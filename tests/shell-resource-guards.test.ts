@@ -181,7 +181,7 @@ describe('ShellTool resource guards', () => {
     }
   });
 
-  test('watchdog reaps the group when the leader is already gone', POSIX_ONLY, async () => {
+  test('watchdog reaps the group when the leader is already gone', LINUX_ONLY, async () => {
     const leader = spawn('setsid', ['sh', '-c', 'sleep 654329 &'], { stdio: 'ignore' });
     try {
       assert.equal(await waitForExit(leader, 4000), true, 'leader exits immediately');

@@ -3,12 +3,12 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MemoryLogStore } from '../src/core/memory-log-store';
 import {
+  AssessMemoryNeedTool,
   FinishMemorySearchTool,
-  MemoryNeighborsTool,
-  MemoryReadTurnTool,
-  MemorySearchTool,
+  MAX_DETAIL_NEEDED_SUMMARY_CHARS,
+  MAX_FINISH_SUMMARY_CHARS,
+  validateAssessArgs,
 } from '../src/tools/memory-branch-tools';
 
 describe('memory branch tools', () => {
@@ -24,84 +24,120 @@ describe('memory branch tools', () => {
     }
   });
 
-  test('search returns compact canonical refs from turn entries only', async () => {
-    writeSessionLog(testRoot, [
-      turn(1, '2026-06-16T10:00:00.000Z', 'alpha_unique first episode', 'nothing yet'),
-      {
-        entry_type: 'runtime',
-        timestamp: '2026-06-16T10:05:00.000Z',
-        session_id: 'chat:demo',
-        session_type: 'chat',
-        level: 'info',
-        message: 'alpha_unique runtime should be ignored',
-      },
-      turn(2, '2026-06-16T11:00:00.000Z', 'second user', 'alpha_unique beta_unique final'),
-    ]);
-    writeDataSessionLog(testRoot, [turn(1, '2026-06-16T12:00:00.000Z', 'alpha_unique data source', 'ignored')]);
-    writeBranchLog(testRoot, 'alpha_unique branch source should be ignored');
+  describe('assess_memory_need', () => {
+    test('declares the pause_turn structured-output contract', () => {
+      const tool = new AssessMemoryNeedTool(async () => ({ ok: true }));
+      assert.equal(tool.definition.controlMode, 'pause_turn');
+      assert.equal(tool.definition.name, 'assess_memory_need');
+      assert.deepEqual(tool.definition.parameters.required, ['action']);
+      assert.deepEqual(tool.definition.parameters.properties.action.enum, ['recall', 'skip']);
+    });
 
-    const store = new MemoryLogStore(testRoot);
-    const tool = new MemorySearchTool(store);
-    const result = await tool.execute({
-      keywords: ['alpha_unique', 'beta_unique'],
-      start_time: '2026-06-16T00:00:00.000Z',
-      end_time: '2026-06-16T23:59:59.999Z',
-      limit: 80,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
+    test('validates and normalizes a recall decision', () => {
+      const validation = validateAssessArgs({
+        action: 'recall',
+        query_text: 'dashboard filter rollback decision',
+        keywords: ['dashboard_unique', 'rollback', 'dashboard_unique', '  ', 42],
+        sources: ['skill', 'agent_memory', 'skill'],
+      });
+      assert.equal(validation.ok, true);
+      assert.deepEqual(validation.ok && validation.payload, {
+        action: 'recall',
+        queryText: 'dashboard filter rollback decision',
+        keywords: ['dashboard_unique', 'rollback', '42'],
+        sources: ['skill', 'agent_memory'],
+      });
+    });
 
-    assert.equal(result.ok, true);
-    const parsed = JSON.parse(String(result.content));
-    assert.equal(parsed.count, 2);
-    assert.deepEqual(parsed.matches, [
-      { ref: 'chat/2026-06-16/demo.jsonl#2', hits: ['alpha_unique', 'beta_unique'] },
-      { ref: 'chat/2026-06-16/demo.jsonl#1', hits: ['alpha_unique'] },
-    ]);
-    assert.equal('preview' in parsed.matches[0], false);
-    assert.equal('score' in parsed.matches[0], false);
-  });
+    test('maps a skip decision and fills a default reason', () => {
+      const explicit = validateAssessArgs({ action: 'skip', reason: '闲聊，无需记忆。' });
+      assert.equal(explicit.ok, true);
+      assert.deepEqual(explicit.ok && explicit.payload, {
+        action: 'skip',
+        reason: '闲聊，无需记忆。',
+      });
 
-  test('read and neighbors accept manually edited adjacent refs', async () => {
-    writeSessionLog(testRoot, [
-      turn(1, '2026-06-16T10:00:00.000Z', 'episode one manual_neighbor_unique', 'first answer'),
-      turn(2, '2026-06-16T11:00:00.000Z', 'episode two', 'second answer'),
-      turn(3, '2026-06-16T12:00:00.000Z', 'episode three', 'third answer'),
-    ]);
+      const implicit = validateAssessArgs({ action: 'skip' });
+      assert.equal(implicit.ok, true);
+      assert.match(implicit.ok && implicit.payload.reason, /主 agent/);
+    });
 
-    const store = new MemoryLogStore(testRoot);
-    const readTool = new MemoryReadTurnTool(store);
-    const read = await readTool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#2',
-      budget_chars: 2000,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(read.ok, true);
-    const readJson = JSON.parse(String(read.content));
-    assert.equal(readJson.ref, 'chat/2026-06-16/demo.jsonl#2');
-    assert.match(readJson.text, /USER:\nepisode two/);
+    test('rejects malformed decisions fail-closed', () => {
+      assert.equal(validateAssessArgs({}).ok, false);
+      assert.equal(validateAssessArgs({ action: 'explore' }).ok, false);
+      assert.equal(validateAssessArgs({ action: 'recall' }).ok, false);
+      assert.equal(validateAssessArgs({ action: 'recall', query_text: 'q' }).ok, false);
+      assert.equal(validateAssessArgs({ action: 'recall', query_text: 'q', keywords: [] }).ok, false);
+      assert.equal(validateAssessArgs({ action: 'recall', query_text: 'q', keywords: ['  '] }).ok, false);
+      assert.equal(
+        validateAssessArgs({ action: 'recall', query_text: 'q', keywords: ['k'], sources: ['memory'] }).ok,
+        false,
+      );
+      const oversized = validateAssessArgs({
+        action: 'recall',
+        query_text: 'q'.repeat(9_000),
+        keywords: ['k'],
+      });
+      assert.equal(oversized.ok, false);
+    });
 
-    const manualAdjacent = await readTool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#1',
-      budget_chars: 2000,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(manualAdjacent.ok, true);
-    assert.match(JSON.parse(String(manualAdjacent.content)).text, /manual_neighbor_unique/);
+    test('validates keywords by Unicode code points, not UTF-16 units', () => {
+      const mk = (action: 'recall' | 'skip', keywords: string[]) => validateAssessArgs({
+        action,
+        query_text: 'q',
+        keywords,
+      });
 
-    const neighborsTool = new MemoryNeighborsTool(store);
-    const neighbors = await neighborsTool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#2',
-      previous: 1,
-      next: 1,
-      budget_chars: 6000,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(neighbors.ok, true);
-    const neighborsJson = JSON.parse(String(neighbors.content));
-    assert.deepEqual(
-      neighborsJson.turns.map((item: any) => item.ref),
-      [
-        'chat/2026-06-16/demo.jsonl#1',
-        'chat/2026-06-16/demo.jsonl#2',
-        'chat/2026-06-16/demo.jsonl#3',
-      ],
-    );
+      // Exactly 64 code points: an astral emoji is ONE code point (two UTF-16
+      // units), so 64 emojis must be accepted even though they are 128 chars.
+      const atLimit = mk('recall', ['😀'.repeat(64)]);
+      assert.equal(atLimit.ok, true);
+
+      // 65 code points — astral or not — is a structured validation error the
+      // model can act on, never a silent drop and never a raw server 400.
+      const astralOver = mk('recall', ['😀'.repeat(65)]);
+      assert.equal(astralOver.ok, false);
+      assert.match(!astralOver.ok ? astralOver.error : '', /at most 64 Unicode code points \(got 65\)/);
+
+      const asciiOver = mk('recall', ['k'.repeat(65)]);
+      assert.equal(asciiOver.ok, false);
+      assert.match(!asciiOver.ok ? asciiOver.error : '', /at most 64 Unicode code points \(got 65\)/);
+
+      // Control characters and unpaired surrogates are rejected outright.
+      const control = mk('recall', ['ok\u0001term']);
+      assert.equal(control.ok, false);
+      assert.match(!control.ok ? control.error : '', /control characters/);
+
+      // C1 range (U+0080–U+009F) mirrors Go unicode.IsControl; U+0085 (NEL)
+      // must never survive into a literal search term.
+      const c1 = mk('recall', ['nel\u0085term']);
+      assert.equal(c1.ok, false);
+      assert.match(!c1.ok ? c1.error : '', /control characters \(C0, DEL, C1\)/);
+
+      const surrogate = mk('recall', ['k\uDE00tail']);
+      assert.equal(surrogate.ok, false);
+      assert.match(!surrogate.ok ? surrogate.error : '', /unpaired surrogates/);
+    });
+
+    test('execute returns the handler ack and surfaces validation errors', async () => {
+      const seen: unknown[] = [];
+      const tool = new AssessMemoryNeedTool(async (payload, context) => {
+        seen.push(payload);
+        assert.equal(context.workingDirectory, testRoot);
+        return { ok: true, action: 'skip' };
+      });
+      const context = { workingDirectory: testRoot, conversationHistory: [] };
+
+      const bad = await tool.execute({ action: 'nope' }, context as any);
+      assert.equal(bad.ok, false);
+      assert.match(JSON.parse(String(bad.message)).error, /action must be/);
+      assert.equal(seen.length, 0);
+
+      const good = await tool.execute({ action: 'skip', reason: '不需要' }, context as any);
+      assert.equal(good.ok, true);
+      assert.deepEqual(JSON.parse(String(good.content)), { ok: true, action: 'skip' });
+      assert.deepEqual(seen, [{ action: 'skip', reason: '不需要' }]);
+    });
   });
 
   test('finish validates canonical refs and has pause control mode', async () => {
@@ -138,6 +174,39 @@ describe('memory branch tools', () => {
     });
     assert.deepEqual(JSON.parse(String(valid.content)), { ok: true });
 
+    // Local distilled-knowledge citation forms are canonical refs too.
+    const knowledge = await tool.execute({
+      summary: 'KB decision found.',
+      refs: [
+        'kb:KB-11111111-2222-4333-8444-555555555555',
+        'file:documents/rollback-notes.md',
+        'file:documents/guides/deploy notes.md',
+        // Traversal, dot-leading segments, and non-document paths stay invalid.
+        'file:documents/../../etc/hosts.md',
+        'file:documents/.hidden.md',
+        'file:documents/../secrets.md',
+        'file:attachments/x.md',
+        'kb:not-a-kb-id',
+      ],
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(knowledge.ok, false);
+    assert.match(JSON.parse(String(knowledge.message)).error, /invalid canonical ref/);
+
+    const knowledgeValid = await tool.execute({
+      summary: 'KB decision found.',
+      refs: [
+        'kb:KB-11111111-2222-4333-8444-555555555555',
+        'file:documents/rollback-notes.md',
+        'file:documents/guides/deploy notes.md',
+      ],
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(knowledgeValid.ok, true);
+    assert.deepEqual(captured?.refs, [
+      'kb:KB-11111111-2222-4333-8444-555555555555',
+      'file:documents/rollback-notes.md',
+      'file:documents/guides/deploy notes.md',
+    ]);
+
     const suppressed = await tool.execute({
       summary: 'No extra memory worth injecting.',
       refs: [],
@@ -150,6 +219,20 @@ describe('memory branch tools', () => {
       inject: false,
     });
 
+    const audit = await tool.execute({
+      summary: 'Retain this evidence for branch audit only.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: false,
+      delivery: 'audit',
+    }, { workingDirectory: testRoot, conversationHistory: [] });
+    assert.equal(audit.ok, true);
+    assert.deepEqual(captured, {
+      summary: 'Retain this evidence for branch audit only.',
+      refs: ['chat/2026-06-16/demo.jsonl#2'],
+      inject: false,
+      delivery: 'audit',
+    });
+
     const contradictory = await tool.execute({
       summary: 'Found something but asked not to inject.',
       refs: ['chat/2026-06-16/demo.jsonl#2'],
@@ -159,107 +242,150 @@ describe('memory branch tools', () => {
     assert.match(JSON.parse(String(contradictory.message)).error, /refs must be empty/);
   });
 
-  test('read applies field-level truncation for oversized single episodes', async () => {
-    writeSessionLog(testRoot, [
-      turn(1, '2026-06-16T10:00:00.000Z', 'short user', 'x'.repeat(5000)),
-    ]);
+  test('finish accepts generated CatsLog citations but still rejects arbitrary refs', async () => {
+    let captured: any;
+    const tool = new FinishMemorySearchTool(payload => {
+      captured = payload;
+    });
+    const context = { workingDirectory: testRoot, conversationHistory: [] };
 
-    const store = new MemoryLogStore(testRoot);
-    const tool = new MemoryReadTurnTool(store);
-    const result = await tool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#1',
-      budget_chars: 400,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
+    const valid = await tool.execute({
+      summary: 'Remote skill and session evidence are relevant.',
+      refs: ['catslog:skill:release-playbook@3', 'stream-release#17'],
+    }, context);
+    assert.equal(valid.ok, true);
+    assert.deepEqual(captured.refs, ['catslog:skill:release-playbook@3', 'stream-release#17']);
 
-    assert.equal(result.ok, true);
-    const parsed = JSON.parse(String(result.content));
-    assert.equal(parsed.truncated, true);
-    assert.match(parsed.text, /truncated field/);
+    const invalid = await tool.execute({
+      summary: 'bad',
+      refs: ['https://evil.example.test/#1'],
+    }, context);
+    assert.equal(invalid.ok, false);
   });
 
-  test('read strips DeepSeek replay summary artifacts from historical assistant text', async () => {
-    const leakedReplay = [
-      '先给你做个小游戏。',
-      '',
-      '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=write_file，id=call_function_1，参数={"content":"<!DOCTYPE html>',
-      '<html>',
-      '<script>',
-      'const levels = [1, 2, 3];',
-      '</script>',
-      '</html>","file_path":"E:\\\\tmp\\\\flappy.html"}]',
-    ].join('\n');
-    writeSessionLog(testRoot, [
-      turn(1, '2026-06-16T10:00:00.000Z', '写个游戏', leakedReplay),
-    ]);
+  describe('finish concise delivery contract', () => {
+    const CONTEXT_REFS = ['chat/2026-06-16/demo.jsonl#2'];
 
-    const store = new MemoryLogStore(testRoot);
-    const readTool = new MemoryReadTurnTool(store);
-    const result = await readTool.execute({
-      ref: 'chat/2026-06-16/demo.jsonl#1',
-      budget_chars: 4000,
-    }, { workingDirectory: testRoot, conversationHistory: [] });
+    function makeFinishTool() {
+      const payloads: any[] = [];
+      const tool = new FinishMemorySearchTool(payload => {
+        payloads.push(payload);
+      });
+      return { tool, payloads, context: { workingDirectory: testRoot, conversationHistory: [] } };
+    }
 
-    assert.equal(result.ok, true);
-    const parsed = JSON.parse(String(result.content));
-    assert.match(parsed.text, /ASSISTANT_FINAL:\n先给你做个小游戏。/);
-    assert.doesNotMatch(parsed.text, /DeepSeek thinking replay|DOCTYPE html|flappy\.html/);
+    test('pins the concise cap constants', () => {
+      assert.equal(MAX_FINISH_SUMMARY_CHARS, 400);
+      assert.equal(MAX_DETAIL_NEEDED_SUMMARY_CHARS, 800);
+    });
 
-    const searchTool = new MemorySearchTool(store);
-    const search = await searchTool.execute({
-      keywords: ['flappy.html'],
-      start_time: '2026-06-16T00:00:00.000Z',
-      end_time: '2026-06-16T23:59:59.999Z',
-    }, { workingDirectory: testRoot, conversationHistory: [] });
-    assert.equal(search.ok, true);
-    assert.deepEqual(JSON.parse(String(search.content)).matches, []);
+    test('cap is enforced as a structured validation error, never silent truncation', async () => {
+      const { tool, payloads, context } = makeFinishTool();
+      const base = { refs: CONTEXT_REFS, inject: true, delivery: 'context' as const };
+
+      const atCap = await tool.execute({ ...base, summary: 'a'.repeat(MAX_FINISH_SUMMARY_CHARS) }, context);
+      assert.equal(atCap.ok, true);
+      assert.equal(payloads[0].summary.length, MAX_FINISH_SUMMARY_CHARS);
+
+      const overCap = await tool.execute({ ...base, summary: `${'a'.repeat(MAX_FINISH_SUMMARY_CHARS)}!` }, context);
+      assert.equal(overCap.ok, false);
+      const error = JSON.parse(String(overCap.message)).error;
+      assert.match(error, new RegExp(`at most ${MAX_FINISH_SUMMARY_CHARS} Unicode code points \\(got ${MAX_FINISH_SUMMARY_CHARS + 1}\\)`));
+      assert.match(error, /detail_needed/);
+      assert.equal(payloads.length, 1, 'rejected finish must not reach the handler');
+
+      // Trimming happens before the cap check: padding cannot smuggle length.
+      const padded = await tool.execute({ ...base, summary: `  ${'a'.repeat(MAX_FINISH_SUMMARY_CHARS)}  ` }, context);
+      assert.equal(padded.ok, true);
+    });
+
+    test('caps measure Unicode code points, not UTF-16 units', async () => {
+      const { tool, payloads, context } = makeFinishTool();
+      const base = { refs: [], inject: false, delivery: 'discard' as const };
+
+      const astralAtCap = await tool.execute({ ...base, summary: '😀'.repeat(MAX_FINISH_SUMMARY_CHARS) }, context);
+      assert.equal(astralAtCap.ok, true, '400 astral code points (800 UTF-16 units) sit exactly at the cap');
+
+      const astralOver = await tool.execute(
+        { ...base, summary: `${'😀'.repeat(MAX_FINISH_SUMMARY_CHARS)}😀` },
+        context,
+      );
+      assert.equal(astralOver.ok, false);
+      assert.match(JSON.parse(String(astralOver.message)).error, /\(got 401\)/);
+    });
+
+    test('detail_needed relaxes the cap to 800 and stays an explicit honest marker', async () => {
+      const { tool, payloads, context } = makeFinishTool();
+      const base = { refs: CONTEXT_REFS, inject: true, delivery: 'context' as const };
+      const last = () => payloads[payloads.length - 1];
+
+      const rejected = await tool.execute({ ...base, summary: 'b'.repeat(600) }, context);
+      assert.equal(rejected.ok, false);
+
+      const relaxed = await tool.execute({ ...base, summary: 'b'.repeat(600), detail_needed: true }, context);
+      assert.equal(relaxed.ok, true);
+      assert.deepEqual(last(), { ...base, summary: 'b'.repeat(600), detail_needed: true });
+
+      const stillCapped = await tool.execute(
+        { ...base, summary: 'b'.repeat(MAX_DETAIL_NEEDED_SUMMARY_CHARS + 1), detail_needed: true },
+        context,
+      );
+      assert.equal(stillCapped.ok, false);
+      assert.match(
+        JSON.parse(String(stillCapped.message)).error,
+        new RegExp(`at most ${MAX_DETAIL_NEEDED_SUMMARY_CHARS} Unicode code points`),
+      );
+
+      const badType = await tool.execute({ ...base, summary: 'ok', detail_needed: 'yes' }, context);
+      assert.equal(badType.ok, false);
+      assert.match(JSON.parse(String(badType.message)).error, /detail_needed must be a boolean/);
+
+      // Absent and explicit false are equivalent, so payload shapes stay stable.
+      const explicitFalse = await tool.execute({ ...base, summary: 'ok', detail_needed: false }, context);
+      assert.equal(explicitFalse.ok, true);
+      assert.equal('detail_needed' in last(), false);
+    });
+
+    test('tool schema keeps finish parameter names/types stable and advertises the contract', () => {
+      const { tool } = makeFinishTool();
+      assert.equal(tool.definition.controlMode, 'pause_turn');
+      assert.equal(tool.definition.name, 'finish_memory_search');
+      assert.deepEqual(tool.definition.parameters.required, ['summary', 'refs']);
+      assert.equal(tool.definition.parameters.properties.summary.type, 'string');
+      assert.equal(tool.definition.parameters.properties.refs.type, 'array');
+      assert.equal(tool.definition.parameters.properties.inject.type, 'boolean');
+      assert.deepEqual(tool.definition.parameters.properties.delivery.enum, ['context', 'audit', 'discard']);
+      assert.equal(tool.definition.parameters.properties.detail_needed.type, 'boolean');
+      assert.match(String(tool.definition.parameters.properties.summary.description), /400/);
+      assert.match(String(tool.definition.description), /detail_needed/);
+    });
+
+    test('delivery and refs semantics are unchanged under the summary cap', async () => {
+      const { tool, payloads, context } = makeFinishTool();
+
+      const discardWithRefs = await tool.execute(
+        { summary: 'x', refs: CONTEXT_REFS, inject: false, delivery: 'discard' },
+        context,
+      );
+      assert.match(JSON.parse(String(discardWithRefs.message)).error, /refs must be empty when delivery is discard/);
+
+      const auditWithoutRefs = await tool.execute(
+        { summary: 'x', refs: [], inject: false, delivery: 'audit' },
+        context,
+      );
+      assert.match(JSON.parse(String(auditWithoutRefs.message)).error, /refs must include at least one canonical memory ref for audit/);
+
+      const badRef = await tool.execute({ summary: 'x', refs: ['not-a-ref'] }, context);
+      assert.match(JSON.parse(String(badRef.message)).error, /invalid canonical ref/);
+
+      const ok = await tool.execute({ summary: 'fine', refs: CONTEXT_REFS, delivery: 'context' }, context);
+      assert.equal(ok.ok, true);
+      assert.deepEqual(payloads[payloads.length - 1], {
+        summary: 'fine',
+        refs: CONTEXT_REFS,
+        inject: true,
+        delivery: 'context',
+      });
+    });
   });
 });
-
-function writeSessionLog(root: string, entries: unknown[]): void {
-  const dir = path.join(root, 'logs', 'sessions', 'chat', '2026-06-16');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'demo.jsonl'),
-    entries.map(entry => JSON.stringify(entry)).join('\n') + '\n',
-    'utf-8',
-  );
-}
-
-function writeDataSessionLog(root: string, entries: unknown[]): void {
-  const dir = path.join(root, 'data', 'sessions', 'chat', '2026-06-16');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'demo.jsonl'),
-    entries.map(entry => JSON.stringify(entry)).join('\n') + '\n',
-    'utf-8',
-  );
-}
-
-function writeBranchLog(root: string, message: string): void {
-  const dir = path.join(root, 'logs', 'branches', 'memory', '2026-06-16');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'branch.jsonl'),
-    JSON.stringify({ entry_type: 'branch', message }) + '\n',
-    'utf-8',
-  );
-}
-
-function turn(turnNumber: number, timestamp: string, userText: string, assistantText: string) {
-  return {
-    entry_type: 'turn',
-    turn: turnNumber,
-    timestamp,
-    session_id: 'chat:demo',
-    session_type: 'chat',
-    user: { text: userText },
-    assistant: {
-      text: assistantText,
-      tool_calls: [],
-    },
-    tokens: {
-      prompt: 1,
-      completion: 1,
-    },
-  };
-}

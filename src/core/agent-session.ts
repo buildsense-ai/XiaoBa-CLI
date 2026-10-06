@@ -11,6 +11,8 @@ import type {
 import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from '../utils/ai-service';
+import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
+import type { MemoryBranchBudget } from './branch-budget';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import type { TurnSkillSnapshotStore } from '../skills/turn-skill-snapshot';
@@ -28,7 +30,7 @@ import {
 } from '../skills/session-skill-runtime';
 import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
-import { SessionTurnLogger } from '../utils/session-turn-logger';
+import { SessionTurnLogger, type SessionLogAgentIdentity } from '../utils/session-turn-logger';
 import { Metrics } from '../utils/metrics';
 import { ContextWindowManager } from './context-window-manager';
 import {
@@ -105,7 +107,10 @@ export interface AgentServices {
     enabled: boolean;
     modelSource: 'inherit' | 'catalog' | 'custom';
     aiService: AIService;
+    budget?: MemoryBranchBudget;
   };
+  /** Device-bound CatsLog read capability used only by the memory branch. */
+  catslogMemory?: CatsLogMemoryBackend;
   toolManager: ToolManager;
   skillManager: SkillManager;
   /** Optional so tests and embedded legacy runtimes keep their existing path. */
@@ -238,7 +243,7 @@ export class AgentSession {
     private readonly sessionRoute?: SessionRoute,
   ) {
     const type = sessionType || this.extractSessionType(key);
-    this.sessionTurnLogger = new SessionTurnLogger(type, key);
+    this.sessionTurnLogger = new SessionTurnLogger(type, key, sessionLogAgentIdentity(sessionRoute));
     this.turnLogRecorder = new TurnLogRecorder(this.sessionTurnLogger);
     const modelConfig = typeof (services.aiService as any).getConfig === 'function'
       ? (services.aiService as any).getConfig()
@@ -665,6 +670,18 @@ export class AgentSession {
         } else {
           // 旧签名 SessionCallbacks
           callbacks = callbacksOrOptions as SessionCallbacks;
+        }
+      }
+
+      // A few compatibility paths create a session from a legacy string key
+      // before the first routed message arrives. Enrich the logger at the
+      // turn boundary so those sessions still emit the PR391 envelope; a
+      // conflicting route is retained as a warning and never relabels the
+      // existing stream.
+      if (sessionRoute) {
+        const accepted = this.sessionTurnLogger.setAgentIdentity(sessionLogAgentIdentity(sessionRoute));
+        if (!accepted) {
+          Logger.warning(`[会话 ${this.key}] 忽略与既有日志流冲突的 Agent identity`);
         }
       }
 
@@ -1471,4 +1488,19 @@ export class AgentSession {
     return `${normalized.slice(0, maxLength)}...(已截断)`;
   }
 
+}
+
+function sessionLogAgentIdentity(route: SessionRoute | undefined): SessionLogAgentIdentity | undefined {
+  if (!route) return undefined;
+  const rawAgentId = route.agentId?.trim();
+  const agentId = rawAgentId && route.source === 'catscompany' && /^\d+$/.test(rawAgentId)
+    ? `usr${rawAgentId}`
+    : rawAgentId;
+  if (!agentId) return undefined;
+  return {
+    agent_id: agentId,
+    ...(route.agentBodyId?.trim() && { agent_body_id: route.agentBodyId.trim() }),
+    trust: route.identityTrust,
+    ...(route.identitySource?.trim() && { source: route.identitySource.trim() }),
+  };
 }

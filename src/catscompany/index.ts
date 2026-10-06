@@ -62,6 +62,7 @@ import { ShellTool } from '../tools/bash-tool';
 import { uploadImportFileSource } from '../tools/import-file-tool';
 import { resolveCommonDirectoryToolArgs } from '../tools/common-directory-tool';
 import { inferCatsUploadType } from './upload';
+import { RpcToolTelemetrySpan, toolResultContentChars } from './rpc-tool-telemetry';
 import {
   isRemoteDeviceRpcTool,
   normalizeDeviceRpcToolResultForTransport,
@@ -1069,6 +1070,16 @@ export class CatsCompanyBot {
     if (!requestID) return;
     Logger.info(`[CatsCompany][thin_tool_rpc] target received request: request=${requestID}, tool=${request.tool_name || ''}, targetOwner=${request.target_owner_user_id || ''}, targetDevice=${request.target_device_id || ''}, device=${request.device_id || ''}`);
 
+    // Telemetry（仅 grep）：按 request 关联 start → execute-end → result-sent，
+    // 区分工具执行耗时与结果回传传输耗时。只记录清洗后的 request ID、工具
+    // 枚举、时序、ok/errorCode 与长度聚合，不记录 pattern/路径/参数/消息体。
+    const rpcTelemetry = RpcToolTelemetrySpan.begin({
+      channel: 'thin_tool_rpc',
+      requestId: requestID,
+      toolName: request.tool_name,
+    });
+    if (rpcTelemetry) Logger.info(rpcTelemetry.received());
+
     if (this.skillHubThinRpc.supports(String(request.tool_name || ''))) {
       await this.handleSkillHubThinToolRpcRequest(request);
       return;
@@ -1095,10 +1106,19 @@ export class CatsCompanyBot {
           message: result.message,
         };
 
+    // Telemetry：执行结束点（含异常合成的失败结果，时间线始终配对）。
+    if (rpcTelemetry) {
+      Logger.info(rpcTelemetry.executeEnd({
+        ok: result.ok,
+        errorCode: result.ok ? undefined : (result.errorCode || 'TOOL_EXECUTION_ERROR'),
+      }));
+    }
+
     // Shutdown fence: 工具执行期间 destroy() 可能已开始（quiesce 超时后继续），
     // 此时连接即将断开，不再发送迟到结果（review 2026-08-06）。
     if (this.shuttingDown) {
       Logger.info(`[CatsCompany][thin_tool_rpc] destroy 已开始，丢弃 RPC 结果: request=${requestID}`);
+      if (rpcTelemetry) Logger.info(rpcTelemetry.dropped());
       return;
     }
     try {
@@ -1112,8 +1132,23 @@ export class CatsCompanyBot {
         error,
       });
       Logger.info(`[CatsCompany][thin_tool_rpc] target sent result: request=${requestID}, tool=${request.tool_name || ''}, ok=${result.ok}`);
+      if (rpcTelemetry) {
+        Logger.info(rpcTelemetry.resultSent({
+          ok: result.ok,
+          errorCode: error?.code,
+          resultChars: toolResultContentChars(result),
+        }));
+      }
     } catch (err: any) {
       Logger.warning(`[CatsCompany] Thin Tool RPC result send failed: request=${requestID}, error=${err?.message || err}`);
+      if (rpcTelemetry) {
+        Logger.info(rpcTelemetry.resultSent({
+          ok: result.ok,
+          errorCode: error?.code,
+          resultChars: toolResultContentChars(result),
+          sendFailed: true,
+        }));
+      }
     }
   }
 
@@ -1229,6 +1264,16 @@ export class CatsCompanyBot {
     const requestID = request.request_id;
     if (!requestID) return;
 
+    // Telemetry（仅 grep）：与 thin_tool_rpc 接收端同一套 request 关联时序，
+    // 区分工具执行耗时与结果回传传输耗时。只记录清洗后的 request ID、工具
+    // 枚举、时序、ok/errorCode 与长度聚合；被校验拒绝的请求记 ok=false。
+    const rpcTelemetry = RpcToolTelemetrySpan.begin({
+      channel: 'device_rpc',
+      requestId: requestID,
+      toolName: request.tool_name || request.operation,
+    });
+    if (rpcTelemetry) Logger.info(rpcTelemetry.received());
+
     const validationError = this.validateDeviceRpcToolRequest(request);
     let result: ToolExecutionResult | undefined;
     if (!validationError) {
@@ -1250,10 +1295,24 @@ export class CatsCompanyBot {
           message: result.message,
         });
 
+    // Telemetry：执行结束点。校验拒绝（result 为空）同样记 ok=false，
+    // 绝不把被拒绝的 RPC 记成成功执行。
+    if (rpcTelemetry) {
+      if (validationError) {
+        Logger.info(rpcTelemetry.executeEnd({ ok: false, errorCode: validationError.code }));
+      } else if (result) {
+        Logger.info(rpcTelemetry.executeEnd({
+          ok: result.ok,
+          errorCode: result.ok ? undefined : (result.errorCode || 'tool_execution_error'),
+        }));
+      }
+    }
+
     // Shutdown fence: 工具执行期间 destroy() 可能已开始（quiesce 超时后继续），
     // 此时连接即将断开，不再发送迟到结果（review 2026-08-06）。
     if (this.shuttingDown) {
       Logger.info(`[CatsCompany] destroy 已开始，丢弃 Device RPC 结果: request=${requestID}`);
+      if (rpcTelemetry) Logger.info(rpcTelemetry.dropped());
       return;
     }
     try {
@@ -1276,8 +1335,23 @@ export class CatsCompanyBot {
         result: error || !result ? undefined : normalizeDeviceRpcToolResultForTransport(result, { toolName: request.tool_name }),
         error,
       });
+      if (rpcTelemetry) {
+        Logger.info(rpcTelemetry.resultSent({
+          ok: Boolean(result?.ok) && !error,
+          errorCode: error?.code,
+          resultChars: !error && result?.ok ? toolResultContentChars(result) : undefined,
+        }));
+      }
     } catch (err: any) {
       Logger.warning(`[CatsCompany] Device RPC result 发送失败: request=${requestID}, error=${err?.message || err}`);
+      if (rpcTelemetry) {
+        Logger.info(rpcTelemetry.resultSent({
+          ok: Boolean(result?.ok) && !error,
+          errorCode: error?.code,
+          resultChars: !error && result?.ok ? toolResultContentChars(result) : undefined,
+          sendFailed: true,
+        }));
+      }
     }
   }
 

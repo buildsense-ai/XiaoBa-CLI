@@ -138,40 +138,45 @@ describe('GrepTool', () => {
     test('Node.js fallback 应将取消信号传入进行中的文件读取', async () => {
       const controller = new AbortController();
       let receivedSignal: AbortSignal | undefined;
-      const timer = setTimeout(() => controller.abort(), 20);
 
-      try {
-        await withReadFileStub(
-          async (_originalReadFile, _filePath, options) => {
-            receivedSignal = options?.signal;
-            if (!receivedSignal) throw new Error('readFile missing AbortSignal');
-            await new Promise<void>((_resolve, reject) => {
-              const rejectAsAborted = () => reject(Object.assign(new Error('aborted'), {
-                name: 'AbortError',
-                code: 'ABORT_ERR',
-              }));
-              if (receivedSignal?.aborted) rejectAsAborted();
-              else receivedSignal?.addEventListener('abort', rejectAsAborted, { once: true });
-            });
-            return '';
-          },
-          async () => {
-            await assert.rejects(
-              () => (grepTool as any).executeWithNodeJS(
-                { pattern: 'Hello', output_mode: 'files' },
-                testDir,
-                { ...context, abortSignal: controller.signal },
-                '.',
-              ),
-              /搜索已取消/,
-            );
-          },
-        );
-      } finally {
-        clearTimeout(timer);
-      }
+      // 在第一个 readFile 调用内部触发取消：保证取消发生在读取已在途时，
+      // 而不是与 worker 初始化/目录枚举竞速。
+      await withReadFileStub(
+        async (_originalReadFile, _filePath, options) => {
+          receivedSignal = options?.signal;
+          if (!(receivedSignal instanceof AbortSignal)) {
+            throw new Error('readFile missing AbortSignal');
+          }
+          controller.abort();
+          await new Promise<void>((_resolve, reject) => {
+            const rejectAsAborted = () => reject(Object.assign(new Error('aborted'), {
+              name: 'AbortError',
+              code: 'ABORT_ERR',
+            }));
+            if (receivedSignal?.aborted) rejectAsAborted();
+            else receivedSignal?.addEventListener('abort', rejectAsAborted, { once: true });
+          });
+          return '';
+        },
+        async () => {
+          await assert.rejects(
+            () => (grepTool as any).executeWithNodeJS(
+              { pattern: 'Hello', output_mode: 'files' },
+              testDir,
+              { ...context, abortSignal: controller.signal },
+              '.',
+            ),
+            /搜索已取消/,
+          );
+        },
+      );
 
-      assert.strictEqual(receivedSignal, controller.signal);
+      // 运行时将调用方信号与 deadline 合并为内部组合信号：不再要求是同一个
+      // 对象，但必须是有效 AbortSignal，且调用方 abort 后组合信号必须翻转，
+      // 操作本身必须以“搜索已取消”终止。
+      assert.ok(receivedSignal instanceof AbortSignal, 'readFile 必须收到 AbortSignal');
+      assert.strictEqual(receivedSignal!.aborted, true, '调用方取消后组合信号必须翻转');
+      assert.notStrictEqual(receivedSignal, controller.signal);
     });
 
     test('Node.js fallback 应跳过搜索期间消失的单个文件', async () => {

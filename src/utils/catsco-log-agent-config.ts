@@ -6,6 +6,7 @@ const DEFAULT_STABLE_MINUTES = 5;
 const DEFAULT_INTERVAL_MINUTES = 30;
 const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_FILES_PER_CYCLE = 12;
+const DEFAULT_MAX_CONCURRENT_UPLOADS = 3;
 const DEFAULT_API_BASE_URL = 'https://logs.catsco.fun:8000';
 
 export interface CatscoLogAgentConfig {
@@ -17,7 +18,12 @@ export interface CatscoLogAgentConfig {
   stableMinutes: number;
   maxFileBytes: number;
   maxFilesPerCycle: number;
+  maxConcurrentUploads: number;
   catscoUserToken?: string;
+  /** Optional override for exposing the branch's remote memory capability. */
+  memoryEnabled?: boolean;
+  /** Explicit opt-in for the CLI Skill outcome write. */
+  skillOutcomesEnabled?: boolean;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
@@ -104,6 +110,7 @@ export function getCatscoLogAgentConfig(
   const apiBaseUrl = normalizeBaseUrl(
     readEnv(runtimeEnv, 'CATSCO_LOG_API_BASE_URL', 'CATSLOG_API_BASE_URL') || DEFAULT_API_BASE_URL,
   );
+  const memoryEnabledValue = readEnv(runtimeEnv, 'CATSLOG_MEMORY_ENABLED');
   const enabled = readBoolean(runtimeEnv, 'CATSCO_LOG_UPLOAD_ENABLED', true);
   const stateFilePath = resolveContainedPath(
     workingDirectory,
@@ -127,6 +134,11 @@ export function getCatscoLogAgentConfig(
     stableMinutes: readNumber(runtimeEnv, 'CATSCO_LOG_STABLE_MINUTES', DEFAULT_STABLE_MINUTES, 0),
     maxFileBytes: readNumber(runtimeEnv, 'CATSCO_LOG_MAX_FILE_BYTES', DEFAULT_MAX_FILE_BYTES, 1),
     maxFilesPerCycle: readNumber(runtimeEnv, 'CATSCO_LOG_MAX_FILES_PER_CYCLE', DEFAULT_MAX_FILES_PER_CYCLE, 1),
+    maxConcurrentUploads: Math.min(8, readNumber(runtimeEnv, 'CATSCO_LOG_MAX_CONCURRENT_UPLOADS', DEFAULT_MAX_CONCURRENT_UPLOADS, 1)),
     catscoUserToken: readEnv(runtimeEnv, 'CATSCO_USER_TOKEN', 'CATSCOMPANY_USER_TOKEN'),
+    ...(memoryEnabledValue !== undefined
+      ? { memoryEnabled: readBoolean(runtimeEnv, 'CATSLOG_MEMORY_ENABLED', false) }
+      : {}),
+    skillOutcomesEnabled: readBoolean(runtimeEnv, 'CATSLOG_SKILL_OUTCOMES_ENABLED', false),
   };
 }

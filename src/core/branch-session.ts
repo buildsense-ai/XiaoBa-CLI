@@ -15,6 +15,14 @@ export interface BranchSessionOptions {
   workingDirectory: string;
   signal?: AbortSignal;
   logEnabled?: boolean;
+  /** Maximum model turns allowed in one ConversationRunner pass. */
+  maxTurnsPerPass?: number;
+  /** Maximum number of ConversationRunner passes before the branch stops. */
+  maxPasses?: number;
+  /** Wall-clock budget for the whole branch. */
+  deadlineMs?: number;
+  /** Optional prompt-token budget for each runner pass. */
+  maxContextTokens?: number;
 }
 
 export interface BranchRunOutcome {
@@ -28,6 +36,10 @@ export abstract class BranchSession {
   private readonly abortController = new AbortController();
   private stopped = false;
   private initialized = false;
+  private conversationPasses = 0;
+  private budgetExhaustedReason: 'max_passes' | 'deadline' | null = null;
+  private readonly deadlineAt?: number;
+  private readonly budgetTimer?: ReturnType<typeof setTimeout>;
 
   protected constructor(protected readonly options: BranchSessionOptions) {
     this.logger = new BranchSessionLogger({
@@ -36,12 +48,22 @@ export abstract class BranchSession {
       workingDirectory: options.workingDirectory,
       enabled: options.logEnabled !== false,
     });
+    const deadlineMs = normalizePositiveBudget(options.deadlineMs);
+    if (deadlineMs !== undefined) {
+      this.deadlineAt = Date.now() + deadlineMs;
+      const timer = setTimeout(() => {
+        this.exhaustBudget('deadline');
+      }, deadlineMs);
+      timer.unref?.();
+      this.budgetTimer = timer;
+    }
     options.signal?.addEventListener('abort', () => this.stop(), { once: true });
   }
 
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.clearBudgetTimer();
     this.abortController.abort();
   }
 
@@ -51,15 +73,110 @@ export abstract class BranchSession {
       && !this.options.signal?.aborted;
   }
 
+  /**
+   * Reserve one model pass. Keeping this gate in the branch base class makes
+   * the budget apply to every autonomous branch loop, rather than only to a
+   * single ConversationRunner invocation.
+   */
+  protected beginConversationPass(): boolean {
+    if (!this.shouldContinue()) return false;
+    if (this.deadlineAt !== undefined && Date.now() >= this.deadlineAt) {
+      this.exhaustBudget('deadline');
+      return false;
+    }
+    const maxPasses = normalizePositiveBudget(this.options.maxPasses);
+    // Subclasses may reserve extra finish-only passes so a bounded branch
+    // converges to a finish payload instead of dying at its pass budget.
+    const allowedPasses = maxPasses !== undefined
+      ? maxPasses + this.reservedTailPasses()
+      : undefined;
+    if (allowedPasses !== undefined && this.conversationPasses >= allowedPasses) {
+      this.exhaustBudget('max_passes');
+      return false;
+    }
+    this.conversationPasses++;
+    return true;
+  }
+
+  /**
+   * Extra passes allowed beyond maxPasses for a restricted finish-only tail.
+   * Default 0: the budget means exactly what it says unless a branch opts in.
+   */
+  protected reservedTailPasses(): number {
+    return 0;
+  }
+
+  protected isBudgetExhausted(): boolean {
+    return this.budgetExhaustedReason !== null;
+  }
+
+  protected getBudgetExhaustedReason(): string | undefined {
+    return this.budgetExhaustedReason || undefined;
+  }
+
+  protected getBudgetLogPayload(): Record<string, unknown> {
+    return {
+      max_turns_per_pass: normalizePositiveBudget(this.options.maxTurnsPerPass),
+      max_passes: normalizePositiveBudget(this.options.maxPasses),
+      deadline_ms: normalizePositiveBudget(this.options.deadlineMs),
+      max_context_tokens: normalizePositiveBudget(this.options.maxContextTokens),
+    };
+  }
+
+  /** Hooks used by branch-specific provenance trackers. */
+  protected onBranchToolStart(_name: string, _toolUseId: string, _input: any): void {}
+  protected onBranchToolEnd(_name: string, _toolUseId: string, _result: string): void {}
+
+  /**
+   * Called synchronously when the finite branch budget is exhausted. Concrete
+   * branches may retain already-observed evidence here, but must not assume
+   * that parent context can still be published.
+   */
+  protected onBudgetExhausted(): void {}
+
+  protected clearBudgetTimer(): void {
+    if (this.budgetTimer) clearTimeout(this.budgetTimer);
+  }
+
+  private exhaustBudget(reason: 'max_passes' | 'deadline'): void {
+    if (this.budgetExhaustedReason) return;
+    this.budgetExhaustedReason = reason;
+    this.logger.write('budget_exhausted', {
+      reason,
+      conversation_passes: this.conversationPasses,
+      ...this.getBudgetLogPayload(),
+    });
+    this.stop();
+    try {
+      this.onBudgetExhausted();
+    } catch (error: any) {
+      // Budget cleanup is authoritative; a best-effort branch hook must not
+      // turn a bounded shutdown into an unhandled rejection.
+      this.logFailure(error);
+    }
+  }
+
   protected abstract buildInitialMessages(): Promise<Message[]>;
   protected abstract buildTools(): Tool[];
 
+  /**
+   * Hook for branches whose tool surface depends on turn-scoped capability
+   * state. It runs immediately before the initial prompt and before every
+   * subsequent conversation pass, keeping prompt and tools on one snapshot.
+   */
+  protected prepareConversationTurn(): void {}
+
   protected async runConversation(): Promise<BranchRunOutcome> {
+    if (!this.beginConversationPass()) {
+      return { messages: this.messages };
+    }
+    this.prepareConversationTurn();
     if (!this.initialized) {
       this.messages.push(...await this.buildInitialMessages());
       this.initialized = true;
       this.logger.write('start', {
         message_count: this.messages.length,
+        budget: this.getBudgetLogPayload(),
       });
     }
 
@@ -76,6 +193,12 @@ export abstract class BranchSession {
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
       stream: false,
       enableCompression: true,
+      maxTurns: normalizePositiveBudget(this.options.maxTurnsPerPass),
+      maxContextTokens: normalizePositiveBudget(this.options.maxContextTokens),
+      // Branch tools are read-only and independent, so multiple calls emitted
+      // in one model turn run concurrently (results stay keyed to their
+      // tool_use ids; the shared abortSignal cancels the whole batch).
+      parallelToolExecution: true,
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
         sessionId: `branch:${this.options.type}:${this.options.id}`,
@@ -92,14 +215,27 @@ export abstract class BranchSession {
       onToolStart: (name, toolUseId, input) => this.logger.write('tool_start', {
         name,
         tool_use_id: toolUseId,
-        input,
+        input: sanitizeBranchLogValue(input),
       }),
       onToolEnd: (name, toolUseId, result) => this.logger.write('tool_end', {
         name,
         tool_use_id: toolUseId,
-        result,
+        result: sanitizeBranchToolResult(name, result),
       }),
       onRetry: (attempt, maxRetries) => this.logger.write('retry', { attempt, max_retries: maxRetries }),
+    };
+
+    // Keep logging and provenance observation independent: a malformed
+    // observer must never alter the branch's control flow.
+    const originalOnToolStart = callbacks.onToolStart;
+    callbacks.onToolStart = (name, toolUseId, input) => {
+      try { this.onBranchToolStart(name, toolUseId, input); } catch { /* best effort */ }
+      originalOnToolStart?.(name, toolUseId, input);
+    };
+    const originalOnToolEnd = callbacks.onToolEnd;
+    callbacks.onToolEnd = (name, toolUseId, result) => {
+      try { this.onBranchToolEnd(name, toolUseId, result); } catch { /* best effort */ }
+      originalOnToolEnd?.(name, toolUseId, result);
     };
 
     try {
@@ -111,7 +247,7 @@ export abstract class BranchSession {
       });
       return { messages: this.messages, result };
     } finally {
-      this.logger.write('transcript', { messages: this.messages });
+      this.logger.write('transcript', { messages: sanitizeBranchLogValue(this.messages) });
     }
   }
 
@@ -129,6 +265,13 @@ export abstract class BranchSession {
       Logger.warning(`[branch:${this.options.type}:${this.options.id}] failed: ${error?.message || error}`);
     }
   }
+}
+
+function normalizePositiveBudget(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number) || number <= 0) return undefined;
+  return Math.floor(number);
 }
 
 export interface BranchSessionLoggerOptions {
@@ -155,13 +298,14 @@ export class BranchSessionLogger {
 
   write(eventType: string, payload: Record<string, unknown> = {}): void {
     if (!this.filePath) return;
+    const safePayload = sanitizeBranchLogValue(payload) as Record<string, unknown>;
     const entry = {
       entry_type: 'branch',
       branch_type: this.options.branchType,
       branch_id: this.options.branchId,
       event_type: eventType,
       timestamp: new Date().toISOString(),
-      ...payload,
+      ...safePayload,
     };
     try {
       fs.appendFileSync(this.filePath, JSON.stringify(entry) + '\n');
@@ -173,4 +317,88 @@ export class BranchSessionLogger {
 
 function sanitizeFilePart(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120) || 'branch';
+}
+
+const MAX_BRANCH_LOG_TEXT = 24_000;
+const MAX_BRANCH_LOG_ITEMS = 128;
+const MAX_BRANCH_LOG_DEPTH = 8;
+
+/**
+ * Branch logs are local audit artifacts, not a credential store. Keep enough
+ * shape for debugging while redacting capability selectors and receipts even
+ * if a future CatsLog adapter accidentally returns an unprojected field.
+ */
+function sanitizeBranchLogValue(value: unknown, key?: string, depth = 0): unknown {
+  if (key && isSensitiveLogKey(key)) return '[redacted]';
+  if (depth >= MAX_BRANCH_LOG_DEPTH) return '[truncated]';
+  if (typeof value === 'string') {
+    // Tool arguments/results are often JSON-in-a-string. Parse those strings
+    // so nested receipt/token keys receive the same guard, but only when the
+    // text can actually be an object/array — prose and JSON scalars parse
+    // identically through the scrubbed-text path anyway.
+    if (key === 'arguments' || key === 'content' || key === 'result') {
+      const trimmed = value.trimStart();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          return JSON.stringify(sanitizeBranchLogValue(JSON.parse(value), undefined, depth + 1));
+        } catch {
+          // Preserve ordinary prose, but cap untrusted tool text.
+        }
+      }
+    }
+    const scrubbed = scrubInlineSensitiveText(value);
+    return scrubbed.length > MAX_BRANCH_LOG_TEXT
+      ? `${scrubbed.slice(0, MAX_BRANCH_LOG_TEXT)}…[truncated]`
+      : scrubbed;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, MAX_BRANCH_LOG_ITEMS).map(item => sanitizeBranchLogValue(item, undefined, depth + 1));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+      entryKey,
+      sanitizeBranchLogValue(entryValue, entryKey, depth + 1),
+    ]));
+  }
+  return value;
+}
+
+function isSensitiveLogKey(key: string): boolean {
+  // Normalize camelCase and punctuation before matching so both
+  // `retrieval_receipt` and `retrievalReceipt` are covered without treating a
+  // benign key such as `guid` as a UID selector.
+  // Known over-match: benign keys like `max_tokens` also normalize to a
+  // sensitive suffix and are redacted in branch logs. Accepted deliberately —
+  // audit logs prefer over-redaction, and only debugging convenience is lost.
+  const normalized = key
+    .replace(CAMEL_HUMP_RE, '$1_$2')
+    .replace(NON_IDENTIFIER_RE, '_')
+    .toLowerCase();
+  return SENSITIVE_LOG_KEY_RE.test(normalized);
+}
+
+const CAMEL_HUMP_RE = /([a-z0-9])([A-Z])/g;
+const NON_IDENTIFIER_RE = /[^A-Za-z0-9]+/g;
+const SENSITIVE_LOG_KEY_RE = /(?:^|_)(authorization|bearer|password|secret|token|receipt|api_key|uid|uids|scope|tenant|principal|credential|private_key)(?:_|$)/;
+const BEARER_TEXT_RE = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
+const LABELLED_SECRET_TEXT_RE = /((?:retrieval[_-]?receipt|skill[_-]?token|memory[_-]?write[_-]?token|access[_-]?token|api[_-]?key|password|secret)\s*[:=]\s*["']?)[^\s,"'}]+/gi;
+
+function scrubInlineSensitiveText(value: string): string {
+  // Catch labelled secrets in plain assistant text that cannot be handled by
+  // object-key redaction (for example a model repeating a raw tool result).
+  return value
+    .replace(BEARER_TEXT_RE, '$1[redacted]')
+    .replace(LABELLED_SECRET_TEXT_RE, '$1[redacted]');
+}
+
+function sanitizeBranchToolResult(name: string, result: string): unknown {
+  if (!name.startsWith('catslog_')) return result;
+  // CatsLog tool projections are normally JSON. If an alternate adapter
+  // returns plain text, keep only a bounded diagnostic rather than persisting
+  // an opaque string that might contain a bearer or retrieval receipt.
+  try {
+    return JSON.stringify(sanitizeBranchLogValue(JSON.parse(result)));
+  } catch {
+    return `[catslog result redacted; length=${result.length}]`;
+  }
 }

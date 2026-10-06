@@ -5,20 +5,94 @@ evaluation checks used while tuning the branch-session memory search flow.
 
 ## Lifecycle Terms
 
-- `published`: the memory branch finished with `inject:true` and pushed a
-  synthetic observation into the main runner queue.
+- `published`: the memory branch finished with `delivery:context` and pushed a
+  synthetic observation into the main runner queue. The parent still observes
+  it asynchronously through the existing one-late-turn carryover; it never
+  waits for the branch.
+- `audited`: the branch finished with `delivery:audit`; the evidence is kept in
+  the branch JSONL audit log and is not put into the parent prompt.
 - `injected`: the main runner drained a queued observation before a provider
   call and inserted the synthetic tool pair into the model-visible messages.
-- `suppressed`: the memory branch deliberately finished with `inject:false`
-  because it judged that no extra memory was worth showing to the main agent.
+- `suppressed`: the memory branch deliberately finished with
+  `delivery:discard` because it judged that no extra memory was worth keeping.
 - `dropped`: an observation was already published, but no provider call drained
   it before the observation lifecycle expired.
 - `cancelled`: the branch was stopped before it produced a finish payload.
+- `budget_exhausted`: the branch reached its bounded pass/deadline budget before
+  a valid finish payload. No partial context observation is published.
 
-`dropped` is a lifecycle outcome, not a branch judgment. Branch self-suppression
-is represented by `finish_memory_search({ inject:false, refs: [] })`.
+`dropped` is a lifecycle outcome, not a branch judgment. The legacy
+`inject` flag remains accepted for compatibility, but new callers should use
+the explicit `delivery` field.
+
+## CatsLog evidence contract (server-first)
+
+Query policy lives in the branch; retrieval execution lives on the server. The mechanical stage
+runs one fused `/catsco/agent/branch` fan-out and one device-bound
+`/catsco/agent/query/v1/sessions` query in parallel. The session query sends `search_any`: OR
+over at most 8 distinct keywords, each at most 64 Unicode code points (code points, not UTF-16
+units; the assess tool validates and returns a structured error for longer terms, and the
+client rejects violations before any HTTP call — never a silent trim, never a raw 400).
+Truncation beyond 8 keywords and any code-point bounding are reported visibly in the evidence
+pack and telemetry.
+
+**Latest-window semantics (v1):** `latest: true, limit: 20` asks the server for the globally
+newest ≤20 matching records across all streams in the device's visible scopes — it is a bounded
+newest-window read, not one record per stream (that is the separate `session_summary` mode) and
+not a forward page: the server explicitly rejects mixing a cursor into a latest query. Older
+history beyond that window is therefore unreachable in a single recall pass; if it ever
+matters, the shape to add is explicit forward pagination with `from`/`to`, not an unbounded
+loop in the mechanical stage. The recency gap below covers the orthogonal upload/projection
+delay.
+
+**Recency gap:** sessions that are not yet uploaded/projected server-side are invisible until
+they sync, and the newest-window read reaches only the newest ≤20 matching records per pass.
+A successful query proves the returned records are complete for the device's visible
+scopes at query time; it does not mean local files are authorized or indexed. Local replay of
+unsynced sessions is intentionally absent until per-session scope provenance exists.
+
+The branch keeps a single anti-hallucination guard, `CatsLogObservedRefsTracker`:
+it records the citation-shaped refs that actually appeared in this run's projected results
+(remote branch items and session records alike), and a `delivery:context` finish may only cite
+refs from that observed set. An unobserved ref fails closed to
+`delivery:audit` and is logged as `unobserved_refs_audit_only` with the cited
+and observed refs. Bearer values and receipts never enter branch messages,
+observations, or logs. Session records count as usable evidence even when the
+`session_graph` branch verdict is `none`.
+
+The former rich provenance projection (active-head version checks, receipt
+eligibility, route attribution, graph lineage, outcome status, catalog
+revision) was removed with the fat per-source tool surface: the server owns
+evidence freshness, and outcome settlement belongs to the main-turn runtime,
+not the retrieval branch.
+
+## Resource budget
+
+The autonomous memory branch defaults to 4 model turns per pass, 2 passes,
+45 seconds wall-clock, and a 16,000-token prompt budget. One finish-only tail
+pass is reserved beyond `maxPasses` so the run always converges to a finish
+payload. Dashboard clients can read and update these bounded values through
+`/api/branch-agents/memory` and `PUT /api/branch-agents/memory/budget`;
+persisted values are normalized to safe limits on load.
 
 ## Observed Issues
+
+- Production (v1.2): one run spent the full 90s deadline on 14 serial tool
+  calls (3× `memory_search`, 9× `memory_read_turn`, 2× `catslog_branch`) over
+  7 turns and never finished — the remote cap held, but the local lane and the
+  serial execution model were unbounded. Fixes: per-turn parallel dispatch,
+  the run-wide 8-non-finish-call bound with a finish-only tail, tightened
+  default budgets (4 turns/pass, 2 passes), and read-discipline prompt
+  guidance. The local lane itself was later removed entirely (server-first
+  cutover): it had no trustworthy per-agent scope labels and read the
+  process-wide log tree, which could surface sibling agents' private
+  material the device-bound server query would correctly withhold.
+
+- Production (v1.1): one bot's branch made four `catslog_branch` calls plus
+  local reads and burned the full 90s deadline on two consecutive turns
+  ("at-most-one-refine" was prompt-only), so no observation was injected. The
+  mechanical two-call cap, the two-probe stop rule, and the early-exit bar for
+  locally-answerable questions address this; the deadline itself stays 90s.
 
 - Some near-neighbor memories repeat recent context that the main agent already
   saw. These should usually be suppressed unless they contain extra tool

@@ -10,6 +10,13 @@ import { CatsConnectorAutoStart } from '../src/dashboard/cats-connector-autostar
 import { resolveDashboardConnectorPolicy } from '../src/dashboard/server';
 
 const dashboardDir = join(process.cwd(), 'dashboard');
+
+// The installer launcher test shells out to PowerShell; skip where it is absent.
+const hasPwsh = spawnSync(
+  'pwsh',
+  ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'],
+  { encoding: 'utf8' },
+).status === 0;
 const html = readFileSync(join(dashboardDir, 'connector.html'), 'utf-8');
 const script = readFileSync(join(dashboardDir, 'connector.js'), 'utf-8');
 const styles = readFileSync(join(dashboardDir, 'connector.css'), 'utf-8');
@@ -486,7 +493,7 @@ test('dashboard connector policy keeps server ownership opt-in and preserves des
   assert.match(installPs1, /set "XIAOBA_RUNTIME_ROLE=desktop"/);
 });
 
-test('Windows installer generates a launcher that sets the child runtime role', () => {
+test('Windows installer generates a launcher that sets the child runtime role', { skip: !hasPwsh }, () => {
   // Evaluate the actual generation block, not the installer main flow (which
   // installs software and creates a desktop shortcut).
   const generation = installPs1.match(/function Create-Launcher \{([\s\S]*?)\r?\n    Log /)?.[1];

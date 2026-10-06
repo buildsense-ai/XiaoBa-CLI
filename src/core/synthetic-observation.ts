@@ -23,13 +23,40 @@ export interface SyntheticObservationUse {
   missingInfo?: string[];
 }
 
+/** Lane that produced an injected ref (local usage telemetry only). */
+export type SyntheticObservationRefLane = 'remote_pool' | 'session' | 'knowledge' | 'other';
+
+/** One injected ref tagged with its producing lane at injection time. */
+export interface SyntheticObservationRefLaneTag {
+  ref: string;
+  lane: SyntheticObservationRefLane;
+}
+
 export interface SyntheticObservationMetadata {
   branchId?: string;
   branchType?: string;
   refs?: string[];
   timing?: SyntheticObservationTiming;
   originTurn?: number;
+  /**
+   * Per-ref lane attribution for this injection, tagged by the memory branch
+   * from presentation lane membership (additive, local-only telemetry; never
+   * reported to the server).
+   */
+  refLanes?: SyntheticObservationRefLaneTag[];
+  /**
+   * Downstream citation telemetry pool for this injection: the /branch
+   * request_id plus the reportable subset of the injection refs (server pool
+   * refs only). Absent when the run had no remote branch request_id or no
+   * pool-shaped refs — telemetry then degrades to local logging only.
+   */
+  citation?: SyntheticObservationCitation;
   [key: string]: unknown;
+}
+
+export interface SyntheticObservationCitation {
+  requestId: string;
+  refs: string[];
 }
 
 export interface SyntheticObservation {

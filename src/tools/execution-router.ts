@@ -1,7 +1,8 @@
 import type { DeviceGrantOperation, ScopedDeviceGrant } from '../types/session-identity';
 import type { TargetRoute, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { normalizeTargetText } from '../catscompany/runtime-context';
-import { executeRemoteDeviceRpcTool } from './device-rpc-tool';
+import { executeRemoteDeviceRpcTool, resolveRemoteToolTimeoutMs } from './device-rpc-tool';
+import { resolveGrepRpcTimeoutMs } from './grep-search-policy';
 import { TOOL_TARGET_CONTEXT_PREFIX, TOOL_TARGET_CONTEXT_SUFFIX } from './tool-target-context';
 import {
   isRevokedBotSkillSnapshotCommand,
@@ -204,13 +205,37 @@ export async function executeRouteIfRemote(
 ): Promise<ToolExecutionResult | undefined> {
   if (!route.ok || route.mode !== 'remote') return undefined;
   if (context.thinToolRpc && route.targetOwnerUserId) {
-    const result = await context.thinToolRpc.executeTool({
-      targetOwnerUserId: route.targetOwnerUserId,
-      targetDeviceId: route.targetDeviceId,
-      toolName,
-      args: stripExecutionTargetArg(args),
-      timeoutMs: toolName === 'send_file' || toolName === 'import_file' ? 300_000 : undefined,
-    });
+    let timeoutMs: number | undefined = toolName === 'send_file' || toolName === 'import_file' ? 300_000 : undefined;
+    if (toolName === 'grep') {
+      const dispatchNow = Date.now();
+      if (route.grant?.expiresAt !== undefined
+        && (!Number.isFinite(route.grant.expiresAt) || route.grant.expiresAt <= dispatchNow)) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效；请刷新授权后再试。', retryable: false };
+      }
+      try {
+        timeoutMs = resolveRemoteToolTimeoutMs(route.grant?.expiresAt, resolveGrepRpcTimeoutMs(args.timeout_ms), dispatchNow);
+      } catch (error: any) {
+        return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: false };
+      }
+    }
+    let result: ToolExecutionResult;
+    try {
+      result = await context.thinToolRpc.executeTool({
+        targetOwnerUserId: route.targetOwnerUserId,
+        targetDeviceId: route.targetDeviceId,
+        toolName,
+        args: stripExecutionTargetArg(args),
+        timeoutMs,
+      });
+    } catch (error: any) {
+      // Preserve the existing exception path for all other tools. Grep's
+      // transport deadline is an incomplete search, never a no-match fact.
+      if (toolName !== 'grep' || !/timeout|timed out|deadline/i.test(String(error?.code || error?.kind || error?.message || ''))) throw error;
+      result = {
+        ok: false, errorCode: 'SEARCH_TIMEOUT', retryable: false,
+        message: '远程 grep 未在限定时间内返回；搜索不完整，不代表没有匹配。请缩小 path/glob，不要原样重复全目录搜索。',
+      };
+    }
     return attachRouteTargetContext(
       stripRemoteToolTargetContext(result),
       route,

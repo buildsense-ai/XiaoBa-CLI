@@ -2,9 +2,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import fs from 'node:fs';
+const hasPwsh = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' }).status === 0;
 const script=fs.readFileSync(new URL('../ops/ctyun-worker-image/New-CatsCoWorkerImage.ps1',import.meta.url),'utf8');
 const body=script.slice(script.indexOf('function Remove-Builder {'),script.indexOf('function Remove-KeyPair {'));
-for(const mode of ['busy','unsupported-then-busy','forbidden','always-busy'])test(`temporary builder deletion: ${mode}`,()=>{
+for(const mode of ['busy','unsupported-then-busy','forbidden','always-busy'])test(`temporary builder deletion: ${mode}`,{skip:!hasPwsh},()=>{
  const ps=`$ErrorActionPreference='Stop'
 $RegionID='test-region';$script:BuilderID='owned-id';$script:BuilderResourceID='owned-resource';$script:BuilderName='owned-name';$script:deleted=$false;$script:calls=@();$script:proofs=0
 function Resolve-BuilderInstance {if(-not $script:deleted){return @{instanceID='owned-id'}}}

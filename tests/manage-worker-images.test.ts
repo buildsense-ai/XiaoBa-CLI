@@ -5,6 +5,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 
+// The worker-image lifecycle tests shell out to PowerShell; skip where absent.
+const hasPwsh = spawnSync(
+  "pwsh",
+  ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+  { encoding: "utf8" },
+).status === 0;
+
 const root = path.resolve(__dirname, "..");
 const managePath = path.join(
   root,
@@ -83,7 +90,7 @@ process.stdout.write(JSON.stringify({
 }));
 `;
 
-test("worker image lifecycle: list, latest, and prune keeps N (default 3)", () => {
+test("worker image lifecycle: list, latest, and prune keeps N (default 3)", { skip: !hasPwsh }, () => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "catsco-img-mgmt-"));
   try {
     const statePath = path.join(sandbox, "state.json");
@@ -313,7 +320,7 @@ process.exit(result.status ?? 1);
   return { sandbox, statePath, logPath, writeState, runScript };
 }
 
-test("worker image lifecycle: multi-round confirm, pagination, and confirm timeout", () => {
+test("worker image lifecycle: multi-round confirm, pagination, and confirm timeout", { skip: !hasPwsh }, () => {
   const sb = buildSandbox("catsco-img-mgmt2-");
   try {
     const workerImages = (n: number) =>
@@ -363,7 +370,7 @@ test("worker image lifecycle: multi-round confirm, pagination, and confirm timeo
   }
 });
 
-test("worker image lifecycle: empty list and missing labels are safe", () => {
+test("worker image lifecycle: empty list and missing labels are safe", { skip: !hasPwsh }, () => {
   const sb = buildSandbox("catsco-img-mgmt3-");
   try {
     // Empty list prints a valid empty JSON array.
@@ -392,7 +399,7 @@ test("worker image lifecycle: empty list and missing labels are safe", () => {
   }
 });
 
-test("worker image lifecycle: prune protects production-referenced images", () => {
+test("worker image lifecycle: prune protects production-referenced images", { skip: !hasPwsh }, () => {
   const sb = buildSandbox("catsco-img-mgmt4-");
   try {
     const eight = Array.from({ length: 8 }, (_, i) => ({

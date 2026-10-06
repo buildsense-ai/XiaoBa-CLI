@@ -1,6 +1,7 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext, ToolExecutionResult, UploadedFileResult } from '../types/tool';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
+import { resolveGrepRpcTimeoutMs } from './grep-search-policy';
 import type { ToolGatewayDecision } from './tool-gateway';
 
 const REMOTE_TOOL_DEFAULT_TIMEOUT_MS = 60_000;
@@ -54,6 +55,11 @@ export async function executeRemoteDeviceRpcTool(
     };
   }
 
+  const dispatchNow = Date.now();
+  if (toolName === 'grep' && gateway.grant?.expiresAt !== undefined
+    && (!Number.isFinite(gateway.grant.expiresAt) || gateway.grant.expiresAt <= dispatchNow)) {
+    return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效；请刷新授权后再试。', retryable: false };
+  }
   try {
     return await context.deviceRpc.executeTool({
       toolName,
@@ -64,9 +70,20 @@ export async function executeRemoteDeviceRpcTool(
       targetDeviceDisplayName: gateway.targetDeviceDisplayName,
       targetDeviceBodyId: gateway.targetDeviceBodyId,
       targetDeviceInstallationId: gateway.targetDeviceInstallationId,
-      timeoutMs: resolveRemoteToolTimeoutMs(gateway.grant?.expiresAt, requestedToolTimeoutMs(toolName, args)),
+      timeoutMs: resolveRemoteToolTimeoutMs(gateway.grant?.expiresAt, requestedToolTimeoutMs(toolName, args), dispatchNow),
     });
   } catch (error: any) {
+    if (toolName === 'grep' && error instanceof RangeError) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: false };
+    }
+    if (toolName === 'grep' && mapRpcErrorCode(error) === 'EXECUTION_TIMEOUT') {
+      return {
+        ok: false,
+        errorCode: 'SEARCH_TIMEOUT',
+        message: '远程 grep 未在限定时间内返回；搜索不完整，不代表没有匹配。请缩小 path/glob，不要原样重复全目录搜索。',
+        retryable: false,
+      };
+    }
     return {
       ok: false,
       errorCode: mapRpcErrorCode(error),
@@ -115,7 +132,7 @@ export function normalizeDeviceRpcToolResultPayload(
       ok: false,
       errorCode: normalizeErrorCode(record.errorCode),
       message: truncateText(String(record.message || '远程设备工具执行失败。'), options),
-      retryable: Boolean(record.retryable),
+      retryable: record.errorCode === 'SEARCH_TIMEOUT' ? false : Boolean(record.retryable),
     };
   }
   return {
@@ -134,7 +151,7 @@ export function normalizeDeviceRpcToolResultForTransport(
       ok: false,
       errorCode: normalizeErrorCode(result.errorCode),
       message: truncateText(result.message, options),
-      retryable: Boolean(result.retryable),
+      retryable: result.errorCode === 'SEARCH_TIMEOUT' ? false : Boolean(result.retryable),
     };
   }
   return {
@@ -163,6 +180,7 @@ export function resolveRemoteToolTimeoutMs(
 
 function requestedToolTimeoutMs(toolName: string, args: Record<string, unknown>): number | undefined {
   if (toolName === 'send_file' || toolName === 'import_file') return REMOTE_TOOL_MAX_TIMEOUT_MS;
+  if (toolName === 'grep') return resolveGrepRpcTimeoutMs(args.timeout_ms);
   if (toolName !== 'execute_shell') return undefined;
   const timeout = Number(args?.timeout);
   return Number.isFinite(timeout) && timeout > 0 ? timeout : undefined;
@@ -222,6 +240,7 @@ function normalizeErrorCode(value: unknown): ToolErrorCode {
     || text === 'TOOL_EXECUTION_ERROR'
     || text === 'PERMISSION_DENIED'
     || text === 'FILE_NOT_FOUND'
+    || text === 'SEARCH_TIMEOUT'
     || text === 'EXECUTION_TIMEOUT'
   ) {
     return text;
@@ -231,7 +250,7 @@ function normalizeErrorCode(value: unknown): ToolErrorCode {
 
 function mapRpcErrorCode(error: any): ToolErrorCode {
   const text = String(error?.code || error?.kind || error?.message || '').toLowerCase();
-  if (text.includes('timeout')) return 'EXECUTION_TIMEOUT';
+  if (/timeout|timed out|deadline/.test(text)) return 'EXECUTION_TIMEOUT';
   if (text.includes('permission') || text.includes('forbidden') || text.includes('denied')) return 'PERMISSION_DENIED';
   return 'TOOL_EXECUTION_ERROR';
 }

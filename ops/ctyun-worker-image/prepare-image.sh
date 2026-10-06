@@ -81,7 +81,11 @@ fi
 [[ "$EXPECTED_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || die "invalid version"
 
 ACTUAL_SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
-[[ "${ACTUAL_SHA256,,}" == "${SHA256,,}" ]] || die "artifact checksum mismatch"
+# tr-normalize instead of ${var,,}: the probe runs under POSIX sh (bash 3.2 on
+# macOS hosts), which does not support the lowercase expansion.
+ACTUAL_SHA256_NORM="$(printf '%s' "$ACTUAL_SHA256" | tr '[:upper:]' '[:lower:]')"
+SHA256_NORM="$(printf '%s' "$SHA256" | tr '[:upper:]' '[:lower:]')"
+[[ "$ACTUAL_SHA256_NORM" == "$SHA256_NORM" ]] || die "artifact checksum mismatch"
 
 export DEBIAN_FRONTEND=noninteractive
 image_phase platform-check

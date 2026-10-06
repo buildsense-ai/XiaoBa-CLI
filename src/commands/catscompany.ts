@@ -303,7 +303,8 @@ export async function catscompanyCommand(): Promise<void> {
       isIdle: () => !shuttingDown && bot.isIdleForRuntimeReload(),
       applySelection: async selection => applyCloudModelRuntimeSelection({
         runtimeRoot,
-        connectorConfig,
+        // The connector cannot be absent here: startup exits before the watcher is created.
+        connectorConfig: connectorConfig!,
         currentBot: () => bot,
         replaceBot: next => { bot = next; },
         botId: modelBotId,

@@ -10,6 +10,8 @@ const { setTimeout: delay } = require('node:timers/promises');
 const MAX_FILE_BYTES = 256 * 1024;
 const PAGE_SIZE = 30;
 const READ_SIZE = 12000;
+const MAX_BATCH_READS = 8;
+const REVISION_PATTERN = /^[a-f0-9]{64}$/;
 const ID_PATTERN = /^KB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const SHORT_ID_PATTERN = /^KB-[a-f0-9]{8}$/;
 
@@ -101,6 +103,43 @@ class KnowledgeStore {
     return { ...doc, body, offset, nextOffset: offset + body.length < doc.body.length ? offset + body.length : null };
   }
 
+  // Strictly read-only batch of existing `read` calls in this one process.
+  // Each result binds to the caller's expectedRevision: the body is returned
+  // only when the freshly read revision matches it verbatim. On mismatch the
+  // current revision is reported as metadata and the body is never emitted,
+  // so a caller can never cite latest content as an older revision.
+  readBatch(requests) {
+    if (!Array.isArray(requests) || !requests.length || requests.length > MAX_BATCH_READS
+        || requests.some(request => !request || typeof request !== 'object' || Array.isArray(request))) {
+      fail('INVALID_INPUT', `read-batch requires a JSON array of 1-${MAX_BATCH_READS} read request objects.`);
+    }
+    return { results: requests.map((request, index) => this.readBatchItem(index, request)) };
+  }
+
+  readBatchItem(index, request) {
+    const id = request.id;
+    const expectedRevision = request.expectedRevision;
+    if (typeof id !== 'string' || !ID_PATTERN.test(id) || !REVISION_PATTERN.test(expectedRevision || '')
+        || (request.offset !== undefined && !/^\d+$/.test(String(request.offset)))) {
+      return { index, status: 'read_error', code: 'INVALID_INPUT',
+        message: 'Each read needs a full KB-ID, a 64-hex expectedRevision, and an optional nonnegative integer offset.' };
+    }
+    try {
+      const doc = this.read(id, offset(request.offset));
+      if (doc.id !== id || doc.revision !== expectedRevision) {
+        return { index, id, status: 'revision_mismatch', revision: doc.revision, expectedRevision };
+      }
+      return {
+        index, id, status: 'ok', revision: doc.revision, expectedRevision,
+        body: doc.body, offset: doc.offset, nextOffset: doc.nextOffset,
+      };
+    } catch (error) {
+      if (error.code === 'NOT_FOUND') return { index, id, status: 'not_found', expectedRevision };
+      return { index, id, status: 'read_error', code: error.code || 'READ_ERROR',
+        message: String(error.message || error).slice(0, 300), expectedRevision };
+    }
+  }
+
   sourcePath(relative) {
     if (!relative.startsWith('documents/') || !/\.md$/i.test(relative)
         || /[\\:\0]/.test(relative) || relative.split('/').some(part => !part || part === '.' || part === '..')) {
@@ -170,6 +209,40 @@ class KnowledgeStore {
       nextOffset: offset + PAGE_SIZE < docs.length ? offset + PAGE_SIZE : null,
       warnings,
     };
+  }
+
+  // Bounded OR of the same per-query AND matching used by index(). Load and
+  // normalize each document once instead of starting one process/scan per
+  // keyword. Preserve query priority and each query's first-page ordering;
+  // this is not a completeness watermark for historical session retrieval.
+  searchAny(queries) {
+    if (!Array.isArray(queries) || !queries.length || queries.length > 3
+        || queries.some(query => typeof query !== 'string' || !query.trim()
+          || Array.from(query).length > 64 || /[\u0000-\u001f\u007f-\u009f]/.test(query))) {
+      fail('INVALID_INPUT', 'search-any requires 1-3 nonempty query strings of at most 64 code points.');
+    }
+    const warnings = [];
+    const docs = this.documents(warnings).map(doc => ({
+      doc,
+      text: `${doc.id}\n${doc.title}\n${doc.summary}\n${doc.category}\n${doc.body}`.toLocaleLowerCase(),
+    }));
+    const matchingIds = new Set();
+    const emittedIds = new Set();
+    const items = [];
+    let truncated = false;
+    for (const query of queries) {
+      const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      const matches = docs.filter(({ text }) => terms.every(term => text.includes(term)));
+      for (const { doc } of matches) matchingIds.add(doc.id);
+      truncated ||= matches.length > PAGE_SIZE;
+      for (const { doc } of matches.slice(0, PAGE_SIZE)) {
+        if (emittedIds.has(doc.id)) continue;
+        emittedIds.add(doc.id);
+        const { id, title, summary, category, updatedAt, revision, managed, file } = doc;
+        items.push({ id, title, summary, category, updatedAt, revision, managed, file });
+      }
+    }
+    return { total: matchingIds.size, items, truncated, warnings };
   }
 
   atomicWrite(file, content) {
@@ -362,12 +435,24 @@ function offset(value) {
 }
 
 async function main(args) {
-  if (args[0] !== '--root') fail('INVALID_INPUT', 'Usage: knowledge.cjs --root ABSOLUTE_PATH index|search|read|put|delete|reindex ...');
+  if (args[0] !== '--root') fail('INVALID_INPUT', 'Usage: knowledge.cjs --root ABSOLUTE_PATH index|search|read|read-batch|put|delete|reindex ...');
   const store = new KnowledgeStore(args[1]);
   const [command, ...rest] = args.slice(2);
   if (command === 'index' && rest.length <= 1) return store.index('', offset(rest[0]));
   if (command === 'search' && rest[0]?.trim() && rest.length <= 2) return store.index(rest[0], offset(rest[1]));
+  if (command === 'search-any' && rest.length === 1 && rest[0].length <= 4096) {
+    let queries;
+    try { queries = JSON.parse(rest[0]); }
+    catch { fail('INVALID_INPUT', 'search-any expects a JSON array of query strings.'); }
+    return store.searchAny(queries);
+  }
   if (command === 'read' && rest.length >= 1 && rest.length <= 2) return store.read(rest[0], offset(rest[1]));
+  if (command === 'read-batch' && rest.length === 1 && rest[0].length <= 4096) {
+    let requests;
+    try { requests = JSON.parse(rest[0]); }
+    catch { fail('INVALID_INPUT', 'read-batch expects a JSON array of read request objects.'); }
+    return store.readBatch(requests);
+  }
   if (command === 'reindex' && !rest.length) return store.reindex();
   if (command === 'put' && rest.length === 1) {
     const input = fs.statSync(rest[0]);
