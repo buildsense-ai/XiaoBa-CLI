@@ -36,12 +36,13 @@ test('compiled knowledge runtime works from isolated CLI, desktop and Worker res
           const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
           const {execFileSync}=require('node:child_process');
           const app=process.argv[1],data=process.env.XIAOBA_USER_DATA_DIR;
+          const dataReal=fs.realpathSync(data);
           const {SkillManager}=require(path.join(app,'dist/skills/skill-manager'));
           const {renderKnowledgePaths}=require(path.join(app,'dist/skills/builtin-knowledge-skill'));
           (async()=>{
             const manager=new SkillManager();await manager.loadSkills();
             const skill=manager.getSkill('xiaoba-knowledge');assert.ok(skill);
-            assert.equal(skill.filePath,path.join(app,'skills/xiaoba-knowledge/SKILL.md'));
+            assert.equal(fs.realpathSync(skill.filePath),fs.realpathSync(path.join(app,'skills/xiaoba-knowledge/SKILL.md')));
             const rendered=renderKnowledgePaths(skill);assert.ok(rendered.content.includes(path.join(data,'knowledge')));
             assert.ok(rendered.content.includes(process.env.XIAOBA_NODE_EXECUTABLE));
             const script=path.join(path.dirname(skill.filePath),'scripts/knowledge.cjs');

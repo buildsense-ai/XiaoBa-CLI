@@ -247,7 +247,7 @@ test("applies update: creates release dir, switches current, data untouched", { 
     const log = fs.readFileSync(fake.log, "utf8");
     assert.match(log, /systemctl restart catsco-agent\.service/);
     assert.match(log, /systemctl is-active catsco-agent\.service/);
-    assert.strictEqual(fs.realpathSync(path.join(root, "current")), releaseRoot);
+    assert.strictEqual(fs.realpathSync(path.join(root, "current")), fs.realpathSync(releaseRoot));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

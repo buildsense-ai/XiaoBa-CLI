@@ -8,6 +8,12 @@ import * as path from "node:path";
 
 const root = path.resolve(__dirname, "..");
 
+const hasPowerShell = spawnSync(
+  "pwsh",
+  ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+  { encoding: "utf8" },
+).status === 0;
+
 describe("Tianyi Cloud worker image pipeline", () => {
   const artifactBuilder = read("scripts/build-linux-worker-artifact.mjs");
   const imagePreparer = read("ops/ctyun-worker-image/prepare-image.sh");
@@ -592,7 +598,7 @@ describe("Tianyi Cloud worker image pipeline", () => {
     assert.match(workflow, /CTYUN_WORKER_BASE_IMAGE_HARDENED/);
   });
 
-  test("bootstrap telemetry decodes UTF-8 content and retries transient malformed reads", () => {
+  test("bootstrap telemetry decodes UTF-8 content and retries transient malformed reads", { skip: !hasPowerShell }, () => {
     const helperStart = imageOrchestrator.indexOf(
       "function Convert-BootstrapResponseContent",
     );
@@ -906,7 +912,7 @@ if ($failure -notmatch 'permission denied') {
     );
   });
 
-  test("PowerShell image orchestrator parses successfully", () => {
+  test("PowerShell image orchestrator parses successfully", { skip: !hasPowerShell }, () => {
     const escapedPath = imageOrchestratorPath.replaceAll("'", "''");
     execFileSync(
       "pwsh",
@@ -920,7 +926,7 @@ if ($failure -notmatch 'permission denied') {
     );
   });
 
-  test("image bake lifecycle is owned, idempotent, and strictly cleaned", () => {
+  test("image bake lifecycle is owned, idempotent, and strictly cleaned", { skip: !hasPowerShell }, () => {
     const sandbox = fs.mkdtempSync(
       path.join(os.tmpdir(), "catsco-worker-image-test-"),
     );

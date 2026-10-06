@@ -101,6 +101,7 @@ validate_hex "$EXPECTED_COMMIT" 40 "commit"
 [[ "$EXPECTED_VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || die "invalid version: $EXPECTED_VERSION"
 [[ -f "$ARTIFACT" ]] || die "artifact not found: $ARTIFACT"
 
+EXPECTED_SHA_NORMALIZED="$(printf '%s' "$EXPECTED_SHA" | tr '[:upper:]' '[:lower:]')"
 RELEASE_ID="${EXPECTED_VERSION}-${EXPECTED_COMMIT:0:8}"
 RELEASE_ROOT="$RELEASES_ROOT/$RELEASE_ID"
 COMPLETE_MARKER="$RELEASE_ROOT/.catsco-release-complete"
@@ -112,11 +113,12 @@ esac
 # 幂等：只有带完整安装标记的 release 才允许复用。旧安装中断时可能已经
 # 写入 worker-release.json，但目录里的其他文件仍是截断或缺失状态。
 CURRENT_TARGET="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-if [[ "$CURRENT_TARGET" == "$RELEASE_ROOT" \
+RELEASE_ROOT_RESOLVED="$(readlink -f "$RELEASE_ROOT" 2>/dev/null || true)"
+if [[ -n "$RELEASE_ROOT_RESOLVED" && "$CURRENT_TARGET" == "$RELEASE_ROOT_RESOLVED" \
       && -f "$COMPLETE_MARKER" \
       && "$("$JQ_BIN" -r '.version // ""' "$COMPLETE_MARKER" 2>/dev/null || true)" == "$EXPECTED_VERSION" \
       && "$("$JQ_BIN" -r '.commit // ""' "$COMPLETE_MARKER" 2>/dev/null || true)" == "$EXPECTED_COMMIT" \
-      && "$("$JQ_BIN" -r '.sha256 // ""' "$COMPLETE_MARKER" 2>/dev/null || true)" == "${EXPECTED_SHA,,}" \
+      && "$("$JQ_BIN" -r '.sha256 // ""' "$COMPLETE_MARKER" 2>/dev/null || true)" == "$EXPECTED_SHA_NORMALIZED" \
       && "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" == "active" ]]; then
   echo "already up to date: $RELEASE_ID"
   exit 0
@@ -124,7 +126,8 @@ fi
 
 # 1) checksum
 ACTUAL_SHA="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
-[[ "${ACTUAL_SHA,,}" == "${EXPECTED_SHA,,}" ]] \
+ACTUAL_SHA_NORMALIZED="$(printf '%s' "$ACTUAL_SHA" | tr '[:upper:]' '[:lower:]')"
+[[ "$ACTUAL_SHA_NORMALIZED" == "$EXPECTED_SHA_NORMALIZED" ]] \
   || die "checksum mismatch (expected ${EXPECTED_SHA}, got ${ACTUAL_SHA})"
 
 # 2) 在 releases 同一文件系统中预检空间并解压到 staging。这样最终发布只需
@@ -187,7 +190,7 @@ fi
 # 完成标记是控制面复用本地 release 的唯一凭据。先在 staging 内落盘，再
 # 将完整目录换入最终路径；任何更早的失败都只会留下可安全清理的 .staging。
 printf '{"schemaVersion":1,"version":"%s","commit":"%s","sha256":"%s"}\n' \
-  "$EXPECTED_VERSION" "$EXPECTED_COMMIT" "${EXPECTED_SHA,,}" > "$STAGED_ROOT/.catsco-release-complete"
+  "$EXPECTED_VERSION" "$EXPECTED_COMMIT" "$EXPECTED_SHA_NORMALIZED" > "$STAGED_ROOT/.catsco-release-complete"
 
 if [[ -e "$RELEASE_ROOT" ]]; then
   mv -- "$RELEASE_ROOT" "$REPLACED_ROOT"
@@ -215,7 +218,9 @@ SINCE="@$(date +%s)"
 # Keep the link relative to ROOT so it can never retain a staging path if the
 # release tree is moved or the host's path translation rules normalize it.
 ln -sfn "releases/$RELEASE_ID" "$CURRENT_LINK"
-[[ "$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)" == "$RELEASE_ROOT" ]] \
+# Canonicalize both sides before comparing: macOS resolves /var/... under
+# /private/var, so a literal comparison would reject a correct relative link.
+[[ "$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)" == "$(readlink -f "$RELEASE_ROOT" 2>/dev/null || true)" ]] \
   || { rm -f "$CURRENT_LINK"; die "current link does not resolve to installed release"; }
 systemctl restart "$SERVICE"
 
