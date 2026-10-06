@@ -83,7 +83,6 @@ describe('ConversationRunner synthetic observations', () => {
     let providerCalls = 0;
     const runner = new ConversationRunner(aiService, new NoopToolExecutor(), {
       stream: false,
-      enableCompression: false,
       syntheticObservationProvider: () => {
         providerCalls += 1;
         return providerCalls === 2 ? [makeObservation()] : [];

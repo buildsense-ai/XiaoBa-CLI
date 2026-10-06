@@ -3,10 +3,8 @@ import type { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
 import { SessionStore } from '../utils/session-store';
 import { stripAssistantTranscriptArtifacts } from '../utils/transcript-artifacts';
-import { ContextCompressor } from '../core/context-compressor';
 import {
   CheckpointCompactionCoordinator,
-  isCheckpointCompactionEnabled,
 } from '../core/checkpoint-compaction';
 import { estimateMessagesTokens } from '../core/token-estimator';
 import type {
@@ -17,8 +15,6 @@ import type {
 const CLOUD_RESTORE_PAGE_SIZE = 200;
 const CLOUD_RESTORE_DIRECT_TOKEN_BUDGET = 60_000;
 const CLOUD_RESTORE_FINAL_TOKEN_CEILING = 90_000;
-const CLOUD_RESTORE_SUMMARY_INPUT_BUDGET = 70_000;
-const CLOUD_RESTORE_RECENT_EPISODES = 12;
 const CLOUD_RESTORE_RECENT_TOKEN_BUDGET = 30_000;
 
 interface AgentContextHistoryClient {
@@ -181,44 +177,21 @@ export class CatsCompanyCloudSessionRestorer {
     }
 
     try {
-      if (isCheckpointCompactionEnabled()) {
-        const coordinator = new CheckpointCompactionCoordinator(this.aiService, {
-          maxContextTokens: CLOUD_RESTORE_FINAL_TOKEN_CEILING,
-          compactionThreshold: 0.65,
-          retainedUserTokenBudget: CLOUD_RESTORE_RECENT_TOKEN_BUDGET,
-        });
-        const result = await coordinator.compactIfNeeded(messages, {
-          sessionKey,
-          phase: 'restore',
-          signal,
-        });
-        if (!result.compacted) {
-          throw new Error('cloud restore checkpoint compaction did not produce a checkpoint');
-        }
-        return {
-          messages: trimToTokenBudget(result.messages, CLOUD_RESTORE_FINAL_TOKEN_CEILING),
-          compressed: true,
-          summaryFallback: false,
-        };
-      }
-
-      const compressor = new ContextCompressor(this.aiService, {
+      const coordinator = new CheckpointCompactionCoordinator(this.aiService, {
         maxContextTokens: CLOUD_RESTORE_FINAL_TOKEN_CEILING,
-        summaryContentBudget: CLOUD_RESTORE_SUMMARY_INPUT_BUDGET,
-        preserveRecentEpisodes: CLOUD_RESTORE_RECENT_EPISODES,
-        preserveRecentEpisodeTokenBudget: CLOUD_RESTORE_RECENT_TOKEN_BUDGET,
-        preserveRecentEpisodeMaxShare: 0.4,
+        compactionThreshold: 0.65,
+        retainedUserTokenBudget: CLOUD_RESTORE_RECENT_TOKEN_BUDGET,
       });
-      const compacted = await compressor.compact(messages, {
+      const result = await coordinator.compactIfNeeded(messages, {
+        sessionKey,
+        phase: 'restore',
         signal,
-        customInstructions: [
-          '这些内容来自 CatsCompany 云端可见聊天历史，用于在新设备上恢复主会话。',
-          '保留用户目标、关键决定、已交付结果、文件名、未完成事项和重要约束。',
-          '不要声称恢复了工具调用、本地文件状态、设备授权或未出现在历史里的信息。',
-        ].join('\n'),
       });
+      if (!result.compacted) {
+        throw new Error('cloud restore checkpoint compaction did not produce a checkpoint');
+      }
       return {
-        messages: trimToTokenBudget(compacted, CLOUD_RESTORE_FINAL_TOKEN_CEILING),
+        messages: trimToTokenBudget(result.messages, CLOUD_RESTORE_FINAL_TOKEN_CEILING),
         compressed: true,
         summaryFallback: false,
       };

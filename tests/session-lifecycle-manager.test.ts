@@ -857,7 +857,6 @@ describe('AgentSession lifecycle', () => {
       AgentSession,
       SessionStore,
       CONTEXT_COMPACTION_START_MESSAGE,
-      CONTEXT_COMPACTION_GENERATED_MESSAGE,
       CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     } = loadSessionModules();
     SessionStore.getInstance().saveContext('catscompany:lifecycle-compact-status', [
@@ -907,25 +906,29 @@ describe('AgentSession lifecycle', () => {
     });
 
     assert.deepStrictEqual(compactReasons, ['pre_turn', 'restore', 'mid_turn']);
+    // One start notice from the compaction event and one completion notice
+    // after the checkpoint is persisted: no "generated" intermediate line.
     assert.deepStrictEqual(thinking, [
       CONTEXT_COMPACTION_START_MESSAGE,
-      CONTEXT_COMPACTION_GENERATED_MESSAGE,
       CONTEXT_COMPACTION_COMPLETE_MESSAGE,
     ]);
   });
 
-  test('legacy compaction failure status does not claim the turn was stopped', () => {
+  test('compaction error status renders the unified Chinese error copy', () => {
     const {
       AgentSession,
-      LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE,
+      CONTEXT_COMPACTION_ERROR_MESSAGE,
     } = loadSessionModules();
-    const session = new AgentSession('catscompany:lifecycle-legacy-compact-status', buildMockServices(), 'catscompany');
+    const session = new AgentSession('catscompany:lifecycle-compact-error-status', buildMockServices(), 'catscompany');
 
     assert.equal(
-      (session as any).formatContextCompactionStatus({ status: 'error' }, false),
-      LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE,
+      (session as any).formatContextCompactionStatus({ status: 'error' }),
+      CONTEXT_COMPACTION_ERROR_MESSAGE,
     );
-    assert.doesNotMatch(LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE, /停止本轮/);
+    assert.equal(
+      (session as any).formatContextCompactionStatus({ status: 'skipped' }),
+      '',
+    );
   });
 
   test('handleMessage strips internal error artifacts before context compaction sees them', async () => {
@@ -1482,9 +1485,8 @@ function loadSessionModules(): any {
     MODEL_TRANSIENT_ERROR_MESSAGE: require('../src/core/agent-session').MODEL_TRANSIENT_ERROR_MESSAGE,
     EMPTY_MODEL_RESPONSE_MESSAGE: require('../src/core/agent-session').EMPTY_MODEL_RESPONSE_MESSAGE,
     CONTEXT_COMPACTION_START_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_START_MESSAGE,
-    CONTEXT_COMPACTION_GENERATED_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_GENERATED_MESSAGE,
     CONTEXT_COMPACTION_COMPLETE_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_COMPLETE_MESSAGE,
-    LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE: require('../src/core/agent-session').LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE,
+    CONTEXT_COMPACTION_ERROR_MESSAGE: require('../src/core/agent-session').CONTEXT_COMPACTION_ERROR_MESSAGE,
     SessionStore: require('../src/utils/session-store').SessionStore,
     createSessionRoute: require('../src/core/session-router').createSessionRoute,
     createCatsCoSessionRoute: require('../src/core/session-router').createCatsCoSessionRoute,

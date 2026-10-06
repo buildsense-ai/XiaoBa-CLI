@@ -8,8 +8,10 @@ import { AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers
 import { Logger } from '../utils/logger';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
 import { Metrics } from '../utils/metrics';
-import { ContextCompressor } from './context-compressor';
 import {
+  CHECKPOINT_COMPACTION_COMPLETE_MESSAGE,
+  CHECKPOINT_COMPACTION_ERROR_MESSAGE,
+  CHECKPOINT_COMPACTION_START_MESSAGE,
   CheckpointPersistenceError,
   splitDurableAndTransient,
   type CheckpointCompactionCoordinator,
@@ -200,8 +202,6 @@ export interface RunnerOptions {
   stream?: boolean;
   /** 供 agent 检查 stop 状态，返回 false 时提前退出循环 */
   shouldContinue?: () => boolean;
-  /** 是否启用上下文压缩（默认 true，agent 用 false） */
-  enableCompression?: boolean;
   /** True when the caller wants the model turn to update state/history but never auto-send a final message. */
   suppressFinalResponse?: boolean;
   /** 透传给 ToolExecutor 的执行上下文（session/run/surface 等） */
@@ -236,10 +236,8 @@ export interface RunnerOptions {
  * 依赖 ToolExecutor 抽象，同时支持 ToolManager（主会话）和 AgentToolExecutor（子 agent）。
  */
 export class ConversationRunner {
-  private compressor: ContextCompressor;
   private stream: boolean;
   private shouldContinue?: () => boolean;
-  private enableCompression: boolean;
   private toolExecutionContext?: Partial<ToolExecutionContext>;
   private maxPromptTokens: number;
   private maxTurns?: number;
@@ -273,7 +271,6 @@ export class ConversationRunner {
   ) {
     this.stream = options?.stream ?? true;
     this.shouldContinue = options?.shouldContinue;
-    this.enableCompression = options?.enableCompression ?? true;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
@@ -289,11 +286,6 @@ export class ConversationRunner {
     this.sessionLabel = this.toolExecutionContext?.sessionId
       ? `${this.toolExecutionContext.sessionId} `
       : '';
-    this.compressor = new ContextCompressor(this.aiService, {
-      maxContextTokens: this.maxPromptTokens,
-      compactionThreshold: 0.5,
-      summaryContentBudget: calculateSummaryBudgetTokens(this.maxPromptTokens),
-    });
     this.promptTraceLogger = new PromptTraceLogger({
       sessionId: this.toolExecutionContext?.sessionId,
       surface: this.toolExecutionContext?.surface,
@@ -376,31 +368,6 @@ export class ConversationRunner {
         notifiedToolBudgetDisabled = true;
         if (callbacks?.onThinking) {
           await callbacks.onThinking(PROMPT_TOOLS_DISABLED_MESSAGE);
-        }
-      }
-
-      if (this.enableCompression) {
-        const toolTokens = estimateToolsTokens(requestTools);
-        const messageTokens = estimateMessagesTokens(messages);
-        const totalTokens = messageTokens + toolTokens;
-        const usagePercent = Math.round((totalTokens / this.maxPromptTokens) * 100);
-        Logger.info(`[${this.sessionLabel}Turn ${turns}] 上下文: ${messageTokens} + ${toolTokens} = ${totalTokens} tokens (${usagePercent}%)`);
-        
-        // 检查压缩：考虑工具tokens，留足安全边际
-        const threshold = this.maxPromptTokens * 0.5;
-        if (totalTokens > threshold) {
-          Logger.info(`上下文使用率 ${usagePercent}%，触发压缩...`);
-          if (callbacks?.onThinking) {
-            await callbacks.onThinking('上下文较长，正在压缩后继续处理。');
-          }
-          const compacted = await this.compressor.compact(messages, {
-            signal: this.toolExecutionContext?.abortSignal,
-          });
-          messages.length = 0;
-          messages.push(...compacted);
-          if (callbacks?.onThinking) {
-            await callbacks.onThinking('上下文压缩完成，继续处理。');
-          }
         }
       }
 
@@ -939,14 +906,13 @@ export class ConversationRunner {
       onStatus: callbacks?.onThinking
         ? async event => {
           if (event.status === 'start') {
-            await callbacks.onThinking?.('Context is full. Creating a continuation checkpoint.');
-          } else if (event.status === 'complete') {
-            await callbacks.onThinking?.('Continuation summary generated. Saving the checkpoint.');
-          } else if (event.status === 'skipped') {
-            await callbacks.onThinking?.('Checkpoint did not reduce context. Keeping the original transcript.');
-          } else {
-            await callbacks.onThinking?.('Checkpoint creation failed. Stopping this turn with the original context preserved.');
+            await callbacks.onThinking?.(CHECKPOINT_COMPACTION_START_MESSAGE);
+          } else if (event.status === 'error') {
+            await callbacks.onThinking?.(CHECKPOINT_COMPACTION_ERROR_MESSAGE);
           }
+          // `complete` is announced once the checkpoint is persisted below, and
+          // `skipped` changed nothing for the user. Both stay in the
+          // checkpoint_compaction log instead of the transcript.
         }
         : undefined,
     });
@@ -961,7 +927,7 @@ export class ConversationRunner {
         + `stopping before another model turn: ${error instanceof Error ? error.message : String(error)}`,
       );
       try {
-        await callbacks?.onThinking?.('Checkpoint could not be saved. Stopping this turn with the original context preserved.');
+        await callbacks?.onThinking?.(CHECKPOINT_COMPACTION_ERROR_MESSAGE);
       } catch {
         // Thinking callbacks are observational and must not replace the persistence error.
       }
@@ -971,7 +937,7 @@ export class ConversationRunner {
     messages.splice(0, messages.length, ...result.messages);
     this.refreshRuntimeContextForPendingInput(messages);
     try {
-      await callbacks?.onThinking?.('Continuation checkpoint saved. Continuing the same task.');
+      await callbacks?.onThinking?.(CHECKPOINT_COMPACTION_COMPLETE_MESSAGE);
     } catch {
       // Thinking callbacks are best-effort after durable persistence.
     }

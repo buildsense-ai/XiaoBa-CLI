@@ -6,6 +6,8 @@ import { Logger } from '../utils/logger';
 import { PathResolver } from '../utils/path-resolver';
 import { Tool } from '../types/tool';
 import { AgentToolExecutor } from '../agents/agent-tool-executor';
+import { CheckpointCompactionCoordinator } from './checkpoint-compaction';
+import { resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
 
 export interface BranchSessionOptions {
@@ -192,7 +194,19 @@ export abstract class BranchSession {
     );
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
       stream: false,
-      enableCompression: true,
+      // Branches own an in-memory transcript, so they use the same checkpoint
+      // compaction as every other surface and never persist a checkpoint.
+      checkpointCompactionCoordinator: new CheckpointCompactionCoordinator(
+        this.options.aiService,
+        {
+          maxContextTokens: normalizePositiveBudget(this.options.maxContextTokens)
+            ?? resolveModelPromptBudgetTokens(
+              typeof (this.options.aiService as any).getConfig === 'function'
+                ? (this.options.aiService as any).getConfig()
+                : {},
+            ),
+        },
+      ),
       maxTurns: normalizePositiveBudget(this.options.maxTurnsPerPass),
       maxContextTokens: normalizePositiveBudget(this.options.maxContextTokens),
       // Branch tools are read-only and independent, so multiple calls emitted

@@ -68,7 +68,6 @@ describe('ConversationRunner runtime transient messages', () => {
     let drainCount = 0;
     const runner = new ConversationRunner(aiService, new NoopToolExecutor(), {
       stream: false,
-      enableCompression: false,
       runtimeTransientProvider: () => {
         drainCount += 1;
         if (drainCount !== 2) return [];

@@ -97,7 +97,6 @@ test('prompt trace records summarized prompt, response, and tool result without 
       new TraceToolExecutor(),
       {
         stream: true,
-        enableCompression: false,
         toolExecutionContext: {
           sessionId: 'prompt-trace:test',
           surface: 'cli',
@@ -149,7 +148,6 @@ test('prompt trace stays silent when disabled', async () => {
       new TraceToolExecutor(),
       {
         stream: true,
-        enableCompression: false,
         toolExecutionContext: {
           sessionId: 'prompt-trace:off',
           surface: 'cli',

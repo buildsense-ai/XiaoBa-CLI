@@ -145,7 +145,6 @@ export abstract class BaseAgent implements Agent {
 
     const runner = new ConversationRunner(this.aiService, toolExecutor, {
       stream: false,
-      enableCompression: false,
       shouldContinue: () => this.status === 'running',
       toolExecutionContext: {
         sessionId: this.id,

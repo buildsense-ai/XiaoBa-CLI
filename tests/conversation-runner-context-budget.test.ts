@@ -77,7 +77,6 @@ test('prompt budget guard emits a visible thinking status before mechanical trim
   const runner = new ConversationRunner(aiService as any, executor, {
     maxContextTokens: 1_000,
     stream: false,
-    enableCompression: false,
   });
   const thinking: string[] = [];
 
@@ -121,7 +120,6 @@ test('legacy folding flags do not rewrite tool results before provider requests'
     const runner = new ConversationRunner(aiService as any, executor, {
       maxContextTokens: 100_000,
       stream: false,
-      enableCompression: false,
     });
 
     const result = await runner.run([
@@ -286,7 +284,6 @@ test('oversized tool schemas are disabled visibly before provider requests', asy
   const runner = new ConversationRunner(aiService as any, executor, {
     maxContextTokens: 1_000,
     stream: false,
-    enableCompression: false,
   });
   const thinking: string[] = [];
 

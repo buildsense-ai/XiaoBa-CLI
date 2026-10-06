@@ -43,7 +43,6 @@ test('ConversationRunner forwards attempt observation with session and episode c
   let captured: AIRequestOptions | undefined;
   const sink = { observe: () => undefined };
   const runner = new ConversationRunner(oneReplyAI(options => { captured = options; }) as any, new EmptyTools(), {
-    enableCompression: false,
     episodeId: 'episode-1',
     toolExecutionContext: { sessionId: 'session-1', surface: 'cli' },
     cacheTraceSink: sink,

@@ -23,7 +23,6 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     delete process.env.XIAOBA_DISABLE_PROMPT_OVERRIDES;
     writePrompt('system-prompt.md', '# CatsCo\n\n你是 CatsCo。');
     writePrompt('runtime-context.md', '当前日期：{{date}}');
-    writePrompt('compact-system.md', '请压缩上下文。');
   });
 
   afterEach(() => {

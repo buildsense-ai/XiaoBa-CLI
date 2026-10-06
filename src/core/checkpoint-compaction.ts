@@ -14,6 +14,19 @@ export const CHECKPOINT_SUMMARY_PREFIX = [
   'Use this summary to continue the same task without repeating completed work:',
 ].join(' ');
 
+/**
+ * Single source of truth for the user-visible checkpoint status copy.
+ *
+ * Every compaction surface (pre_turn, mid_turn, restore, manual /compact and
+ * the legacy fallback) renders the same Chinese wording, so a long conversation
+ * can never switch language or wording mid-stream. The compaction phase is
+ * recorded in runtime logs (the `checkpoint_compaction` event and the Logger
+ * lines) instead of being encoded into the user-visible copy.
+ */
+export const CHECKPOINT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
+export const CHECKPOINT_COMPACTION_COMPLETE_MESSAGE = '上下文已压缩，检查点已保存。';
+export const CHECKPOINT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文并安全停止本轮。';
+
 export const DEFAULT_CHECKPOINT_COMPACTION_THRESHOLD = 0.85;
 export const MIN_PHYSICAL_WINDOW_CHECKPOINT_TOKENS = 256_000;
 const MIN_RETAINED_USER_TOKEN_BUDGET = 8_000;
@@ -93,12 +106,6 @@ export class CheckpointPersistenceError extends Error {
   }
 }
 
-export function isCheckpointCompactionEnabled(
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  return env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED !== 'false';
-}
-
 export function calculateCheckpointInputLimitTokens(
   contextWindowTokens: number,
   threshold = DEFAULT_CHECKPOINT_COMPACTION_THRESHOLD,
@@ -140,8 +147,7 @@ export function resolveCheckpointInputLimitTokens(
  *
  * The coordinator summarizes durable transcript only, retains the user inputs
  * needed to continue the active task, and leaves transient runtime facts out of
- * the durable checkpoint. Legacy compaction remains available behind the
- * XIAOBA_CHECKPOINT_COMPACTION_ENABLED=false rollback switch.
+ * the durable checkpoint. It is the only compaction mechanism in the runtime.
  */
 export class CheckpointCompactionCoordinator {
   private readonly maxContextTokens: number;

@@ -167,7 +167,7 @@ test('runner exposes assistant text before tool calls separately from working st
     }],
     { execute_shell: 'weather ok' },
   );
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false });
   const assistantText: string[] = [];
   const thinking: string[] = [];
 
@@ -195,7 +195,6 @@ test('runner strips DeepSeek replay summary artifacts from final visible replies
   const mock = createMockAI([makeFinalResponse(leakedReplay)]);
   const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: '写个 html 游戏' }]);
@@ -216,7 +215,6 @@ test('runner surfaces a clear fallback when final reply only contains replay art
   const mock = createMockAI([makeFinalResponse(artifactOnly)]);
   const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: '继续' }]);
@@ -253,7 +251,6 @@ test('runner restores DeepSeek replay summaries into executable tool calls', asy
   );
   const runner = new ConversationRunner(mock.aiService, executor, {
     stream: false,
-    enableCompression: false,
     toolExecutionContext: {
       workingDirectory: 'E:/tmp',
     },
@@ -287,7 +284,6 @@ test('runner does not restore DeepSeek replay summaries for state-changing tools
   );
   const runner = new ConversationRunner(mock.aiService, executor, {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: '继续' }]);
@@ -320,7 +316,6 @@ test('runner does not restore outbound file replay summaries outside the current
   );
   const runner = new ConversationRunner(mock.aiService, executor, {
     stream: false,
-    enableCompression: false,
     toolExecutionContext: {
       workingDirectory: 'E:/work/safe',
     },
@@ -355,7 +350,6 @@ test('runner does not restore outbound message replay summaries', async () => {
   );
   const runner = new ConversationRunner(mock.aiService, executor, {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: '继续' }]);
@@ -395,7 +389,6 @@ test('runner keeps normal providerContent tool replay for M3 style tool calls', 
     },
   }], { execute_shell: 'ok' }), {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: 'run shell' }]);
@@ -453,7 +446,6 @@ test('runner keeps Responses reasoning and matching function calls in the tool t
     },
   }], { execute_shell: 'ok' }), {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: 'run shell' }]);
@@ -526,7 +518,7 @@ test('runner suppresses verbose diagnostic text before tool calls', async () => 
     }],
     { execute_shell: 'ok' },
   );
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false });
   const assistantText: string[] = [];
   const thinking: string[] = [];
 
@@ -569,7 +561,7 @@ test('runner suppresses short debugging diagnosis before tool calls', async () =
     }],
     { execute_shell: 'ok' },
   );
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false });
   const assistantText: string[] = [];
   const thinking: string[] = [];
 
@@ -611,7 +603,7 @@ test('runner still surfaces concise progress before tool calls', async () => {
     }],
     { execute_shell: 'ok' },
   );
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false });
   const assistantText: string[] = [];
   const thinking: string[] = [];
 
@@ -654,7 +646,7 @@ test('runner surfaces medium-length progress before tool calls', async () => {
     }],
     { execute_shell: 'ok' },
   );
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false });
   const assistantText: string[] = [];
 
   const result = await runner.run([{ role: 'user', content: '做两个页面' }], {
@@ -694,7 +686,7 @@ test('runner does not leak suppressed tool prelude through thinking callbacks', 
     }],
     { execute_shell: 'ok' },
   );
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: false });
   const thinking: string[] = [];
 
   const result = await runner.run([{ role: 'user', content: '跑测试' }], {
@@ -728,7 +720,7 @@ test('runner normalizes send_text tool into assistant transcript without tool_re
     { send_text: '消息已发送' },
   );
 
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: true, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: true });
   const result = await runner.run([{ role: 'user', content: '你好' }]);
 
   const secondCallMessages = mock.getReceivedMessages()[1];
@@ -777,7 +769,6 @@ test('runner injects current directory before the active request context without
   );
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
     stream: true,
-    enableCompression: false,
     toolExecutionContext: {
       workingDirectory: 'C:\\Users\\test\\workspace',
       getCurrentDirectory: () => 'C:\\Users\\test\\workspace',
@@ -862,7 +853,6 @@ test('runner surfaces image safety errors after outbound messages on message sur
   );
   const runner = new ConversationRunner(aiService as any, toolExecutor, {
     stream: true,
-    enableCompression: false,
     toolExecutionContext: {
       surface: 'catscompany',
       channel: {
@@ -903,7 +893,6 @@ test('runner replies image safety errors directly on non-CatsCompany message sur
   };
   const runner = new ConversationRunner(aiService as any, new MockToolExecutor([], {}), {
     stream: true,
-    enableCompression: false,
     toolExecutionContext: {
       surface: 'feishu',
       channel: {
@@ -950,7 +939,6 @@ test('runner recovers once from empty max_tokens responses before surfacing a fa
   const mock = createMockAI(responses);
   const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
     stream: true,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: '继续包装 skill' }]);
@@ -985,7 +973,6 @@ test('runner does not return raw no-reply when empty max_tokens recovery fails',
   const mock = createMockAI(responses);
   const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
     stream: true,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: '继续包装 skill' }]);
@@ -1014,7 +1001,6 @@ test('runner sends empty max_tokens fallback through message surface channel', a
   const mock = createMockAI(responses);
   const runner = new ConversationRunner(mock.aiService, new MockToolExecutor([], {}), {
     stream: true,
-    enableCompression: false,
     toolExecutionContext: {
       surface: 'feishu',
       channel: {
@@ -1063,7 +1049,7 @@ test('runner does not persist assistant draft content when send_text already del
     { send_text: '消息已发送' },
   );
 
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: true, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: true });
   const result = await runner.run([{ role: 'user', content: '说说高价值场景' }]);
 
   const secondCallMessages = mock.getReceivedMessages()[1];
@@ -1108,7 +1094,7 @@ test('runner keeps non-outbound tools as assistant/tool transcript', async () =>
     { read_file: 'file contents' },
   );
 
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: true, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: true });
   await runner.run([{ role: 'user', content: '读一下文件' }]);
 
   const secondCallMessages = mock.getReceivedMessages()[1];
@@ -1176,7 +1162,6 @@ test('runner pauses only when pause_turn is called explicitly', async () => {
 
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
     stream: true,
-    enableCompression: false,
   });
   const result = await runner.run([{ role: 'user', content: '你好' }]);
 
@@ -1234,7 +1219,6 @@ test('runner records outbound file sends as normal tool_result transcript for la
 
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
     stream: true,
-    enableCompression: false,
   });
   const result = await runner.run([{ role: 'user', content: 'send the desktop docx' }]);
 
@@ -1350,7 +1334,6 @@ test('runner keeps repeated send_file calls in the same assistant response as le
 
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
     stream: true,
-    enableCompression: false,
   });
   await runner.run([{ role: 'user', content: 'send the desktop docx twice' }]);
 
@@ -1466,7 +1449,6 @@ test('runner does not locally retry failed outbound file sends unless the failur
 
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
     stream: true,
-    enableCompression: false,
   });
   const result = await runner.run([{ role: 'user', content: 'send the desktop html' }]);
 
@@ -1534,7 +1516,7 @@ test('runner allows duplicate outbound messages but injects a soft hint before t
     },
   );
 
-  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: true, enableCompression: false });
+  const runner = new ConversationRunner(mock.aiService, toolExecutor, { stream: true });
   const result = await runner.run([{ role: 'user', content: '你好' }]);
 
   assert.equal(
@@ -1620,7 +1602,6 @@ test('runner keeps duplicate outbound hints transient and collapses repeated ass
 
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
     stream: true,
-    enableCompression: false,
   });
 
   await runner.run([{ role: 'user', content: '你好' }]);
@@ -1713,7 +1694,6 @@ test('runner allows sending the same outbound content again after a new observat
 
   const runner = new ConversationRunner(mock.aiService, toolExecutor, {
     stream: true,
-    enableCompression: false,
   });
 
   await runner.run([{ role: 'user', content: '开始吧' }]);
