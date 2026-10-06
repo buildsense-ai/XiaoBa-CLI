@@ -292,7 +292,7 @@ describe('AnthropicProvider runtime feedback boundary', () => {
     assert.equal(result.content, 'hello world');
     assert.equal(result.stopReason, 'max_tokens');
     assert.equal(result.usage.totalTokens, 30);
-    assert.equal((provider as any).maxTokens, 32768);
+    assert.equal((provider as any).maxTokens, 128 * 1024);
   });
 
   test('tolerates empty or string content from Anthropic-compatible endpoints', () => {

@@ -131,6 +131,90 @@ export interface SessionRuntimeState {
   currentDirectory?: string;
   remoteContextCursors?: Record<string, number>;
   updatedAt?: string;
+  /**
+   * Set while a conversation turn has not reached a terminal state because the
+   * worker process died (OOM killer, host reboot). Cleared on every terminal
+   * outcome — including the user's own /stop — so the next start() only
+   * resumes turns nobody finished on purpose.
+   */
+  interruptedTurn?: InterruptedTurnState;
+}
+
+export interface InterruptedTurnState {
+  /** Conversation topic the turn belonged to, used to reply in the right place. */
+  topic: string;
+  /** Why the turn stopped: currently 'oom-kill' (SIGKILL from the kernel). */
+  reason: string;
+  /** Last known recipient, so the resume notice reaches the same conversation. */
+  senderId?: string;
+  /**
+   * The session key this marker belongs to.
+   *
+   * Stored explicitly because keyToFilename() maps every character outside
+   * [a-zA-Z0-9_-] to '_', which is lossy: 'cc_user:usr38' becomes
+   * 'cc_user_usr38' and 'session:v2:...' loses every separator, so the key
+   * cannot be reconstructed from the file name. Recovery has to load the exact
+   * conversation, so it reads the key from here.
+   */
+  sessionKey?: string;
+  /** ISO timestamp of the interruption; recovery ignores markers older than the window. */
+  startedAt: string;
+  /** How many times this interruption has already been auto-resumed. */
+  attempts: number;
+  /**
+   * The metadata a resumed turn needs to reach the user's own computer.
+   *
+   * A resume is a runtime observation, not a user message, so it has no
+   * incoming metadata of its own. Without this the resumed turn carries no
+   * execution scope, device grants or target routes: user-device tools are
+   * denied and the model is told "No user computer targets are currently
+   * available", which strands exactly the kind of task this feature exists to
+   * rescue.
+   *
+   * Only the device-related keys are kept. Connector grants carry an
+   * actor_token, and ParsedCatsMessage documents them as "never copied into
+   * model text or durable history" -- so they are deliberately excluded.
+   */
+  deviceContext?: InterruptedTurnDeviceContext;
+}
+
+/** Whitelisted slice of message metadata, stored so a resume can rebuild grants. */
+export interface InterruptedTurnDeviceContext {
+  /**
+   * The execution identity the interrupted turn ran under.
+   *
+   * Not derivable from metadata alone: identityTrust, isTrusted, agentId and
+   * actorUserId all come from the server-signed envelope. Every field is a
+   * primitive, and none of them is a credential, so persisting it is safe --
+   * and without it the rebuilt grants fail their scope check and user-device
+   * tools stay denied after a resume.
+   */
+  executionScope?: InterruptedTurnExecutionScope;
+  /** `catsco_identity` only: device_grants and device_selection live here. */
+  catscoIdentity?: Record<string, unknown>;
+  /** `xiaoba_runtime` only: the target routes for the user's computers. */
+  xiaobaRuntime?: Record<string, unknown>;
+}
+
+/** Primitive-only copy of ExecutionScope; kept structural to avoid a type cycle. */
+export interface InterruptedTurnExecutionScope {
+  source: string;
+  sessionKey: string;
+  topicId: string;
+  topicType: string;
+  actorUserId: string;
+  identityTrust: string;
+  isTrusted: boolean;
+  legacySessionKey?: string;
+  legacyRestoreKey?: string;
+  legacyCleanupKey?: string;
+  agentId?: string;
+  agentBodyId?: string;
+  channelSeq?: number;
+  permissionsSource?: string;
+  deviceOwnerUserId?: string;
+  deviceOwnerSource?: string;
+  channelSource?: string;
 }
 
 export class SessionStore {
@@ -216,14 +300,60 @@ export class SessionStore {
   saveRuntimeState(sessionKey: string, state: SessionRuntimeState): boolean {
     try {
       if (!fs.existsSync(SESSION_STATE_DIR)) fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
-      fs.writeFileSync(stateFilePath(sessionKey), JSON.stringify({
+      const target = stateFilePath(sessionKey);
+      const payload = JSON.stringify({
         ...state,
         updatedAt: new Date().toISOString(),
-      }, null, 2), 'utf-8');
+      }, null, 2);
+      // Write-then-rename: the interruption marker is written by a process the
+      // kernel is already killing, and this file also carries the remote
+      // context cursors. Overwriting in place means a kill mid-write leaves a
+      // truncated file, which loses the marker (recovery silently never fires)
+      // and the cursors (history has to be re-pulled). rename() is atomic
+      // within a directory, so a reader sees either the old file or the
+      // complete new one, never a half-written one.
+      //
+      // Sweep earlier staging files first. A kill between writeFileSync() and
+      // renameSync() is exactly the event this file is written for, so those
+      // leftovers are expected rather than exceptional: without this they
+      // accumulate one per crash forever. The scan ignores them (they do not
+      // end in .json), so this is hygiene, not correctness.
+      this.removeStaleStagingFiles(target);
+      const temp = `${target}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temp, payload, 'utf-8');
+        fs.renameSync(temp, target);
+      } catch (writeError) {
+        try {
+          if (fs.existsSync(temp)) fs.unlinkSync(temp);
+        } catch { /* best effort */ }
+        throw writeError;
+      }
       return true;
     } catch (err) {
       Logger.error(`Failed to save session state [${sessionKey}]: ${err}`);
       return false;
+    }
+  }
+
+  /**
+   * Removes `<target>.<pid>.tmp` files left by writes that never reached their
+   * rename. Best-effort: a stale file is harmless, so failures are ignored.
+   */
+  private removeStaleStagingFiles(target: string): void {
+    const dir = path.dirname(target);
+    const stem = `${path.basename(target)}.`;
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (!name.startsWith(stem) || !name.endsWith('.tmp')) continue;
+      try {
+        fs.unlinkSync(path.join(dir, name));
+      } catch { /* best effort */ }
     }
   }
 

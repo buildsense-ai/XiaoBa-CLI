@@ -68,7 +68,7 @@ describe('AgentSession lifecycle', () => {
           provider: 'anthropic',
           contextWindowTokens: 204_800,
         },
-        expectedLimit: 155_648,
+        expectedLimit: 137_216,
       },
       {
         key: 'user:budget-custom-128k',
@@ -103,7 +103,7 @@ describe('AgentSession lifecycle', () => {
         (session as any).checkpointCompactionCoordinator.compactionTriggerTokens,
         item.expectedLimit,
       );
-      assert.ok(item.expectedLimit + (item.config.maxTokens ?? 32_768)
+      assert.ok(item.expectedLimit + (item.config.maxTokens ?? 51_200)
         <= item.config.contextWindowTokens);
     }
   });

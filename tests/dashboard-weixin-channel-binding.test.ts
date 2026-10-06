@@ -198,6 +198,7 @@ describe('dashboard weixin agent channel binding', () => {
     fs.mkdirSync(path.join(testRoot, '.xiaoba'), { recursive: true });
     fs.writeFileSync(path.join(testRoot, '.xiaoba', 'catsco.json'), JSON.stringify({
       version: 1,
+      runtimeMode: 'local_bot',
       account: {
         token: 'user-token',
         uid: input.userUid,

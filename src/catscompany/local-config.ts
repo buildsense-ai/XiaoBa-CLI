@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { CATSCO_APP_HTTP_ORIGINS, type CatsCoDomainFamily } from '../utils/catsco-domains';
 import { getCatscoLogAgentConfig } from '../utils/catsco-log-agent-config';
 import { clearCatscoLogAgentCredentials } from '../utils/catsco-log-agent-state';
+import type { CatsCompanyRuntimeRole } from './types';
 
 export interface CatsCoLocalAccount {
   token: string;
@@ -33,6 +34,9 @@ export interface CatsCoLocalDevice {
   connectorTokenExpiresAt?: number;
 }
 
+/** The identity that owns the single local catscompany process. */
+export type CatsCoRuntimeMode = 'connector' | 'local_bot';
+
 export interface CatsCoLocalConfig {
   version: 1;
   endpoints?: {
@@ -41,6 +45,12 @@ export interface CatsCoLocalConfig {
     preferredFamily?: CatsCoDomainFamily;
   };
   account?: CatsCoLocalAccount;
+  /**
+   * Explicitly records whether the current desktop session is a device
+   * Connector or a legacy/local Bot. Older installations omit this field and
+   * default to the device Connector migration path.
+   */
+  runtimeMode?: CatsCoRuntimeMode;
   currentBot?: CatsCoLocalBot;
   /** Previous account's Bot binding retained for rollback and migration audit. */
   legacyBot?: CatsCoLocalBot;
@@ -51,6 +61,31 @@ export interface CatsCoLocalConfig {
     closeToTray?: boolean;
   };
   updatedAt?: string;
+}
+
+export function resolveCatsCoRuntimeMode(
+  config: Pick<CatsCoLocalConfig, 'runtimeMode' | 'currentBot' | 'device' | 'account'>,
+  runtimeRole: CatsCompanyRuntimeRole = 'desktop',
+  userUid?: string,
+): CatsCoRuntimeMode {
+  if (config.runtimeMode === 'local_bot' || config.runtimeMode === 'connector') {
+    return config.runtimeMode;
+  }
+  // Missing mode means an older installation. Desktop launches migrate to the
+  // device Connector, while server/CLI launches retain a confirmed Bot
+  // identity so existing cloud-hosted Bots do not lose their credentials.
+  const bot = config.currentBot;
+  const expectedUserUid = String(userUid || config.account?.uid || '').trim();
+  const boundByUserUid = String(bot?.boundByUserUid || '').trim();
+  if (runtimeRole === 'server'
+    && bot?.uid
+    && bot.apiKey
+    && boundByUserUid
+    && (!expectedUserUid || boundByUserUid === expectedUserUid)
+    && bot.bindingSource) {
+    return 'local_bot';
+  }
+  return 'connector';
 }
 
 /** Whether the logged-in device has an active connector credential. */
@@ -385,6 +420,7 @@ export class CatsCoLocalConfigService {
     if (accountChanged) this.clearCatsLogCredentials();
     this.save({
       ...config,
+      runtimeMode: accountChanged ? 'connector' : config.runtimeMode,
       endpoints: {
         ...(config.endpoints || {}),
         httpBaseUrl: state.httpBaseUrl,
@@ -486,6 +522,7 @@ export class CatsCoLocalConfigService {
     };
     this.save({
       ...config,
+      runtimeMode: 'connector',
       endpoints: {
         ...(config.endpoints || {}),
         httpBaseUrl: input.state.httpBaseUrl,
@@ -527,6 +564,7 @@ export class CatsCoLocalConfigService {
     const config = this.load();
     this.save({
       ...config,
+      runtimeMode: 'local_bot',
       endpoints: {
         ...(config.endpoints || {}),
         httpBaseUrl: state.httpBaseUrl,
@@ -583,6 +621,7 @@ export class CatsCoLocalConfigService {
     const config = this.load();
     this.save({
       ...config,
+      runtimeMode: 'connector',
       account: undefined,
       device: config.device
         ? { ...config.device, connectorToken: undefined, connectorTokenExpiresAt: undefined }
@@ -682,7 +721,15 @@ export class CatsCoLocalConfigService {
     return next;
   }
 
-  toDashboardConfigPayload(): Record<string, unknown> {
+  setRuntimeMode(mode: CatsCoRuntimeMode): CatsCoRuntimeMode {
+    const nextMode: CatsCoRuntimeMode = mode === 'local_bot' ? 'local_bot' : 'connector';
+    const config = this.load();
+    if (config.runtimeMode === nextMode) return nextMode;
+    this.save({ ...config, runtimeMode: nextMode });
+    return nextMode;
+  }
+
+  toDashboardConfigPayload(runtimeRole: CatsCompanyRuntimeRole = 'desktop'): Record<string, unknown> {
     const state = this.getAuthState();
     const config = this.load();
     const hasConfirmedBot = Boolean(
@@ -697,6 +744,7 @@ export class CatsCoLocalConfigService {
       configPath: this.configPath,
       hasAccount: Boolean(state.token && state.uid),
       hasBot: hasConfirmedBot,
+      runtimeMode: resolveCatsCoRuntimeMode(config, runtimeRole, state.uid),
       account: state.uid
         ? { uid: state.uid, username: state.username || '', displayName: state.displayName || state.username || '' }
         : null,
