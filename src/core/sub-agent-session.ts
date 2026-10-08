@@ -14,7 +14,6 @@ import type { ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult,
 import { resolveModelContextWindow } from '../utils/model-context-window';
 import {
   CheckpointCompactionCoordinator,
-  isCheckpointCompactionEnabled,
 } from './checkpoint-compaction';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -299,21 +298,14 @@ export class SubAgentSession {
       ? (this.aiService as any).getConfig()
       : {};
     const contextWindow = resolveModelContextWindow(modelConfig);
-    const useCheckpointCompaction = isCheckpointCompactionEnabled();
-    const checkpointCompactionCoordinator = useCheckpointCompaction
-      ? new CheckpointCompactionCoordinator(
-        this.aiService,
-        { maxContextTokens: contextWindow.promptBudgetTokens },
-      )
-      : undefined;
+    const checkpointCompactionCoordinator = new CheckpointCompactionCoordinator(
+      this.aiService,
+      { maxContextTokens: contextWindow.promptBudgetTokens },
+    );
 
     // 创建独立的 ConversationRunner（不注入 channel，子智能体不直接和用户通信）
     const runner = new ConversationRunner(this.aiService, toolManager, {
       maxTurns: this.options.maxTurns,
-      // Match the main-session rollout switch: checkpoint compaction is the
-      // default, while the explicit rollback flag restores the legacy runner
-      // compressor for both main agents and subagents.
-      enableCompression: !useCheckpointCompaction,
       checkpointCompactionCoordinator,
       shouldContinue: () => !this.stopped,
       toolExecutionContext: {

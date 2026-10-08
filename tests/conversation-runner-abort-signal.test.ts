@@ -29,7 +29,6 @@ test('ConversationRunner passes AbortSignal to streamed model requests', async (
   };
 
   const runner = new ConversationRunner(aiService as any, new EmptyToolExecutor(), {
-    enableCompression: false,
     toolExecutionContext: { abortSignal: controller.signal },
   });
 
@@ -51,12 +50,10 @@ test('ConversationRunner marks non-live surfaces as buffered without creating a 
   };
 
   const bufferedRunner = new ConversationRunner(aiService as any, new EmptyToolExecutor(), {
-    enableCompression: false,
   });
   await bufferedRunner.run([{ role: 'user', content: 'buffered' }]);
 
   const liveRunner = new ConversationRunner(aiService as any, new EmptyToolExecutor(), {
-    enableCompression: false,
   });
   await liveRunner.run(
     [{ role: 'user', content: 'live' }],
@@ -91,7 +88,6 @@ test('ConversationRunner reuses AbortSignal after prompt-too-long trim retry', a
 
   const runner = new ConversationRunner(aiService as any, new EmptyToolExecutor(), {
     stream: false,
-    enableCompression: false,
     toolExecutionContext: { abortSignal: controller.signal },
   });
 
@@ -136,7 +132,6 @@ test('ConversationRunner omits tool definitions when the model config disables t
 
   const runner = new ConversationRunner(aiService as any, toolExecutor, {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: 'hello' }]);
@@ -215,7 +210,6 @@ test('ConversationRunner executes a tool only once after a transient model retry
 
   const runner = new ConversationRunner(service, toolExecutor, {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: 'read it' }]);
@@ -294,7 +288,6 @@ test('ConversationRunner does not repeat a completed tool when the following mod
   };
   const runner = new ConversationRunner(service, toolExecutor, {
     stream: false,
-    enableCompression: false,
   });
 
   const result = await runner.run([{ role: 'user', content: 'read it' }]);

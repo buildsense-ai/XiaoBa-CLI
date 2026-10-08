@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Message } from '../src/types';
-import { CHECKPOINT_SUMMARY_PREFIX, CheckpointCompactionCoordinator } from '../src/core/checkpoint-compaction';
+import { CHECKPOINT_COMPACTION_ERROR_MESSAGE, CHECKPOINT_SUMMARY_PREFIX, CheckpointCompactionCoordinator } from '../src/core/checkpoint-compaction';
 import { ConversationRunner } from '../src/core/conversation-runner';
 import type {
   ToolCall,
@@ -308,7 +308,7 @@ test('runner stops before another model request when checkpoint persistence fail
 
   assert.equal(modelRequests.length, 1);
   assert.deepEqual(thinking, [
-    'Checkpoint could not be saved. Stopping this turn with the original context preserved.',
+    CHECKPOINT_COMPACTION_ERROR_MESSAGE,
   ]);
 });
 

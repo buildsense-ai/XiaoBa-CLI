@@ -6,14 +6,12 @@ import test from 'node:test';
 import { ConversationRunner } from '../src/core/conversation-runner';
 import { SubAgentSession } from '../src/core/sub-agent-session';
 
-test('SubAgentSession follows the main-session checkpoint compaction rollout switch', async () => {
-  const originalFlag = process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED;
+test('SubAgentSession always runs on checkpoint compaction', async () => {
   const originalRun = ConversationRunner.prototype.run;
-  const observed: Array<{ enableCompression: boolean; checkpointCoordinator: boolean }> = [];
+  const observed: Array<{ checkpointCoordinator: boolean }> = [];
 
   (ConversationRunner.prototype as any).run = async function runMock(messages: any[]) {
     observed.push({
-      enableCompression: Boolean((this as any).enableCompression),
       checkpointCoordinator: Boolean((this as any).checkpointCompactionCoordinator),
     });
     return {
@@ -46,19 +44,12 @@ test('SubAgentSession follows the main-session checkpoint compaction rollout swi
   };
 
   try {
-    delete process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED;
     await runSession('sub-checkpoint-default');
 
-    process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED = 'false';
-    await runSession('sub-checkpoint-legacy');
-
     assert.deepEqual(observed, [
-      { enableCompression: false, checkpointCoordinator: true },
-      { enableCompression: true, checkpointCoordinator: false },
+      { checkpointCoordinator: true },
     ]);
   } finally {
     ConversationRunner.prototype.run = originalRun;
-    if (originalFlag === undefined) delete process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED;
-    else process.env.XIAOBA_CHECKPOINT_COMPACTION_ENABLED = originalFlag;
   }
 });

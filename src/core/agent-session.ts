@@ -32,7 +32,6 @@ import { PromptManager } from '../utils/prompt-manager';
 import { Logger } from '../utils/logger';
 import { SessionTurnLogger, type SessionLogAgentIdentity } from '../utils/session-turn-logger';
 import { Metrics } from '../utils/metrics';
-import { ContextWindowManager } from './context-window-manager';
 import {
   RuntimeFeedbackInbox,
   RuntimeFeedbackInput,
@@ -66,11 +65,13 @@ import {
 } from '../bot-definition/prompt-sync';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
 import {
+  CHECKPOINT_COMPACTION_COMPLETE_MESSAGE,
+  CHECKPOINT_COMPACTION_ERROR_MESSAGE,
+  CHECKPOINT_COMPACTION_START_MESSAGE,
   CheckpointCompactionCoordinator,
   CheckpointPersistenceError,
   resolveCheckpointInputLimitTokens,
   type CheckpointCompactionPhase,
-  isCheckpointCompactionEnabled,
 } from './checkpoint-compaction';
 import { estimateToolsTokens } from './token-estimator';
 import type { SessionRuntimeLogEvent, TurnErrorPayload } from '../utils/session-log-schema';
@@ -91,11 +92,9 @@ export const MODEL_TRANSIENT_ERROR_MESSAGE = '模型服务暂时不可用，请�
 export const EMPTY_MODEL_RESPONSE_MESSAGE = '模型本轮未返回有效内容，请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 export const MODEL_RECOVERY_FAILED_MESSAGE = '模型服务暂时不稳定，系统已尝试自动恢复但仍未成功，请稍后继续。';
 export const MODEL_REQUEST_FAILED_MESSAGE = '模型服务暂时不稳定，本次处理未能完成，请稍后继续。';
-export const CONTEXT_COMPACTION_START_MESSAGE = '正在压缩上下文，整理较早的对话内容。';
-export const CONTEXT_COMPACTION_GENERATED_MESSAGE = '上下文摘要已生成，正在保存检查点。';
-export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = '检查点已保存，继续处理当前请求。';
-export const CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文并安全停止本轮。';
-export const LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE = '上下文压缩失败，已保留原上下文继续处理。';
+export const CONTEXT_COMPACTION_START_MESSAGE = CHECKPOINT_COMPACTION_START_MESSAGE;
+export const CONTEXT_COMPACTION_COMPLETE_MESSAGE = CHECKPOINT_COMPACTION_COMPLETE_MESSAGE;
+export const CONTEXT_COMPACTION_ERROR_MESSAGE = CHECKPOINT_COMPACTION_ERROR_MESSAGE;
 
 // ─── 接口定义 ───────────────────────────────────────────
 
@@ -226,9 +225,7 @@ export class AgentSession {
   private turnLogRecorder: TurnLogRecorder;
   private turnContextBuilder = new TurnContextBuilder();
   private turnController: AgentTurnController;
-  private contextWindowManager: ContextWindowManager;
   private checkpointCompactionCoordinator: CheckpointCompactionCoordinator;
-  private readonly useCheckpointCompaction: boolean;
   private skillRuntime: SessionSkillRuntime;
   private runtimeFeedbackInbox = new RuntimeFeedbackInbox();
   private planRuntime = new PlanRuntime();
@@ -259,10 +256,6 @@ export class AgentSession {
       + `checkpointLimit=${checkpointInputLimit}, promptBudget=${contextWindow.promptBudgetTokens}, `
       + `reserve=${contextWindow.safetyReserveTokens}`,
     );
-    this.contextWindowManager = new ContextWindowManager(services.aiService, {
-      maxContextTokens: contextWindow.promptBudgetTokens,
-      summaryContentBudget: contextWindow.summaryBudgetTokens,
-    });
     this.checkpointCompactionCoordinator = new CheckpointCompactionCoordinator(
       services.aiService,
       {
@@ -270,7 +263,6 @@ export class AgentSession {
         compactionTriggerTokens: checkpointInputLimit,
       },
     );
-    this.useCheckpointCompaction = isCheckpointCompactionEnabled();
     this.skillRuntime = new SessionSkillRuntime(services.skillManager, key);
     this.lifecycleManager = new SessionLifecycleManager({
       sessionKey: key,
@@ -294,12 +286,8 @@ export class AgentSession {
       workspaceRoot: this.defaultDirectory,
       getCurrentDirectory: () => this.currentDirectory,
       updateCurrentDirectory: directory => this.updateCurrentDirectory(directory),
-      maxPromptTokens: this.useCheckpointCompaction
-        ? checkpointInputLimit
-        : contextWindow.promptBudgetTokens,
-      checkpointCompactionCoordinator: this.useCheckpointCompaction
-        ? this.checkpointCompactionCoordinator
-        : undefined,
+      maxPromptTokens: checkpointInputLimit,
+      checkpointCompactionCoordinator: this.checkpointCompactionCoordinator,
       persistCheckpoint: messages => {
         if (!this.persistCheckpoint(messages)) {
           throw new Error('Failed to persist continuation checkpoint');
@@ -445,7 +433,6 @@ export class AgentSession {
       const compactionResult = await this.compactContextIfNeeded(
         messagesBeforeRestoreCompaction,
         'restore',
-        '恢复后',
         compactionSignal,
         options.callbacks,
       );
@@ -535,7 +522,6 @@ export class AgentSession {
     const compactionResult = await this.compactContextIfNeeded(
       messagesBeforeCompaction,
       'restore',
-      '群聊历史补入',
     );
     if (lifecycleGeneration !== this.lifecycleGeneration) return false;
     this.messages = compactionResult.messages;
@@ -714,7 +700,6 @@ export class AgentSession {
         const compactionResult = await this.compactContextIfNeeded(
           messagesBeforeCompaction,
           'pre_turn',
-          '处理前',
           this.activeAbortController.signal,
           callbacks,
         );
@@ -917,12 +902,6 @@ export class AgentSession {
 
       // /compact - explicitly create one checkpoint without creating a user turn.
       if (commandName === 'compact') {
-        if (!this.useCheckpointCompaction) {
-          return {
-            handled: true,
-            reply: '当前会话未启用 checkpoint 压缩，无法执行 /compact。',
-          };
-        }
         if (this.busy || this.manualCompactionInFlight) {
           return {
             handled: true,
@@ -953,7 +932,6 @@ export class AgentSession {
           const result = await this.compactContextIfNeeded(
             sourceMessages,
             'manual',
-            '手动 /compact',
             compactAbortController.signal,
             compactCallbacks,
             true,
@@ -968,7 +946,7 @@ export class AgentSession {
           }
           this.messages = result.messages;
           Logger.info(`[会话 ${this.key}] /compact 完成，检查点已保存`);
-          return { handled: true, reply: '上下文已压缩，检查点已保存。' };
+          return { handled: true, reply: CHECKPOINT_COMPACTION_COMPLETE_MESSAGE };
         } catch (error) {
           const stopped = this.interruptRequested || compactAbortController.signal.aborted;
           Logger.warning(
@@ -1012,7 +990,7 @@ export class AgentSession {
       if (commandName === 'history') {
         return {
           handled: true,
-          reply: `对话历史信息:\n当前历史长度: ${this.messages.length} 条消息\n上下文压缩: 由 ContextWindowManager 自动管理`,
+          reply: `对话历史信息:\n当前历史长度: ${this.messages.length} 条消息\n上下文压缩: 由 checkpoint 压缩自动管理`,
         };
       }
 
@@ -1226,9 +1204,6 @@ export class AgentSession {
     maxTokens: number;
     usagePercent: number;
   } {
-    if (!this.useCheckpointCompaction) {
-      return this.contextWindowManager.getUsageInfo(messages);
-    }
     return this.checkpointCompactionCoordinator.getUsageInfo(
       messages,
       this.getToolDefinitionTokens(),
@@ -1238,30 +1213,17 @@ export class AgentSession {
   private async compactContextIfNeeded(
     messages: Message[],
     phase: CheckpointCompactionPhase,
-    reason: string,
     signal?: AbortSignal,
     callbacks?: SessionCallbacks,
     force = false,
   ): Promise<{ messages: Message[]; compacted: boolean }> {
-    if (!this.useCheckpointCompaction) {
-      const compactedMessages = await this.contextWindowManager.compactIfNeeded(messages, {
-        sessionKey: this.key,
-        reason,
-        signal,
-        onStatus: this.createContextCompactionNotifier(callbacks, false),
-      });
-      return {
-        messages: compactedMessages,
-        compacted: false,
-      };
-    }
     return this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
       sessionKey: this.key,
       phase,
       force,
       toolTokens: this.getToolDefinitionTokens(),
       signal,
-      onStatus: this.createContextCompactionNotifier(callbacks, true),
+      onStatus: this.createContextCompactionNotifier(callbacks),
     });
   }
 
@@ -1282,13 +1244,12 @@ export class AgentSession {
 
   private createContextCompactionNotifier(
     callbacks: SessionCallbacks | undefined,
-    stopsOnError: boolean,
   ): ((event: {
     status: 'start' | 'complete' | 'skipped' | 'error';
   }) => Promise<void>) | undefined {
     if (!callbacks?.onThinking) return undefined;
     return async (event) => {
-      const message = this.formatContextCompactionStatus(event, stopsOnError);
+      const message = this.formatContextCompactionStatus(event);
       if (!message) return;
       await this.notifyContextCompaction(callbacks, message);
     };
@@ -1296,20 +1257,17 @@ export class AgentSession {
 
   private formatContextCompactionStatus(event: {
     status: 'start' | 'complete' | 'skipped' | 'error';
-  }, stopsOnError: boolean): string {
+  }): string {
     switch (event.status) {
-      case 'skipped':
-        return '摘要未缩减上下文，继续保留原始记录。';
       case 'start':
-        return CONTEXT_COMPACTION_START_MESSAGE;
-      case 'complete':
-        return stopsOnError
-          ? CONTEXT_COMPACTION_GENERATED_MESSAGE
-          : CONTEXT_COMPACTION_COMPLETE_MESSAGE;
+        return CHECKPOINT_COMPACTION_START_MESSAGE;
       case 'error':
-        return stopsOnError
-          ? CONTEXT_COMPACTION_ERROR_MESSAGE
-          : LEGACY_CONTEXT_COMPACTION_ERROR_MESSAGE;
+        return CHECKPOINT_COMPACTION_ERROR_MESSAGE;
+      // Success and no-op are not reported here: the single completion notice is
+      // emitted after the checkpoint is durably persisted, so the user never
+      // sees a "generated" and a "saved" message for the same compaction.
+      case 'complete':
+      case 'skipped':
       default:
         return '';
     }

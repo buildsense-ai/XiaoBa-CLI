@@ -512,9 +512,6 @@ export class AgentTurnController {
         maxContextTokens: this.options.maxPromptTokens,
         checkpointCompactionCoordinator: this.options.checkpointCompactionCoordinator,
         onCompactionCheckpoint: this.options.persistCheckpoint,
-        // AgentSession/ContextWindowManager compacts durable history before the turn.
-        // Runner-level compaction can fold transient runtime feedback into summary.
-        enableCompression: false,
         suppressFinalResponse: options.suppressFinalResponse,
         toolExecutionContext: {
           sessionId: this.options.sessionKey,

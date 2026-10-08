@@ -7,7 +7,6 @@ import {
   CheckpointCompactionCoordinator,
   buildCheckpointCompactionPrompt,
   calculateCheckpointInputLimitTokens,
-  isCheckpointCompactionEnabled,
   resolveCheckpointInputLimitTokens,
 } from '../src/core/checkpoint-compaction';
 import { resolveModelContextWindow } from '../src/utils/model-context-window';
@@ -39,13 +38,6 @@ function createService(
   };
   return { service, requests };
 }
-
-test('checkpoint compaction switch defaults on and supports explicit rollback', () => {
-  assert.equal(isCheckpointCompactionEnabled({} as NodeJS.ProcessEnv), true);
-  assert.equal(isCheckpointCompactionEnabled({
-    XIAOBA_CHECKPOINT_COMPACTION_ENABLED: 'false',
-  } as NodeJS.ProcessEnv), false);
-});
 
 test('default checkpoint threshold is 85 percent of the physical context window', () => {
   const { service } = createService(() => 'unused summary');

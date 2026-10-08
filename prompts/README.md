@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | `system-prompt.md` | 普通主会话基础 system prompt：人格、通用原则、交流方式、工作方式。 | `PromptComposer.getBaseSystemPrompt()` |
 | `runtime-context.md` | 普通主会话运行时模板：displayName、platform、date、当前目录说明。 | `PromptComposer.getRuntimeContextPrompt()` |
-| `compact-system.md` | 上下文压缩专用 system prompt。要求只输出文本、禁止工具、输出 `<analysis>` 和 `<summary>`。 | `ContextCompressor.buildCompactSystemPrompt()` |
+| `checkpoint-compact-system.md` | checkpoint 压缩专用 system prompt。要求只输出文本、禁止工具、输出 `<analysis>` 和 `<summary>`。 | `CheckpointCompactionCoordinator.buildCompactSystemPrompt()` |
 | `subagents/system.md` | 子 agent 通用运行规则。 | `SubAgentSession.buildSubAgentSystemPrompt()` |
 | `transient/*.md` | 每轮可丢弃的稳定注入模板，例如当前目录说明、计划状态说明、子 agent 状态说明、runner 恢复提示、编排 soft nudge。 | `TurnContextBuilder`、`ConversationRunner`、`runner-orchestration-policy` |
 | `sidecars/*.md` | 非主会话的侧路模型调用 system prompt，例如群聊插嘴判断、日报生成。 | `ChimeInJudge`、`DailyReportGenerator` |
@@ -67,7 +67,7 @@ prompts/runtime-context.md 渲染后的内容
 - 如果主 system prompt hash 变化，运行时会在这一轮开始前替换 durable history 里的主 system 消息。正在进行中的工具循环不会中途切换 prompt，保证同一轮推理稳定。
 - 如果只改了 `sidecars/`、`subagents/`、`transient/` 等非主 system 文件，主 system 文本不会被替换，但 prompt bundle hash 会在下一轮更新到日志 metadata，便于追踪“这一轮运行时对应哪批 prompt 文件”。
 - 恢复历史时不会长期保存旧 system prompt；持久化历史会过滤 system 消息，重启后恢复的会话会重新读取当前 prompt 文件。
-- `transient/`、`compact-system.md`、`subagents/`、`sidecars/` 多数是在每次对应调用时读取。改完文件后，下一次触发对应注入、压缩、子 agent 或 sidecar 调用就会使用新文本。
+- `transient/`、`checkpoint-compact-system.md`、`subagents/`、`sidecars/` 多数是在每次对应调用时读取。改完文件后，下一次触发对应注入、压缩、子 agent 或 sidecar 调用就会使用新文本。
 - 运行时以应用目录下的 `prompts/` 作为内置基线；如果本地覆盖目录里存在同名 `.md` 文件，则优先读取覆盖版本。
 - Dashboard 的“提示词 / Prompt Lab”页面会写入覆盖目录，不会修改安装包或仓库里的基线文件。
 
@@ -152,7 +152,7 @@ $env:XIAOBA_RUNTIME_ROOT="D:\CatsCoRuntime"
 - 文件名使用小写 kebab-case，例如 `runtime-context.md`、`tool-recovery-hint.md`。
 - 按场景分目录，例如：
   - `subagents/`
-  - `compact-system.md`
+  - `checkpoint-compact-system.md`
   - `transient/`
   - `sidecars/`
 - 一个文件只负责一个明确场景，不混合多个互不相关的规则。
@@ -194,7 +194,7 @@ Electron 打包必须包含 `prompts/**/*`。当前 `package.json` 的 electron-
 `npm.cmd run release:check` 会检查：
 
 - `build.files` 是否包含 `prompts/**/*`。
-- `system-prompt.md`、`runtime-context.md`、`compact-system.md`、`subagents/system.md` 是否存在。
+- `system-prompt.md`、`runtime-context.md`、`checkpoint-compact-system.md`、`subagents/system.md` 是否存在。
 - 当前代码直接读取的 `transient/`、`sidecars/` 模板是否存在。
 
 ## 安全和内容约束

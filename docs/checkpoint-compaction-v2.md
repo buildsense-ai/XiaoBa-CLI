@@ -17,18 +17,19 @@
 → 继续同一任务
 ```
 
-旧 `ContextWindowManager`、`ContextCompressor` 和机械裁剪代码暂时保留，用于回滚和最后兜底。新旧语义压缩不会在同一次运行中同时生效。
+checkpoint 压缩是运行时唯一的语义压缩机制。旧的 `ContextWindowManager`、`ContextCompressor` 和它们的专用 prompt 已删除，不存在回滚开关。
 
-## 唯一开关
+## 覆盖范围
+
+主会话、Subagent、Branch Agent 和云端历史恢复全部接入同一个 `CheckpointCompactionCoordinator`。没有第二套压缩实现，因此用户可见的压缩提示只有一组中文文案：
 
 ```text
-XIAOBA_CHECKPOINT_COMPACTION_ENABLED
+正在压缩上下文，整理较早的对话内容。
+上下文已压缩，检查点已保存。
+上下文压缩失败，已保留原上下文并安全停止本轮。
 ```
 
-- 未设置或不为 `false`：使用新检查点链路。
-- 设置为 `false`：恢复旧 `ContextWindowManager` / `ContextCompressor` 链路。
-
-Branch Agent 和 Subagent 暂不接入新 coordinator，行为保持不变。
+压缩阶段（`pre_turn` / `mid_turn` / `restore` / `manual`）、是否缩减了上下文等细节只写入运行时日志（`checkpoint_compaction` 事件），不进入用户可见文案。
 
 ## 数据分层
 
@@ -275,17 +276,11 @@ checkpoint 已生成但落盘失败
 
 ### 回滚
 
-设置：
+checkpoint 压缩是唯一机制，没有运行时开关。需要回退时按发布流程回滚到发布前版本。
 
-```text
-XIAOBA_CHECKPOINT_COMPACTION_ENABLED=false
-```
+## 与机械裁剪的关系
 
-即可恢复旧语义压缩链路。新代码不删除旧 compressor、旧 prompt 或旧测试。
-
-## 与旧裁剪的关系
-
-新链路启用时：
+checkpoint 压缩负责语义压缩；`ConversationRunner` 的机械预算裁剪（`ensurePromptBudget`）仍在，用于最后兜底：
 
 - 当前 episode 和历史 episode 的工具结果都不再提前折叠；
 - `read_file`、`execute_shell`、adaptive folding 和 current-run folding 的旧环境变量不再影响运行；
