@@ -336,9 +336,7 @@ describe('RuntimeProfile', () => {
 });
 
 function getCurrentToolManagerNames(): string[] {
-  // The default profile allowlist includes the capability-gated recall tool;
-  // a bare ToolManager registers it only when a provider is supplied.
-  return [...new ToolManager('/tmp/xiaoba-runtime-profile-tools')
+  return new ToolManager('/tmp/xiaoba-runtime-profile-tools')
     .getToolDefinitions()
-    .map(definition => definition.name), 'catslog_knowledge_recall'];
+    .map(definition => definition.name);
 }

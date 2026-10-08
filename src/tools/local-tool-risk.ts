@@ -1,7 +1,6 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult, ToolRiskLevel } from '../types/tool';
 import { isCatsCoAgentLocalBodyContext, isCatsCoLocalOwnerSelfContext, resolveToolGatewayAccess } from './tool-gateway';
-import { CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from './catslog-knowledge-recall-tool';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -27,11 +26,6 @@ const LOW_RISK_TOOLS = new Set([
   // branch-local control tools; retrieval itself is mechanical and never a
   // model-facing tool anymore.
   'assess_memory_need',
-  // Native read-only mainAgent recall over the Agent-private CatsLog daily
-  // knowledge corpus. Same rationale as the branch control tools: the
-  // device-bound read capability is authenticated and scoped by the
-  // provider; no local mutation, no external side effect, no confirmation.
-  CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME,
   // The device-bound CatsLog read capability is authenticated and scoped by
   // the provider; it does not mutate the local machine or send an external
   // side effect.

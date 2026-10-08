@@ -81,17 +81,7 @@ export class RuntimeFactory {
     // branch re-checks its current capability before every turn, so a login,
     // token rotation, or explicit disable after startup is observed without
     // reconstructing the adapter service graph.
-    //
-    // The provider lifetime is deliberately independent of the automatic
-    // branch switch: the native `catslog_knowledge_recall` tool shares this
-    // provider and must work when the memory-search branch is off (and the
-    // branch must work if recall is ever disabled). Each consumer re-checks
-    // its own availability per call.
     const catslogMemory = branchConfig.branches.memorySearch.enabled
-      || profile.tools.enabled.includes('catslog_knowledge_recall')
-      || CatsLogMemoryProvider.shouldExposeKnowledgeRecall(
-        PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory),
-      )
       ? new CatsLogMemoryProvider(
         // CatsLog credentials live under the runtime data root (the same root
         // used by Dashboard login/logout). Fall back to the profile cwd for
@@ -111,7 +101,6 @@ export class RuntimeFactory {
       ...(catslogMemory ? { catslogMemory } : {}),
       toolManager: new ToolManager(profile.workingDirectory, {}, {
         enabledToolNames: profile.tools.enabled,
-        ...(catslogMemory ? { catslogKnowledge: catslogMemory } : {}),
       }),
       skillManager: new SkillManager(),
       turnSkillSnapshotStore: this.createTurnSkillSnapshotStore(),

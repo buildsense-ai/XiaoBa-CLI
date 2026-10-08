@@ -173,21 +173,10 @@ describe('ToolManager', () => {
   test('registers all default tools when no enabled list is provided', () => {
     const manager = new ToolManager('/tmp/xiaoba-tool-manager');
 
-    // The capability-gated recall tool registers only with a supplied
-    // device-bound provider; without one it is absent (never a stub).
-    const expected = DEFAULT_TOOL_NAMES.filter(name => name !== 'catslog_knowledge_recall');
     assert.deepStrictEqual(
       manager.getToolDefinitions().map(definition => definition.name),
-      expected,
+      DEFAULT_TOOL_NAMES,
     );
-  });
-
-  test('registers the recall tool when the profile allowlist includes it and a provider is supplied', () => {
-    const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, {
-      enabledToolNames: ['catslog_knowledge_recall'],
-      catslogKnowledge: { isKnowledgeRecallAvailable: () => true } as any,
-    });
-    assert.equal(manager.getTool('catslog_knowledge_recall')?.definition.name, 'catslog_knowledge_recall');
   });
 
   test('registers only enabled default tools when an enabled list is provided', async () => {

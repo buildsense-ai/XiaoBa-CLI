@@ -49,30 +49,6 @@ const KNOWLEDGE_KB_REF_PATTERN = /^kb:KB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-
 const KNOWLEDGE_FILE_REF_PATTERN = /^file:documents\/(?:[A-Za-z0-9][A-Za-z0-9 ._-]*\/)*[A-Za-z0-9][A-Za-z0-9 ._-]*\.[mM][dD]$/;
 
 /**
- * Citable ref for one entry revision of the Agent-private daily knowledge
- * corpus: `catslog:knowledge:<document_id>:<revision>:<entry_id>`. Segments
- * use the shared package's opaque-ID charset, so branch refs and
- * `stream#line` strings can never masquerade as corpus refs. This is a NEW,
- * distinct identity domain — it does not widen the local-KB grammar.
- */
-const CATSLOG_KNOWLEDGE_REF_PATTERN = /^catslog:knowledge:([A-Za-z0-9_-]{1,256}):([A-Za-z0-9_-]{1,128}):([A-Za-z0-9_-]{1,256})$/;
-
-/** Build the citable ref for an exact day/document/revision/entry anchor. */
-export function catslogKnowledgeCitationRef(
-  documentId: string,
-  revision: string,
-  entryId: string,
-): string | null {
-  const ref = `catslog:knowledge:${documentId}:${revision}:${entryId}`;
-  return CATSLOG_KNOWLEDGE_REF_PATTERN.test(ref) ? ref : null;
-}
-
-/** True when `ref` is a typed daily-knowledge corpus ref. */
-export function isCatsLogKnowledgeCitationRef(ref: string): boolean {
-  return CATSLOG_KNOWLEDGE_REF_PATTERN.test(ref);
-}
-
-/**
  * Citable ref form of a local distilled-knowledge document: `kb:<KB-ID>` for
  * managed documents, `file:documents/...` for raw source Markdown.
  */
@@ -89,9 +65,6 @@ export function isMemoryCitationRef(ref: string): boolean {
   // Server pool-citation refs pass through the branch projection unchanged;
   // the observed-refs tracker still gates any citation of them.
   if (CATSLOG_POOL_CITATION_REF_PATTERN.test(ref)) return true;
-  // Typed daily-knowledge corpus refs (knowledge/1). Identity domains stay
-  // disjoint: the ref carries document/revision/entry exactly as served.
-  if (isCatsLogKnowledgeCitationRef(ref)) return true;
   const stream = ref.match(CATSLOG_STREAM_REF_PATTERN);
   if (stream && isSafeCatsLogOpaqueIdentifier(stream[1], 256)) return true;
   const skill = ref.match(CATSLOG_SKILL_REF_PATTERN);

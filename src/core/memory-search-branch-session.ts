@@ -38,12 +38,6 @@ import {
   projectLocalKnowledgeLane,
   searchLocalKnowledgeLane,
 } from './catslog-knowledge-lane';
-import {
-  searchDailyKnowledgeLane,
-  projectDailyKnowledgeLane,
-  collectDailyKnowledgeRefs,
-  type DailyKnowledgeLaneResult,
-} from './catslog-daily-knowledge-lane';
 import { normalizeMemoryBranchBudget } from './branch-budget';
 import type { MemoryBranchBudget } from './branch-budget';
 import { hasUsableMemoryEvidence } from './memory-evidence-gate';
@@ -102,13 +96,6 @@ interface MechanicalRetrievalState {
   /** Local distilled-knowledge lane (L0); typed degraded statuses, never throws. */
   knowledge?: LocalKnowledgeLaneResult;
   knowledgeJson?: string;
-  /**
-   * Agent-private daily-knowledge lane (L-DK); typed degraded statuses. Pointers
-   * only — full content is read back through the native recall tool, so the
-   * citation ref grammar (provenance) is unchanged.
-   */
-  dailyKnowledge?: DailyKnowledgeLaneResult;
-  dailyKnowledgeJson?: string;
   /** Final model-visible presentation; raw projections stay separate for audit. */
   presentation?: ConsolidateMemoryEvidencePackResult;
   /**
@@ -131,9 +118,6 @@ const MAX_SESSION_RECORDS = 20;
 const MAX_REMOTE_EVIDENCE_CHARS = 20_000;
 const MAX_SESSION_EVIDENCE_CHARS = 12_000;
 const MAX_KNOWLEDGE_EVIDENCE_CHARS = 8_000;
-/** Daily-knowledge lane budgets: pointer slices, never silent drops. */
-const MAX_DAILY_KNOWLEDGE_EVIDENCE_HITS = 8;
-const REFINE_DAILY_KNOWLEDGE_HITS = 4;
 
 /**
  * Refine-visible evidence view. Pass 2 only needs enough evidence to decide
@@ -393,8 +377,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       session_query: this.sessionQueryStatus(),
       local_knowledge: this.knowledgeStatus(),
       local_knowledge_entries: this.retrieval.knowledge?.entries.length ?? 0,
-      daily_knowledge: this.dailyKnowledgeStatus(),
-      daily_knowledge_hits: this.retrieval.dailyKnowledge?.hits.length ?? 0,
       ...(this.retrieval.keywordsTruncated ? { keywords_truncated: true } : {}),
       ...(this.retrieval.keywordsBounded ? { keywords_bounded: true } : {}),
       next: 'call finish_memory_search with the evidence pack',
@@ -424,7 +406,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       timed('branch', () => this.fetchRemoteBranch(plan, signal)),
       timed('sessions', () => this.fetchServerSessions(searchAny, signal)),
       timed('knowledge', () => this.fetchLocalKnowledge(searchAny, signal)),
-      timed('daily_knowledge', () => this.fetchDailyKnowledge(plan, signal)),
     ]);
 
     if (this.retrieval.remoteResponse) {
@@ -443,11 +424,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         projectLocalKnowledgeLane(this.retrieval.knowledge, MAX_KNOWLEDGE_EVIDENCE_CHARS),
       );
     }
-    if (this.retrieval.dailyKnowledge) {
-      this.retrieval.dailyKnowledgeJson = JSON.stringify(
-        projectDailyKnowledgeLane(this.retrieval.dailyKnowledge),
-      );
-    }
     this.retrieval.presentation = consolidateMemoryEvidencePack({
       remoteBranch: this.remoteEvidencePack(),
       sessionRecords: this.sessionEvidencePack(),
@@ -457,13 +433,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       maxSessionChars: MAX_SESSION_EVIDENCE_CHARS,
       maxKnowledgeChars: MAX_KNOWLEDGE_EVIDENCE_CHARS,
     });
-    // L-DK is attached AFTER consolidation: its typed corpus refs must be
-    // observed explicitly (the consolidator's ref walker does not know the
-    // new grammar). Full view refs ⊇ refine view refs keeps the finish guard
-    // fail-closed while making the lane genuinely citable.
-    const dailyRefs = collectDailyKnowledgeRefs(this.retrieval.dailyKnowledge);
-    this.retrieval.presentation.evidencePack.daily_knowledge = this.dailyKnowledgeEvidencePack();
-    this.retrieval.presentation.presentedRefs.push(...dailyRefs);
     this.retrieval.refinePresentation = this.buildRefinePresentation();
     this.verdict = this.readSessionGraphVerdict();
     this.evidencePackMessage = this.buildEvidencePackMessage();
@@ -489,8 +458,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       session_records: this.retrieval.sessionRecords.length,
       local_knowledge: this.knowledgeStatus(),
       local_knowledge_entries: this.retrieval.knowledge?.entries.length ?? 0,
-      daily_knowledge: this.dailyKnowledgeStatus(),
-      daily_knowledge_hits: this.retrieval.dailyKnowledge?.hits.length ?? 0,
       local_knowledge_keywords_capped: this.retrieval.knowledge?.keywordsCapped ?? false,
       local_knowledge_entries_capped: this.retrieval.knowledge?.entriesCapped ?? false,
       local_knowledge_projected_entries: this.knowledgeProjectedEntryCount(),
@@ -526,7 +493,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       Boolean(value) && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
         : {};
-    const result = consolidateMemoryEvidencePack({
+    return consolidateMemoryEvidencePack({
       remoteBranch: lane(pack?.remote_branch),
       sessionRecords: lane(pack?.session_records),
       localKnowledge: lane(pack?.local_knowledge),
@@ -540,8 +507,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         knowledgeExcerptTextChars: REFINE_KNOWLEDGE_EXCERPT_TEXT_CHARS,
       },
     });
-    result.evidencePack.daily_knowledge = this.dailyKnowledgeEvidencePack(REFINE_DAILY_KNOWLEDGE_HITS);
-    return result;
   }
 
   /** Typed session-lane status for logs, acks, and the evidence pack. */
@@ -559,60 +524,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     if (knowledge.entries.length === 0) return 'empty';
     return knowledge.entriesCapped
       || this.knowledgeProjectedEntryCount() < knowledge.entries.length ? 'truncated' : 'ok';
-  }
-
-  /** Typed daily-knowledge lane status for logs and acks. */
-  private dailyKnowledgeStatus(): 'ok' | 'empty' | 'truncated' | 'unavailable' {
-    const lane = this.retrieval.dailyKnowledge;
-    if (!lane) return 'unavailable';
-    return lane.status;
-  }
-
-  private dailyKnowledgeEvidencePack(maxHits = MAX_DAILY_KNOWLEDGE_EVIDENCE_HITS): Record<string, unknown> {
-    if (this.retrieval.dailyKnowledgeJson) {
-      try {
-        const projected = JSON.parse(this.retrieval.dailyKnowledgeJson) as Record<string, unknown>;
-        const hits = Array.isArray(projected.hits) ? projected.hits : [];
-        const reads = Array.isArray(projected.reads) ? projected.reads : [];
-        if (hits.length > maxHits || reads.length > maxHits) {
-          const visibleReads = reads.slice(0, maxHits);
-          const visibleRefs = new Set(visibleReads.map((read: any) => read.ref));
-          const boundedReads = visibleReads.map((read: any) => {
-            if (!Array.isArray(read.newer_updates)) return read;
-            let hiddenUpdate = false;
-            const updates = read.newer_updates.map((update: any) => {
-              if (!update.remote_read_ref || visibleRefs.has(update.remote_read_ref)) return update;
-              hiddenUpdate = true;
-              const { remote_read_ref, ...anchorOnly } = update;
-              return anchorOnly;
-            });
-            return { ...read, newer_updates: updates, ...(hiddenUpdate ? {
-              newer_updates_note: '部分更新正文超出本视图预算，仅保留锚点；请按 remote_ref 回读后再引用。',
-            } : {}) };
-          });
-          return {
-            ...projected,
-            hits: hits.slice(0, maxHits),
-            reads: boundedReads,
-            truncated: true,
-            note: 'daily knowledge 超过本视图预算，仅呈现前缀；未呈现项可用 catslog_knowledge_recall 按精确 anchor 回读。',
-          };
-        }
-        return projected;
-      } catch {
-        // fall through to the placeholder below
-      }
-    }
-    return {
-      content_trust: 'agent_private_daily_knowledge',
-      provenance: 'catslog_daily_knowledge',
-      status: 'unavailable',
-      note: this.retrieval.dailyKnowledge?.error
-        ? `CatsLog daily knowledge search failed: ${this.retrieval.dailyKnowledge.error}`
-        : 'CatsLog daily knowledge lane did not produce a usable result.',
-      hits: [],
-      reads: [],
-    };
   }
 
   private knowledgePresentedEntries(): Record<string, unknown>[] {
@@ -661,36 +572,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         keywordsCapped: false,
         keywordsFailed: 0,
         entriesCapped: false,
-      };
-    }
-  }
-
-  /**
-   * L-DK lane: one bounded search over the caller's Agent-private CatsLog
-   * daily knowledge corpus via the shared provider. Same device-bound read
-   * capability, no extra model call, typed degradation; hits are pointers
-   * only (no citable refs — full reads go through the native recall tool).
-   */
-  private async fetchDailyKnowledge(plan: RecallPlan, signal?: AbortSignal): Promise<void> {
-    try {
-      const bounded = buildSearchAny(plan.keywords);
-      this.retrieval.dailyKnowledge = await searchDailyKnowledgeLane({
-        backend: this.catslogMemory,
-        queryText: plan.queryText,
-        keywords: bounded.searchAny.length > 0 ? bounded.searchAny : plan.keywords,
-        signal,
-      });
-    } catch (error: any) {
-      this.retrieval.dailyKnowledge = {
-        status: 'unavailable',
-        hits: [],
-        reads: [],
-        expansions: [],
-        error: String(error?.message || error || 'daily knowledge search failed').slice(0, 200),
-        queryUsed: plan.queryText,
-        keywordsQueried: [],
-        hitsCapped: false,
-        serverTruncated: false,
       };
     }
   }
@@ -759,12 +640,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
 
   private hasUsableEvidence(): boolean {
     const pack = this.retrieval.presentation?.evidencePack;
-    // A daily-knowledge hit with a usable read is evidence even when every
-    // old lane returned none — the refine pass must not be skipped then.
-    const dailyUsable = (this.retrieval.dailyKnowledge?.reads ?? [])
-      .some(read => !read.read_error && read.text.trim().length > 0)
-      || (this.retrieval.dailyKnowledge?.hits.length ?? 0) > 0;
-    if (dailyUsable) return true;
     if (!pack) {
       return hasUsableMemoryEvidence({
         remoteResponse: this.retrieval.remoteResponse,
@@ -787,7 +662,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       remote_branch: this.remoteEvidencePack(),
       session_records: this.sessionEvidencePack(),
       local_knowledge: this.knowledgeEvidencePack(),
-      daily_knowledge: this.dailyKnowledgeEvidencePack(),
     };
     return {
       role: 'user',
@@ -806,7 +680,6 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
           + 'updated_at 是文档修改时间，不是历史覆盖水位；不得把该时间以前未引用的记录视为已被蒸馏。'
           + '当远端/会话证据更新或与 KB 冲突时，保留来源边界并合成差异，不要盲目照搬文档。'
           + 'KB excerpt 仅为绑定 revision 与 char_start/char_end 的局部原文，分页、截断和读取缺口可能省略条件；没有片段不代表已读完正文。'
-          + 'daily_knowledge（catslog_daily_knowledge）是本 Agent 私有每日知识的 lane：包含检索命中与实际回读的条目全文；默认包含 draft（未审定）条目，status=draft 只表示未核验，不等于不存在或已证伪，不要把 draft 当成已核验事实，也不要因此忽略它；reads 的 ref（catslog:knowledge:…）是本轮已观察的可引用 ref，引用片段事实时使用对应 ref；带 newer_updates 的旧 read 可能已被补充/修正：is_remote_update 的 read 是更新的权威内容，仅列 anchor 的更新不代表已读全文；expansion 页截断时可能还有未见的更新，本 lane 不声称完整；命中带 follow_on/未读满时可继续用 catslog_knowledge_recall 按精确 anchor 扩展或回读，不要凭空假设后续内容。'
           + '请分析后立即调用 finish_memory_search 收尾；refs 仅用本视图中真实呈现条目的 ref 或分组 refs。文档正文提及的其他引用不是本轮已验证来源，片段事实引用该 KB 条目的 ref。',
       }),
     };
