@@ -39,6 +39,9 @@ export interface DailyKnowledgeRead {
   title: string;
   text: string;
   text_truncated: boolean;
+  /** Body omitted from this presentation; the ref identifies only the anchor. */
+  text_omitted?: boolean;
+  updates_omitted?: number;
   status: string;
   read_error?: string;
   is_remote_update?: boolean;
@@ -54,6 +57,7 @@ export interface DailyKnowledgeRead {
     remote_status: 'resolved' | 'target_missing' | 'source_revoked';
     /** Present only when remote_status = resolved AND the remote was read; absent means anchor-only knowledge. */
     remote_read_ref?: string;
+    remote_text_omitted?: boolean;
   }>;
 }
 
@@ -71,6 +75,7 @@ export interface DailyKnowledgeExpansion {
     remote_status: 'resolved' | 'target_missing' | 'source_revoked';
   }>;
   truncated: boolean;
+  edges_omitted?: number;
   error?: string;
 }
 
@@ -89,6 +94,8 @@ export interface DailyKnowledgeLaneResult {
   hitsCapped: boolean;
   /** True when the server page reported more content beyond this lane slice. */
   serverTruncated: boolean;
+  /** Cumulative presentation omissions when tightening an already bounded view. */
+  presentationOmitted?: { hits: number; reads: number; updates: number; edges: number };
 }
 
 export interface DailyKnowledgeLaneOptions {
@@ -162,10 +169,20 @@ function boundReadText(text: string): { text: string; truncated: boolean } {
 /** All citable refs carried by the lane (hits + reads), for refs-tracker registration. */
 export function collectDailyKnowledgeRefs(lane: DailyKnowledgeLaneResult | undefined): string[] {
   if (!lane) return [];
+  return collectProjectedDailyKnowledgeRefs(projectDailyKnowledgeLane(lane));
+}
+
+/** Refs from the final bounded view only, including explicitly anchor-only edges. */
+export function collectProjectedDailyKnowledgeRefs(projected: Record<string, unknown>): string[] {
   const refs = new Set<string>();
-  for (const hit of lane.hits) refs.add(hit.ref);
-  for (const read of lane.reads) refs.add(read.ref);
-  for (const expansion of lane.expansions ?? []) {
+  for (const row of [...(projected.hits as DailyKnowledgeHit[] ?? []), ...(projected.reads as DailyKnowledgeRead[] ?? [])]) {
+    refs.add(row.ref);
+    for (const update of (row as DailyKnowledgeRead).newer_updates ?? []) {
+      if (update.remote_ref) refs.add(update.remote_ref);
+    }
+  }
+  for (const expansion of projected.expansions as DailyKnowledgeExpansion[] ?? []) {
+    refs.add(expansion.anchor_ref);
     for (const edge of expansion.edges) {
       if (edge.remote_ref) refs.add(edge.remote_ref);
     }
@@ -178,13 +195,13 @@ function updateNote(updates: NonNullable<DailyKnowledgeRead['newer_updates']>): 
   const readRefs = updates.filter(update => update.remote_read_ref).length;
   const anchorOnly = updates.length - readRefs;
   const parts: string[] = [];
-  if (readRefs > 0) parts.push(`${readRefs} 条更新的权威内容已回读（见 remote_read_ref 的 read 行）`);
+  if (readRefs > 0) parts.push(`${readRefs} 条更新的内容已呈现（见 remote_read_ref 的 read 行；text_truncated 表示仅有片段）`);
   if (anchorOnly > 0) parts.push(`${anchorOnly} 条更新仅有锚点信息（未读全文，不得声称其内容）`);
   return `本条目存在更新的补充/修正关系：${parts.join('；')}。引用本条旧内容时必须同时引用对应更新。`;
 }
 
 /** Stable projected lane envelope for the evidence pack / audit JSON. */
-export function projectDailyKnowledgeLane(lane: DailyKnowledgeLaneResult): Record<string, unknown> {
+function dailyKnowledgeProjection(lane: DailyKnowledgeLaneResult): Record<string, unknown> {
   return {
     content_trust: 'agent_private_daily_knowledge',
     provenance: 'catslog_daily_knowledge',
@@ -210,16 +227,23 @@ export function projectDailyKnowledgeLane(lane: DailyKnowledgeLaneResult): Recor
       title: read.title,
       text: read.text,
       ...(read.text_truncated ? { text_truncated: true } : {}),
+      ...(read.text_omitted ? { text_omitted: true } : {}),
+      ...(read.updates_omitted ? { updates_omitted: read.updates_omitted } : {}),
       status: read.status,
       ...(read.is_remote_update ? { is_remote_update: true } : {}),
-      ...(read.newer_updates?.length ? {
-        newer_updates: read.newer_updates.map(update => ({
+      ...(read.newer_updates?.length || read.updates_omitted ? {
+        newer_updates: (read.newer_updates ?? []).map(update => ({
           link_kind: update.link_kind,
           remote_status: update.remote_status,
           remote_ref: update.remote_ref ?? undefined,
           ...(update.remote_read_ref ? { remote_read_ref: update.remote_read_ref } : {}),
+          ...(update.remote_text_omitted ? { remote_text_omitted: true } : {}),
         })),
-        newer_updates_note: updateNote(read.newer_updates),
+        newer_updates_note: [
+          read.newer_updates?.length ? updateNote(read.newer_updates) : '',
+          read.updates_omitted ? `另有 ${read.updates_omitted} 条补充/修正关系未呈现；本条旧内容不能作为最终未修正结论引用，须按精确版本回读更新。` : '',
+        ].filter(Boolean).join(' '),
+        ...(read.updates_omitted ? { has_unpresented_updates: true } : {}),
       } : {}),
       ...(read.read_error ? { read_error: read.read_error } : {}),
     })),
@@ -231,6 +255,7 @@ export function projectDailyKnowledgeLane(lane: DailyKnowledgeLaneResult): Recor
         ...(edge.remote_ref ? { remote_ref: edge.remote_ref } : {}),
       })),
       ...(expansion.truncated ? { truncated: true } : {}),
+      ...(expansion.edges_omitted ? { edges_omitted: expansion.edges_omitted } : {}),
       ...(expansion.error ? { error: expansion.error } : {}),
     })),
     ...(lane.error ? { error: lane.error } : {}),
@@ -240,6 +265,109 @@ export function projectDailyKnowledgeLane(lane: DailyKnowledgeLaneResult): Recor
     server_truncated: lane.serverTruncated,
     refs_note: 'hits/reads 的 ref（catslog:knowledge:…）是本轮已观察的可引用 ref：引用片段事实时使用对应 read 的 ref；is_remote_update 的 read 是更新的权威内容，被标记 newer_updates 的旧 read 内容可能已被补充/修正，引用旧内容时必须同时给出 newer_updates 的 ref；仅列出 anchor（无 remote_read_ref）的更新只有锚点信息，不代表已读其全文；expansion 页截断时可能还有未见的更新，本 lane 不声称完整。',
   };
+}
+
+/**
+ * Bound the entire JSON envelope, including hits, reads, relations and metadata.
+ * Only the displayed portion is readable: text_truncated/text_omitted mark
+ * partial/absent bodies, and remote_read_ref names a displayed body row.
+ */
+export function projectDailyKnowledgeLane(
+  lane: DailyKnowledgeLaneResult,
+  maxChars = 16_000,
+  maxHits = MAX_DAILY_KNOWLEDGE_HITS,
+): Record<string, unknown> {
+  if (!Number.isSafeInteger(maxChars) || maxChars < 256) {
+    throw new RangeError('daily knowledge presentation budget must be at least 256 characters');
+  }
+  // Work on a copy: retrieval/audit retains the originally read bodies.
+  const view = JSON.parse(JSON.stringify(lane)) as DailyKnowledgeLaneResult;
+  const omitted = { hits: 0, reads: 0, updates: 0, edges: 0, ...view.presentationOmitted };
+  omitted.hits += Math.max(0, view.hits.length - maxHits);
+  view.hits = view.hits.slice(0, maxHits);
+  let shortened = Object.values(omitted).some(count => count > 0);
+  const render = (): Record<string, unknown> => {
+    const bodyRefs = new Set(view.reads.filter(read => !read.read_error && read.text.length > 0).map(read => read.ref));
+    for (const read of view.reads) {
+      for (const update of read.newer_updates ?? []) {
+        if (update.remote_read_ref && !bodyRefs.has(update.remote_read_ref)) {
+          delete update.remote_read_ref;
+          update.remote_text_omitted = true;
+        }
+      }
+    }
+    return {
+      ...dailyKnowledgeProjection(view),
+      ...(shortened ? {
+        status: 'truncated', truncated: true, presentation_omitted: omitted,
+        note: '本视图预算省略了正文或元数据；text_truncated 是片段，text_omitted 或 remote_text_omitted 仅有锚点；按精确版本回读后再引用遗漏正文。',
+      } : {}),
+    };
+  };
+  let projected = render();
+  const fits = () => JSON.stringify(projected).length <= maxChars;
+  const refresh = () => { shortened = true; projected = render(); };
+
+  // Keep old→actually displayed correction relationships first. Expansion
+  // pages duplicate those relations, so shed their tail before body text.
+  for (const expansion of [...view.expansions].reverse()) {
+    while (!fits() && expansion.edges.length > 0) {
+      expansion.edges.pop();
+      expansion.edges_omitted = (expansion.edges_omitted ?? 0) + 1;
+      expansion.truncated = true;
+      omitted.edges += 1;
+      refresh();
+    }
+  }
+  for (const read of [...view.reads].reverse()) {
+    const updates = read.newer_updates ?? [];
+    while (!fits()) {
+      const index = updates.map(update => !update.remote_read_ref).lastIndexOf(true);
+      if (index < 0) break;
+      updates.splice(index, 1);
+      read.updates_omitted = (read.updates_omitted ?? 0) + 1;
+      omitted.updates += 1;
+      refresh();
+    }
+  }
+  // Equal per-body reductions retain both stale and corrected text and their
+  // immutable anchors, instead of dropping the remote bodies first.
+  for (let textCap = 1_600; !fits() && textCap >= 100; textCap = Math.floor(textCap / 2)) {
+    for (const read of view.reads) {
+      const chars = Array.from(read.text);
+      if (chars.length <= textCap) continue;
+      read.text = chars.slice(0, textCap).join('') + '…[truncated]';
+      read.text_truncated = true;
+    }
+    refresh();
+  }
+  while (!fits() && view.hits.length > 0) {
+    view.hits.pop(); omitted.hits += 1; refresh();
+  }
+  // Very small budgets may omit a whole body. Clear every content pointer
+  // to it in render(), retaining the exact remote_ref and an explicit gap.
+  for (const read of [...view.reads].reverse()) {
+    if (fits()) break;
+    read.text = '';
+    read.text_truncated = true;
+    read.text_omitted = true;
+    refresh();
+  }
+  while (!fits() && view.reads.length > 0) {
+    view.reads.pop(); omitted.reads += 1; refresh();
+  }
+  while (!fits() && view.expansions.length > 0) {
+    view.expansions.pop(); refresh();
+  }
+  if (!fits()) {
+    // Envelope-only overflow (e.g. a long query/cursor) must also be bounded.
+    return {
+      content_trust: 'agent_private_daily_knowledge', provenance: 'catslog_daily_knowledge',
+      status: 'truncated', truncated: true, presentation_overflow: true,
+      note: '本视图预算省略了正文与锚点；请用原查询重新检索。',
+    };
+  }
+  return projected;
 }
 
 /**

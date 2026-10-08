@@ -41,7 +41,7 @@ import {
 import {
   searchDailyKnowledgeLane,
   projectDailyKnowledgeLane,
-  collectDailyKnowledgeRefs,
+  collectProjectedDailyKnowledgeRefs,
   type DailyKnowledgeLaneResult,
 } from './catslog-daily-knowledge-lane';
 import { normalizeMemoryBranchBudget } from './branch-budget';
@@ -103,12 +103,10 @@ interface MechanicalRetrievalState {
   knowledge?: LocalKnowledgeLaneResult;
   knowledgeJson?: string;
   /**
-   * Agent-private daily-knowledge lane (L-DK); typed degraded statuses. Pointers
-   * only — full content is read back through the native recall tool, so the
-   * citation ref grammar (provenance) is unchanged.
+   * Agent-private daily-knowledge lane with revision-pinned originals and
+   * corrections; its bounded presentation keeps content tied to exact refs.
    */
   dailyKnowledge?: DailyKnowledgeLaneResult;
-  dailyKnowledgeJson?: string;
   /** Final model-visible presentation; raw projections stay separate for audit. */
   presentation?: ConsolidateMemoryEvidencePackResult;
   /**
@@ -131,7 +129,9 @@ const MAX_SESSION_RECORDS = 20;
 const MAX_REMOTE_EVIDENCE_CHARS = 20_000;
 const MAX_SESSION_EVIDENCE_CHARS = 12_000;
 const MAX_KNOWLEDGE_EVIDENCE_CHARS = 8_000;
-/** Daily-knowledge lane budgets: pointer slices, never silent drops. */
+/** Daily shares the existing 40k full / 12k refine lane totals. */
+const MAX_DAILY_KNOWLEDGE_EVIDENCE_CHARS = 16_000;
+const MAX_REFINE_DAILY_KNOWLEDGE_EVIDENCE_CHARS = 6_000;
 const MAX_DAILY_KNOWLEDGE_EVIDENCE_HITS = 8;
 const REFINE_DAILY_KNOWLEDGE_HITS = 4;
 
@@ -443,27 +443,28 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         projectLocalKnowledgeLane(this.retrieval.knowledge, MAX_KNOWLEDGE_EVIDENCE_CHARS),
       );
     }
-    if (this.retrieval.dailyKnowledge) {
-      this.retrieval.dailyKnowledgeJson = JSON.stringify(
-        projectDailyKnowledgeLane(this.retrieval.dailyKnowledge),
-      );
-    }
+    // Reserve daily's share inside the existing total, rather than appending
+    // another lane after the old 40k cap. With no daily evidence, old lane
+    // budgets remain available in full.
+    const fullScale = this.hasDailyKnowledgeEvidence() ? 0.6 : 1;
     this.retrieval.presentation = consolidateMemoryEvidencePack({
       remoteBranch: this.remoteEvidencePack(),
       sessionRecords: this.sessionEvidencePack(),
       localKnowledge: this.knowledgeEvidencePack(),
     }, {
-      maxRemoteChars: MAX_REMOTE_EVIDENCE_CHARS,
-      maxSessionChars: MAX_SESSION_EVIDENCE_CHARS,
-      maxKnowledgeChars: MAX_KNOWLEDGE_EVIDENCE_CHARS,
+      maxRemoteChars: Math.floor(MAX_REMOTE_EVIDENCE_CHARS * fullScale),
+      maxSessionChars: Math.floor(MAX_SESSION_EVIDENCE_CHARS * fullScale),
+      maxKnowledgeChars: Math.floor(MAX_KNOWLEDGE_EVIDENCE_CHARS * fullScale),
     });
     // L-DK is attached AFTER consolidation: its typed corpus refs must be
     // observed explicitly (the consolidator's ref walker does not know the
     // new grammar). Full view refs ⊇ refine view refs keeps the finish guard
     // fail-closed while making the lane genuinely citable.
-    const dailyRefs = collectDailyKnowledgeRefs(this.retrieval.dailyKnowledge);
-    this.retrieval.presentation.evidencePack.daily_knowledge = this.dailyKnowledgeEvidencePack();
-    this.retrieval.presentation.presentedRefs.push(...dailyRefs);
+    const dailyPack = this.dailyKnowledgeEvidencePack();
+    this.retrieval.presentation.evidencePack.daily_knowledge = dailyPack;
+    this.retrieval.presentation.presentedRefs.push(...collectProjectedDailyKnowledgeRefs(dailyPack));
+    this.retrieval.presentation.diagnostics.daily_chars_out = JSON.stringify(dailyPack).length;
+    this.retrieval.presentation.diagnostics.refs_presented = this.retrieval.presentation.presentedRefs.length;
     this.retrieval.refinePresentation = this.buildRefinePresentation();
     this.verdict = this.readSessionGraphVerdict();
     this.evidencePackMessage = this.buildEvidencePackMessage();
@@ -526,21 +527,26 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       Boolean(value) && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
         : {};
+    const refineScale = this.hasDailyKnowledgeEvidence() ? 0.5 : 1;
     const result = consolidateMemoryEvidencePack({
       remoteBranch: lane(pack?.remote_branch),
       sessionRecords: lane(pack?.session_records),
       localKnowledge: lane(pack?.local_knowledge),
     }, {
-      maxRemoteChars: MAX_REFINE_REMOTE_EVIDENCE_CHARS,
-      maxSessionChars: MAX_REFINE_SESSION_EVIDENCE_CHARS,
-      maxKnowledgeChars: MAX_REFINE_KNOWLEDGE_EVIDENCE_CHARS,
+      maxRemoteChars: Math.floor(MAX_REFINE_REMOTE_EVIDENCE_CHARS * refineScale),
+      maxSessionChars: Math.floor(MAX_REFINE_SESSION_EVIDENCE_CHARS * refineScale),
+      maxKnowledgeChars: Math.floor(MAX_REFINE_KNOWLEDGE_EVIDENCE_CHARS * refineScale),
       refineView: {
         remoteItemTextChars: REFINE_REMOTE_ITEM_TEXT_CHARS,
         sessionMemberTextChars: REFINE_SESSION_MEMBER_TEXT_CHARS,
         knowledgeExcerptTextChars: REFINE_KNOWLEDGE_EXCERPT_TEXT_CHARS,
       },
     });
-    result.evidencePack.daily_knowledge = this.dailyKnowledgeEvidencePack(REFINE_DAILY_KNOWLEDGE_HITS);
+    const dailyPack = this.dailyKnowledgeEvidencePack(MAX_REFINE_DAILY_KNOWLEDGE_EVIDENCE_CHARS, REFINE_DAILY_KNOWLEDGE_HITS);
+    result.evidencePack.daily_knowledge = dailyPack;
+    result.presentedRefs.push(...collectProjectedDailyKnowledgeRefs(dailyPack));
+    result.diagnostics.daily_chars_out = JSON.stringify(dailyPack).length;
+    result.diagnostics.refs_presented = result.presentedRefs.length;
     return result;
   }
 
@@ -568,48 +574,36 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     return lane.status;
   }
 
-  private dailyKnowledgeEvidencePack(maxHits = MAX_DAILY_KNOWLEDGE_EVIDENCE_HITS): Record<string, unknown> {
-    if (this.retrieval.dailyKnowledgeJson) {
-      try {
-        const projected = JSON.parse(this.retrieval.dailyKnowledgeJson) as Record<string, unknown>;
-        const hits = Array.isArray(projected.hits) ? projected.hits : [];
-        const reads = Array.isArray(projected.reads) ? projected.reads : [];
-        if (hits.length > maxHits || reads.length > maxHits) {
-          const visibleReads = reads.slice(0, maxHits);
-          const visibleRefs = new Set(visibleReads.map((read: any) => read.ref));
-          const boundedReads = visibleReads.map((read: any) => {
-            if (!Array.isArray(read.newer_updates)) return read;
-            let hiddenUpdate = false;
-            const updates = read.newer_updates.map((update: any) => {
-              if (!update.remote_read_ref || visibleRefs.has(update.remote_read_ref)) return update;
-              hiddenUpdate = true;
-              const { remote_read_ref, ...anchorOnly } = update;
-              return anchorOnly;
-            });
-            return { ...read, newer_updates: updates, ...(hiddenUpdate ? {
-              newer_updates_note: '部分更新正文超出本视图预算，仅保留锚点；请按 remote_ref 回读后再引用。',
-            } : {}) };
-          });
-          return {
-            ...projected,
-            hits: hits.slice(0, maxHits),
-            reads: boundedReads,
-            truncated: true,
-            note: 'daily knowledge 超过本视图预算，仅呈现前缀；未呈现项可用 catslog_knowledge_recall 按精确 anchor 回读。',
-          };
-        }
-        return projected;
-      } catch {
-        // fall through to the placeholder below
-      }
+  private hasDailyKnowledgeEvidence(): boolean {
+    const lane = this.retrieval.dailyKnowledge;
+    return Boolean(lane && (lane.hits.length > 0 || lane.reads.length > 0));
+  }
+
+  private dailyKnowledgeEvidencePack(
+    maxChars = MAX_DAILY_KNOWLEDGE_EVIDENCE_CHARS,
+    maxHits = MAX_DAILY_KNOWLEDGE_EVIDENCE_HITS,
+  ): Record<string, unknown> {
+    if (this.retrieval.dailyKnowledge) {
+      const full = this.retrieval.presentation?.evidencePack.daily_knowledge as Record<string, unknown> | undefined;
+      if (full?.presentation_overflow === true) return full;
+      // Tighten only rows/relations actually retained by the full view. This
+      // guarantees refine refs ⊆ the full observed refs even when long hit
+      // cursors or other metadata consumed most of the full budget.
+      const source = full ? {
+        ...this.retrieval.dailyKnowledge,
+        status: full.status as DailyKnowledgeLaneResult['status'],
+        hits: full.hits as DailyKnowledgeLaneResult['hits'],
+        reads: full.reads as DailyKnowledgeLaneResult['reads'],
+        expansions: full.expansions as DailyKnowledgeLaneResult['expansions'],
+        presentationOmitted: full.presentation_omitted as DailyKnowledgeLaneResult['presentationOmitted'],
+      } : this.retrieval.dailyKnowledge;
+      return projectDailyKnowledgeLane(source, maxChars, maxHits);
     }
     return {
       content_trust: 'agent_private_daily_knowledge',
       provenance: 'catslog_daily_knowledge',
       status: 'unavailable',
-      note: this.retrieval.dailyKnowledge?.error
-        ? `CatsLog daily knowledge search failed: ${this.retrieval.dailyKnowledge.error}`
-        : 'CatsLog daily knowledge lane did not produce a usable result.',
+      note: 'CatsLog daily knowledge lane did not produce a usable result.',
       hits: [],
       reads: [],
     };
@@ -668,8 +662,8 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   /**
    * L-DK lane: one bounded search over the caller's Agent-private CatsLog
    * daily knowledge corpus via the shared provider. Same device-bound read
-   * capability, no extra model call, typed degradation; hits are pointers
-   * only (no citable refs — full reads go through the native recall tool).
+   * capability, no extra model call, typed degradation; revision-pinned
+   * original and correction reads stay in this private corpus lane.
    */
   private async fetchDailyKnowledge(plan: RecallPlan, signal?: AbortSignal): Promise<void> {
     try {

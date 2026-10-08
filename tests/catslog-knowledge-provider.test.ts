@@ -189,7 +189,7 @@ describe('CatsLogMemoryProvider knowledge recall', () => {
     )) as any;
     try {
       await provider().expandKnowledge({
-        anchor: { kind: 'knowledge_entry', id: 'ake-1', document_id: 'akd-1' },
+        anchor: { kind: 'knowledge_entry', id: 'ake-' + 'a'.repeat(24), document_id: 'akd-' + 'b'.repeat(24), revision: 'akr-' + 'c'.repeat(64) },
       });
       assert.fail('expected rejection');
     } catch (error: any) {
@@ -211,7 +211,8 @@ describe('CatsLogMemoryProvider knowledge recall', () => {
     }) as any;
     const controller = new AbortController();
     const result = await provider().readKnowledge({
-      document_id: 'akd-1',
+      document_id: 'akd-' + 'a'.repeat(24),
+      revision: 'akr-' + 'b'.repeat(64),
       format: 'okf',
     }, controller.signal);
     assert.equal(result.format, 'okf');
@@ -224,7 +225,7 @@ describe('CatsLogMemoryProvider knowledge recall', () => {
       throw new DOMException('This operation was aborted', 'AbortError');
     }) as any;
     await assert.rejects(
-      () => provider().readKnowledge({ document_id: 'akd-1', format: 'okf' }, cancelled.signal),
+      () => provider().readKnowledge({ document_id: 'akd-' + 'a'.repeat(24), revision: 'akr-' + 'b'.repeat(64), format: 'okf' }, cancelled.signal),
       /abort/i,
     );
   });

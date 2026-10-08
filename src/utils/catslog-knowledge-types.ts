@@ -203,7 +203,7 @@ export const KNOWLEDGE_MAX_READ_LIMIT = 100;
 export const KNOWLEDGE_MAX_EXPAND_LIMIT = 100;
 export const KNOWLEDGE_MAX_CURSOR_BYTES = 2048;
 export const KNOWLEDGE_MAX_DOCUMENT_ID_BYTES = 256;
-export const KNOWLEDGE_MAX_REVISION_BYTES = 64;
+export const KNOWLEDGE_MAX_REVISION_BYTES = 128;
 export const KNOWLEDGE_MAX_OPAQUE_ID_BYTES = 128;
 /** Expanded via the client's opaque-identifier grammar; used for anchor/entry IDs. */
 export const KNOWLEDGE_MAX_ANCHOR_ID_BYTES = 128;

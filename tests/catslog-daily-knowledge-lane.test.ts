@@ -8,9 +8,9 @@ import {
 import { catslogKnowledgeCitationRef, isMemoryCitationRef } from '../src/tools/memory-branch-tools';
 import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
 
-const DOC = 'akd-' + 'a'.repeat(64);
+const DOC = 'akd-' + 'a'.repeat(24);
 const REV = 'akr-' + 'b'.repeat(64);
-const ENTRY = 'ake-' + 'c'.repeat(64);
+const ENTRY = 'ake-' + 'c'.repeat(24);
 
 function fakeBackend(overrides: Partial<CatsLogMemoryBackend> = {}): CatsLogMemoryBackend {
   return {
@@ -53,7 +53,7 @@ describe('daily knowledge lane', () => {
     let searchCalls = 0;
     let readCalls = 0;
     const readQueries: any[] = [];
-    const draftEntry = 'ake-' + 'd'.repeat(64);
+    const draftEntry = 'ake-' + 'd'.repeat(24);
     const backend = fakeBackend({
       searchKnowledge: async (query: any) => {
         searchCalls += 1;
@@ -211,8 +211,8 @@ describe('daily knowledge lane', () => {
 
   test('newer correction adopted: expand finds supplements edge, remote NEW entry is read as the authoritative update', async () => {
     const OLD_DOC = DOC;
-    const NEW_DOC = 'akd-' + 'e'.repeat(64);
-    const NEW_ENTRY = 'ake-' + 'f'.repeat(64);
+    const NEW_DOC = 'akd-' + 'e'.repeat(24);
+    const NEW_ENTRY = 'ake-' + 'f'.repeat(24);
     const NEW_REV = 'akr-' + '9'.repeat(64);
     const expandCalls: any[] = [];
     const readCalls: any[] = [];
@@ -275,7 +275,7 @@ describe('daily knowledge lane', () => {
     assert.equal(lane.expansions.length, 1);
     assert.equal(lane.expansions[0].edges[0].remote_status, 'resolved');
     const projected = projectDailyKnowledgeLane(lane) as any;
-    assert.match(projected.reads[0].newer_updates_note, /权威内容已回读/);
+    assert.match(projected.reads[0].newer_updates_note, /内容已呈现/);
   });
 
   test('revoked / missing remote endpoints are explicit statuses — anchor-only, no fake text', async () => {
@@ -304,7 +304,7 @@ describe('daily knowledge lane', () => {
   test('expansion pages and remote reads are budget-bounded; truncated pages never claim totals', async () => {
     let expandCalls = 0;
     let remoteReadCalls = 0;
-    const NEW_DOC = 'akd-' + 'e'.repeat(64);
+    const NEW_DOC = 'akd-' + 'e'.repeat(24);
     const backend = fakeBackend({
       searchKnowledge: async () => ({
         hits: [

@@ -137,6 +137,13 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     const input = (args ?? {}) as RecallArgs;
     const signal = context.abortSignal;
     try {
+      // The native surface shares one per-invocation gate, including history.
+      // Older embedders may omit discovery; their route methods remain the
+      // compatibility boundary. Never fall back to isAvailable: that check
+      // belongs to automatic Branch and has a separate feature switch.
+      if (this.backend.isKnowledgeRecallAvailable?.() === false) {
+        return this.unavailableResult('CatsLog recall 已禁用或没有有效读取能力');
+      }
       switch (input.action) {
         case 'search':
           return await this.search(input, signal);
@@ -268,7 +275,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     }
     const result = await this.backend.querySessions({
       searchAny: keywords,
-      latest: true,
+      latest: false,
       ...(this.optionalLimit(input.limit) !== undefined ? { limit: this.optionalLimit(input.limit) } : {}),
       ...(this.optionalCursor(input.cursor) !== undefined ? { cursor: this.optionalCursor(input.cursor) } : {}),
     }, signal);
@@ -308,7 +315,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     };
   }
 
-  /** Success envelope with faithful pagination: next_cursor verbatim or exhausted. */
+  /** Success envelope preserving the server's exhaustion and incomplete state. */
   private pageResult(payload: unknown, nextCursor: string | undefined, exhausted: boolean): ToolExecutionResult {
     const body = typeof payload === 'object' && payload !== null
       ? payload as Record<string, unknown>
@@ -318,9 +325,12 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       content: JSON.stringify({
         ...body,
         next_cursor: typeof nextCursor === 'string' && nextCursor ? nextCursor : undefined,
-        exhausted: exhausted || !nextCursor,
+        exhausted,
+        ...(!exhausted ? { incomplete: true } : {}),
         ...(typeof nextCursor === 'string' && nextCursor ? {
           note: '还有后续页：用相同 action 与参数、原样传回 next_cursor 继续读取；不要假设未返回的内容不存在。',
+        } : !exhausted ? {
+          note: '本次响应不完整且未提供续页 cursor；不能据此声称已读完或历史不存在。',
         } : {}),
       }),
     };
