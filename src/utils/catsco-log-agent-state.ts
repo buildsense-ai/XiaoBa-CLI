@@ -50,6 +50,9 @@ export interface CatscoLogAgentState {
   sessionsUrl?: string;
   /** Agent-facing branch retrieval endpoint (ADR 0019). */
   branchUrl?: string;
+  knowledgeSearchUrl?: string;
+  knowledgeReadUrl?: string;
+  knowledgeExpandUrl?: string;
   /** Separate write-only capability; never use it for reads. */
   memoryWriteTokenId?: string;
   memoryWriteToken?: string;
@@ -136,6 +139,9 @@ export function clearCatscoSkillToken(state: CatscoLogAgentState): void {
   delete state.memoryRecallUrl;
   delete state.sessionsUrl;
   delete state.branchUrl;
+  delete state.knowledgeSearchUrl;
+  delete state.knowledgeReadUrl;
+  delete state.knowledgeExpandUrl;
 }
 
 /** Clear only the note write capability while preserving read credentials. */
