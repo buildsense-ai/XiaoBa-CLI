@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { NativeRecallFeedbackOutbox, feedbackEvent } from '../src/core/native-recall-feedback-outbox';
 import { dailyKnowledgeRef, hashedRecallRef } from '../src/core/native-recall-attribution';
 import { saveCatscoLogAgentState } from '../src/utils/catsco-log-agent-state';
+import { Logger } from '../src/utils/logger';
 
 const DOC = `akd-${'a'.repeat(24)}`;
 const REV = `akr-${'b'.repeat(64)}`;
@@ -231,7 +232,6 @@ test('branch observation emits feedback_sources only with proven scope and exact
 });
 
 test('silent drops are observable: oversize and overflow emit metadata-only drop logs', async () => {
-  const { Logger } = await import('../src/utils/logger');
   const working = dir(); state(working);
   const outbox = new NativeRecallFeedbackOutbox(working, { env: env('https://example.test') });
   const scope = outbox.captureScope()!;
