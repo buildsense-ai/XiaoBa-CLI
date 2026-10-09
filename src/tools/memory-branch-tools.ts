@@ -40,6 +40,7 @@ const CATSLOG_STREAM_REF_PATTERN = /^(.+)#(?:[1-9][0-9]*|summary)$/;
 const CATSLOG_SESSION_HASH_REF_PATTERN = /^catslog:session:[a-f0-9]{24}$/;
 const CATSLOG_SKILL_REF_PATTERN = /^catslog:skill:(.+)@([1-9][0-9]*)$/;
 const CATSLOG_REF_HASH_PATTERN = /^catslog:ref:[a-f0-9]{24}$/;
+const CATSLOG_SOURCE_REF_PATTERN = /^catslog:source:[a-f0-9]{64}$/;
 // Local distilled-knowledge citations: managed KB documents and raw source
 // Markdown under the KB store's documents/ tree (see xiaoba-knowledge). The
 // path grammar is deliberately narrower than the store accepts: ASCII
@@ -91,7 +92,7 @@ export function isMemoryCitationRef(ref: string): boolean {
   if (CATSLOG_POOL_CITATION_REF_PATTERN.test(ref)) return true;
   // Typed daily-knowledge corpus refs (knowledge/1). Identity domains stay
   // disjoint: the ref carries document/revision/entry exactly as served.
-  if (isCatsLogKnowledgeCitationRef(ref)) return true;
+  if (isCatsLogKnowledgeCitationRef(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) return true;
   const stream = ref.match(CATSLOG_STREAM_REF_PATTERN);
   if (stream && isSafeCatsLogOpaqueIdentifier(stream[1], 256)) return true;
   const skill = ref.match(CATSLOG_SKILL_REF_PATTERN);

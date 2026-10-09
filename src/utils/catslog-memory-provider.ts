@@ -14,6 +14,7 @@ import {
 import {
   DEFAULT_KNOWLEDGE_EXPAND_URL,
   DEFAULT_KNOWLEDGE_READ_URL,
+  DEFAULT_KNOWLEDGE_SOURCE_READ_URL,
   DEFAULT_KNOWLEDGE_SEARCH_URL,
 } from './catslog-knowledge-types';
 import type {
@@ -31,6 +32,8 @@ import type {
   CatsLogKnowledgeReadQuery,
   CatsLogKnowledgeReadResult,
   CatsLogKnowledgeSearchPage,
+  CatsLogKnowledgeSourceQuery,
+  CatsLogKnowledgeSourcePage,
   CatsLogKnowledgeSearchQuery,
 } from './catslog-knowledge-types';
 import { getCatscoLogAgentConfig } from './catsco-log-agent-config';
@@ -114,6 +117,11 @@ export interface CatsLogMemoryBackend {
     query: CatsLogKnowledgeReadQuery,
     signal?: AbortSignal,
   ): Promise<CatsLogKnowledgeReadResult>;
+  /** Exact source/context reader, preserving canonical identity and disclosure coverage. */
+  readKnowledgeSource?(
+    query: CatsLogKnowledgeSourceQuery,
+    signal?: AbortSignal,
+  ): Promise<CatsLogKnowledgeSourcePage>;
   /** Optional knowledge/1 link expansion around one typed anchor. */
   expandKnowledge?(
     query: CatsLogKnowledgeExpandQuery,
@@ -136,6 +144,7 @@ interface CatsLogReadCapability {
   branchUrl: string;
   knowledgeSearchUrl: string;
   knowledgeReadUrl: string;
+  knowledgeSourceReadUrl: string;
   knowledgeExpandUrl: string;
 }
 
@@ -333,6 +342,21 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     );
   }
 
+  async readKnowledgeSource(query: CatsLogKnowledgeSourceQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeSourcePage> {
+    if (!this.isKnowledgeRecallAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    }
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof client.readKnowledgeSource !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the knowledge source read route');
+        }
+        return client.readKnowledgeSource({ ...query, token: capability.token,
+          knowledgeSourceReadUrl: capability.knowledgeSourceReadUrl, signal });
+      }, signal,
+    );
+  }
+
   /** Expand knowledge links around one typed anchor endpoint. */
   async expandKnowledge(query: CatsLogKnowledgeExpandQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeLinkPage> {
     if (!this.isKnowledgeRecallAvailable()) {
@@ -525,6 +549,7 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       latest.branchUrl = safePathOrDefault(response.branch_url, DEFAULT_BRANCH_URL);
       latest.knowledgeSearchUrl = safePathOrDefault(responseRecord.knowledge_search_url, DEFAULT_KNOWLEDGE_SEARCH_URL);
       latest.knowledgeReadUrl = safePathOrDefault(responseRecord.knowledge_read_url, DEFAULT_KNOWLEDGE_READ_URL);
+      latest.knowledgeSourceReadUrl = safePathOrDefault(responseRecord.knowledge_source_read_url, DEFAULT_KNOWLEDGE_SOURCE_READ_URL);
       latest.knowledgeExpandUrl = safePathOrDefault(responseRecord.knowledge_expand_url, DEFAULT_KNOWLEDGE_EXPAND_URL);
     } else if (responseHasReadCapabilityFields(response as unknown as Record<string, unknown>)) {
       // Only clear the snapshot we actually attempted to replace. A second
@@ -604,6 +629,7 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
       branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
       knowledgeSearchUrl: safePathOrDefault(response?.knowledge_search_url, DEFAULT_KNOWLEDGE_SEARCH_URL),
       knowledgeReadUrl: safePathOrDefault(response?.knowledge_read_url, DEFAULT_KNOWLEDGE_READ_URL),
+      knowledgeSourceReadUrl: safePathOrDefault(response?.knowledge_source_read_url, DEFAULT_KNOWLEDGE_SOURCE_READ_URL),
       knowledgeExpandUrl: safePathOrDefault(response?.knowledge_expand_url, DEFAULT_KNOWLEDGE_EXPAND_URL),
     }
     : null;
@@ -622,6 +648,7 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
     branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
     knowledgeSearchUrl: safePathOrDefault(state.knowledgeSearchUrl, DEFAULT_KNOWLEDGE_SEARCH_URL),
     knowledgeReadUrl: safePathOrDefault(state.knowledgeReadUrl, DEFAULT_KNOWLEDGE_READ_URL),
+    knowledgeSourceReadUrl: safePathOrDefault(state.knowledgeSourceReadUrl, DEFAULT_KNOWLEDGE_SOURCE_READ_URL),
     knowledgeExpandUrl: safePathOrDefault(state.knowledgeExpandUrl, DEFAULT_KNOWLEDGE_EXPAND_URL),
   };
 }

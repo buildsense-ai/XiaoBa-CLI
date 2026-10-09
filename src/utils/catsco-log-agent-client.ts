@@ -1,3 +1,4 @@
+import type { NativeRecallFeedbackEvent } from '../core/native-recall-feedback-outbox';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -6,6 +7,7 @@ import {
   CATSLOG_KNOWLEDGE_LINK_KINDS,
   DEFAULT_KNOWLEDGE_EXPAND_URL,
   DEFAULT_KNOWLEDGE_READ_URL,
+  DEFAULT_KNOWLEDGE_SOURCE_READ_URL,
   DEFAULT_KNOWLEDGE_SEARCH_URL,
   KNOWLEDGE_MAX_ANCHOR_ID_BYTES,
   KNOWLEDGE_MAX_CURSOR_BYTES,
@@ -24,6 +26,8 @@ import {
   type CatsLogKnowledgeReadQuery,
   type CatsLogKnowledgeReadResult,
   type CatsLogKnowledgeSearchPage,
+  type CatsLogKnowledgeSourceQuery,
+  type CatsLogKnowledgeSourcePage,
   type CatsLogKnowledgeSearchQuery,
 } from './catslog-knowledge-types';
 
@@ -58,6 +62,7 @@ export interface CatscoBootstrapResponse {
   /** Per-Agent per-day knowledge corpus read routes (capability-relative, safe paths only). */
   knowledge_search_url?: string;
   knowledge_read_url?: string;
+  knowledge_source_read_url?: string;
   knowledge_expand_url?: string;
   memory_write_token_id?: string;
   memory_write_token?: string;
@@ -799,6 +804,23 @@ export class CatscoLogAgentClient {
     );
   }
 
+  async reportKnowledgeSourceFeedback(input: {
+    token: string; events: NativeRecallFeedbackEvent[]; signal?: AbortSignal;
+  }): Promise<{ schema_version: 1; claim_semantics: 'client_claim_not_server_attestation'; outcomes: { event_id: string; applied: boolean }[] }> {
+    const token = requireCapabilityToken(input.token);
+    if (!input.events.length || input.events.length > 64) throw new Error('CatsLog feedback batch is invalid');
+    const data = await this.postCapabilityJSON<any>('/catsco/agent/knowledge/source/feedback', token,
+      { schema_version: 1, events: input.events }, 'CatsLog source feedback failed', input.signal);
+    const ids = new Set(input.events.map(ev => ev.event_id));
+    if (data.schema_version !== 1 || data.claim_semantics !== 'client_claim_not_server_attestation'
+      || !Array.isArray(data.outcomes) || data.outcomes.length !== ids.size
+      || new Set(data.outcomes.map((item: any) => item?.event_id)).size !== ids.size
+      || data.outcomes.some((item: any) => !ids.has(item?.event_id) || typeof item?.applied !== 'boolean')) {
+      throw new Error('CatsLog feedback acknowledgement is invalid');
+    }
+    return data;
+  }
+
   /**
    * Search the caller's Agent-private daily knowledge corpus (knowledge/1).
    * Same device-bound read token as memory/recall; the server derives the
@@ -887,6 +909,21 @@ export class CatscoLogAgentClient {
       body,
       'CatsLog knowledge expand failed',
       input.signal,
+    );
+  }
+
+  /** Exact source/context read. Raw text is a stored projection, not log bytes. */
+  async readKnowledgeSource(input: CatsLogKnowledgeSourceQuery & {
+    token?: string;
+    skillToken?: string;
+    knowledgeSourceReadUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatsLogKnowledgeSourcePage> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const body = validateKnowledgeSourceQuery(input);
+    return this.postCapabilityJSON<CatsLogKnowledgeSourcePage>(
+      input.knowledgeSourceReadUrl || DEFAULT_KNOWLEDGE_SOURCE_READ_URL,
+      token, body, 'CatsLog knowledge source read failed', input.signal,
     );
   }
 
@@ -1433,6 +1470,21 @@ function validateKnowledgeAnchorForRequest(anchor: unknown, name = 'anchor'): Re
   if (!streamBound && (streamId !== undefined || byteOffset !== undefined || byteLength !== undefined)) {
     throw new Error(`CatsLog knowledge ${name} carries stream coordinates on a non-session anchor kind`);
   }
+  const skillVersionId = knowledgeOptionalId(raw.skill_version_id, `${name}.skill_version_id`);
+  const skillKind = kind === 'skill_program' || kind === 'skill_node';
+  if (!skillKind && skillVersionId !== undefined) {
+    throw new Error(`CatsLog knowledge ${name}.skill_version_id is only valid on skill anchors`);
+  }
+  if (skillKind) {
+    if (!skillVersionId) throw new Error(`CatsLog knowledge ${name}.skill_version_id is required`);
+    if (sessionId !== undefined || sessionType !== undefined) {
+      throw new Error(`CatsLog knowledge ${name} carries session coordinates on a skill anchor`);
+    }
+    if (kind === 'skill_program' && id !== skillVersionId) {
+      throw new Error(`CatsLog knowledge ${name}.id must equal skill_version_id for skill_program`);
+    }
+    body.skill_version_id = skillVersionId;
+  }
   return body;
 }
 
@@ -1517,6 +1569,64 @@ export function validateKnowledgeReadQuery(query: CatsLogKnowledgeReadQuery): Re
   if (limit !== undefined) body.limit = limit;
   const cursor = validateKnowledgeCursor(query.cursor);
   if (cursor !== undefined) body.cursor = cursor;
+  return body;
+}
+
+/** Source v1 accepts full projection SHA pins (with optional sha256 prefix),
+ * while knowledge_entry pins remain akr revisions. Never reuse session lines.
+ */
+export function validateKnowledgeSourceQuery(query: CatsLogKnowledgeSourceQuery): Record<string, unknown> {
+  if (!query || !query.anchor || typeof query.anchor !== 'object' || Array.isArray(query.anchor)) {
+    throw new Error('CatsLog knowledge source anchor is required');
+  }
+  const raw = query.anchor;
+  const fields = new Set(['kind', 'id', 'document_id', 'revision', 'session_id', 'session_type', 'stream_id', 'byte_offset', 'byte_length', 'skill_version_id']);
+  if (Object.keys(raw).some(key => !fields.has(key))) throw new Error('CatsLog knowledge source anchor has unknown fields');
+  const { revision, byte_length, ...withoutPin } = raw;
+  // The generic anchor validator forbids zero byte_length and SHA prefixes;
+  // source v1 allows explicit zero for turn anchors and a prefixed SHA pin.
+  const anchor = validateKnowledgeAnchorForRequest({ ...withoutPin,
+    ...(byte_length !== undefined && byte_length !== 0 ? { byte_length } : {}),
+  });
+  if (revision !== undefined) {
+    if (typeof revision !== 'string' || (raw.kind === 'knowledge_entry'
+      ? !/^akr-[a-f0-9]{64}$/.test(revision)
+      : !/^(?:sha256:)?[a-f0-9]{64}$/.test(revision))) {
+      throw new Error('CatsLog knowledge source revision is invalid');
+    }
+    anchor.revision = revision;
+  }
+  if (raw.kind === 'knowledge_entry') {
+    if (!revision) throw new Error('CatsLog knowledge source knowledge_entry requires a revision pin');
+    if (!/^ake-[a-f0-9]{24}$/.test(raw.id) || !/^akd-[a-f0-9]{24}$/.test(raw.document_id || '')) {
+      throw new Error('CatsLog knowledge source knowledge_entry identity is invalid');
+    }
+    if (raw.session_id !== undefined || raw.session_type !== undefined) throw new Error('CatsLog knowledge source knowledge_entry carries session coordinates');
+  } else if (raw.kind === 'skill_program' || raw.kind === 'skill_node') {
+    // Skill anchors self-locate through skill_version_id; session coordinates
+    // belong to stream/graph/learning domains only (server agrees).
+    if (raw.session_id !== undefined || raw.session_type !== undefined) {
+      throw new Error('CatsLog knowledge source skill anchor carries session coordinates');
+    }
+    if (!revision) throw new Error('CatsLog knowledge source skill anchor requires a revision pin');
+  } else if (!raw.session_id) {
+    throw new Error('CatsLog knowledge source anchor.session_id is required');
+  }
+  if (raw.kind === 'session_query' || raw.kind === 'session_result') {
+    if (!raw.stream_id) throw new Error('CatsLog knowledge source anchor.stream_id is required');
+    if (raw.kind === 'session_query' && byte_length !== undefined && byte_length !== 0) throw new Error('CatsLog knowledge source query is not a result byte range');
+    if (raw.kind === 'session_result' && !(typeof byte_length === 'number' && byte_length > 0)) throw new Error('CatsLog knowledge source result requires byte_length');
+  }
+  if (byte_length === 0 && (raw.kind === 'session_query' || raw.kind === 'session_result')) anchor.byte_length = 0;
+  const body: Record<string, unknown> = { anchor };
+  for (const name of ['before', 'after', 'max_bytes'] as const) {
+    const value = query[name];
+    if (value === undefined) continue;
+    const min = name === 'max_bytes' ? 256 : 0;
+    const max = name === 'max_bytes' ? 65536 : 4;
+    if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`CatsLog knowledge source ${name} must be between ${min} and ${max}`);
+    body[name] = value;
+  }
   return body;
 }
 

@@ -43,12 +43,15 @@ import {
   projectDailyKnowledgeLane,
   collectProjectedDailyKnowledgeRefs,
   type DailyKnowledgeLaneResult,
+  type DailyKnowledgeSourceContent,
 } from './catslog-daily-knowledge-lane';
 import { normalizeMemoryBranchBudget } from './branch-budget';
 import type { MemoryBranchBudget } from './branch-budget';
 import { hasUsableMemoryEvidence } from './memory-evidence-gate';
 import { consolidateMemoryEvidencePack, type ConsolidateMemoryEvidencePackResult } from './branch-evidence-pack';
 import { collectBranchRefLanes } from './branch-citation-reporter';
+import { NativeRecallFeedbackOutbox, feedbackEvent } from './native-recall-feedback-outbox';
+import type { NativeRecallSource } from './native-recall-attribution';
 
 export interface MemorySearchBranchSessionOptions {
   sessionKey: string;
@@ -134,6 +137,29 @@ const MAX_DAILY_KNOWLEDGE_EVIDENCE_CHARS = 16_000;
 const MAX_REFINE_DAILY_KNOWLEDGE_EVIDENCE_CHARS = 6_000;
 const MAX_DAILY_KNOWLEDGE_EVIDENCE_HITS = 8;
 const REFINE_DAILY_KNOWLEDGE_HITS = 4;
+/** Locator metadata only; no source body is copied into parent context. */
+export const MAX_MEMORY_SOURCE_LOCATORS = 9;
+export const MAX_MEMORY_SOURCE_LOCATOR_CHARS = 2_048;
+
+interface MemorySourceLocator {
+  ref: string;
+  anchor: DailyKnowledgeSourceContent['anchor'];
+  status: DailyKnowledgeSourceContent['status'];
+  coverage: DailyKnowledgeSourceContent['coverage'];
+  read_content_hash?: string;
+  disclosure: 'metadata';
+  branch_disclosure: DailyKnowledgeSourceContent['disclosure'];
+  truncated: boolean;
+  redacted: boolean;
+}
+interface MemorySourceLocatorPack {
+  items: MemorySourceLocator[];
+  omitted: number;
+  cap_chars: number;
+  cap_items: number;
+  note: string;
+}
+
 
 /**
  * Refine-visible evidence view. Pass 2 only needs enough evidence to decide
@@ -492,6 +518,9 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       local_knowledge_entries: this.retrieval.knowledge?.entries.length ?? 0,
       daily_knowledge: this.dailyKnowledgeStatus(),
       daily_knowledge_hits: this.retrieval.dailyKnowledge?.hits.length ?? 0,
+      daily_knowledge_budgets: this.retrieval.dailyKnowledge?.budgets,
+      daily_knowledge_stop_reasons: this.retrieval.dailyKnowledge?.stop_reasons,
+      skill_lineage: this.retrieval.dailyKnowledge?.skill_lineage ?? 'not_observed',
       local_knowledge_keywords_capped: this.retrieval.knowledge?.keywordsCapped ?? false,
       local_knowledge_entries_capped: this.retrieval.knowledge?.entriesCapped ?? false,
       local_knowledge_projected_entries: this.knowledgeProjectedEntryCount(),
@@ -595,6 +624,10 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         hits: full.hits as DailyKnowledgeLaneResult['hits'],
         reads: full.reads as DailyKnowledgeLaneResult['reads'],
         expansions: full.expansions as DailyKnowledgeLaneResult['expansions'],
+        source_reads: full.source_reads as DailyKnowledgeLaneResult['source_reads'],
+        source_errors: full.source_errors as DailyKnowledgeLaneResult['source_errors'],
+        skill_lineage: full.skill_lineage as DailyKnowledgeLaneResult['skill_lineage'],
+        skill_lineage_anchors: full.skill_lineage_anchors as DailyKnowledgeLaneResult['skill_lineage_anchors'],
         presentationOmitted: full.presentation_omitted as DailyKnowledgeLaneResult['presentationOmitted'],
       } : this.retrieval.dailyKnowledge;
       return projectDailyKnowledgeLane(source, maxChars, maxHits);
@@ -796,6 +829,10 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         instruction: '以上是本次机械检索证据的收尾视图（远端融合检索、设备绑定会话查询与本地蒸馏知识库三路并行取得；视图按收尾预算有界截取：尾部被省略的条目以 truncated/consolidation_omitted 标注，被缩短的文本以 ...[truncated] 结尾，被省略的条目不在本视图中）。'
           + 'distilled KB 条目（local_knowledge，provenance=local_knowledge）在覆盖当前问题时优先采用；'
           + 'session_turn_group 中 records 按原顺序保留各 turn、角色、日期和修正，refs 是对应来源；标注遗漏或不可用的来源不表示历史不存在。'
+          + 'daily_knowledge.source_reads 的 source、before、after 每项有独立的 canonical anchor/ref；只可从 status=read、disclosure=text 的实际可见文本引述事实。'
+          + 'source 是授权脱敏存储投影，不是原 log bytes；partial/truncated/text_omitted/structural_only、missing/revoked/stale/unsupported 和 context_truncated 均限制可声称的覆盖。'
+          + 'stop_reasons 和 budgets 表示本轮固定预算停止边界；Skill 候选已有远端并行检索。daily_knowledge.source_reads 中 provenance/expand 边给出的 skill_program/skill_node 锚点会走同一条预算受限通道实际回读：skill_program 只给出 metadata_only 结构与逐节点 node_sources 映射（每节点独立 proved，不得合并为全局 lineage，也不等于已读节点正文），skill_node 回读才会披露节点正文。skill_lineage 字段是本轮真实结果（resolved/unsupported/unavailable/not_observed，unavailable 与 not_observed 都不代表 Skill 不存在），历史从未 capture 的映射/正文仍是 unsupported；不得假称已沿未呈现的 Skill 节点回读。'
+          + 'finish 选中的 source refs 会附有界 source_locators 定位元数据供主 agent 用 exact anchor 回读，primary 优先；未映射的 hash 不能当作可读地址。精确 ref 匹配不证明原文完整、因果使用或任务成功。'
           + 'KB 命中只是候选资料，不证明完整覆盖；managed 只说明由知识库脚本管理，不表示事实已核验。'
           + 'updated_at 是文档修改时间，不是历史覆盖水位；不得把该时间以前未引用的记录视为已被蒸馏。'
           + '当远端/会话证据更新或与 KB 冲突时，保留来源边界并合成差异，不要盲目照搬文档。'
@@ -881,6 +918,10 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       decision = { delivery: requestedDelivery, unobservedRefs: [], evidence };
     } else {
       const unobservedRefs = this.observedRefs.unobservedRefs(payload.refs);
+      const visibleRefs = new Set(this.retrieval.refinePresentation?.presentedRefs ?? []);
+      for (const ref of payload.refs) {
+        if (ref.startsWith('catslog:source:') && !visibleRefs.has(ref) && !unobservedRefs.includes(ref)) unobservedRefs.push(ref);
+      }
       decision = unobservedRefs.length === 0
         ? { delivery: 'context', unobservedRefs: [], evidence }
         // Fabricated/unseen refs stay out of parent context; the downgrade to
@@ -954,6 +995,42 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     };
   }
 
+  /** Preserve replayable node mapping across the summary-only compression
+   * boundary. Use only actually visible, finish-selected sources. Primary
+   * nodes take precedence over neighbors; omitted refs are not hash readers.
+   */
+  private sourceLocatorPack(refs: string[]): MemorySourceLocatorPack | undefined {
+    const selected = new Set(refs.filter(ref => ref.startsWith('catslog:source:')));
+    if (!selected.size) return undefined;
+    const pages = (this.retrieval.refinePresentation?.evidencePack.daily_knowledge as Record<string, unknown> | undefined)
+      ?.source_reads as DailyKnowledgeLaneResult['source_reads'];
+    const candidates = [...(pages ?? []).map(page => page.source),
+      ...(pages ?? []).flatMap(page => [...page.before, ...page.after])];
+    const pack: MemorySourceLocatorPack = {
+      items: [], omitted: selected.size, cap_chars: MAX_MEMORY_SOURCE_LOCATOR_CHARS, cap_items: MAX_MEMORY_SOURCE_LOCATORS,
+      note: 'Locator metadata only. Replay with catslog_knowledge_recall action=read_source and the exact anchor. Unmapped refs cannot be read from their hash. Status/coverage describe the Branch view, not parent source-text disclosure.',
+    };
+    const seen = new Set<string>();
+    for (const content of candidates) {
+      if (!selected.has(content.ref) || seen.has(content.ref)) continue;
+      seen.add(content.ref);
+      if (pack.items.length >= MAX_MEMORY_SOURCE_LOCATORS) continue;
+      const locator: MemorySourceLocator = {
+        ref: content.ref, anchor: { ...content.anchor }, status: content.status, coverage: content.coverage,
+        ...((content.read_content_hash ?? content.content_hash)
+          ? { read_content_hash: content.read_content_hash ?? content.content_hash } : {}),
+        disclosure: 'metadata', branch_disclosure: content.disclosure,
+        truncated: content.truncated || content.text_truncated === true, redacted: content.redacted,
+      };
+      pack.items.push(locator);
+      pack.omitted -= 1;
+      if (JSON.stringify(pack).length > MAX_MEMORY_SOURCE_LOCATOR_CHARS) {
+        pack.items.pop(); pack.omitted += 1;
+      }
+    }
+    return pack;
+  }
+
   protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
     const requestedDelivery = payload.delivery || (payload.inject ? 'context' : 'discard');
     const decision = this.resolveFinishDecision(payload, requestedDelivery);
@@ -962,6 +1039,24 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     // each injected ref, from this run's presentation (remote pool membership +
     // ref shape). Local-only — never part of the server citation report.
     const refLanes = collectBranchRefLanes(payload.refs, this.remotePoolRefs());
+    const sourceDisclosures = (this.retrieval.refinePresentation?.evidencePack.daily_knowledge as Record<string, unknown> | undefined)
+      ?.source_reads as DailyKnowledgeLaneResult['source_reads'];
+    const citedSourceDisclosures = (sourceDisclosures ?? []).flatMap(page => [page.source, ...page.before, ...page.after])
+      .filter(content => payload.refs.includes(content.ref))
+      .map(content => ({ ref: content.ref, disclosure: content.disclosure, status: content.status,
+        coverage: content.coverage, role: content.role, kind: content.anchor.kind,
+        truncated: content.truncated || content.text_truncated === true, redacted: content.redacted }));
+    const sourceLocators = this.sourceLocatorPack(payload.refs);
+    // Feedback-owner contract: emit canonical envelopes only for refs the
+    // branch actually mapped to a source_read item (exact anchor + pin);
+    // knowledge refs resolve their own typed anchor. Unmapped hashed refs
+    // remain local-only and never block the event.
+    const feedbackSources = this.buildFeedbackSources(payload.refs);
+    let feedbackScope: string | undefined;
+    if (feedbackSources.length) {
+      const scope = new NativeRecallFeedbackOutbox(this.memoryOptions.workingDirectory).captureScope();
+      if (scope) feedbackScope = scope;
+    }
     return {
       id: `memory-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       source: 'memory',
@@ -972,19 +1067,73 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         branchId: this.options.id,
         branchType: this.options.type,
         refs: payload.refs,
+        ...(citedSourceDisclosures.length ? { sourceDisclosures: citedSourceDisclosures } : {}),
         // Downstream citation telemetry pool (context deliveries only reach
         // this point): /branch request_id + the payload refs that belong to
         // that request's server pool. The parent-turn seam matches the reply
         // text against these and reports citations fire-and-forget.
         ...(citation ? { citation } : {}),
         ...(refLanes.length > 0 ? { refLanes } : {}),
+        // Canonical feedback envelope captured at observation production;
+        // the parent controller only enqueues whole validated events and
+        // never infers origin identity at finish.
+        ...(feedbackSources.length && feedbackScope
+          ? { feedback_sources: feedbackSources, feedback_scope: feedbackScope }
+          : {}),
       },
       formattedContent: JSON.stringify({
         source: 'memory',
         summary: payload.summary,
         refs: payload.refs,
+        ...(sourceLocators ? { source_locators: sourceLocators } : {}),
       }),
     };
+  }
+
+  /**
+   * Canonical per-ref envelopes for typed-source feedback. Every emitted
+   * source carries an exact canonical anchor (knowledge_entry refs decode
+   * their own document/revision/entry; source refs reuse the branch's
+   * source_read anchor + content hash). Refs without an exact envelope are
+   * skipped — they stay local-only per the feedback/source contract.
+   */
+  private buildFeedbackSources(refs: string[]): NativeRecallSource[] {
+    const selected = new Set(refs);
+    const out: NativeRecallSource[] = [];
+    const seen = new Set<string>();
+    const push = (source: NativeRecallSource) => {
+      if (seen.has(source.ref) || out.length >= 128) return;
+      seen.add(source.ref);
+      out.push(source);
+    };
+    for (const ref of selected) {
+      const match = /^catslog:knowledge:([A-Za-z0-9_-]+):([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/.exec(ref);
+      if (!match) continue;
+      push({ ref, disclosure: 'metadata',
+        anchor: { kind: 'knowledge_entry', id: match[3], document_id: match[1], revision: match[2] } });
+    }
+    const pages = (this.retrieval.refinePresentation?.evidencePack.daily_knowledge as Record<string, unknown> | undefined)
+      ?.source_reads as DailyKnowledgeLaneResult['source_reads'];
+    const candidates = [...(pages ?? []).map(page => page.source),
+      ...(pages ?? []).flatMap(page => [...page.before, ...page.after])];
+    for (const content of candidates) {
+      if (!selected.has(content.ref) || !content.anchor?.revision) continue;
+      push({ ref: content.ref, disclosure: 'metadata', anchor: content.anchor,
+        ...((content.read_content_hash ?? content.content_hash)
+          ? { ref_content_hash: content.read_content_hash ?? content.content_hash } : {}),
+        coverage: content.coverage, role: content.role,
+        truncated: content.truncated || content.text_truncated === true, redacted: content.redacted });
+    }
+    // Keep only envelopes the outbox itself would accept (whole-event gate).
+    const probe = feedbackEvent({
+      event_id: 'probe', trace_id: 'recall-probe', kind: 'branch_source', outcome: 'completed',
+      occurred_at_ms: 1, observed: out, delivered: [], cited: [], retained: [],
+      citation_semantics: 'explicit_ref_match_not_causal_use',
+      delivery_semantics: 'branch_summary_with_refs_not_source_body',
+      retained_semantics: 'final_explicit_ref_match_not_semantic_adoption',
+      lifecycle: 'turn_local_no_carryover',
+    });
+    return probe ? probe.observed : [];
   }
 
   /**

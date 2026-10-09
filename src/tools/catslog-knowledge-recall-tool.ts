@@ -8,12 +8,15 @@ import type {
   CatsLogKnowledgeSearchQuery,
 } from '../utils/catslog-knowledge-types';
 
+import { canonicalRecallJSON, recallTextHash, dailyKnowledgeRef, hashedRecallRef, nativeRecallAttribution, type NativeRecallSource } from '../core/native-recall-attribution';
+import { validateKnowledgeSourceQuery } from '../utils/catsco-log-agent-client';
+import type { CatsLogKnowledgeSourceQuery, CatsLogKnowledgeSourceContent } from '../utils/catslog-knowledge-types';
 export const CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME = 'catslog_knowledge_recall';
 
 /**
  * Query shape for one recall invocation. Actions map 1:1 onto the CatsLog
- * daily knowledge API paths (search / read / expand) plus the explicit
- * `history` action over the existing device-bound session query route.
+ * daily knowledge API paths (search / read / expand / source read) plus
+ * `history` over the device-bound session query projection.
  */
 interface RecallArgs {
   action?: unknown;
@@ -34,6 +37,10 @@ interface RecallArgs {
   anchor?: unknown;
   direction?: unknown;
   kinds?: unknown;
+  // source/context
+  before?: unknown;
+  after?: unknown;
+  max_bytes?: unknown;
   // history (explicit source only)
   search_any?: unknown;
 }
@@ -42,13 +49,14 @@ const HISTORY_MAX_KEYWORDS = 8;
 
 /**
  * Native read-only mainAgent recall tool over the Agent-private CatsLog
- * daily knowledge corpus (contract `knowledge/1`). One small tool, three
+ * daily knowledge corpus (contract `knowledge/1`) and source v1. Four
  * API-backed actions plus an explicit history lane:
  *
  * - `search` — bounded entry search (metadata hits + follow-on hints).
  * - `read`   — full document/entry text (json pages or raw OKF markdown).
  * - `expand` — in/out/both link views around one typed anchor.
- * - `history`— ONLY when the caller explicitly asks for raw session history;
+ * - `read_source`/`source` — exact typed source/context with pins and coverage.
+ * - `history`— explicit keyword lookup over redacted session projections;
  *   delegated to the existing device-bound `querySessions` route with
  *   faithful cursor paging.
  *
@@ -61,7 +69,8 @@ const HISTORY_MAX_KEYWORDS = 8;
  * - Tokens and scope identifiers never enter tool results: the provider
  *   injects the capability token out-of-band and server responses carry no
  *   principal/agent/scope fields.
- * - Read-only: no local writes, no localKB sync, no automatic anything.
+ * - Evidence is read-only. Attribution events are persisted by the runner's
+ *   existing local session log; no source feedback is sent remotely.
  */
 export class CatsLogKnowledgeRecallTool implements Tool {
   definition: ToolDefinition = {
@@ -71,7 +80,9 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       'action=search：按关键词搜索每日知识条目（默认包含 draft 未审定条目，status 字段可见，draft 不代表已核验；命中标题/状态/所在文档与日期，全文需 read）。',
       'action=read：读取指定文档（可选 revision/entry_id）；format=json 返回条目全文分页，format=okf 返回整篇 Open Knowledge Format Markdown。',
       'action=expand：沿某个 typed anchor 展开来向/去向链接（supplements/corrects/…），remote 状态显式返回。',
-      'action=history：仅当确实需要原始历史会话时使用，按关键词检索设备绑定的会话记录投影。',
+      'action=read_source（source 同义）：按精确 typed anchor/revision 回读来源及最多前后各 4 个上下文节点，返回角色、时间、全文版本 pin、披露文本 hash 与覆盖。knowledge_entry 必须固定 revision。raw 是脱敏 turn 投影，不是原始日志 bytes；graph/rich result 当前会明确 unsupported。',
+      'action=history：仅当确实需要原始历史会话时使用，按关键词检索设备绑定的会话记录投影；不能替代精确 source reader。',
+      '每次成功返回 recall_attribution.trace_id 和稳定 ref；引用事实时复制对应正文 ref。披露/交付不等于已使用；引用与最终保留在本地分别统计，远端 typed-source feedback 尚未接入。',
       '响应中的 cursor 是不透明令牌：翻页时必须原样传回，不要猜测或改写；有 next_cursor 就继续翻页，不要假设内容已读完或不存在。',
       '不可用时返回明确错误，不会伪装成空结果。',
     ].join('\n'),
@@ -80,8 +91,8 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       properties: {
         action: {
           type: 'string',
-          enum: ['search', 'read', 'expand', 'history'],
-          description: 'search=搜索每日知识；read=读取文档全文；expand=沿链接扩展；history=显式检索原始历史会话。',
+          enum: ['search', 'read', 'expand', 'read_source', 'source', 'history'],
+          description: 'search=搜索每日知识；read=读取文档；expand=沿链接扩展；read_source/source=精确来源及上下文；history=历史记录投影。',
         },
         query: { type: 'string', description: 'search 必填。检索词。' },
         limit: { type: 'number', description: '可选。每页条数上限（服务端有默认值与上限）。' },
@@ -103,17 +114,19 @@ export class CatsLogKnowledgeRecallTool implements Tool {
           properties: {
             kind: {
               type: 'string',
-              enum: ['session_query', 'session_result', 'graph_node', 'learning_node', 'knowledge_entry'],
+              enum: ['session_query', 'session_result', 'graph_node', 'learning_node', 'knowledge_entry', 'skill_program', 'skill_node'],
             },
             id: { type: 'string' },
             document_id: { type: 'string', description: 'knowledge_entry 锚点必填；其他 kind 禁止。' },
             revision: { type: 'string' },
             session_id: { type: 'string' },
+            session_type: { type: 'string' },
             stream_id: { type: 'string' },
             byte_offset: { type: 'number' },
             byte_length: { type: 'number' },
+            skill_version_id: { type: 'string', description: 'skill_program/skill_node 必填；program 的 id 等于该版本 ID。' },
           },
-          description: 'expand 必填。typed anchor（kind 与 id 必填；knowledge_entry 还需 document_id），各身份域不可互换。',
+          description: 'expand/read_source 必填。typed anchor；read_source 的 knowledge_entry 必须 document_id+revision，其他来源必须 session_id；raw 还需 stream_id 与精确 byte_offset。',
         },
         direction: { type: 'string', enum: ['out', 'in', 'both'], description: '可选。expand 方向，默认 both。' },
         kinds: {
@@ -121,6 +134,9 @@ export class CatsLogKnowledgeRecallTool implements Tool {
           items: { type: 'string', enum: ['derived_from', 'supplements', 'corrects', 'continues', 'related', 'used'] },
           description: '可选。expand 按关系类型过滤。',
         },
+        before: { type: 'number', description: 'read_source 可选。之前的上下文节点数，整数 0..4。' },
+        after: { type: 'number', description: 'read_source 可选。之后的上下文节点数，整数 0..4。' },
+        max_bytes: { type: 'number', description: 'read_source 可选。总披露文本 UTF-8 字节预算，256..65536，默认 16384。' },
         search_any: {
           type: 'array',
           items: { type: 'string' },
@@ -144,23 +160,28 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       if (this.backend.isKnowledgeRecallAvailable?.() === false) {
         return this.unavailableResult('CatsLog recall 已禁用或没有有效读取能力');
       }
+      let result: ToolExecutionResult;
       switch (input.action) {
         case 'search':
-          return await this.search(input, signal);
+          result = await this.search(input, signal); break;
         case 'read':
-          return await this.read(input, signal);
+          result = await this.read(input, signal); break;
         case 'expand':
-          return await this.expand(input, signal);
+          result = await this.expand(input, signal); break;
+        case 'read_source':
+        case 'source':
+          result = await this.readSource(input, signal); break;
         case 'history':
-          return await this.history(input, signal);
+          result = await this.history(input, signal); break;
         default:
           return {
             ok: false,
             errorCode: 'INVALID_TOOL_ARGUMENTS',
             retryable: false,
-            message: 'action 必须是 search / read / expand / history 之一',
+            message: 'action 必须是 search / read / expand / read_source / source / history 之一',
           };
       }
+      return this.withAttribution(result, String(input.action));
     } catch (error: any) {
       return this.errorResult(error);
     }
@@ -282,6 +303,92 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     return this.pageResult(result, result.next_cursor, result.truncated !== true && !result.next_cursor);
   }
 
+  private async readSource(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {
+    // Validate the original shape: silently dropping an invalid pin/coordinate
+    // could turn an exact read into an unpinned read of a different source.
+    const query: CatsLogKnowledgeSourceQuery = {
+      anchor: input.anchor as CatsLogKnowledgeAnchor,
+      ...(input.before !== undefined ? { before: input.before as number } : {}),
+      ...(input.after !== undefined ? { after: input.after as number } : {}),
+      ...(input.max_bytes !== undefined ? { max_bytes: input.max_bytes as number } : {}),
+    };
+    try { validateKnowledgeSourceQuery(query); } catch (error: any) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: false };
+    }
+    if (!this.backend.readKnowledgeSource) return this.unavailableResult('当前运行环境未接入 CatsLog 精确来源读取');
+    const page = await this.backend.readKnowledgeSource(query, signal);
+    return { ok: true, content: JSON.stringify({ ...page,
+      incomplete: page.context_truncated || !page.before_exhausted || !page.after_exhausted
+        || [page.source, ...page.before, ...page.after].some(item => item.coverage !== 'complete' || item.status !== 'read'),
+      source_view: 'stored_projection_not_original_log_bytes',
+    }) };
+  }
+
+  private withAttribution(result: ToolExecutionResult, action: string): ToolExecutionResult {
+    if (!result.ok || typeof result.content !== 'string') return result;
+    const body = JSON.parse(result.content);
+    const sources: NativeRecallSource[] = [];
+    // Canonical feedback envelope (kc-feedback-source-contract): the durable
+    // outbox only ships sources carrying an exact anchor + revision; bare
+    // hashed refs (okf document, history records, unpinned expand remotes)
+    // stay local-only by contract.
+    const daily = (document: string, revision: string, entry: string, disclosure: NativeRecallSource['disclosure'], text?: string) => {
+      const ref = dailyKnowledgeRef(document, revision, entry);
+      const anchor: CatsLogKnowledgeAnchor = { kind: 'knowledge_entry', id: entry, document_id: document, revision };
+      sources.push({ ref, anchor, disclosure, ...(text !== undefined ? { disclosed_text_hash: recallTextHash(text) } : {}) });
+      return ref;
+    };
+    if (action === 'search') {
+      body.hits = (body.hits || []).map((hit: any) => ({ ...hit,
+        ref: daily(hit.document_id, hit.revision, hit.entry_id, 'metadata'),
+      }));
+    } else if (action === 'read' && Array.isArray(body.entries)) {
+      body.entries = body.entries.map((entry: any) => ({ ...entry,
+        ref: daily(body.document_id, body.revision, entry.id, 'text', entry.text),
+      }));
+    } else if (action === 'read' && body.format === 'okf') {
+      body.ref = hashedRecallRef('document', [body.document_id, body.okf]);
+      sources.push({ ref: body.ref, disclosure: 'text', disclosed_text_hash: recallTextHash(body.okf) });
+    } else if (action === 'expand') {
+      body.edges = (body.edges || []).map((edge: any) => {
+        if (edge.remote_status !== 'resolved') return edge;
+        const anchor: CatsLogKnowledgeAnchor = edge.remote;
+        const ref = anchor.kind === 'knowledge_entry' && anchor.revision
+          ? dailyKnowledgeRef(anchor.document_id!, anchor.revision, anchor.id)
+          : hashedRecallRef('source', [anchor, null]);
+        // Only revision-pinned anchors may leave the client: feedbackEvent
+        // drops the whole event rather than admit an unbound claim.
+        sources.push({ ref, ...(anchor.revision ? { anchor } : {}), disclosure: 'metadata', coverage: 'structural_only' });
+        return { ...edge, remote_ref: ref };
+      });
+    } else if (action === 'read_source' || action === 'source') {
+      const annotate = (item: CatsLogKnowledgeSourceContent) => {
+        if (item.status !== 'read') return item;
+        const ref = item.anchor.kind === 'knowledge_entry'
+          ? dailyKnowledgeRef(item.anchor.document_id!, item.anchor.revision!, item.anchor.id)
+          : hashedRecallRef('source', [item.anchor, item.content_hash ?? null]);
+        sources.push({ ref,
+          ...(item.anchor.revision ? { anchor: item.anchor } : {}),
+          ...(item.content_hash ? { ref_content_hash: item.content_hash } : {}),
+          disclosure: item.text ? 'text' : 'metadata',
+          coverage: item.coverage, role: item.role, truncated: item.truncated, redacted: item.redacted,
+          ...(item.text ? { disclosed_text_hash: recallTextHash(item.text) } : {}) });
+        return { ...item, ref };
+      };
+      body.source = annotate(body.source);
+      body.before = body.before.map(annotate);
+      body.after = body.after.map(annotate);
+    } else if (action === 'history') {
+      body.records = (body.records || []).map((record: any) => {
+        const ref = hashedRecallRef('history', record);
+        sources.push({ ref, disclosure: 'text', disclosed_text_hash: recallTextHash(canonicalRecallJSON(record)) });
+        return { ...record, corpus_ref: ref };
+      });
+    }
+    body.recall_attribution = nativeRecallAttribution(sources);
+    return { ...result, content: JSON.stringify(body) };
+  }
+
   private optionalLimit(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
   }
@@ -311,6 +418,9 @@ export class CatsLogKnowledgeRecallTool implements Tool {
         : {}),
       ...(typeof raw.byte_length === 'number' && Number.isSafeInteger(raw.byte_length) && raw.byte_length > 0
         ? { byte_length: raw.byte_length }
+        : {}),
+      ...(typeof raw.skill_version_id === 'string' && raw.skill_version_id.trim()
+        ? { skill_version_id: raw.skill_version_id.trim() }
         : {}),
     };
   }

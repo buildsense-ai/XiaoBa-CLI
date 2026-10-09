@@ -7,6 +7,54 @@ import {
 } from '../src/core/catslog-daily-knowledge-lane';
 import { catslogKnowledgeCitationRef, isMemoryCitationRef } from '../src/tools/memory-branch-tools';
 import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
+import type { CatsLogKnowledgeAnchor, CatsLogKnowledgeSourceContent, CatsLogKnowledgeSourcePage } from '../src/utils/catslog-knowledge-types';
+
+// Skill lineage fixtures mirror the server contract in
+// internal/store/agent_knowledge_skill_sources.go: a program read is
+// metadata_only + per-node node_sources; a node read discloses its own body.
+const SKILL_VERSION = 'skv-' + 'c'.repeat(20);
+const SKILL_DIGEST = 'b'.repeat(64);
+const TURN_DIGEST = 'a'.repeat(64);
+const SKILL_NODE_A = 'skn-' + 'd'.repeat(20);
+const SKILL_NODE_B = 'skn-' + 'e'.repeat(20);
+const PROGRAM_ANCHOR: CatsLogKnowledgeAnchor = { kind: 'skill_program', id: SKILL_VERSION, skill_version_id: SKILL_VERSION, revision: SKILL_DIGEST };
+const NODE_A: CatsLogKnowledgeAnchor = { kind: 'skill_node', id: SKILL_NODE_A, skill_version_id: SKILL_VERSION, revision: SKILL_DIGEST };
+const NODE_B: CatsLogKnowledgeAnchor = { kind: 'skill_node', id: SKILL_NODE_B, skill_version_id: SKILL_VERSION, revision: SKILL_DIGEST };
+const TURN_ANCHOR: CatsLogKnowledgeAnchor = { kind: 'session_query', id: 'turn-1', session_id: 'skill-session', stream_id: 'skill-stream', byte_offset: 0, revision: TURN_DIGEST };
+
+function skillContent(overrides: Partial<CatsLogKnowledgeSourceContent> = {}): CatsLogKnowledgeSourceContent {
+  return { anchor: { ...PROGRAM_ANCHOR }, status: 'read', role: 'learning', speaker: 'structure',
+    occurred_at: null, text: '', coverage: 'structural_only', truncated: false, redacted: false,
+    missing: false, revoked: false, ...overrides };
+}
+function skillPage(source: CatsLogKnowledgeSourceContent): CatsLogKnowledgeSourcePage {
+  return { source, before: [], after: [], before_exhausted: true, after_exhausted: true,
+    context_truncated: false, served_at: '2026-10-09T00:00:00Z' };
+}
+function skillProgramPage(): CatsLogKnowledgeSourcePage {
+  return skillPage(skillContent({ reason: 'program_node_mapping', node_sources: [
+    { anchor: { ...NODE_A }, source_anchors: [{ ...TURN_ANCHOR }] },
+    { anchor: { ...NODE_B }, source_anchors: [{ ...TURN_ANCHOR }] },
+  ] }));
+}
+function skillNodePage(anchor: CatsLogKnowledgeAnchor, text: string): CatsLogKnowledgeSourcePage {
+  return skillPage(skillContent({ anchor: { ...anchor }, speaker: 'assistant', text,
+    coverage: 'complete', content_hash: `sha256:${'f'.repeat(64)}`,
+    source_anchors: [{ ...TURN_ANCHOR }] }));
+}
+/** Backend whose single read exposes a skill_program via expand edge provenance. */
+function skillBackend(overrides: Partial<CatsLogMemoryBackend> = {}): CatsLogMemoryBackend {
+  return fakeBackend({
+    expandKnowledge: async () => ({ edges: [{
+      link: { id: 'akl-skill', kind: 'used', source: PROGRAM_ANCHOR, target: { kind: 'knowledge_entry', id: ENTRY, document_id: DOC, revision: REV } },
+      remote: { ...PROGRAM_ANCHOR }, remote_status: 'resolved' }], exhausted: true }),
+    readKnowledgeSource: async query => query.anchor.kind === 'skill_node'
+      ? skillNodePage(query.anchor, `body of ${query.anchor.id}`)
+      : skillProgramPage(),
+    ...overrides,
+  } as any);
+}
+
 
 const DOC = 'akd-' + 'a'.repeat(24);
 const REV = 'akr-' + 'b'.repeat(64);
@@ -252,12 +300,12 @@ describe('daily knowledge lane', () => {
       },
     });
     const lane = await searchDailyKnowledgeLane({ backend, queryText: 'q', keywords: [] });
-    // Expansion: typed knowledge_entry anchor, inbound, correction kinds only.
+    // Expansion: exact anchor, both directions, all supported relations.
     assert.equal(expandCalls.length, 1);
     assert.equal(expandCalls[0].anchor.kind, 'knowledge_entry');
     assert.equal(expandCalls[0].anchor.document_id, OLD_DOC);
-    assert.equal(expandCalls[0].direction, 'in');
-    assert.deepEqual(expandCalls[0].kinds, ['supplements', 'corrects', 'continues']);
+    assert.equal(expandCalls[0].direction, 'both');
+    assert.deepEqual(expandCalls[0].kinds, ['supplements', 'corrects', 'continues', 'derived_from', 'used', 'related']);
     // Remote NEW entry actually read (2 reads total: original + remote).
     assert.equal(readCalls.length, 2);
     assert.equal(readCalls[1].document_id, NEW_DOC);
@@ -282,8 +330,8 @@ describe('daily knowledge lane', () => {
     const backend = fakeBackend({
       expandKnowledge: async () => ({
         edges: [
-          { link: { kind: 'corrects' }, remote: { kind: 'knowledge_entry', id: 'ake-missing', document_id: DOC, revision: REV }, remote_status: 'target_missing' },
-          { link: { kind: 'corrects' }, remote: { kind: 'knowledge_entry', id: 'ake-revoked', document_id: DOC, revision: REV }, remote_status: 'source_revoked' },
+          { link: { kind: 'corrects', target: { kind: 'knowledge_entry', id: ENTRY, document_id: DOC, revision: REV } }, remote: { kind: 'knowledge_entry', id: 'ake-missing', document_id: DOC, revision: REV }, remote_status: 'target_missing' },
+          { link: { kind: 'corrects', target: { kind: 'knowledge_entry', id: ENTRY, document_id: DOC, revision: REV } }, remote: { kind: 'knowledge_entry', id: 'ake-revoked', document_id: DOC, revision: REV }, remote_status: 'source_revoked' },
         ],
         exhausted: true,
       }),
@@ -359,5 +407,141 @@ describe('daily knowledge lane', () => {
     assert.equal(lane.reads.length, 1);
     assert.equal(lane.reads[0].text, 'full body text');
     assert.equal(lane.status, 'truncated');
+  });
+
+  // ---- Skill lineage (objective 1: real, not narrowed-scope, consumption) ----
+
+  test('proved skill_program read resolves lineage and presents per-node mappings plus node bodies', async () => {
+    const lane = await searchDailyKnowledgeLane({ backend: skillBackend(), queryText: 'q', keywords: [] });
+    // The server-returned skill anchor was actually dispatched through the
+    // budgeted source reader — not summarized away.
+    assert.equal(lane.skill_lineage, 'resolved');
+    assert.deepEqual(lane.source_errors, []);
+    const program = lane.source_reads!.find(row => row.requested_anchor.kind === 'skill_program')!;
+    assert.ok(program, 'skill_program read row exists');
+    // Program is metadata-only: structure, never a claimed body.
+    assert.equal(program.source.status, 'read');
+    assert.equal(program.source.disclosure, 'metadata');
+    assert.equal(program.source.text, '');
+    // Per-node mappings survive verbatim and are NOT collapsed into one union.
+    assert.equal(program.source.node_sources!.length, 2);
+    assert.deepEqual(program.source.node_sources!.map(m => m.anchor.id), [SKILL_NODE_A, SKILL_NODE_B]);
+    assert.equal(lane.budgets!.skill_lineage_nodes, 2);
+    // Follow-on node reads use only server-returned node anchors.
+    const nodeRows = lane.source_reads!.filter(row => row.requested_anchor.kind === 'skill_node');
+    assert.equal(nodeRows.length, 2);
+    for (const row of nodeRows) assert.equal(row.source.disclosure, 'text');
+    // Per-anchor rows are the truth record for each anchor independently.
+    const rows = lane.skill_lineage_anchors!;
+    assert.equal(rows.length, 3);
+    const programRow = rows.find(row => row.anchor.kind === 'skill_program')!;
+    assert.equal(programRow.outcome, 'resolved');
+    assert.equal(programRow.node_mappings, 2);
+    assert.equal(programRow.body_disclosed, undefined, 'a program read never claims node body');
+    assert.ok(rows.filter(r => r.anchor.kind === 'skill_node').every(r => r.outcome === 'resolved' && r.body_disclosed === true));
+    // Projection keeps the resolved lineage and its per-node rows.
+    const projected = projectDailyKnowledgeLane(lane, 16_000) as any;
+    assert.equal(projected.skill_lineage, 'resolved');
+    assert.equal(projected.skill_lineage_anchors.length, 3);
+    assert.ok(projected.skill_lineage_anchors.every((r: any) => r.presented === true));
+  });
+
+  test('server-reported absent mapping stays truthful unsupported with its exact reason', async () => {
+    const lane = await searchDailyKnowledgeLane({
+      backend: skillBackend({
+        readKnowledgeSource: async () => skillPage(skillContent({ status: 'unsupported',
+          coverage: 'structural_only', reason: 'node_source_mapping_not_captured' })),
+      }),
+      queryText: 'q', keywords: [],
+    });
+    assert.equal(lane.skill_lineage, 'unsupported');
+    assert.match(lane.skill_lineage_stop_reason!, /skill_lineage_source_unsupported/);
+    const row = lane.skill_lineage_anchors![0];
+    assert.equal(row.outcome, 'unsupported');
+    assert.equal(row.server_reason, 'node_source_mapping_not_captured');
+    // No fabricated mapping or body anywhere.
+    assert.equal(lane.source_reads![0].source.node_sources, undefined);
+    assert.equal(lane.source_reads![0].source.text, '');
+    assert.ok(lane.stop_reasons!.includes('skill_lineage_source_unsupported'));
+    assert.ok(!lane.stop_reasons!.some(reason => /resolved|claimed/.test(reason)));
+    // The gap is stated, not silently dropped.
+    const projected = projectDailyKnowledgeLane(lane, 16_000) as any;
+    assert.equal(projected.skill_lineage, 'unsupported');
+    assert.equal(projected.skill_lineage_anchors[0].outcome, 'unsupported');
+  });
+
+  test('missing source reader is unavailable, not unsupported — absence of attempt is not absence of lineage', async () => {
+    const lane = await searchDailyKnowledgeLane({
+      backend: skillBackend({ readKnowledgeSource: undefined } as any),
+      queryText: 'q', keywords: [],
+    });
+    assert.equal(lane.skill_lineage, 'unavailable');
+    assert.equal(lane.skill_lineage_stop_reason, 'skill_lineage_reader_unavailable');
+    assert.ok(lane.skill_lineage_anchors!.every(row => row.outcome === 'unavailable'));
+    assert.deepEqual(lane.source_reads, []);
+    assert.ok(lane.stop_reasons!.includes('skill_lineage_reader_unavailable'));
+  });
+
+  test('skill version/id mismatch is rejected exactly like every other anchor kind', async () => {
+    for (const [label, bad] of [
+      ['version', { ...PROGRAM_ANCHOR, skill_version_id: 'skv-' + '9'.repeat(20) }],
+      ['program id', { ...PROGRAM_ANCHOR, id: SKILL_VERSION + 'x' }],
+      ['revision', { ...PROGRAM_ANCHOR, revision: '9'.repeat(64) }],
+    ] as const) {
+      const lane = await searchDailyKnowledgeLane({
+        backend: skillBackend({
+          readKnowledgeSource: async () => skillPage(skillContent({ anchor: { ...bad } })),
+        }),
+        queryText: 'q', keywords: [],
+      });
+      assert.equal(lane.source_reads!.length, 0, `${label} mismatch yields no read row`);
+      assert.match(lane.source_errors![0].error, /source_identity_mismatch/, label);
+      // Rejected, never downgraded to a plausible-looking lineage claim.
+      assert.equal(lane.skill_lineage, 'unsupported');
+      const row = lane.skill_lineage_anchors![0];
+      assert.equal(row.outcome, 'rejected');
+      assert.equal(row.stop_reason, 'skill_lineage_identity_mismatch');
+      assert.ok(lane.stop_reasons!.includes('skill_lineage_identity_mismatch'));
+    }
+  });
+
+  test('a fabricated node mapping is dropped and counted; it never merges into the real lineage', async () => {
+    const lane = await searchDailyKnowledgeLane({
+      backend: skillBackend({ readKnowledgeSource: async () => skillPage(skillContent({ node_sources: [
+        { anchor: { ...NODE_A }, source_anchors: [{ ...TURN_ANCHOR }] },
+        // Forged: a node belonging to a different program version.
+        { anchor: { kind: 'skill_node', id: 'skn-forged', skill_version_id: 'skv-' + '9'.repeat(20), revision: SKILL_DIGEST },
+          source_anchors: [{ ...TURN_ANCHOR }] },
+      ] })) }),
+      queryText: 'q', keywords: [],
+    });
+    assert.ok(lane.stop_reasons!.includes('skill_node_mapping_identity_mismatch'));
+    const program = lane.source_reads!.find(row => row.requested_anchor.kind === 'skill_program')!;
+    assert.equal(program.source.node_sources!.length, 1, 'only the proved mapping survives');
+    assert.equal(program.source.node_sources![0].anchor.id, SKILL_NODE_A);
+    // Follow-on reads are unlocked ONLY by proved mappings.
+    assert.ok(lane.source_reads!.every(row => row.requested_anchor.id !== 'skn-forged'));
+    assert.equal(lane.skill_lineage, 'resolved');
+  });
+
+  test('not_observed spends no presentation budget when no skill anchor exists', async () => {
+    const lane = await searchDailyKnowledgeLane({ backend: fakeBackend(), queryText: 'q', keywords: [] });
+    assert.equal(lane.skill_lineage, 'not_observed');
+    assert.equal(lane.skill_lineage_anchors, undefined);
+    const projected = projectDailyKnowledgeLane(lane, 16_000) as any;
+    assert.equal(projected.skill_lineage, undefined, 'nothing attempted ⇒ nothing claimed in the bounded view');
+    assert.doesNotMatch(JSON.stringify(projected), /skill_lineage/);
+  });
+
+  test('skill node follow-on reads stay inside the shared fixed source-read budget', async () => {
+    const wire: any[] = [];
+    const lane = await searchDailyKnowledgeLane({
+      backend: skillBackend({ readKnowledgeSource: async query => { wire.push(query.anchor); return query.anchor.kind === 'skill_node' ? skillNodePage(query.anchor, 'n') : skillProgramPage(); } }),
+      queryText: 'q', keywords: [],
+    });
+    // 1 program + MAX_DAILY_KNOWLEDGE_SKILL_NODE_READS (2) nodes = the whole
+    // 3-read budget; the byte cap is unchanged.
+    assert.equal(wire.length, 3);
+    assert.ok(lane.budgets!.source_reads <= 3);
   });
 });

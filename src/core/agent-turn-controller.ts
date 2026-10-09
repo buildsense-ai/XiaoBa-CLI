@@ -1,3 +1,5 @@
+import { NativeRecallFeedbackOutbox } from './native-recall-feedback-outbox';
+import { randomUUID as feedbackUUID } from 'node:crypto';
 import { ContentBlock, Message } from '../types';
 import { randomUUID } from 'crypto';
 import type {
@@ -32,6 +34,7 @@ import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from '.
 import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
+import { NativeRecallTracker } from './native-recall-attribution';
 import { PlanRuntime } from './plan-runtime';
 import {
   BranchCitationReport,
@@ -249,11 +252,37 @@ interface MemoryBranchSlot {
 export class AgentTurnController {
   private turnSequence = 0;
   private memoryBranchCarryover: MemoryBranchSlot | null = null;
+  /** Feedback event IDs already logged as server-acknowledged this process;
+   * dedupe only — the ack itself is authority, never a guess. */
+  private readonly feedbackAckLogged = new Set<string>();
+
+  /**
+   * Flush queued feedback and log one `native_recall_feedback_ack` row per
+   * event the server actually acknowledged. Queueing stays
+   * `queued_client_claim`; `server_feedback` only becomes `acknowledged`
+   * after a real response.
+   */
+  private flushFeedbackAndLogAcks(feedbackOutbox: NativeRecallFeedbackOutbox | undefined): void {
+    if (!feedbackOutbox) return;
+    void feedbackOutbox.flush().then(acked => {
+      for (const id of acked.acknowledged) {
+        if (this.feedbackAckLogged.has(id)) continue;
+        this.feedbackAckLogged.add(id);
+        Logger.runtimeEvent('INFO', 'native recall source feedback acknowledged', {
+          type: 'native_recall_feedback_ack', payload: { event_id: id, server_feedback: 'acknowledged' },
+        });
+      }
+    }).catch(() => {});
+  }
 
   constructor(private readonly options: AgentTurnControllerOptions) {}
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
     const turnNumber = ++this.turnSequence;
+    const nativeRecall = new NativeRecallTracker();
+    const feedbackOutbox = new NativeRecallFeedbackOutbox(this.options.getCurrentDirectory());
+    // Drained restart leftovers still earn their ack rows.
+    this.flushFeedbackAndLogAcks(feedbackOutbox);
     const turnStartedAt = Date.now();
     const injectionTiming = new TurnInjectionTiming({
       sessionKey: this.options.sessionKey,
@@ -347,7 +376,7 @@ export class AgentTurnController {
 
       let result;
       try {
-        result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks, injectionTiming));
+        result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks, injectionTiming, nativeRecall, feedbackOutbox));
         this.markEpisodeMessages(result.newMessages, episodeId);
         // Text-only first action: the runner resolves when the final
         // assistant text is complete. When any tool dispatched earlier, the
@@ -362,8 +391,11 @@ export class AgentTurnController {
         // not just the visible reply — e.g. reading a KB document by path is
         // a citation even when the reply never prints the ref literally.
         // Fire-and-forget — telemetry must never break a turn.
-        this.dispatchBranchCitationTelemetry(consumedObservations, result.newMessages, result.response);
+        this.dispatchBranchCitationTelemetry(consumedObservations, result.newMessages, result.response, feedbackOutbox);
+        this.persistNativeRecallUsage(nativeRecall, result.newMessages, result.response,
+          params.abortSignal?.aborted || !params.shouldContinue() ? 'cancelled' : 'completed', feedbackOutbox);
       } catch (error: any) {
+        this.persistNativeRecallUsage(nativeRecall, turnContext.messages, '', params.abortSignal?.aborted ? 'cancelled' : 'failed', feedbackOutbox);
         const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
         this.replaceBase64Images(partialMessages);
         if (partialMessages.length > 0) {
@@ -702,10 +734,46 @@ export class AgentTurnController {
     consumedObservations: readonly SyntheticObservation[],
     newMessages: readonly Message[] | undefined,
     replyText: string | undefined,
+    feedbackOutbox?: NativeRecallFeedbackOutbox,
   ): void {
     try {
       const corpus = collectAssistantCitationText(newMessages, replyText);
-      const { reports, knowledgeRefs } = matchBranchCitations(consumedObservations, corpus);
+      let branchFeedbackQueued = false;
+      for (const observation of consumedObservations) {
+        const metadata = observation.metadata as Record<string, any> | undefined;
+        const sources = metadata?.feedback_sources;
+        if (!Array.isArray(sources) || !sources.length || typeof metadata?.feedback_scope !== 'string') continue;
+        const refs = new Set(metadata.refs ?? []);
+        // Branch injection discloses summaries/refs; do not promote it to full source body delivery.
+        const observed = sources.filter((source: any) => refs.has(source.ref)).map((source: any) => ({ ...source, disclosure: 'metadata' }));
+        const event = { event_id: `feedback-${feedbackUUID()}`, trace_id: `recall-${feedbackUUID()}`, kind: 'branch_source',
+          occurred_at_ms: Date.now(), outcome: 'completed', observed,
+          delivered: observed.map((source: any) => ({ ref: source.ref, disclosure: 'metadata' })),
+          cited: observed.filter((source: any) => corpus.includes(source.ref)).map((source: any) => source.ref),
+          retained: observed.filter((source: any) => replyText?.includes(source.ref)).map((source: any) => source.ref),
+          citation_semantics: 'explicit_ref_match_not_causal_use', delivery_semantics: 'branch_summary_with_refs_not_source_body',
+          retained_semantics: 'final_explicit_ref_match_not_semantic_adoption', lifecycle: 'turn_local_no_carryover' };
+        if ((feedbackOutbox?.enqueue([event], metadata.feedback_scope) ?? 0) > 0) branchFeedbackQueued = true;
+      }
+      this.flushFeedbackAndLogAcks(feedbackOutbox);
+      const { reports, knowledgeRefs, sourceRefs = [] } = matchBranchCitations(consumedObservations, corpus);
+      const retainedMatch = matchBranchCitations(consumedObservations, replyText);
+      const injectedSourceRefs = [...new Set(consumedObservations.flatMap(observation => observation.metadata?.refs ?? [])
+        .filter(ref => /^catslog:source:[a-f0-9]{64}$/.test(ref)))].slice(0, 128);
+      if (injectedSourceRefs.length) {
+        Logger.runtimeEvent('INFO', 'branch source attribution (local)', {
+          type: 'branch_source_usage',
+          payload: {
+            injected_refs: injectedSourceRefs,
+            cited_refs: sourceRefs,
+            retained_refs: retainedMatch.sourceRefs ?? [],
+            delivery_semantics: 'branch_summary_with_refs_not_source_body',
+            citation_semantics: 'assistant_explicit_ref_match_not_causal_use',
+            retained_semantics: 'final_explicit_ref_match_not_semantic_adoption',
+            server_feedback: branchFeedbackQueued ? 'queued_client_claim' : 'not_connected',
+          },
+        });
+      }
       for (const report of reports) {
         void this.reportBranchCitations(report);
       }
@@ -717,14 +785,16 @@ export class AgentTurnController {
             type: 'branch_knowledge_citations',
             payload: {
               refs: knowledgeRefs,
+              retained_refs: retainedMatch.knowledgeRefs,
             },
           },
         );
       }
       const usage = collectBranchCitationUsage(consumedObservations, corpus);
+      const retainedUsage = collectBranchCitationUsage(consumedObservations, replyText);
       if (usage) {
-        const injectedTotal = usage.injectedByLane.remote_pool + usage.injectedByLane.session + usage.injectedByLane.knowledge;
-        const citedTotal = usage.citedByLane.remote_pool + usage.citedByLane.session + usage.citedByLane.knowledge;
+        const injectedTotal = usage.injectedByLane.remote_pool + usage.injectedByLane.session + usage.injectedByLane.knowledge + usage.injectedByLane.source;
+        const citedTotal = usage.citedByLane.remote_pool + usage.citedByLane.session + usage.citedByLane.knowledge + usage.citedByLane.source;
         Logger.runtimeEvent(
           'INFO',
           `[${this.options.sessionKey}] branch citation usage: injected ${injectedTotal}, cited ${citedTotal}, carryover=${usage.carryover}`,
@@ -734,6 +804,9 @@ export class AgentTurnController {
               requestIds: usage.requestIds,
               injectedByLane: usage.injectedByLane,
               citedByLane: usage.citedByLane,
+              retainedByLane: retainedUsage?.citedByLane,
+              citationSemantics: 'explicit_ref_match_not_causal_use',
+              serverTypedSourceFeedback: 'not_connected',
               carryover: usage.carryover,
             },
           },
@@ -769,12 +842,34 @@ export class AgentTurnController {
     }
   }
 
-  private toRunnerCallbacks(callbacks?: AgentTurnCallbacks, injectionTiming?: TurnInjectionTiming): RunnerCallbacks {
+  private persistNativeRecallUsage(
+    tracker: NativeRecallTracker,
+    messages: readonly Message[],
+    finalText: string,
+    outcome: 'completed' | 'failed' | 'cancelled' = 'completed',
+    feedbackOutbox?: NativeRecallFeedbackOutbox,
+  ): void {
+    try {
+      for (const payload of tracker.finish(messages, finalText, outcome)) {
+        const scope = typeof payload.feedback_scope === 'string' ? payload.feedback_scope : undefined;
+        const durable = feedbackOutbox?.enqueue([payload], scope) ?? 0;
+        const { feedback_scope: _bound, ...logged } = payload;
+        Logger.runtimeEvent('INFO', 'native recall source attribution (local)', {
+          type: 'native_recall_source_usage', payload: { ...logged, server_feedback: durable ? 'queued_client_claim' : 'local_only_unbound_or_unavailable' },
+        });
+      }
+      this.flushFeedbackAndLogAcks(feedbackOutbox);
+    } catch { /* Observational logging must never break the turn. */ }
+  }
+
+  private toRunnerCallbacks(callbacks?: AgentTurnCallbacks, injectionTiming?: TurnInjectionTiming, nativeRecall?: NativeRecallTracker, feedbackOutbox?: NativeRecallFeedbackOutbox): RunnerCallbacks {
     const wrapped: RunnerCallbacks = {
       onText: callbacks?.onText,
       onAssistantText: callbacks?.onAssistantText,
       onThinking: callbacks?.onThinking,
       onToolStart: callbacks?.onToolStart,
+      onToolExecutionResult: (result, messages) => nativeRecall?.observe(result, messages, feedbackOutbox?.captureScope()),
+      onModelInput: messages => nativeRecall?.deliver(messages),
       onToolEnd: callbacks?.onToolEnd,
       onToolDisplay: callbacks?.onToolDisplay,
       onRetry: callbacks?.onRetry,

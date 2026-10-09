@@ -88,8 +88,12 @@ describe('recall real provider/client transport regressions', () => {
       if (route.endsWith('/knowledge/expand')) {
         const n = Number.parseInt(body.anchor.id.slice(4), 16);
         assert.deepEqual(body.anchor, anchor(n));
-        assert.equal(body.direction, 'in');
-        assert.deepEqual(body.kinds, ['supplements', 'corrects', 'continues']);
+        if (body.direction === 'both') {
+          assert.deepEqual(body.kinds, ['supplements', 'corrects', 'continues', 'derived_from', 'used', 'related']);
+        } else {
+          assert.equal(body.direction, 'in');
+          assert.deepEqual(body.kinds, ['supplements', 'corrects', 'continues']);
+        }
         assert.equal(body.limit, 20);
         return json({ edges: Array.from({ length: 20 }, (_, index) => {
           const remote = anchor((n === 1 ? 100 : 200) + index);
@@ -98,7 +102,7 @@ describe('recall real provider/client transport regressions', () => {
       }
       if (route.endsWith('/branch')) return json({ request_id: 'synthetic-branch', status: 'ok', branches: [{ source: 'session_graph', status: 'ok', evidence_verdict: allLanes ? 'strong' : 'none',
         items: allLanes ? Array.from({ length: 30 }, (_, i) => ({ source: 'session', ref: `synthetic-remote#${i + 1}`, kind: 'session_turn', text: '远'.repeat(2_000) })) : [] }] });
-      if (route.endsWith('/sessions')) return json({ records: allLanes ? Array.from({ length: 20 }, (_, i) => ({ ref: `synthetic-session#${i + 1}`, session_id: 'synthetic-session', log_date: '2026-10-07', turn: i + 1,
+      if (route.endsWith('/sessions')) return json({ records: allLanes ? Array.from({ length: 20 }, (_, i) => ({ ref: `synthetic-session-${i}#1`, session_id: `synthetic-session-${i}`, log_date: '2026-10-07', turn: 1,
         user: { text: '史'.repeat(1_000) }, agent: { text: '改'.repeat(1_000) } })) : [], truncated: false });
       return json({ error: 'unexpected_route' }, 500);
     };
@@ -193,7 +197,9 @@ describe('recall real provider/client transport regressions', () => {
     assert.equal(first.next_cursor, cursor);
     const second = JSON.parse(String((await tool.execute({ ...args, cursor: first.next_cursor }, context())).content));
     assert.equal(second.exhausted, true);
-    assert.deepEqual([...first.records, ...second.records], records);
+    const retainedRecords = [...first.records, ...second.records];
+    assert.deepEqual(retainedRecords.map(({ corpus_ref: _corpusRef, ...record }: any) => record), records);
+    assert.ok(retainedRecords.every((record: any) => /^catslog:history:[a-f0-9]{64}$/.test(record.corpus_ref)), 'client attribution is additive; original record identity stays unchanged');
     assert.equal(calls[1].body.cursor, cursor);
     assert.ok(calls.every(call => call.body.latest === false));
     const changed = await tool.execute({ ...args, search_any: ['other'], cursor }, context());
@@ -288,6 +294,9 @@ describe('recall real provider/client transport regressions', () => {
     assert.equal(state.dailyKnowledge.reads[0].text, '旧'.repeat(4_000), 'projection leaves retrieval evidence intact');
     if (allLanes) {
       assert.ok(full.local_knowledge.entries.length > 0, 'real bundled KB search participates');
+      assert.ok(refine.local_knowledge.entries.length > 0, 'R1: at least the relevant metadata floor survives');
+      assert.ok(refine.remote_branch.branches.some((b: any) => b.items?.length > 0));
+      assert.ok(refine.session_records.records.length > 0, 'actual finish retains four nonempty lanes');
       assert.ok(JSON.stringify(refine.remote_branch).length <= 3_000);
       assert.ok(JSON.stringify(refine.session_records).length <= 1_800);
       assert.ok(JSON.stringify(refine.local_knowledge).length <= 1_200);

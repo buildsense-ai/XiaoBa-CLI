@@ -1,12 +1,11 @@
 /**
  * XiaoBa client DTOs for the CatsLog per-Agent per-day knowledge corpus
- * (POST /catsco/agent/knowledge/search|read|expand).
+ * (POST /catsco/agent/knowledge/search|read|expand and source/read).
  *
- * These types are a 1:1 mirror of the FINAL shared Go contract in
- * `catslog/internal/knowledge` types.go (contract version `knowledge/1`,
- * announced via /tmp/knowledge-types-ready.md). The json tags below are the
- * wire schema — do not fork or rename fields here; coordinate with the
- * contract worker instead. Scope identifiers (principal/agent subject/
+ * The daily corpus DTOs mirror the shared Go contract in
+ * `catslog/internal/knowledge` types.go (`knowledge/1`). The additive source
+ * reader v1 mirrors /tmp/knowledge-coverage-source-contract.md. JSON fields
+ * are the wire schema — coordinate any changes with the contract owner. Scope identifiers (principal/agent subject/
  * memory scope) are deliberately absent: the server derives them from the
  * device-bound token and never echoes them back.
  */
@@ -16,10 +15,13 @@ export type CatsLogKnowledgeAnchorKind =
   | 'session_result'
   | 'graph_node'
   | 'learning_node'
-  | 'knowledge_entry';
+  | 'knowledge_entry'
+  | 'skill_program'
+  | 'skill_node';
 
 export const CATSLOG_KNOWLEDGE_ANCHOR_KINDS: readonly CatsLogKnowledgeAnchorKind[] = [
   'session_query', 'session_result', 'graph_node', 'learning_node', 'knowledge_entry',
+  'skill_program', 'skill_node',
 ];
 
 /**
@@ -38,6 +40,9 @@ export interface CatsLogKnowledgeAnchor {
   stream_id?: string;
   byte_offset?: number;
   byte_length?: number;
+  /** Skill lineage anchors only: the program version. skill_program's `id`
+   * equals this value; skill_node's `id` is the node ID inside that version. */
+  skill_version_id?: string;
 }
 
 export type CatsLogKnowledgeEntryStatus = 'draft' | 'active' | 'superseded' | 'retired';
@@ -191,9 +196,58 @@ export interface CatsLogKnowledgeLinkPage {
   exhausted: boolean;
 }
 
+/** Frozen source reader v1: /tmp/knowledge-coverage-source-contract.md.
+ * Raw sources are redacted stored projections, never original log bytes.
+ */
+export interface CatsLogKnowledgeSourceQuery {
+  anchor: CatsLogKnowledgeAnchor;
+  before?: number;
+  after?: number;
+  max_bytes?: number;
+}
+export type CatsLogKnowledgeSourceStatus = 'read' | 'missing' | 'revoked' | 'stale' | 'unsupported';
+export interface CatsLogKnowledgeSourceContent {
+  anchor: CatsLogKnowledgeAnchor;
+  status: CatsLogKnowledgeSourceStatus;
+  role: 'organic' | 'learning' | 'knowledge';
+  speaker: 'user' | 'assistant' | 'user_assistant' | 'structure' | 'knowledge';
+  occurred_at: string | null;
+  text: string;
+  content_hash?: string;
+  coverage: 'complete' | 'partial' | 'structural_only';
+  truncated: boolean;
+  redacted: boolean;
+  missing: boolean;
+  revoked: boolean;
+  reason?: string;
+  /** Declared provenance; separate from the learning selected set. */
+  source_anchors?: CatsLogKnowledgeAnchor[];
+  selected_anchors?: CatsLogKnowledgeAnchor[];
+  node_kind?: 'query' | 'action' | 'result' | 'teachback';
+  /** Skill program reads only: one independently proved mapping per node,
+   * preserved exactly as stored — never collapsed into a program-wide union. */
+  node_sources?: CatsLogKnowledgeSourceNodeMapping[];
+}
+
+/** Mirrors knowledge.SourceNodeMapping (node_sources entries). */
+export interface CatsLogKnowledgeSourceNodeMapping {
+  anchor: CatsLogKnowledgeAnchor;
+  source_anchors: CatsLogKnowledgeAnchor[];
+}
+export interface CatsLogKnowledgeSourcePage {
+  source: CatsLogKnowledgeSourceContent;
+  before: CatsLogKnowledgeSourceContent[];
+  after: CatsLogKnowledgeSourceContent[];
+  before_exhausted: boolean;
+  after_exhausted: boolean;
+  context_truncated: boolean;
+  served_at: string;
+}
+
 /** Stable route defaults owned by CatsLog; capability responses may override. */
 export const DEFAULT_KNOWLEDGE_SEARCH_URL = '/catsco/agent/knowledge/search';
 export const DEFAULT_KNOWLEDGE_READ_URL = '/catsco/agent/knowledge/read';
+export const DEFAULT_KNOWLEDGE_SOURCE_READ_URL = '/catsco/agent/knowledge/source/read';
 export const DEFAULT_KNOWLEDGE_EXPAND_URL = '/catsco/agent/knowledge/expand';
 
 /** Wire bounds (knowledge/types.go). Upper bounds only — nothing truncates. */

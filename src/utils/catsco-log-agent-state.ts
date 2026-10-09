@@ -52,6 +52,7 @@ export interface CatscoLogAgentState {
   branchUrl?: string;
   knowledgeSearchUrl?: string;
   knowledgeReadUrl?: string;
+  knowledgeSourceReadUrl?: string;
   knowledgeExpandUrl?: string;
   /** Separate write-only capability; never use it for reads. */
   memoryWriteTokenId?: string;
@@ -141,6 +142,7 @@ export function clearCatscoSkillToken(state: CatscoLogAgentState): void {
   delete state.branchUrl;
   delete state.knowledgeSearchUrl;
   delete state.knowledgeReadUrl;
+  delete state.knowledgeSourceReadUrl;
   delete state.knowledgeExpandUrl;
 }
 
