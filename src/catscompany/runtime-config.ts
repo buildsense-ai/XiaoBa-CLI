@@ -12,6 +12,7 @@ import {
   createCatsCoLocalConfigService,
 } from './local-config';
 import { CATSCO_APP_HTTP_ORIGINS, catsCoDomainFamily } from '../utils/catsco-domains';
+import { resolveCatsCompanyGroupActivationJevConfig } from './jev-group-activation';
 
 export type CatsCoRuntimeMissingField = 'serverUrl' | 'apiKey' | 'bodyId';
 
@@ -217,6 +218,7 @@ export function resolveCatsCoRuntimeConfig(
         if (family) service.recordEndpointFamily(family);
       },
       sessionTTL: config.catscompany?.sessionTTL,
+      groupActivationJev: resolveCatsCompanyGroupActivationJevConfig(effectiveEnv),
     }
     : undefined;
   const connectorReady = Boolean(serverUrl && (apiKey || connectorToken));

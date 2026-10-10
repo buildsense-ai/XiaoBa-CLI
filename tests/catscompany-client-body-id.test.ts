@@ -98,6 +98,37 @@ describe('CatsCompany client body identity', () => {
     assert.equal(headers['x-catsco-runtime-credential'], 'runtime-credential-test');
   });
 
+  test('advertises passive group activation only when explicitly enabled', async () => {
+    clearIdentityEnv();
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const address = server.address() as AddressInfo;
+    for (const enabled of [false, true]) {
+      const handshake = new Promise<any>(resolve => {
+        server.once('connection', socket => {
+          socket.once('message', data => {
+            resolve(JSON.parse(data.toString()).hi);
+            socket.close();
+          });
+        });
+      });
+      const client = new CatsClient({
+        serverUrl: `ws://127.0.0.1:${address.port}`,
+        apiKey: 'cc-test-key', bodyId: 'body-test',
+        semanticGroupActivation: enabled,
+      });
+      client.on('error', () => undefined);
+      client.connect();
+      try {
+        const hi = await withTimeout(handshake);
+        assert.equal(hi.semantic_group_activation, enabled ? true : undefined);
+      } finally {
+        client.disconnect();
+      }
+    }
+  });
+
   test('does not send the privileged Runtime header when no credential is configured', async () => {
     clearIdentityEnv();
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
