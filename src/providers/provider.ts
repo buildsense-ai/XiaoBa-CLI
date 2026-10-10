@@ -1,4 +1,4 @@
-import { Message, ChatResponse } from '../types';
+import { Message, ChatResponse, type ProviderApiType, type ProviderId } from '../types';
 import { ToolDefinition } from '../types/tool';
 import type { ProviderRequestPreflightSummary } from './request-preflight';
 
@@ -26,7 +26,7 @@ export interface StreamRetryInfo {
   message?: string;
 }
 
-export type ModelAttemptApiType = 'anthropic-messages' | 'openai-chat-completions' | 'openai-responses';
+export type ModelAttemptApiType = ProviderApiType;
 export type ModelAttemptOutcome = 'started' | 'succeeded' | 'retrying' | 'failed' | 'cancelled';
 export type ModelAttemptStopReason =
   | 'non_retryable'
@@ -67,7 +67,7 @@ export interface ModelAttemptEvent {
   attemptNumber: number;
   timestamp: string;
   outcome: ModelAttemptOutcome;
-  provider: 'openai' | 'anthropic';
+  provider: ProviderId;
   model: string;
   apiType: ModelAttemptApiType;
   stream: boolean;
