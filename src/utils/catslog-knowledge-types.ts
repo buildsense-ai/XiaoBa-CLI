@@ -204,6 +204,11 @@ export interface CatsLogKnowledgeSourceQuery {
   before?: number;
   after?: number;
   max_bytes?: number;
+  /** Opaque server-issued continuation token from a prior page's
+   * before_cursor/after_cursor. Resumes the bounded context walk from that
+   * page's last fully-disclosed boundary; the base `anchor` must be repeated
+   * verbatim because the token is bound to it. Never fabricated client-side. */
+  cursor?: string;
 }
 export type CatsLogKnowledgeSourceStatus = 'read' | 'missing' | 'revoked' | 'stale' | 'unsupported';
 export interface CatsLogKnowledgeSourceContent {
@@ -241,6 +246,13 @@ export interface CatsLogKnowledgeSourcePage {
   before_exhausted: boolean;
   after_exhausted: boolean;
   context_truncated: boolean;
+  /** Server continuation token for the `before` direction, present only when
+   * that direction still has undisclosed context (not exhausted, or a
+   * neighbor body was byte-trimmed). Submit it as `cursor` on a follow-up
+   * read_source with the same `anchor`. */
+  before_cursor?: string;
+  /** Continuation token for the `after` direction; same contract. */
+  after_cursor?: string;
   served_at: string;
 }
 

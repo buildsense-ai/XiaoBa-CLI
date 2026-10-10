@@ -1627,6 +1627,11 @@ export function validateKnowledgeSourceQuery(query: CatsLogKnowledgeSourceQuery)
     if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`CatsLog knowledge source ${name} must be between ${min} and ${max}`);
     body[name] = value;
   }
+  // Continuation: only a server-issued opaque token is accepted; the client
+  // never constructs or mutates one. The server re-binds it to this exact
+  // anchor and re-proves the boundary on every page.
+  const cursor = validateKnowledgeCursor(query.cursor);
+  if (cursor !== undefined) body.cursor = cursor;
   return body;
 }
 

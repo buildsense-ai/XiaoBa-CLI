@@ -96,7 +96,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
         },
         query: { type: 'string', description: 'search 必填。检索词。' },
         limit: { type: 'number', description: '可选。每页条数上限（服务端有默认值与上限）。' },
-        cursor: { type: 'string', description: '可选。上一页响应原样返回的 next_cursor，翻页时必须逐字节一致。' },
+        cursor: { type: 'string', description: '可选。上一页响应原样返回的 next_cursor、before_cursor 或 after_cursor，翻页时必须逐字节一致。' },
         date_from: { type: 'string', description: '可选。YYYY-MM-DD 起始日（含）。' },
         date_to: { type: 'string', description: '可选。YYYY-MM-DD 结束日（含）。' },
         statuses: {
@@ -311,6 +311,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       ...(input.before !== undefined ? { before: input.before as number } : {}),
       ...(input.after !== undefined ? { after: input.after as number } : {}),
       ...(input.max_bytes !== undefined ? { max_bytes: input.max_bytes as number } : {}),
+      ...(input.cursor !== undefined ? { cursor: input.cursor as string } : {}),
     };
     try { validateKnowledgeSourceQuery(query); } catch (error: any) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: false };
