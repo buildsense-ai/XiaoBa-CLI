@@ -127,6 +127,10 @@ export interface RunnerCallbacks {
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   /** 工具执行完成 */
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
+  /** Actual executor result, before transcript projection. */
+  onToolExecutionResult?: (result: ToolResult, precedingMessages: readonly Message[]) => void;
+  /** Exact input submitted to the primary model after trimming/compaction. */
+  onModelInput?: (messages: readonly Message[]) => void;
   /** 需要显示工具输出（如 task_planner） */
   onToolDisplay?: (name: string, content: string) => void;
   /** 重试通知 */
@@ -451,6 +455,7 @@ export class ConversationRunner {
 
       let response: ChatResponse;
       try {
+        this.runObservation(() => callbacks?.onModelInput?.(requestMessages));
         response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
       } catch (error: any) {
         this.runObservation(() => this.promptTraceLogger.recordError(turns, error));
@@ -1941,6 +1946,7 @@ export class ConversationRunner {
     Metrics.recordToolCall(toolName, toolDuration);
     this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
     Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
+    this.runObservation(() => callbacks?.onToolExecutionResult?.(result, messages));
     callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
 
     const deliveredOutbound = (

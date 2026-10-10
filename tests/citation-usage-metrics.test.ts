@@ -58,8 +58,8 @@ describe('collectBranchCitationUsage', () => {
 
     assert.equal(usage?.carryover, false);
     assert.deepEqual(usage?.requestIds, ['br-1']);
-    assert.deepEqual(usage?.injectedByLane, { remote_pool: 1, session: 1, knowledge: 1 });
-    assert.deepEqual(usage?.citedByLane, { remote_pool: 1, session: 1, knowledge: 0 });
+    assert.deepEqual(usage?.injectedByLane, { remote_pool: 1, session: 1, knowledge: 1, source: 0 });
+    assert.deepEqual(usage?.citedByLane, { remote_pool: 1, session: 1, knowledge: 0, source: 0 });
   });
 
   test('knowledge refs match bare KB-ID in tool paths', () => {
@@ -89,13 +89,13 @@ describe('collectBranchCitationUsage', () => {
       }),
       observation({ refs: [POOL_REF], refLanes: 'not-an-array' as any }),
     ], `corpus ${POOL_REF}`);
-    assert.deepEqual(usage?.injectedByLane, { remote_pool: 1, session: 1, knowledge: 1 });
+    assert.deepEqual(usage?.injectedByLane, { remote_pool: 1, session: 1, knowledge: 1, source: 0 });
   });
 
   test('undefined when there are no observations; empty corpus yields zero citations', () => {
     assert.equal(collectBranchCitationUsage([], 'x'), undefined);
     const usage = collectBranchCitationUsage([observation({ refs: [POOL_REF] })], undefined);
-    assert.deepEqual(usage?.citedByLane, { remote_pool: 0, session: 0, knowledge: 0 });
+    assert.deepEqual(usage?.citedByLane, { remote_pool: 0, session: 0, knowledge: 0, source: 0 });
   });
 
   test('invalid request ids are excluded but lane counts still computed', () => {
