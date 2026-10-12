@@ -944,6 +944,9 @@ async function getCatsBotBodyStatus(
       active,
       localBodyId: normalizedLocalBodyId,
       platformBodyId: platformBodyId || undefined,
+      // Platform-managed cloud employees may only run on their official body;
+      // the server refuses any other WebSocket upgrade.
+      cloudDeployed: Boolean(data?.cloud_deployed),
       conflictReason: activeLeaseOwnedByOtherBody ? 'active_lease_owned_by_other_body' : undefined,
       connectedAt: typeof data?.connected_at === 'string' ? data.connected_at : undefined,
       checkedAt: new Date().toISOString(),
@@ -988,6 +991,15 @@ async function transferCatsBotBodyBinding(
         'CatsCompany 服务端暂不支持本机 Bot 的安全迁移，请先升级服务端后再运行这个 Bot。',
         503,
         'BOT_BODY_TRANSFER_UNAVAILABLE',
+      );
+    }
+    // The server refuses to move a managed cloud employee's binding with a
+    // dedicated code; surface that as a clear explanation, not "busy".
+    if (status === 409 && error?.data?.code === 'cloud_worker_managed_binding') {
+      throw codedHttpError(
+        '这个 Bot 是云员工，由云端托管运行，不能在本地接管。请直接在 CatsCo 里与它对话，或新建一个本地 Bot。',
+        409,
+        'BOT_CLOUD_MANAGED',
       );
     }
     if (status === 409) {
@@ -3894,7 +3906,13 @@ export function createApiRouter(
       ? { state: 'device_connector' as const, active: Boolean(runtime.connectorReady), localBodyId, checkedAt: new Date().toISOString() }
       : await getCatsBotBodyStatus(state, state.botUid, localBodyId);
     const bodyStatus = annotateLocalBotLeaseConflict(serviceManager, runtimeMode, rawBodyStatus);
-    const bodyBlocking = !deviceConnectorMode && (bodyStatus.state === 'conflict' || bodyStatus.state === 'auth_error');
+    // Cloud employees run on the platform: a local runtime must never present
+    // them as locally runnable (the server refuses a non-official body anyway).
+    const bodyBlocking = !deviceConnectorMode && (
+      bodyStatus.state === 'conflict'
+      || bodyStatus.state === 'auth_error'
+      || bodyStatus.cloudDeployed === true
+    );
     const chatReady = connected && runtime.bodyConfigured && !bodyBlocking;
     const boundBotId = String(state.botUid || '').trim();
     // 云端模型以 CatsCompany 服务端配置为权威。直接拉取云端当前选择，
@@ -4798,6 +4816,16 @@ export function createApiRouter(
       // safe: CatsCompany will rebind it when this Bot connects.
       const localBodyId = String(localConfig.load().device?.bodyId || '').trim();
       const selectedBodyStatus = await getCatsBotBodyStatus(state, botUid, localBodyId);
+      // A cloud employee runs on its official platform body; starting it
+      // locally would only fight the server-side enforcement. Refuse with a
+      // friendly explanation instead of a confusing conflict/transfer attempt.
+      if (selectedBodyStatus.cloudDeployed === true) {
+        throw codedHttpError(
+          '这个 Bot 是云员工，在云端托管运行，不能在本地启动。请直接在 CatsCo 里与它对话，或新建一个本地 Bot。',
+          409,
+          'BOT_CLOUD_MANAGED',
+        );
+      }
       if (selectedBodyStatus.state === 'conflict') {
         throw codedHttpError(
           '这个本机 Bot 当前仍在另一台设备上运行。请先关闭另一台设备上的 Bot，再重试。',

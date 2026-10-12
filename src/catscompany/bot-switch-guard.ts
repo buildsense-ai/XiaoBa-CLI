@@ -3,7 +3,8 @@ const DEFAULT_TIMEOUT_MS = 2_500;
 
 export type CatsCoBotSwitchGuardCode =
   | 'BOT_BINDING_UNVERIFIED'
-  | 'BOT_BOUND_TO_OTHER_RUNTIME';
+  | 'BOT_BOUND_TO_OTHER_RUNTIME'
+  | 'BOT_CLOUD_MANAGED';
 
 export class CatsCoBotSwitchGuardError extends Error {
   constructor(
@@ -81,6 +82,14 @@ export async function verifyCatsCoBotSwitchBinding(
     || (bound === false && Boolean(platformBodyId))
   ) {
     throw unverified('CatsCo 返回了不完整的运行环境绑定状态，已停止切换。');
+  }
+  // Platform-managed cloud employees may only run on their official body;
+  // refuse before the generic mismatch error so the reason stays accurate.
+  if (payload.cloud_deployed === true) {
+    throw new CatsCoBotSwitchGuardError(
+      'BOT_CLOUD_MANAGED',
+      '目标 Agent 是云员工，由云端托管运行，不能切换到本地。',
+    );
   }
   if (bound && platformBodyId !== localBodyId) {
     throw new CatsCoBotSwitchGuardError(

@@ -718,6 +718,95 @@ describe('dashboard CatsCo account status', () => {
     assert.equal(data.chatReady, false);
   });
 
+  test('GET /cats/status treats a cloud employee as not locally runnable', async () => {
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'webuser', display_name: 'Web User' });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({ body_id: 'cloud-official-body', active: false, cloud_deployed: true });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+    saveConfirmedLocalBinding('body-local');
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/status`);
+    const data = await response.json() as any;
+
+    assert.equal(response.status, 200);
+    assert.equal(data.bodyStatus.cloudDeployed, true);
+    assert.equal(data.chatReady, false);
+  });
+
+  test('POST /cats/runtime-mode refuses to start a cloud employee locally', async () => {
+    if (dashboardServer) {
+      await close(dashboardServer);
+      dashboardServer = undefined;
+    }
+
+    const service = {
+      name: 'catscompany',
+      label: 'CatsCo agent',
+      command: process.execPath,
+      args: [],
+      status: 'stopped',
+    };
+    let transferCalls = 0;
+    let startCalls = 0;
+    const dashboardApp = express();
+    dashboardApp.use(express.json());
+    dashboardApp.use('/api', createApiRouter({
+      getAll: () => [service],
+      getService: (name: string) => name === 'catscompany' ? service : undefined,
+      start: (name: string) => {
+        assert.equal(name, 'catscompany');
+        startCalls += 1;
+        service.status = 'running';
+        return service;
+      },
+    } as any));
+    dashboardServer = await listen(dashboardApp);
+    dashboardBaseUrl = serverBaseUrl(dashboardServer);
+
+    await startCatsServer((req, res) => {
+      if (req.path === '/api/me') {
+        return res.json({ uid: 42, username: 'owner', display_name: 'Owner' });
+      }
+      if (req.path === '/api/bots' && req.method === 'GET') {
+        return res.json({ bots: [{ uid: 199, username: 'cloud-agent', display_name: 'Cloud Agent', api_key: 'cloud-agent-key', owner_id: 42 }] });
+      }
+      if (req.path === '/api/bots/body-status') {
+        return res.json({ bot_uid: Number(req.query.uid), active: false, body_id: 'cloud-official-body', cloud_deployed: true });
+      }
+      if (req.path === '/api/bots/body-transfer' && req.method === 'POST') {
+        transferCalls += 1;
+        return res.json({ ok: true, bot_uid: 199, body_id: 'body-local' });
+      }
+      return res.status(404).json({ error: 'not found' });
+    });
+
+    createCatsCoLocalConfigService({ runtimeRoot: testRoot }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: catsBaseUrl, serverUrl: 'wss://app.catsco.cc/v0/channels' },
+      account: { token: 'user-token', uid: '42', username: 'owner', displayName: 'Owner' },
+      currentBot: { uid: '188', name: 'Old Agent', apiKey: 'old-agent-key' },
+      device: { deviceId: 'device-local', bodyId: 'body-local', installationId: 'install-local' },
+    });
+
+    const response = await fetch(`${dashboardBaseUrl}/api/cats/runtime-mode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runtimeMode: 'local_bot', botUid: '199' }),
+    });
+    const text = await response.text();
+    const data = JSON.parse(text) as any;
+
+    assert.equal(response.status, 409, text);
+    assert.equal(data.code, 'BOT_CLOUD_MANAGED');
+    assert.equal(transferCalls, 0);
+    assert.equal(startCalls, 0);
+  });
+
   test('POST /cats/runtime-mode transfers an inactive historical Bot body before starting it', async () => {
     if (dashboardServer) {
       await close(dashboardServer);
