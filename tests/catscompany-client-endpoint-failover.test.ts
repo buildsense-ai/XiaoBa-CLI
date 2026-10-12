@@ -105,6 +105,59 @@ describe('CatsCompany client endpoint failover', () => {
     return (server.address() as AddressInfo).port;
   }
 
+  async function startUpgradeRejectionServer(status: number): Promise<{ url: string; attempts: () => number }> {
+    let attempts = 0;
+    const server = createHttpServer((_req, res) => {
+      res.statusCode = status;
+      res.end('rejected');
+    });
+    server.on('upgrade', (_req, socket) => {
+      attempts += 1;
+      socket.write(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\n\r\n`);
+      socket.destroy();
+    });
+    httpServers.push(server);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as AddressInfo;
+    return { url: `ws://127.0.0.1:${address.port}/v0/channels`, attempts: () => attempts };
+  }
+
+  async function startFlakyHandshakeServer(failures: number): Promise<{ url: string; attempts: () => number }> {
+    const server = new WebSocketServer({ noServer: true });
+    servers.push(server);
+    server.on('connection', socket => {
+      sockets.push(socket);
+      socket.on('message', (data: Buffer) => {
+        let message: any;
+        try {
+          message = JSON.parse(data.toString());
+        } catch {
+          return;
+        }
+        if (message?.hi && socket.readyState === socket.OPEN) {
+          socket.send(JSON.stringify({
+            ctrl: { code: 200, id: '1', params: { build: 'catscompany', uid: '7002', name: 'recover-bot' } },
+          }));
+        }
+      });
+    });
+    let attempts = 0;
+    const httpServer = createHttpServer();
+    httpServer.on('upgrade', (req, socket, head) => {
+      attempts += 1;
+      if (attempts <= failures) {
+        socket.write('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      server.handleUpgrade(req, socket, head, ws => server.emit('connection', ws, req));
+    });
+    httpServers.push(httpServer);
+    await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
+    const address = httpServer.address() as AddressInfo;
+    return { url: `ws://127.0.0.1:${address.port}/v0/channels`, attempts: () => attempts };
+  }
+
   test('switches to the sibling endpoint after the configured endpoint fails to connect', async () => {
     const live = await startHandshakeServer();
     const deadPort = await reserveDeadPort();
@@ -195,6 +248,85 @@ describe('CatsCompany client endpoint failover', () => {
 
     assert.equal(live.connectionCount(), 0);
     assert.equal(client.getActiveServerUrl(), null);
+  });
+
+  test('does not rotate endpoints when the server rejects the upgrade with 409 body-binding conflict', async () => {
+    const live = await startHandshakeServer();
+    const conflict = await startUpgradeRejectionServer(409);
+    const client = trackClient(new CatsClient({
+      serverUrl: conflict.url,
+      endpointCandidates: [conflict.url, live.url],
+      apiKey: 'cc-test-key',
+      bodyId: 'body-conflict',
+      reconnectBaseDelayMs: 30,
+      reconnectMaxDelayMs: 60,
+    }));
+    client.on('error', () => undefined);
+    client.connect();
+    await new Promise<void>(resolve => setTimeout(resolve, 400));
+    client.disconnect();
+
+    assert.equal(live.connectionCount(), 0);
+    assert.equal(client.getActiveServerUrl(), null);
+    assert.ok(
+      conflict.attempts() >= 2,
+      `expected repeated retries on the conflicted endpoint, got ${conflict.attempts()}`,
+    );
+  });
+
+  test('recovers on the same endpoint after a transient 409 rejection clears', async () => {
+    const sibling = await startHandshakeServer();
+    const flaky = await startFlakyHandshakeServer(2);
+    const client = trackClient(new CatsClient({
+      serverUrl: flaky.url,
+      endpointCandidates: [flaky.url, sibling.url],
+      apiKey: 'cc-test-key',
+      bodyId: 'body-recover',
+      reconnectBaseDelayMs: 30,
+      reconnectMaxDelayMs: 60,
+    }));
+    client.on('error', () => undefined);
+    client.connect();
+    await withTimeout(new Promise<void>(resolve => client.once('ready', () => resolve())));
+    client.disconnect();
+
+    assert.equal(client.getActiveServerUrl(), flaky.url);
+    assert.equal(sibling.connectionCount(), 0);
+    assert.ok(
+      flaky.attempts() >= 3,
+      `expected rejection then recovery on the same endpoint, got ${flaky.attempts()}`,
+    );
+  });
+
+  test('throttles repeated business-rejection reconnect logs', async () => {
+    const conflict = await startUpgradeRejectionServer(409);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown) => {
+      warnings.push(String(message));
+    };
+    try {
+      const client = trackClient(new CatsClient({
+        serverUrl: conflict.url,
+        apiKey: 'cc-test-key',
+        bodyId: 'body-throttle',
+        reconnectBaseDelayMs: 30,
+        reconnectMaxDelayMs: 60,
+      }));
+      client.on('error', () => undefined);
+      client.connect();
+      await new Promise<void>(resolve => setTimeout(resolve, 500));
+      client.disconnect();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const conflictLines = warnings.filter(line => line.includes('cause=upgrade_http_409'));
+    assert.ok(conflictLines.length >= 1, 'expected the first conflict log to be emitted');
+    assert.ok(
+      conflictLines.length <= 3,
+      `expected throttled conflict logs, got ${conflictLines.length}`,
+    );
   });
 
   test('friend-request accept follows the client HTTP base instead of a hardcoded default', async () => {

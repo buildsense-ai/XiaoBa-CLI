@@ -584,6 +584,10 @@ export class CatsCompanyBot {
   private botUid: string | null = null;
   private connectorReady = false;
   private shuttingDown = false;
+  // 同类连接错误的连续计数：业务层拒绝（如 409 Body 绑定冲突）会以固定节奏
+  // 长期重试，只保留首条与每 30 条抽样，避免云 worker 日志刷屏。
+  private repeatedConnectorError = '';
+  private repeatedConnectorErrorCount = 0;
   private runtime: AdapterRuntimeBundle;
   private runtimeProfile: AdapterRuntimeBundle['profile'];
   private localDeviceGrant?: ScopedLocalDeviceGrant;
@@ -742,6 +746,8 @@ export class CatsCompanyBot {
     // 注册事件
     this.bot.on('ready', (info: { uid: string; name: string }) => {
       this.connectorReady = true;
+      this.repeatedConnectorError = '';
+      this.repeatedConnectorErrorCount = 0;
       this.botUid = String(info.uid || '').trim() || this.botUid;
       const botName = info.name.trim() || '(未设置)';
       this.runtimeProfile.displayName = botName;
@@ -796,7 +802,16 @@ export class CatsCompanyBot {
     });
 
     this.bot.on('error', (err: Error) => {
-      Logger.error(`CatsCo 连接错误: ${err.message}`);
+      const message = String(err?.message || '');
+      if (message && message === this.repeatedConnectorError) {
+        this.repeatedConnectorErrorCount += 1;
+        if (this.repeatedConnectorErrorCount % 30 !== 0) return;
+        Logger.error(`CatsCo 连接错误: ${message}（同类错误已连续 ${this.repeatedConnectorErrorCount} 次，日志已降频）`);
+        return;
+      }
+      this.repeatedConnectorError = message;
+      this.repeatedConnectorErrorCount = 1;
+      Logger.error(`CatsCo 连接错误: ${message}`);
     });
 
     this.bot.connect();
