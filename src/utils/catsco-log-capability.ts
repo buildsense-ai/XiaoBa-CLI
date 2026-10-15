@@ -24,6 +24,7 @@ export function cleanCapabilityText(value: unknown): string | undefined {
 export function responseHasReadCapabilityFields(response: Record<string, unknown>): boolean {
   return [
     'skill_token_id', 'skill_token', 'skill_token_expires_at', 'skills_url',
+    'knowledge_search_url', 'knowledge_read_url', 'knowledge_expand_url', 'knowledge_source_read_url',
     'skill_graph_url', 'sessions_url', 'memory_url', 'memory_recall_url',
   ].some(key => response[key] !== undefined);
 }

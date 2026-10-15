@@ -1,5 +1,35 @@
+import type { NativeRecallFeedbackEvent } from '../core/native-recall-feedback-outbox';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  CATSLOG_KNOWLEDGE_ANCHOR_KINDS,
+  CATSLOG_KNOWLEDGE_ENTRY_STATUSES,
+  CATSLOG_KNOWLEDGE_LINK_KINDS,
+  DEFAULT_KNOWLEDGE_EXPAND_URL,
+  DEFAULT_KNOWLEDGE_READ_URL,
+  DEFAULT_KNOWLEDGE_SOURCE_READ_URL,
+  DEFAULT_KNOWLEDGE_SEARCH_URL,
+  KNOWLEDGE_MAX_ANCHOR_ID_BYTES,
+  KNOWLEDGE_MAX_CURSOR_BYTES,
+  KNOWLEDGE_MAX_DOCUMENT_ID_BYTES,
+  KNOWLEDGE_MAX_EXPAND_LIMIT,
+  KNOWLEDGE_MAX_OPAQUE_ID_BYTES,
+  KNOWLEDGE_MAX_READ_LIMIT,
+  KNOWLEDGE_MAX_REVISION_BYTES,
+  KNOWLEDGE_MAX_SEARCH_LIMIT,
+  KNOWLEDGE_MAX_SEARCH_QUERY_BYTES,
+  type CatsLogKnowledgeExpandQuery,
+  type CatsLogKnowledgeLinkDirection,
+  type CatsLogKnowledgeLinkKind,
+  type CatsLogKnowledgeLinkPage,
+  type CatsLogKnowledgeReadPage,
+  type CatsLogKnowledgeReadQuery,
+  type CatsLogKnowledgeReadResult,
+  type CatsLogKnowledgeSearchPage,
+  type CatsLogKnowledgeSourceQuery,
+  type CatsLogKnowledgeSourcePage,
+  type CatsLogKnowledgeSearchQuery,
+} from './catslog-knowledge-types';
 
 export interface CatscoBootstrapInput {
   deviceId: string;
@@ -29,6 +59,11 @@ export interface CatscoBootstrapResponse {
   /** Agent-facing branch retrieval endpoint (ADR 0019), same device-bound token. */
   branch_url?: string;
   memory_notes_url?: string;
+  /** Per-Agent per-day knowledge corpus read routes (capability-relative, safe paths only). */
+  knowledge_search_url?: string;
+  knowledge_read_url?: string;
+  knowledge_source_read_url?: string;
+  knowledge_expand_url?: string;
   memory_write_token_id?: string;
   memory_write_token?: string;
   memory_write_token_expires_at?: string;
@@ -769,6 +804,142 @@ export class CatscoLogAgentClient {
     );
   }
 
+  async reportKnowledgeSourceFeedback(input: {
+    token: string; events: NativeRecallFeedbackEvent[]; signal?: AbortSignal;
+  }): Promise<{ schema_version: 1; claim_semantics: 'client_claim_not_server_attestation'; outcomes: { event_id: string; applied: boolean }[] }> {
+    const token = requireCapabilityToken(input.token);
+    if (!input.events.length || input.events.length > 64) throw new Error('CatsLog feedback batch is invalid');
+    const data = await this.postCapabilityJSON<any>('/catsco/agent/knowledge/source/feedback', token,
+      { schema_version: 1, events: input.events }, 'CatsLog source feedback failed', input.signal);
+    const ids = new Set(input.events.map(ev => ev.event_id));
+    if (data.schema_version !== 1 || data.claim_semantics !== 'client_claim_not_server_attestation'
+      || !Array.isArray(data.outcomes) || data.outcomes.length !== ids.size
+      || new Set(data.outcomes.map((item: any) => item?.event_id)).size !== ids.size
+      || data.outcomes.some((item: any) => !ids.has(item?.event_id) || typeof item?.applied !== 'boolean')) {
+      throw new Error('CatsLog feedback acknowledgement is invalid');
+    }
+    return data;
+  }
+
+  /**
+   * Search the caller's Agent-private daily knowledge corpus (knowledge/1).
+   * Same device-bound read token as memory/recall; the server derives the
+   * scope triple from the token, so no scope selectors exist on the wire.
+   * Cursors are opaque and query-bound: the caller must replay them
+   * unmodified. Results are typed; an unavailable corpus is an error, never
+   * a fake-empty page.
+   */
+  async searchKnowledge(input: CatsLogKnowledgeSearchQuery & {
+    token?: string;
+    skillToken?: string;
+    knowledgeSearchUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatsLogKnowledgeSearchPage> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const body = validateKnowledgeSearchQuery(input);
+    return this.postCapabilityJSON<CatsLogKnowledgeSearchPage>(
+      input.knowledgeSearchUrl || DEFAULT_KNOWLEDGE_SEARCH_URL,
+      token,
+      body,
+      'CatsLog knowledge search failed',
+      input.signal,
+    );
+  }
+
+  /**
+   * Read one daily knowledge document (optionally a revision and/or single
+   * entry). `format: "json"` pages entries; `format: "okf"` returns the raw
+   * deterministic Open Knowledge Format markdown body (text/markdown) — the
+   * client passes it through verbatim and never clips it.
+   */
+  async readKnowledge(input: CatsLogKnowledgeReadQuery & {
+    token?: string;
+    skillToken?: string;
+    knowledgeReadUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatsLogKnowledgeReadResult> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const body = validateKnowledgeReadQuery(input);
+    const format = input.format === 'okf' ? 'okf' : 'json';
+    if (format === 'okf') {
+      const response = await fetch(this.buildUrl(input.knowledgeReadUrl || DEFAULT_KNOWLEDGE_READ_URL), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        signal: input.signal,
+        body: JSON.stringify(body),
+      });
+      await this.ensureOk(response, 'CatsLog knowledge read failed');
+      const contentType = String(response.headers.get('content-type') || '');
+      const bodyText = await response.text();
+      if (!bodyText) throw new Error('CatsLog knowledge read failed: empty OKF body');
+      if (contentType && !/text\/markdown|text\/plain|application\/octet-stream/i.test(contentType)) {
+        throw new Error(`CatsLog knowledge read failed: unexpected OKF content type ${contentType}`);
+      }
+      return { format: 'okf', body: bodyText };
+    }
+    const page = await this.postCapabilityJSON<CatsLogKnowledgeReadPage>(
+      input.knowledgeReadUrl || DEFAULT_KNOWLEDGE_READ_URL,
+      token,
+      body,
+      'CatsLog knowledge read failed',
+      input.signal,
+    );
+    return { format: 'json', page };
+  }
+
+  /**
+   * Expand links around one typed anchor endpoint (in/out/both views of the
+   * single stored directed edge). Remote endpoint states are explicit
+   * statuses (resolved / target_missing / source_revoked), never fake-empty.
+   */
+  async expandKnowledge(input: CatsLogKnowledgeExpandQuery & {
+    token?: string;
+    skillToken?: string;
+    knowledgeExpandUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatsLogKnowledgeLinkPage> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const body = validateKnowledgeExpandQuery(input);
+    return this.postCapabilityJSON<CatsLogKnowledgeLinkPage>(
+      input.knowledgeExpandUrl || DEFAULT_KNOWLEDGE_EXPAND_URL,
+      token,
+      body,
+      'CatsLog knowledge expand failed',
+      input.signal,
+    );
+  }
+
+  /** Exact source/context read. Raw text is a stored projection, not log bytes. */
+  async readKnowledgeSource(input: CatsLogKnowledgeSourceQuery & {
+    token?: string;
+    skillToken?: string;
+    knowledgeSourceReadUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatsLogKnowledgeSourcePage> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const body = validateKnowledgeSourceQuery(input);
+    return this.postCapabilityJSON<CatsLogKnowledgeSourcePage>(
+      input.knowledgeSourceReadUrl || DEFAULT_KNOWLEDGE_SOURCE_READ_URL,
+      token, body, 'CatsLog knowledge source read failed', input.signal,
+    );
+  }
+
+  private async ensureOk(response: Response, fallbackMessage: string): Promise<void> {
+    if (response.ok) return;
+    let detail = '';
+    try {
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : null;
+      detail = String(data?.error || data?.detail || data?.message || '');
+    } catch { /* non-JSON error body */ }
+    const error = new Error(detail ? `${fallbackMessage}: ${detail}` : `${fallbackMessage}: HTTP ${response.status}`);
+    (error as any).status = response.status;
+    throw error;
+  }
+
   /** Retrieve redacted session evidence and optional Agent Memory notes. */
   async recallMemory(input: CatscoMemoryRecallQuery & {
     token?: string;
@@ -1228,4 +1399,260 @@ function validateNoteTime(value: string, name: string): void {
 
 function hasDisallowedControl(value: string): boolean {
   return /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
+}
+
+/**
+ * Knowledge-corpus opaque IDs use the shared package's restricted charset
+ * (`[A-Za-z0-9_-]`), which mechanically rejects branch conversation refs and
+ * `stream#line` strings: anchor identity domains never interchange.
+ */
+export function isSafeKnowledgeOpaqueId(value: unknown, maxBytes = KNOWLEDGE_MAX_OPAQUE_ID_BYTES): value is string {
+  const id = typeof value === 'string' ? value : '';
+  if (!id || Buffer.byteLength(id, 'utf8') > maxBytes) return false;
+  return /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+function knowledgeOptionalId(value: unknown, name: string, maxBytes = KNOWLEDGE_MAX_OPAQUE_ID_BYTES): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isSafeKnowledgeOpaqueId(value, maxBytes)) throw new Error(`CatsLog knowledge ${name} is invalid`);
+  return value as string;
+}
+
+function knowledgeOptionalInteger(value: unknown, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`CatsLog knowledge ${name} is invalid`);
+  }
+  return value as number;
+}
+
+function validateKnowledgeAnchorForRequest(anchor: unknown, name = 'anchor'): Record<string, unknown> {
+  if (!anchor || typeof anchor !== 'object' || Array.isArray(anchor)) {
+    throw new Error(`CatsLog knowledge ${name} is invalid`);
+  }
+  const raw = anchor as Record<string, unknown>;
+  const kind = raw.kind;
+  if (typeof kind !== 'string' || !CATSLOG_KNOWLEDGE_ANCHOR_KINDS.includes(kind as never)) {
+    throw new Error(`CatsLog knowledge ${name}.kind is invalid`);
+  }
+  const id = raw.id;
+  if (!isSafeKnowledgeOpaqueId(id, KNOWLEDGE_MAX_ANCHOR_ID_BYTES)) {
+    throw new Error(`CatsLog knowledge ${name}.id is invalid`);
+  }
+  const body: Record<string, unknown> = { kind, id };
+  // knowledge_entry requires document_id; every other kind forbids it (the
+  // identity domains are disjoint and never interchangeable).
+  const documentId = knowledgeOptionalId(raw.document_id, `${name}.document_id`, KNOWLEDGE_MAX_DOCUMENT_ID_BYTES);
+  if (kind === 'knowledge_entry') {
+    if (!documentId) throw new Error(`CatsLog knowledge ${name}.document_id is required for knowledge_entry anchors`);
+    body.document_id = documentId;
+  } else if (documentId !== undefined) {
+    throw new Error(`CatsLog knowledge ${name}.document_id is only valid on knowledge_entry anchors`);
+  }
+  const revision = knowledgeOptionalId(raw.revision, `${name}.revision`, KNOWLEDGE_MAX_REVISION_BYTES);
+  if (revision !== undefined) body.revision = revision;
+  const sessionId = knowledgeOptionalId(raw.session_id, `${name}.session_id`);
+  if (sessionId !== undefined) body.session_id = sessionId;
+  const sessionType = knowledgeOptionalId(raw.session_type, `${name}.session_type`, 64);
+  if (sessionType !== undefined) body.session_type = sessionType;
+  const streamId = knowledgeOptionalId(raw.stream_id, `${name}.stream_id`);
+  if (streamId !== undefined) body.stream_id = streamId;
+  const byteOffset = knowledgeOptionalInteger(raw.byte_offset, `${name}.byte_offset`);
+  if (byteOffset !== undefined) body.byte_offset = byteOffset;
+  const byteLength = knowledgeOptionalInteger(raw.byte_length, `${name}.byte_length`);
+  if (byteLength !== undefined) {
+    if (byteLength === 0) throw new Error(`CatsLog knowledge ${name}.byte_length must be positive when present`);
+    body.byte_length = byteLength;
+  }
+  // Stream coordinates exist only on the two session domains; graph/learning
+  // /knowledge anchors must not carry them (server-side ValidateAnchor agrees).
+  const streamBound = kind === 'session_query' || kind === 'session_result';
+  if (!streamBound && (streamId !== undefined || byteOffset !== undefined || byteLength !== undefined)) {
+    throw new Error(`CatsLog knowledge ${name} carries stream coordinates on a non-session anchor kind`);
+  }
+  const skillVersionId = knowledgeOptionalId(raw.skill_version_id, `${name}.skill_version_id`);
+  const skillKind = kind === 'skill_program' || kind === 'skill_node';
+  if (!skillKind && skillVersionId !== undefined) {
+    throw new Error(`CatsLog knowledge ${name}.skill_version_id is only valid on skill anchors`);
+  }
+  if (skillKind) {
+    if (!skillVersionId) throw new Error(`CatsLog knowledge ${name}.skill_version_id is required`);
+    if (sessionId !== undefined || sessionType !== undefined) {
+      throw new Error(`CatsLog knowledge ${name} carries session coordinates on a skill anchor`);
+    }
+    if (kind === 'skill_program' && id !== skillVersionId) {
+      throw new Error(`CatsLog knowledge ${name}.id must equal skill_version_id for skill_program`);
+    }
+    body.skill_version_id = skillVersionId;
+  }
+  return body;
+}
+
+function validateKnowledgeCursor(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const cursor = typeof value === 'string' ? value : '';
+  if (!cursor) return undefined;
+  if (Buffer.byteLength(cursor, 'utf8') > KNOWLEDGE_MAX_CURSOR_BYTES || hasDisallowedControl(cursor)) {
+    throw new Error('CatsLog knowledge cursor is invalid');
+  }
+  return cursor;
+}
+
+function validateKnowledgeLimit(value: unknown, max: number): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > max) {
+    throw new Error(`CatsLog knowledge limit must be an integer between 1 and ${max}`);
+  }
+  return value as number;
+}
+
+function validateKnowledgeDay(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  const day = typeof value === 'string' ? value : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(Date.parse(`${day}T00:00:00Z`))) {
+    throw new Error(`CatsLog knowledge ${name} must be YYYY-MM-DD`);
+  }
+  return day;
+}
+
+/** Wire-shaped body for POST /catsco/agent/knowledge/search. */
+export function validateKnowledgeSearchQuery(query: CatsLogKnowledgeSearchQuery): Record<string, unknown> {
+  const text = typeof query.query === 'string' ? query.query : '';
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error('CatsLog knowledge search query is required');
+  if (Buffer.byteLength(trimmed, 'utf8') > KNOWLEDGE_MAX_SEARCH_QUERY_BYTES) {
+    throw new Error(`CatsLog knowledge search query must be at most ${KNOWLEDGE_MAX_SEARCH_QUERY_BYTES} bytes`);
+  }
+  const body: Record<string, unknown> = { query: trimmed };
+  const limit = validateKnowledgeLimit(query.limit, KNOWLEDGE_MAX_SEARCH_LIMIT);
+  if (limit !== undefined) body.limit = limit;
+  const cursor = validateKnowledgeCursor(query.cursor);
+  if (cursor !== undefined) body.cursor = cursor;
+  const dateFrom = validateKnowledgeDay(query.date_from, 'date_from');
+  if (dateFrom !== undefined) body.date_from = dateFrom;
+  const dateTo = validateKnowledgeDay(query.date_to, 'date_to');
+  if (dateTo !== undefined) body.date_to = dateTo;
+  if (query.statuses !== undefined) {
+    if (!Array.isArray(query.statuses) || query.statuses.some(status => !CATSLOG_KNOWLEDGE_ENTRY_STATUSES.includes(status))) {
+      throw new Error('CatsLog knowledge search statuses are invalid');
+    }
+    if (query.statuses.length > 0) body.statuses = [...new Set(query.statuses)];
+  }
+  // Daily-corpus default: INCLUDE draft entries unless the caller explicitly
+  // opts out. The store's Search default excludes drafts when no statuses are
+  // given and include_draft is false — freshly generated daily knowledge is
+  // EntryStatusDraft, so a client-side wire default of true is required or
+  // new knowledge is invisible to search. Status stays visible on every hit,
+  // and draft is UNTRUSTED/unreviewed, never verified.
+  body.include_draft = query.include_draft !== false;
+  return body;
+}
+
+/** Wire-shaped body for POST /catsco/agent/knowledge/read. */
+export function validateKnowledgeReadQuery(query: CatsLogKnowledgeReadQuery): Record<string, unknown> {
+  const documentId = typeof query.document_id === 'string' ? query.document_id.trim() : '';
+  if (!isSafeKnowledgeOpaqueId(documentId, KNOWLEDGE_MAX_DOCUMENT_ID_BYTES)) {
+    throw new Error('CatsLog knowledge read document_id is invalid');
+  }
+  const body: Record<string, unknown> = { document_id: documentId };
+  const revision = knowledgeOptionalId(query.revision, 'read revision', KNOWLEDGE_MAX_REVISION_BYTES);
+  if (revision !== undefined) body.revision = revision;
+  const entryId = knowledgeOptionalId(query.entry_id, 'read entry_id');
+  if (entryId !== undefined) body.entry_id = entryId;
+  if (query.format !== undefined) {
+    if (query.format !== 'json' && query.format !== 'okf') {
+      throw new Error('CatsLog knowledge read format must be json or okf');
+    }
+    body.format = query.format;
+  }
+  const limit = validateKnowledgeLimit(query.limit, KNOWLEDGE_MAX_READ_LIMIT);
+  if (limit !== undefined) body.limit = limit;
+  const cursor = validateKnowledgeCursor(query.cursor);
+  if (cursor !== undefined) body.cursor = cursor;
+  return body;
+}
+
+/** Source v1 accepts full projection SHA pins (with optional sha256 prefix),
+ * while knowledge_entry pins remain akr revisions. Never reuse session lines.
+ */
+export function validateKnowledgeSourceQuery(query: CatsLogKnowledgeSourceQuery): Record<string, unknown> {
+  if (!query || !query.anchor || typeof query.anchor !== 'object' || Array.isArray(query.anchor)) {
+    throw new Error('CatsLog knowledge source anchor is required');
+  }
+  const raw = query.anchor;
+  const fields = new Set(['kind', 'id', 'document_id', 'revision', 'session_id', 'session_type', 'stream_id', 'byte_offset', 'byte_length', 'skill_version_id']);
+  if (Object.keys(raw).some(key => !fields.has(key))) throw new Error('CatsLog knowledge source anchor has unknown fields');
+  const { revision, byte_length, ...withoutPin } = raw;
+  // The generic anchor validator forbids zero byte_length and SHA prefixes;
+  // source v1 allows explicit zero for turn anchors and a prefixed SHA pin.
+  const anchor = validateKnowledgeAnchorForRequest({ ...withoutPin,
+    ...(byte_length !== undefined && byte_length !== 0 ? { byte_length } : {}),
+  });
+  if (revision !== undefined) {
+    if (typeof revision !== 'string' || (raw.kind === 'knowledge_entry'
+      ? !/^akr-[a-f0-9]{64}$/.test(revision)
+      : !/^(?:sha256:)?[a-f0-9]{64}$/.test(revision))) {
+      throw new Error('CatsLog knowledge source revision is invalid');
+    }
+    anchor.revision = revision;
+  }
+  if (raw.kind === 'knowledge_entry') {
+    if (!revision) throw new Error('CatsLog knowledge source knowledge_entry requires a revision pin');
+    if (!/^ake-[a-f0-9]{24}$/.test(raw.id) || !/^akd-[a-f0-9]{24}$/.test(raw.document_id || '')) {
+      throw new Error('CatsLog knowledge source knowledge_entry identity is invalid');
+    }
+    if (raw.session_id !== undefined || raw.session_type !== undefined) throw new Error('CatsLog knowledge source knowledge_entry carries session coordinates');
+  } else if (raw.kind === 'skill_program' || raw.kind === 'skill_node') {
+    // Skill anchors self-locate through skill_version_id; session coordinates
+    // belong to stream/graph/learning domains only (server agrees).
+    if (raw.session_id !== undefined || raw.session_type !== undefined) {
+      throw new Error('CatsLog knowledge source skill anchor carries session coordinates');
+    }
+    if (!revision) throw new Error('CatsLog knowledge source skill anchor requires a revision pin');
+  } else if (!raw.session_id) {
+    throw new Error('CatsLog knowledge source anchor.session_id is required');
+  }
+  if (raw.kind === 'session_query' || raw.kind === 'session_result') {
+    if (!raw.stream_id) throw new Error('CatsLog knowledge source anchor.stream_id is required');
+    if (raw.kind === 'session_query' && byte_length !== undefined && byte_length !== 0) throw new Error('CatsLog knowledge source query is not a result byte range');
+    if (raw.kind === 'session_result' && !(typeof byte_length === 'number' && byte_length > 0)) throw new Error('CatsLog knowledge source result requires byte_length');
+  }
+  if (byte_length === 0 && (raw.kind === 'session_query' || raw.kind === 'session_result')) anchor.byte_length = 0;
+  const body: Record<string, unknown> = { anchor };
+  for (const name of ['before', 'after', 'max_bytes'] as const) {
+    const value = query[name];
+    if (value === undefined) continue;
+    const min = name === 'max_bytes' ? 256 : 0;
+    const max = name === 'max_bytes' ? 65536 : 4;
+    if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`CatsLog knowledge source ${name} must be between ${min} and ${max}`);
+    body[name] = value;
+  }
+  // Continuation: only a server-issued opaque token is accepted; the client
+  // never constructs or mutates one. The server re-binds it to this exact
+  // anchor and re-proves the boundary on every page.
+  const cursor = validateKnowledgeCursor(query.cursor);
+  if (cursor !== undefined) body.cursor = cursor;
+  return body;
+}
+
+/** Wire-shaped body for POST /catsco/agent/knowledge/expand. */
+export function validateKnowledgeExpandQuery(query: CatsLogKnowledgeExpandQuery): Record<string, unknown> {
+  const body: Record<string, unknown> = { anchor: validateKnowledgeAnchorForRequest(query.anchor) };
+  if (query.direction !== undefined) {
+    if (!['out', 'in', 'both'].includes(query.direction)) {
+      throw new Error('CatsLog knowledge expand direction is invalid');
+    }
+    body.direction = query.direction;
+  }
+  if (query.kinds !== undefined) {
+    if (!Array.isArray(query.kinds) || query.kinds.some(kind => !CATSLOG_KNOWLEDGE_LINK_KINDS.includes(kind))) {
+      throw new Error('CatsLog knowledge expand kinds are invalid');
+    }
+    if (query.kinds.length > 0) body.kinds = [...new Set(query.kinds)];
+  }
+  const limit = validateKnowledgeLimit(query.limit, KNOWLEDGE_MAX_EXPAND_LIMIT);
+  if (limit !== undefined) body.limit = limit;
+  const cursor = validateKnowledgeCursor(query.cursor);
+  if (cursor !== undefined) body.cursor = cursor;
+  return body;
 }
