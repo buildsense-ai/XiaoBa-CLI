@@ -6,6 +6,10 @@
 
 目标：继续使用 `yii/artifact-publish`，修复正常对话中的新应用发布，不换成 David_owner 版，不依赖用户每次追加特殊提示词。
 
+运行时修复与补丁 PR：[XiaoBa-CLI #536](https://github.com/buildsense-ai/XiaoBa-CLI/pull/536)（交付时待审阅合并）。
+
+在线补丁：[artifact-publish-yii-followup.patch](https://github.com/buildsense-ai/XiaoBa-CLI/blob/codex/artifact-publish-command-plan/docs/artifact-publish-yii-followup.patch)。
+
 ## 1. 当前结论与交付边界
 
 这次是三个问题先后暴露，不是一个报错反复出现：

@@ -67,7 +67,7 @@ test('parses quoting, continuations, CRLF and conditional versus unconditional s
     { argv: ['node', 'y'], after: 'success' }, { argv: ['node', 'z'], after: 'always' },
   ]);
   assert.deepEqual(parseArtifactCommandPlan('node x \\\n "title"'), [{ argv: ['node', 'x', 'title'], after: 'always' }]);
-  for (const value of ['node x &&', 'node x && ; node y', 'node x | node y', 'node x > out', 'node x &', 'node x $(id)', 'node x `id`', 'node x "unterminated']) {
+  for (const value of ['node x &&', 'node x && ; node y', 'node x | node y', 'node x > out', 'node x &', 'node x $(id)', 'node x `id`', 'node x "unterminated', 'node x "nul\0argument"', Array(18).fill('node x').join(' && ')]) {
     assert.equal(parseArtifactCommandPlan(value), undefined, value);
   }
 });
