@@ -35,6 +35,8 @@ const skillHubPhase1Tests = [
   'tests/bot-skills-security.test.ts',
   'tests/execution-router-clean.test.ts',
   'tests/trusted-bot-skill-script-execution.test.ts',
+  'tests/artifact-command-plan.test.ts',
+  'tests/artifact-publish-yii-patch.test.ts',
   'tests/tool-result-read-file-local-grants.test.ts',
   'tests/tool-result-read-tool.test.ts',
   'tests/tool-result-send-file-tool.test.ts',
