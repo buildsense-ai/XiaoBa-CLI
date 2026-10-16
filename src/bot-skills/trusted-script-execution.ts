@@ -12,6 +12,14 @@ import {
   readBotSkillLocalMarker,
 } from './local-manifest';
 import { Logger } from '../utils/logger';
+import { parseArtifactCommandPlan } from './artifact-command-plan';
+
+export interface TrustedArtifactCommandStep {
+  args: string[];
+  scriptPath?: string;
+  workingDirectory: string;
+  after: 'always' | 'success';
+}
 
 export interface TrustedBotSkillScriptInvocation {
   scriptPath: string;
@@ -21,6 +29,8 @@ export interface TrustedBotSkillScriptInvocation {
   version: string;
   /** The requested working directory for compound Skill commands (if any). */
   workingDirectory?: string;
+  /** Fully validated Artifact-only commands; never evaluated by a shell. */
+  steps?: TrustedArtifactCommandStep[];
 }
 
 export type TrustedBotSkillScriptDecision =
@@ -143,6 +153,7 @@ export function withTrustedBotSkillArtifactSourceEnvironment(
   const isolated = { ...environment };
   for (const name of ARTIFACT_SOURCE_ENV_NAMES) delete isolated[name];
   if (!invocation || !isArtifactPublishSkill(invocation.skillId)) return isolated;
+  if (path.basename(invocation.scriptPath) === 'init-connector.mjs') return isolated;
 
   const scope = context.executionScope;
   const topicId = stringValue(scope?.topicId);
@@ -205,7 +216,7 @@ export function isArtifactPublishSkillCommand(
       || path.isAbsolute(relative)
       || segments.length !== 3
       || segments[1] !== 'connector'
-      || segments[2].toLowerCase() !== 'artifact-cli.mjs'
+      || !['artifact-cli.mjs', 'init-connector.mjs'].includes(segments[2].toLowerCase())
     ) return false;
     const skillDir = path.join(skillsRoot, segments[0]);
     const installMarker = readSkillHubInstallMarker(skillDir);
@@ -238,10 +249,20 @@ export function resolveTrustedBotSkillScriptInvocation(
   if (!executionDirectory) {
     return denied('The command working directory is missing or unavailable.');
   }
+  if (isArtifactPublishSkillCommand(command, context, options)) {
+    return resolveArtifactCommandPlan(String(command), executionDirectory, context);
+  }
   const parsed = resolveTrustedSkillCommand(command, executionDirectory);
   if (!parsed) {
     return denied('The command is not one direct Node.js script invocation.');
   }
+  return validateTrustedEntrypoint(parsed, context);
+}
+
+function validateTrustedEntrypoint(
+  parsed: ParsedTrustedSkillCommand,
+  context: ToolExecutionContext,
+): TrustedBotSkillScriptDecision {
   const { scriptPath, args, workingDirectory } = parsed;
   if (!['.js', '.cjs', '.mjs'].includes(path.extname(scriptPath).toLowerCase())) {
     return denied('The requested entrypoint is not a JavaScript file.');
@@ -257,7 +278,7 @@ export function resolveTrustedBotSkillScriptInvocation(
   const isScriptsEntrypoint = segments.length >= 3 && segments[1] === 'scripts';
   const isArtifactConnectorEntrypoint = segments.length === 3
     && segments[1] === 'connector'
-    && segments[2].toLowerCase() === 'artifact-cli.mjs';
+    && ['artifact-cli.mjs', 'init-connector.mjs'].includes(segments[2].toLowerCase());
   if (
     !relative
     || relative.startsWith('..')
@@ -317,6 +338,57 @@ export function resolveTrustedBotSkillScriptInvocation(
       ...(workingDirectory ? { workingDirectory } : {}),
     },
   };
+}
+
+function resolveArtifactCommandPlan(
+  command: string,
+  executionDirectory: string,
+  context: ToolExecutionContext,
+): TrustedBotSkillScriptDecision {
+  const segments = parseArtifactCommandPlan(command);
+  if (!segments) return denied('Unsupported Artifact command syntax; use verified Node entrypoints joined by &&, semicolons or newlines.');
+  let cwd = executionDirectory;
+  let identity: TrustedBotSkillScriptInvocation | undefined;
+  let packageDirectory: string | undefined;
+  const steps: TrustedArtifactCommandStep[] = [];
+  for (let index = 0; index < segments.length; index++) {
+    const { argv, after } = segments[index];
+    if (index === 0 && argv[0] === 'cd' && argv.length === 2) {
+      const directory = resolveExecutionDirectory(argv[1], cwd);
+      if (!directory) return denied('The Artifact working directory is unavailable.');
+      cwd = directory;
+      continue;
+    }
+    if (!isNodeCommand(argv[0]) || argv.length < 2) return denied('Artifact command plans may only run verified Node entrypoints and node --version.');
+    if (argv.length === 2 && ['--version', '-v'].includes(argv[1])) {
+      steps.push({ args: [argv[1]], workingDirectory: cwd, after });
+      continue;
+    }
+    const scriptPath = path.resolve(cwd, argv[1]);
+    if (!['artifact-cli.mjs', 'init-connector.mjs'].includes(path.basename(scriptPath))) {
+      return denied('This entrypoint is not supported in an Artifact command plan.');
+    }
+    const validated = validateTrustedEntrypoint({ scriptPath, args: [scriptPath, ...argv.slice(2)], workingDirectory: cwd }, context);
+    if (!validated.ok) return validated;
+    if (!isArtifactPublishSkill(validated.invocation.skillId)
+      || (packageDirectory && packageDirectory !== path.dirname(scriptPath))) {
+      return denied('Every Artifact command must belong to the same verified publisher package.');
+    }
+    packageDirectory = path.dirname(scriptPath);
+    identity ??= validated.invocation;
+    steps.push({ args: validated.invocation.args, scriptPath, workingDirectory: cwd, after });
+  }
+  if (!identity) return denied('The plan has no verified Artifact entrypoint.');
+  return { ok: true, invocation: { ...identity, steps } };
+}
+
+/** Recheck integrity/revocation between steps, after a helper may have changed files. */
+export function revalidateTrustedArtifactStep(
+  step: TrustedArtifactCommandStep,
+  context: ToolExecutionContext,
+): TrustedBotSkillScriptDecision {
+  if (!step.scriptPath || !isTrustedLocalCatsCoRuntime(context)) return denied('Not a trusted Artifact script step.');
+  return validateTrustedEntrypoint({ ...step, scriptPath: step.scriptPath }, context);
 }
 
 interface ParsedTrustedSkillCommand {
@@ -747,6 +819,12 @@ function tokenizeShellCommand(value: string): string[] {
       continue;
     }
     if (/\s/.test(character)) {
+      // Shell newlines delimit commands, unlike whitespace inside quotes.
+      if (character === '\n' || character === '\r') {
+        push();
+        tokens.push(';');
+        continue;
+      }
       push();
       continue;
     }

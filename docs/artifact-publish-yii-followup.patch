@@ -1,0 +1,143 @@
+diff --git a/SKILL.md b/SKILL.md
+index 73ae2ce..5d76161 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -91,6 +91,12 @@ node artifact-cli.mjs publish <应用id> "显示名" <本地端口>
+ 
+ 凭据和公钥都由脚本自己取。返回里 `remote_port` 第 4 步要用。
+ 
++新建应用时，兼容的 XiaoBa 运行时会把当前 CatsCo 对话和触发任务的人类消息作为来源传给发布脚本；脚本随请求提交，平台再校验消息的真实性和归属。不要手填来源 ID、用人类账户令牌替代 Bot 凭据或绕过服务端校验。
++
++没有来源时，脚本只允许更新已经存在的应用；不存在、查询失败或来源不完整都会停止。`artifact_source_message_required` 表示来源未通过平台校验，应检查运行时与 Skill 的兼容性，不要重试旧发布渠道。
++
++组合的初始化、发布命令需要支持 Artifact 命令计划的 XiaoBa 版本。运行时会先校验整组命令，再执行；`&&` 保留前一步成功才继续的语义。正常发布不应要求用户提供特殊提示词。服务安装、迁移、旧应用清理仍遵守各自步骤与授权要求，不因发布成功自动获得删除权限。
++
+ 要收上传的话，把上限作为第 4 个参数加上：
+ 
+ ```sh
+diff --git a/connector/artifact-cli.mjs b/connector/artifact-cli.mjs
+index 2d8467c..05e90b6 100644
+--- a/connector/artifact-cli.mjs
++++ b/connector/artifact-cli.mjs
+@@ -40,6 +40,7 @@ function readPublicKey(stateDir, appId) {
+   return null;
+ }
+ 
++async function main() {
+ const credential = resolveBotCredential();
+ const base = credential.baseUrl.replace(/\/+$/, '');
+ 
+@@ -62,59 +63,102 @@ if (command === 'whoami') {
+     baseUrl: credential.baseUrl,
+     credentialSource: credential.source,
+   }, null, 2));
+-  process.exit(0);
++  process.exitCode = 0;
++  return;
+ }
+ 
+ if (command === 'list') {
+   const { status, body, text } = await call('GET', '/api/artifacts/apps');
+   if (status !== 200) {
+     console.error(`列出失败 HTTP ${status}: ${text.slice(0, 300)}`);
+-    process.exit(1);
++    process.exitCode = 1;
++    return;
+   }
+   const apps = Array.isArray(body?.apps) ? body.apps : [];
+   console.log(`共 ${apps.length} 个应用（归属 bot ${credential.botUid}）`);
+   for (const app of apps) {
+     console.log(`  ${app.id}  remote_port=${app.remote_port}  ${app.title || ''}`);
+   }
+-  process.exit(0);
++  process.exitCode = 0;
++  return;
+ }
+ 
+ if (command === 'publish') {
+   const [id, title, portArg, uploadArg] = args;
+-  if (!id || !title || !portArg) usage();
++  if (!id || !title || !portArg) return usage();
++  if (args.length > 4) {
++    console.error('publish 不接受额外参数；来源只从当前 CatsCo 运行时读取。');
++    process.exitCode = 2;
++    return;
++  }
+   const localPort = Number(portArg);
+-  if (!Number.isInteger(localPort)) { console.error('本地端口必须是整数'); process.exit(2); }
++  if (!Number.isInteger(localPort)) { console.error('本地端口必须是整数'); process.exitCode = 2; return; }
+   const stateDir = process.env.ARTIFACT_STATE_DIR || `/opt/xiaoba-cloud-bot/state/artifacts/${id}`;
+   const publicKey = readPublicKey(stateDir, id);
+   if (!publicKey) {
+     console.error(
+       `找不到公钥。先用 init-connector.mjs 生成密钥（传 auto），它会在 ${stateDir}/id_ed25519.pub 写出公钥。`,
+     );
+-    process.exit(2);
++    process.exitCode = 2;
++    return;
+   }
+   const payload = { id, title, publicKey, localPort };
+   if (uploadArg) payload.uploadLimitMb = Number(uploadArg);
++  const topic = String(process.env.CATSCO_ARTIFACT_SOURCE_TOPIC_ID || '').trim();
++  const sequence = String(process.env.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID || '').trim();
++  if (topic || sequence) {
++    if (!topic || !/^[1-9]\d*$/.test(sequence) || !Number.isSafeInteger(Number(sequence))) {
++      console.error('运行时注入的 Artifact 来源不完整或无效；请从 CatsCo 当前对话重新发起。');
++      process.exitCode = 2;
++      return;
++    }
++    // This is a runtime attribution hint, not authorization. The API validates
++    // the source against canonical messages and the authenticated bot.
++    Object.assign(payload, { source_topic_id: topic, source_message_id: Number(sequence) });
++  } else {
++    // Existing-app updates remain usable outside a new human-triggered turn.
++    // Never interpret lookup errors as either absence or permission to create.
++    const existing = await call('GET', `/api/artifacts/apps/${encodeURIComponent(id)}`);
++    if (existing.status === 404) {
++      console.error('新建 Artifact 缺少当前对话的可信来源；请检查 XiaoBa 运行时版本与 Skill 兼容性，不要手填来源或改走旧渠道。');
++      process.exitCode = 2;
++      return;
++    }
++    if (existing.status !== 200 || existing.body?.id !== id) {
++      console.error(`检查已有 Artifact 失败 HTTP ${existing.status}；已停止发布。`);
++      process.exitCode = 1;
++      return;
++    }
++  }
+   const { status, body, text } = await call('POST', '/api/artifacts/apps', payload);
+   if (status !== 201 && status !== 200) {
+     console.error(`发布失败 HTTP ${status}: ${text.slice(0, 500)}`);
+-    process.exit(1);
++    process.exitCode = 1;
++    return;
+   }
+   const remotePort = body?.remote_port;
+   console.log(JSON.stringify(body, null, 2));
+   if (remotePort) console.error(`远端端口 = ${remotePort}（下一步 init-connector 要用它写出连接器配置）`);
+-  process.exit(0);
++  process.exitCode = 0;
++  return;
+ }
+ 
+ if (command === 'delete') {
+   const [id] = args;
+-  if (!id) usage();
++  if (!id) return usage();
+   const { status, body, text } = await call('DELETE', `/api/artifacts/apps/${encodeURIComponent(id)}`);
+   if (status !== 200 && status !== 204) {
+     console.error(`下架失败 HTTP ${status}: ${text.slice(0, 300)}`);
+-    process.exit(1);
++    process.exitCode = 1;
++    return;
+   }
+   console.log(body ? JSON.stringify(body) : `已下架 ${id}`);
+-  process.exit(0);
++  process.exitCode = 0;
++  return;
+ }
+ 
+ usage();
++}
++
++// Let fetch and stdout/stderr finish cleanly (including Windows/libuv).
++await main();

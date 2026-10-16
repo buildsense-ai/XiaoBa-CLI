@@ -13,6 +13,8 @@ import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription
 import {
   withTrustedBotSkillArtifactSourceEnvironment,
   withTrustedBotSkillConnectorEnvironment,
+  revalidateTrustedArtifactStep,
+  type TrustedBotSkillScriptInvocation,
 } from '../bot-skills/trusted-script-execution';
 import { registerActiveCommand, unregisterActiveCommand } from '../utils/active-commands';
 import { buildCommandResourceNote, readPosixProcessStartTime, sampleProcessGroupRssBytes } from '../utils/machine-resources';
@@ -264,8 +266,9 @@ export class ShellTool implements Tool {
     const wrapped = trustedSkillScript ? undefined : this.wrapCommandWithDirectoryProbe(command);
 
     try {
-      const shellOutput = trustedSkillScript
-        ? await this.executeTrustedSkillScript(
+      const shellOutput = trustedSkillScript?.steps
+        ? await this.executeTrustedArtifactPlan(trustedSkillScript, context, scopedRuntimeEnvironment, timeout, description)
+        : trustedSkillScript ? await this.executeTrustedSkillScript(
           trustedSkillScript.args,
           trustedSkillScript.workingDirectory || executionDirectory.directory,
           scopedRuntimeEnvironment,
@@ -290,7 +293,7 @@ export class ShellTool implements Tool {
         ? this.extractDirectoryProbe(stderr || '', wrapped.marker)
         : { output: stderr || '' };
       const cwdAfter = this.updateCurrentDirectory(
-        (wrapped ? this.readDirectoryProbe(wrapped) : undefined) || parsedStdout.directory || parsedStderr.directory,
+        (wrapped ? this.readDirectoryProbe(wrapped) : trustedSkillScript?.workingDirectory) || parsedStdout.directory || parsedStderr.directory,
         context,
         cwdBefore,
       ) || cwdBefore;
@@ -345,7 +348,7 @@ export class ShellTool implements Tool {
         ? this.extractDirectoryProbe(error.stderr || '', wrapped.marker)
         : { output: String(error.stderr || '') };
       const cwdAfter = this.updateCurrentDirectory(
-        (wrapped ? this.readDirectoryProbe(wrapped) : undefined) || parsedStdout.directory || parsedStderr.directory,
+        (wrapped ? this.readDirectoryProbe(wrapped) : trustedSkillScript?.workingDirectory) || parsedStdout.directory || parsedStderr.directory,
         context,
         cwdBefore,
       ) || cwdBefore;
@@ -403,6 +406,51 @@ export class ShellTool implements Tool {
     } finally {
       if (wrapped) this.cleanupWrappedCommand(wrapped);
     }
+  }
+
+  private async executeTrustedArtifactPlan(
+    invocation: TrustedBotSkillScriptInvocation,
+    context: ToolExecutionContext,
+    environment: ReturnType<typeof resolveRuntimeEnvironment>,
+    timeout: number,
+    label?: string,
+  ): Promise<ShellOutput> {
+    const deadline = Date.now() + timeout;
+    let stdout = '';
+    let stderr = '';
+    let peakRssBytes = 0;
+    let lastError: any;
+    for (const [index, step] of invocation.steps!.entries()) {
+      if (lastError && step.after === 'success') continue;
+      if (context.abortSignal?.aborted || Date.now() >= deadline) {
+        throw Object.assign(new Error(context.abortSignal?.aborted ? 'Command aborted' : 'Artifact command plan timed out'), { stdout, stderr });
+      }
+      const checked = step.scriptPath ? revalidateTrustedArtifactStep(step, context) : undefined;
+      if (checked && !checked.ok) {
+        throw Object.assign(new Error(`Artifact step ${index + 1} failed validation: ${checked.reason}`), { stdout, stderr });
+      }
+      const scoped = withTrustedBotSkillArtifactSourceEnvironment(
+        checked?.ok ? checked.invocation : undefined,
+        context,
+        withTrustedBotSkillConnectorEnvironment(undefined, context, environment.env),
+      );
+      try {
+        const result = await this.executeTrustedSkillScript(step.args, step.workingDirectory,
+          { ...environment, env: scoped }, Math.max(1, deadline - Date.now()), context.abortSignal, label);
+        stdout += result.stdout;
+        stderr += result.stderr;
+        peakRssBytes = Math.max(peakRssBytes, result.peakRssBytes || 0);
+        lastError = undefined;
+      } catch (error: any) {
+        stdout += String(error.stdout || '');
+        stderr += String(error.stderr || '') + `\nArtifact step ${index + 1} failed: ${error.message}\n`;
+        peakRssBytes = Math.max(peakRssBytes, error.peakRssBytes || 0);
+        lastError = error;
+        if (context.abortSignal?.aborted || error.signal || typeof error.code !== 'number' || isShellCommandTimeoutError(error)) break;
+      }
+    }
+    if (lastError) throw Object.assign(lastError, { stdout, stderr, peakRssBytes });
+    return { stdout, stderr, peakRssBytes };
   }
 
   private executeTrustedSkillScript(

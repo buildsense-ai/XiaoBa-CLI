@@ -85,7 +85,7 @@ export function resolveExecutionRoute(
       return {
         ok: false,
         errorCode: 'PERMISSION_DENIED',
-        message: 'The artifact-publish connector command was not accepted as a trusted Skill invocation. Do not set source fields manually; run the documented command from the current CatsCo conversation.',
+        message: `The artifact-publish command was rejected: ${decision.reason} No command in the plan was executed. Do not set source fields manually.`,
       };
     }
     else if (looksLikeSkillScriptCommand(options.command) && context.executionScope?.source === 'catscompany') {
