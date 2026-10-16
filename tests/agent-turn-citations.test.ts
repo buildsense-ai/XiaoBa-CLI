@@ -69,6 +69,7 @@ function createCitationController(options: {
     sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
     sessionType: 'catscompany',
     services: {
+      memoryBranch: { enabled: true, modelSource: 'inherit' },
       aiService: new ScriptedAIService(options.responses) as any,
       catslogMemory: options.catslogMemory,
       toolManager: {

@@ -116,10 +116,6 @@ import {
   type BranchAgentConfig,
   type BranchModelRuntime,
 } from '../../core/branch-agent-config';
-import {
-  MEMORY_BRANCH_BUDGET_LIMITS,
-  type MemoryBranchBudget,
-} from '../../core/branch-budget';
 import { normalizeReasoningEffort, reasoningEffortOrDefault } from '../../utils/reasoning-effort';
 import { normalizeOpenAIApiMode, openAIApiModeOrDefault } from '../../utils/openai-api-mode';
 import {
@@ -1476,7 +1472,9 @@ function memoryBranchDashboardPayload(config: BranchAgentConfig, serviceManager?
     name: 'Memory Search',
     description: '后台检索相关历史，并把内部观察结果交给主 Agent。',
     enabled: memory.enabled,
-    budget: { ...memory.budget },
+    // Legacy pipeline budgets are preserved on disk, but not applied by autonomous Memory.
+    budget: null,
+    budgetPolicy: 'model_context',
     modelSource: memory.model.kind,
     selectedCatalogModelId: memory.model.kind === 'catalog' ? memory.model.modelId : undefined,
     primary: {
@@ -1586,27 +1584,6 @@ function saveMemoryBranchConfig(
   const config = loadBranchAgentConfig({ runtimeRoot: runtimeDataRoot() });
   mutate(config.branches.memorySearch);
   return saveBranchAgentConfig(config, { runtimeRoot: runtimeDataRoot() });
-}
-
-function validateMemoryBranchBudget(
-  input: unknown,
-  current: MemoryBranchBudget,
-): MemoryBranchBudget {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw httpError('budget must be an object', 400);
-  }
-  const source = input as Record<string, unknown>;
-  const result = { ...current };
-  for (const key of Object.keys(MEMORY_BRANCH_BUDGET_LIMITS) as Array<keyof MemoryBranchBudget>) {
-    if (source[key] === undefined) continue;
-    const value = source[key];
-    const limits = MEMORY_BRANCH_BUDGET_LIMITS[key];
-    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < limits.min || value > limits.max) {
-      throw httpError(`${key} must be an integer between ${limits.min} and ${limits.max}`, 400);
-    }
-    result[key] = value;
-  }
-  return result;
 }
 
 function branchRestartPayload(serviceManager: ServiceManager): Record<string, unknown> {
@@ -2685,25 +2662,8 @@ export function createApiRouter(
     }
   });
 
-  router.put('/branch-agents/memory/budget', (req, res) => {
-    try {
-      const current = loadBranchAgentConfig({ runtimeRoot: runtimeDataRoot() });
-      const budgetInput = req.body && Object.prototype.hasOwnProperty.call(req.body, 'budget')
-        ? req.body.budget
-        : req.body;
-      const budget = validateMemoryBranchBudget(
-        budgetInput,
-        current.branches.memorySearch.budget,
-      );
-      const config = saveMemoryBranchConfig(memory => { memory.budget = budget; });
-      res.json({
-        ok: true,
-        ...memoryBranchDashboardPayload(config, serviceManager),
-        ...branchRestartPayload(serviceManager),
-      });
-    } catch (e: any) {
-      res.status(e?.status || 400).json({ error: e?.message || String(e) });
-    }
+  router.put('/branch-agents/memory/budget', (_req, res) => {
+    res.status(409).json({ error: 'Autonomous Memory uses the selected model context; legacy pipeline budgets are inactive.' });
   });
 
   router.put('/branch-agents/memory/model/inherit', (_req, res) => {
