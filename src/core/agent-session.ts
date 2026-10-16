@@ -66,6 +66,11 @@ import {
 } from '../bot-definition/prompt-sync';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
 import {
+  collectLocalAssistantTexts,
+  isDuplicateDurableContextEntry,
+  type DurableContextDedupState,
+} from './durable-context-dedup';
+import {
   CHECKPOINT_COMPACTION_COMPLETE_MESSAGE,
   CHECKPOINT_COMPACTION_ERROR_MESSAGE,
   CHECKPOINT_COMPACTION_START_MESSAGE,
@@ -576,24 +581,17 @@ export class AgentSession {
     const knownRemoteIds = new Set(this.messages
       .filter(message => message.__remoteContextSource && Number(message.__remoteContextId) > 0)
       .map(message => `${message.__remoteContextSource}:${message.__remoteContextId}`));
-    const remoteContextWatermarks = collectRemoteContextWatermarks(this.messages);
+    const dedupState: DurableContextDedupState = {
+      knownRemoteIds,
+      watermarks: collectRemoteContextWatermarks(this.messages),
+      localAssistantTexts: collectLocalAssistantTexts(this.messages),
+    };
     const durableEntries = inputs
       .map(input => typeof input === 'string'
         ? { content: input }
         : input)
       .filter(entry => typeof entry.content === 'string' && entry.content.trim())
-      .filter(entry => {
-        if (!('source' in entry) || !('id' in entry) || !entry.source || entry.id <= 0) return true;
-        const key = `${entry.source}:${entry.id}`;
-        if (
-          knownRemoteIds.has(key)
-          || entry.id <= (remoteContextWatermarks[entry.source] || 0)
-        ) {
-          return false;
-        }
-        knownRemoteIds.add(key);
-        return true;
-      });
+      .filter(entry => !isDuplicateDurableContextEntry(entry, dedupState));
     if (durableEntries.length === 0) {
       return cursorUpdate
         ? this.lifecycleManager.saveRemoteContextCursor(cursorUpdate.source, cursorUpdate.cursor)
