@@ -295,21 +295,31 @@ export class MessageSender {
     Logger.info(`Task status 已发送: topic=${topic}, state=${status.state}, run=${status.run_id}`);
   }
 
-  async sendText(topic: string, text: string): Promise<void> {
-    await this.send(topic, 'text', text);
+  async sendText(topic: string, text: string): Promise<number> {
+    const { seq_id } = await this.send(topic, 'text', text);
     Logger.info(`Text 已发送: ${text.slice(0, 50)}...`);
+    return seq_id;
   }
 
-  async reply(topic: string, text: string): Promise<void> {
+  /**
+   * 发送回复，返回各分段在服务端的 seq。
+   *
+   * 调用方用这些 seq 记住「这条是我发的」，回填历史时才能认出远端副本，不必
+   * 比对正文——正文会被拆段、剥前缀、被服务端改写。
+   */
+  async reply(topic: string, text: string): Promise<number[]> {
     const normalized = typeof text === 'string' ? text.trim() : '';
     if (!normalized) {
       Logger.info(`Reply skipped: empty or whitespace-only text (topic=${topic})`);
-      return;
+      return [];
     }
     const segments = this.splitText(normalized, MAX_MSG_LENGTH);
+    const seqs: number[] = [];
     for (const seg of segments) {
-      await this.sendText(topic, seg);
+      const seq = await this.sendText(topic, seg);
+      if (Number.isFinite(seq) && seq > 0) seqs.push(seq);
     }
+    return seqs;
   }
 
   sendTyping(topic: string): void {
