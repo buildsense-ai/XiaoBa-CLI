@@ -34,6 +34,7 @@ import {
   AgentServices,
   BUSY_MESSAGE,
   type DurableRemoteContextEntry,
+  REMOTE_CONTEXT_SOURCE,
   RuntimeFeedbackInput,
   SessionCallbacks,
 } from '../core/agent-session';
@@ -1664,6 +1665,29 @@ export class CatsCompanyBot {
   // ─── 构建 ChannelCallbacks ──────────────────────
 
   /**
+   * 记下本次发出的消息 seq，供回填去重认领。
+   *
+   * 回填按 `source:id` 去重，而本机那条落盘时还没有 id（saveContext 在 reply
+   * 之前就执行完了）。发出后把 seq 记进运行态，下次回填就能认出「远端那条就是
+   * 我发的」，不必比对正文——正文会被拆段、剥前缀、被服务端改写。
+   *
+   * 只对群聊记录：回填只发生在群会话（shouldHydrateCatsCompanyGroupContext），
+   * p2p 没有这段历史，记了也永远不会被读到。
+   */
+  private recordSentRemoteIds(
+    session: { recordSentRemoteIds?(source: string, ids: number[]): boolean } | undefined,
+    ids: number[],
+  ): void {
+    if (!session?.recordSentRemoteIds || ids.length === 0) return;
+    try {
+      session.recordSentRemoteIds(REMOTE_CONTEXT_SOURCE, ids);
+    } catch (err: any) {
+      // 记不上只会让回填多插一次自己的回复，不该影响发送本身。
+      Logger.warning(`记录已发送消息 seq 失败: ${err?.message || err}`);
+    }
+  }
+
+  /**
    * 为指定 topic 构建通道回调对象。
    * CatsCo webapp 复用 ChannelCallbacks 接口，chatId 对应 topic。
    */
@@ -2202,7 +2226,8 @@ export class CatsCompanyBot {
           let replyDelivered = true;
           if (result.visibleToUser && result.text) {
             try {
-              await this.sender.reply(msg.topic, result.text);
+              const sentSeqs = await this.sender.reply(msg.topic, result.text);
+              this.recordSentRemoteIds(session, sentSeqs);
             } catch (err: any) {
               replyDelivered = false;
               Logger.warning(`前端通知发送失败 (text): ${err.message}`);
@@ -3101,13 +3126,15 @@ export class CatsCompanyBot {
         subAgentManager.markResultObservationHandledForParent(sessionKey, text);
         if (result.text.startsWith('处理消息时出错:')) {
           try {
-            await this.sender.reply(topic, result.text);
+            const sentSeqs = await this.sender.reply(topic, result.text);
+            this.recordSentRemoteIds(session, sentSeqs);
           } catch (err: any) {
             Logger.warning(`错误消息发送失败: ${err.message}`);
           }
         } else if (result.visibleToUser && result.text) {
           try {
-            await this.sender.reply(topic, result.text);
+            const sentSeqs = await this.sender.reply(topic, result.text);
+            this.recordSentRemoteIds(session, sentSeqs);
           } catch (err: any) {
             Logger.warning(`子智能体结果回复发送失败: ${err.message}`);
           }
@@ -3304,9 +3331,11 @@ export class CatsCompanyBot {
         }
 
         if (result.text.startsWith('处理消息时出错:')) {
-          await this.sender.reply(batch.topic, result.text);
+          const sentSeqs = await this.sender.reply(batch.topic, result.text);
+          this.recordSentRemoteIds(session, sentSeqs);
         } else if (result.visibleToUser && result.text) {
-          await this.sender.reply(batch.topic, result.text);
+          const sentSeqs = await this.sender.reply(batch.topic, result.text);
+          this.recordSentRemoteIds(session, sentSeqs);
         }
       }
     } catch (err: any) {
