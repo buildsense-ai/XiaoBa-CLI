@@ -85,6 +85,12 @@ test('concurrent capture serializes and freezes one exact request',async()=>{
   assert.deepEqual(results,[results[0],results[0],results[0]]);assert.equal(fs.readdirSync(spool).length,1);
 });
 
+test('binding JSON property order does not invalidate the existing probe generation',async()=>{
+  const in_=input();const reordered={...in_,binding:{installationId:binding.installationId,bodyId:binding.bodyId,ownerUid:binding.ownerUid,botUid:binding.botUid}};
+  const receipt=await store().capture(reordered,check);
+  assert.deepEqual(await store().capture(in_,check),receipt);
+});
+
 test('input is copied before waiting and active binding is checked after the lock',async()=>{
   const in_=input();let release!:()=>void;let entered!:()=>void;
   const ready=new Promise<void>(r=>entered=r);const hold=new Promise<void>(r=>release=r);

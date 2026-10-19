@@ -93,7 +93,11 @@ export class PublicationCaptureStore {
       if (fs.existsSync(file)) return this.load(file, input).receipt;
       this.quota(root, 0);
       const source = findPublicationSource(skills, input.source.local_skill_id, check);
-      const captured = capturePublicationSource(skills, source, input.binding, check);
+      // Match the existing probe's binding serialization, independent of the
+      // internal caller's JSON/property insertion order.
+      const probeBinding = { botUid: input.binding.botUid, ownerUid: input.binding.ownerUid,
+        bodyId: input.binding.bodyId, installationId: input.binding.installationId };
+      const captured = capturePublicationSource(skills, source, probeBinding, check);
       if (canonical(captured.descriptor) !== canonical(input.source)) fail('publication.source_changed');
       const requestBody = JSON.stringify({ source: { type: 'files', files: captured.files.sort((a,b) => byteOrder(a.path,b.path)) } });
       const receipt: PublicationCaptureReceipt = { schemaVersion: 1, entryId: input.entryId, candidateRevision: 1,
