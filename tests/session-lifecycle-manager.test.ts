@@ -25,7 +25,60 @@ describe('AgentSession lifecycle', () => {
   afterEach(async () => {
     process.chdir(originalCwd);
     if (testRoot && fs.existsSync(testRoot)) {
-      await fs.promises.rm(testRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      await fs.promises.rm(testRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
+
+  test('fork exports cold durable context without initializing or consuming the source', () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const key = 'user:fork-cold';
+    SessionStore.getInstance().saveContext(key, [
+      { role: 'user', content: 'approved design' },
+      { role: 'assistant', content: 'agreed', __checkpointSummary: true },
+    ]);
+    const session = new AgentSession(key, buildMockServices({ aiService: {
+      chat() { throw new Error('fork must not call model'); },
+      chatStream() { throw new Error('fork must not call model'); },
+    } }), 'catscompany');
+    session.restoreFromStore();
+    session.injectContext('temporary runtime hint');
+    const snapshot = session.exportForkContext({});
+    assert.deepStrictEqual(snapshot.messages.map((m: any) => m.content), ['approved design', 'agreed']);
+    assert.equal((session as any).initialized, false);
+    assert.equal((session as any).lifecycleManager.hasPendingRestore(), true);
+    snapshot.messages[0].content = 'mutated branch';
+    assert.equal(session.exportForkContext({}).messages[0].content, 'approved design');
+  });
+
+  test('fork exports live context but rejects running and recovering sessions', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    const session = new AgentSession('user:fork-live', buildMockServices(), 'catscompany');
+    session.setSystemPromptProvider(() => 'system');
+    await session.init();
+    (session as any).messages.push({ role: 'user', content: 'live message' });
+    SessionStore.getInstance().saveContext('user:fork-live', (session as any).messages);
+    assert.equal(session.exportForkContext({}).messages[0].content, 'live message');
+    (session as any).busy = true;
+    assert.throws(() => session.exportForkContext({}), /busy/i);
+    (session as any).busy = false;
+    (session as any).resumeInFlight = true;
+    assert.throws(() => session.exportForkContext({}), /busy/i);
+  });
+
+  test('fork refuses missing or corrupt backing context even when it is cached or initialized', async () => {
+    const { AgentSession, SessionStore } = loadSessionModules();
+    for (const initialized of [false, true]) {
+      const key = `fork-validated-${initialized}`;
+      SessionStore.getInstance().saveContext(key, [{ role: 'user', content: 'valid' }]);
+      const session = new AgentSession(key, buildMockServices(), 'catscompany');
+      session.setSystemPromptProvider(() => 'system');
+      session.restoreFromStore();
+      if (initialized) await session.init();
+      const file = path.join(testRoot, 'data', 'sessions', `${key}.jsonl`);
+      fs.appendFileSync(file, '{corrupt\n');
+      assert.throws(() => session.exportForkContext({}));
+      fs.unlinkSync(file);
+      assert.throws(() => session.exportForkContext({}), /unavailable/i);
     }
   });
 
