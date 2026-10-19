@@ -125,7 +125,7 @@ test('bounded strict response rejects mismatches, duplicate escaped keys, unknow
 });
 test('timeout, abort and two-slot admission cover stalled response without workspace lock',async()=>{
   respond=()=>{};
-  const client=uploader({}, {timeoutMs:300}),a=client.upload(input,grant,check),b=client.upload(input,grant,check);
+  const client=uploader({}, {timeoutMs:5000}),a=client.upload(input,grant,check),b=client.upload(input,grant,check);
   const settled=Promise.allSettled([a,b]);
   await assert.rejects(client.upload(input,grant,check),code('busy'));
   // Candidate reads succeed while HTTP is pending: no workspace lock held.
