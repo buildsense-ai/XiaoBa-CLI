@@ -40,7 +40,9 @@ it never silently recaptures changed content or resets a candidate revision.
 Different input for a retained entry, corruption, or changed principal fails.
 
 Receipts contain only schema, entry, revision, candidate/request digests and byte
-count. The explicit internal `readRequest` returns bytes only after fresh checks.
+count. The explicit internal `readRequest` returns bytes only after fresh checks;
+`readCandidate` returns the verified receipt and bytes together for the
+[internal uploader](skillhub-publication-upload.md), without a second capture.
 Never send its result to chats, generic RPC logs, model context or browser state.
 Captures contain no upload credential and authorize neither upload nor publish.
 
