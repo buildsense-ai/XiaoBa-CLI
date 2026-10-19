@@ -6,7 +6,10 @@ import {
   type CatsSkillMutationGrantMessage,
   type CatsSkillMutationGrantRequest,
   type CatsThinToolRpcMessage,
+  type CatsSessionForkControl,
 } from './client';
+import { CatsSessionForkController } from './session-fork';
+import { SessionStore } from '../utils/session-store';
 import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo, type CatsCompanyRuntimeRole, type CatsGroupRosterMember } from './types';
 import { MessageSender, type ConversationTaskStatusInput } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
@@ -609,6 +612,8 @@ export class CatsCompanyBot {
   private resumedInterruptedTurns = new Set<string>();
   /** Covers message parsing, cloud restore, attachment download, commands, and the model turn. */
   private activeMessageHandlers = 0;
+  private activeSessionMessageHandlers = new Map<string, number>();
+  private sessionForkController?: CatsSessionForkController;
   /** Invalidates queued or in-flight pre-turn hydration after /clear. */
   private sessionClearGenerations = new Map<string, number>();
   /** Separately invalidates queued work on stop without clearing durable history. */
@@ -813,7 +818,16 @@ export class CatsCompanyBot {
 
     this.bot.on('message', async (ctx: MessageContext) => {
       if (this.shuttingDown) return;
-      await this.onMessage(ctx);
+      await this.onMessage(ctx).catch((error: any) => {
+        Logger.warning(`[CatsCompany] Message processing failed: ${error?.message || error}`);
+      });
+    });
+
+    this.bot.on('session_fork', (control: CatsSessionForkControl) => {
+      if (this.shuttingDown) return;
+      void this.runTrackedConversationWork(() => this.getSessionForkController().handle(control)).catch((error: any) => {
+        Logger.warning(`[CatsCompany] Fork completion uncertain; retry the same request: ${error?.message || error}`);
+      });
     });
 
     this.bot.on('member_kicked', (payload: { topic?: string; userId?: string }) => {
@@ -1839,7 +1853,44 @@ export class CatsCompanyBot {
   /**
    * 处理收到的消息
    */
+  private getSessionForkController(): CatsSessionForkController {
+    return this.sessionForkController ??= new CatsSessionForkController({
+      agentUid: () => this.botUid,
+      store: SessionStore.getInstance(),
+      getSession: route => this.sessionManager.get(route),
+      isIdle: key => !this.shuttingDown
+        && !(this.activeSessionMessageHandlers?.get(key) || 0)
+        && !this.sessionExecutionReservations?.has(key)
+        && !this.messageQueue?.get(key)?.length
+        && !this.pendingAttachments?.get(key)?.length
+        && !this.cloudSessionRestorePromises?.has(key)
+        && !this.subAgentCompletionBatches?.has(key)
+        && !this.activeConversationTasks?.has(key)
+        && !this.sessionManager.get(key)?.isBusy()
+        && !SubAgentManager.getInstance().hasActiveForParent(key),
+      complete: input => this.bot.completeSessionFork(input),
+    });
+  }
+
   private async onMessage(ctx: MessageContext): Promise<void> {
+    if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
+    const key = createCatsCoMessageEnvelope({ topic: ctx.topic, isGroup: ctx.isGroup,
+      senderId: ctx.senderId, seq: ctx.seq, text: ctx.text || '', metadata: ctx.metadata, botUid: this.botUid }).sessionKey;
+    const handlers = this.activeSessionMessageHandlers ??= new Map<string, number>();
+    handlers.set(key, (handlers.get(key) || 0) + 1);
+    try {
+      const barrier = this.sessionForkController?.waitForSession(key);
+      if (barrier) await barrier;
+      if (this.shuttingDown) return;
+      await this.onMessageInner(ctx);
+    } finally {
+      const remaining = (handlers.get(key) || 1) - 1;
+      if (remaining) handlers.set(key, remaining);
+      else handlers.delete(key);
+    }
+  }
+
+  private async onMessageInner(ctx: MessageContext): Promise<void> {
     if (this.isCancelMessage(ctx)) {
       this.handleCancelMessage(ctx);
       return;
@@ -1934,6 +1985,18 @@ export class CatsCompanyBot {
     const nativeFeishuTrigger = shouldHydrateCatsCompanyGroupContext(msg);
     const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
     let cloudRestoreResult: CloudSessionRestoreResult | undefined;
+    if (sessionRoute && isClearCommand(msg.text)) {
+      // Fence older work before the provenance lookup can yield to it.
+      this.bumpSessionClearGeneration(key);
+      this.cloudSessionRestoreAbortControllers?.get(key)?.abort();
+      this.cloudSessionRestorePromises.delete(key);
+      try {
+        await this.assertForkLocalContextAvailable(sessionRoute);
+      } catch (error: any) {
+        Logger.warning(`[${key}] Missing fork context; clear refused: ${error?.message || error}`);
+        return;
+      }
+    }
     if (sessionRoute && !isClearCommand(msg.text)) {
       cloudRestoreResult = await this.ensureCloudSessionRestored(msg, sessionRoute);
       if (entryClearGeneration !== this.getSessionClearGeneration(key)
@@ -1961,7 +2024,7 @@ export class CatsCompanyBot {
       if (isClear) {
         this.pendingAttachments.delete(key);
         this.messageQueue.delete(key);
-        this.bumpSessionClearGeneration(key);
+        if (!sessionRoute) this.bumpSessionClearGeneration(key);
         const completionBatch = this.subAgentCompletionBatches.get(key);
         if (completionBatch?.timer) clearTimeout(completionBatch.timer);
         this.subAgentCompletionBatches.delete(key);
@@ -2343,7 +2406,7 @@ export class CatsCompanyBot {
     session: { isBusy?: () => boolean },
   ): boolean {
     const reservations = this.sessionExecutionReservations ??= new Set<string>();
-    if (reservations.has(sessionKey) || session.isBusy?.()) return false;
+    if (this.sessionForkController?.isLocked(sessionKey) || reservations.has(sessionKey) || session.isBusy?.()) return false;
     reservations.add(sessionKey);
     return true;
   }
@@ -2527,8 +2590,17 @@ export class CatsCompanyBot {
 
   private async resumeOneInterruptedTurn(candidate: InterruptedTurnCandidate): Promise<void> {
     const { sessionKey, topic } = candidate;
-    // Register before anything can throw so this session cannot be resumed
-    // twice in one process.
+    if (this.shuttingDown || !this.connectorReady) return;
+    const clearGeneration = this.getSessionClearGeneration(sessionKey);
+    const stopGeneration = this.getSessionStopGeneration(sessionKey);
+    await this.assertForkLocalContextAvailable({ sessionKey, topicId: topic }, true);
+    if (this.shuttingDown || !this.connectorReady
+      || clearGeneration !== this.getSessionClearGeneration(sessionKey)
+      || stopGeneration !== this.getSessionStopGeneration(sessionKey)
+      || this.activeConversationTasks.has(sessionKey)
+      || this.activeSessionMessageHandlers?.get(sessionKey)
+      || this.sessionForkController?.isLocked(sessionKey)) return;
+    // Register only after preflight; rejected missing-context checks must not consume a resume.
     this.resumedInterruptedTurns.add(sessionKey);
 
     // Claim the session before spending anything. Doing this after the notice
@@ -2574,7 +2646,7 @@ export class CatsCompanyBot {
       // suppresses replies built for sub-agent observations and would swallow the
       // answer the user is still waiting for.
       await this.runTrackedConversationWork(() =>
-        this.runInterruptedTurnResume(sessionKey, topic, notice, candidate.deviceContext));
+        this.runInterruptedTurnResume(sessionKey, topic, notice, candidate.deviceContext, clearGeneration, stopGeneration));
     } finally {
       // Release before draining, matching every other session work path.
       this.releaseSessionExecution(sessionKey);
@@ -2641,7 +2713,14 @@ export class CatsCompanyBot {
     topic: string,
     notice: string,
     deviceContext?: InterruptedTurnDeviceContext,
+    clearGeneration = this.getSessionClearGeneration(sessionKey),
+    stopGeneration = this.getSessionStopGeneration(sessionKey),
   ): Promise<void> {
+    await this.assertForkLocalContextAvailable({ sessionKey, topicId: topic }, true);
+    if (this.shuttingDown || !this.connectorReady
+      || clearGeneration !== this.getSessionClearGeneration(sessionKey)
+      || stopGeneration !== this.getSessionStopGeneration(sessionKey)
+      || this.sessionForkController?.isLocked(sessionKey)) return;
     // The session was claimed by resumeOneInterruptedTurn() before any
     // user-visible side effect; this only runs the turn.
     const session = this.sessionManager.getOrCreate(sessionKey);
@@ -2797,6 +2876,20 @@ export class CatsCompanyBot {
     return next;
   }
 
+  private async assertForkLocalContextAvailable(
+    sessionRoute: { sessionKey: string; topicId: string }, requireDurable = false,
+  ): Promise<void> {
+    const store = SessionStore.getInstance();
+    if (store.getForkIdentity(sessionRoute.sessionKey)) {
+      store.readContextForFork(sessionRoute.sessionKey);
+      return;
+    }
+    if (store.hasSession(sessionRoute.sessionKey)
+      || (!requireDurable && this.sessionManager.get(sessionRoute.sessionKey))) return;
+    const status = await this.bot.getSessionFork(sessionRoute.topicId);
+    if (status) throw new Error(`session_fork_local_context_missing:${status.state}`);
+  }
+
   private async ensureCloudSessionRestored(
     msg: ParsedCatsMessage,
     sessionRoute: ReturnType<typeof createCatsCoSessionRoute>,
@@ -2835,7 +2928,13 @@ export class CatsCompanyBot {
 
     const abortController = new AbortController();
     (this.cloudSessionRestoreAbortControllers ??= new Map()).set(key, abortController);
-    const restore = this.restoreCloudSessionWithStatus(msg, sessionRoute, abortController.signal)
+    const restore = this.assertForkLocalContextAvailable(sessionRoute)
+      .then(() => {
+        abortController.signal.throwIfAborted();
+        return this.restoreCloudSessionWithStatus(msg, sessionRoute, abortController.signal);
+      })
+      .catch((error): CloudSessionRestoreResult => ({ status: 'failed', restoredMessages: 0,
+        fetchedMessages: 0, compressed: false, error }))
       .finally(() => {
         if (this.cloudSessionRestorePromises.get(key) === restore) {
           this.cloudSessionRestorePromises.delete(key);
@@ -3017,6 +3116,8 @@ export class CatsCompanyBot {
     clearGeneration = this.getSessionClearGeneration(sessionKey),
     stopGeneration = this.getSessionStopGeneration(sessionKey),
   ): Promise<void> {
+    const barrier = this.sessionForkController?.waitForSession(sessionKey);
+    if (barrier) await barrier;
     await this.runTrackedConversationWork(() =>
       this.handleSubAgentFeedbackInner(sessionKey, topic, senderId, text, executionScope, clearGeneration, stopGeneration));
   }

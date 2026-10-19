@@ -6,6 +6,8 @@ import { Logger } from '../utils/logger';
 import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, type CatsCoDomainFamily } from '../utils/catsco-domains';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
 import type { CatsGroupRosterMember } from './types';
+import { normalizeSessionForkControl, type CatsSessionForkCompletion, type CatsSessionForkStatus } from './session-fork';
+export type { CatsSessionForkControl, CatsSessionForkCompletion, CatsSessionForkStatus } from './session-fork';
 
 export type { UploadResult } from './upload';
 
@@ -542,6 +544,10 @@ export class CatsClient extends EventEmitter {
           }
         }
       }
+    } else if (msg.session_fork) {
+      const control = normalizeSessionForkControl(msg.session_fork);
+      if (control) this.emit('session_fork', control);
+      else Logger.warning('[CatsCompany] Invalid session_fork control ignored');
     } else if (msg.device_rpc) {
       this.handleDeviceRpcMessage(msg.device_rpc);
     } else if (msg.thin_tool_rpc) {
@@ -744,6 +750,42 @@ export class CatsClient extends EventEmitter {
 
   async sendMessage(topic: string, text: string): Promise<number> {
     return this.sendStructuredMessage({ topic_id: topic, type: 'text', content: text });
+  }
+
+  async getSessionFork(topic: string): Promise<CatsSessionForkStatus | undefined> {
+    const url = new URL(`${this.httpBaseUrl()}/api/bot/session-forks`);
+    url.searchParams.set('topic_id', topic);
+    return this.requestSessionFork(url, { method: 'GET' }, topic, true);
+  }
+
+  async completeSessionFork(input: CatsSessionForkCompletion): Promise<CatsSessionForkStatus> {
+    const status = await this.requestSessionFork(new URL(`${this.httpBaseUrl()}/api/bot/session-forks/complete`), {
+      method: 'POST', body: JSON.stringify(input),
+    }, input.target_topic_id);
+    if (!status || status.request_id !== input.request_id) throw new Error('session_fork_completion_mismatch');
+    return status;
+  }
+
+  private async requestSessionFork(
+    url: URL, init: RequestInit, topic: string, allowAbsent = false,
+  ): Promise<CatsSessionForkStatus | undefined> {
+    if (!this.config.apiKey) throw new Error('session_fork_bot_api_key_required');
+    const bodyId = firstNonEmpty(this.config.bodyId, process.env.CATSCO_BODY_ID, process.env.CATSCOMPANY_BODY_ID,
+      process.env.CATSCO_DEVICE_ID, process.env.CATSCOMPANY_DEVICE_ID);
+    const response = await fetch(url, { ...init, headers: {
+      Authorization: `ApiKey ${this.config.apiKey}`, 'Content-Type': 'application/json',
+      'User-Agent': CATSCOMPANY_CLIENT_UA, ...(bodyId ? { 'X-CatsCo-Body-ID': bodyId } : {}),
+    }, signal: AbortSignal.timeout(15_000) });
+    const payload = await response.json() as Partial<CatsSessionForkStatus>;
+    // An unsupported route (generic 404), authorization failure or malformed reply is not proof of absence.
+    if (allowAbsent && response.status === 404 && payload?.error === 'session_fork_not_found') return undefined;
+    if (!response.ok) throw new Error(`session_fork_http_${response.status}`);
+    if (!payload || payload.target_topic_id !== topic || typeof payload.source_topic_id !== 'string'
+      || typeof payload.request_id !== 'string' || !payload.request_id
+      || !['pending', 'ready', 'failed'].includes(String(payload.state))) {
+      throw new Error('session_fork_status_invalid');
+    }
+    return payload as CatsSessionForkStatus;
   }
 
   async getAgentContextHistory(

@@ -177,6 +177,7 @@ function createHarness(options: {
   bot.sessionClearGenerations = new Map();
   bot.botUid = 'usr43';
   bot.bot = {
+    getSessionFork: async () => undefined,
     getAgentContextHistory: async () => ({
       messages: [],
       topic_id: 'grp_80',
@@ -558,7 +559,7 @@ describe('CatsCompany execution scope flow', () => {
     };
 
     const oldRestore = harness.bot.ensureCloudSessionRestored({ topic: 'p2p_7_43', seq: 12 } as any, route as any);
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(restoreResolvers.length, 1);
 
     await harness.bot.onMessage({
@@ -572,7 +573,7 @@ describe('CatsCompany execution scope flow', () => {
     });
 
     const newRestore = harness.bot.ensureCloudSessionRestored({ topic: 'p2p_7_43', seq: 14 } as any, route as any);
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(restoreResolvers.length, 2);
 
     restoreResolvers[0]({ status: 'failed', restoredMessages: 0, fetchedMessages: 0, compressed: false });

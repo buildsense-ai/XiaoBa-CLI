@@ -61,6 +61,13 @@ export class SessionLifecycleManager {
     return messages;
   }
 
+  snapshotForFork(): Message[] {
+    const key = this.resolveExistingSessionKey();
+    if (!key) throw new Error('Source local session is unavailable');
+    const durable = this.sessionStore.readContextForFork(key);
+    return this.pendingRestore ? structuredClone(this.pendingRestore) : durable;
+  }
+
   reset(): ResetSessionStateResult {
     this.pendingRestore = undefined;
     this.options.runtimeFeedbackInbox.reset();
@@ -71,7 +78,7 @@ export class SessionLifecycleManager {
   }
 
   clear(): ClearSessionStateResult {
-    const sessionDeleted = this.sessionStore.deleteSession(this.options.sessionKey);
+    const sessionDeleted = this.sessionStore.deleteSession(this.options.sessionKey, { preserveForkIdentity: true });
     const stateDeleted = this.sessionStore.deleteRuntimeState(this.options.sessionKey);
     let persisted = sessionDeleted && stateDeleted;
     for (const cleanupKey of this.resolveLegacyCleanupKeys()) {
