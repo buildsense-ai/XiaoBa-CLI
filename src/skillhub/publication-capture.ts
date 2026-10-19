@@ -128,9 +128,18 @@ export class PublicationCaptureStore {
   // Raw bytes are available only through an explicit internal read, never in a
   // receipt, error, log or automatically serialized class property.
   async readRequest(input: PublicationCaptureInput, checkAuthority: () => void): Promise<Buffer> {
+    return (await this.readCandidate(input, checkAuthority)).bytes;
+  }
+
+  // Explicit internal uploader access; receipt and exact bytes are verified
+  // together under one lock. Never serialize this object onto generic RPC.
+  async readCandidate(input: PublicationCaptureInput, checkAuthority: () => void): Promise<{ receipt: PublicationCaptureReceipt; bytes: Buffer }> {
     validateInput(input);
     input = { ...input, binding: { ...input.binding }, source: { ...input.source } };
-    return this.locked(input, checkAuthority, root => Buffer.from(this.load(path.join(root, `${input.entryId}.json`), input).requestBody));
+    return this.locked(input, checkAuthority, root => {
+      const saved = this.load(path.join(root, `${input.entryId}.json`), input);
+      return { receipt: saved.receipt, bytes: Buffer.from(saved.requestBody) };
+    });
   }
 
   private async locked<T>(input: PublicationCaptureInput, checkAuthority: () => void,
