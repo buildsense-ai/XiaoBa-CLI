@@ -63,6 +63,20 @@ export function describePublicationSource(
   skillsRoot: string, skillDir: string, binding: PublicationSourceBinding,
   check: () => void = () => {},
 ): PublicationSourceDescriptor {
+  return inspectPublicationSource(skillsRoot, skillDir, binding, check, false).descriptor;
+}
+
+// Internal capture primitive. The caller must hold the workspace lock and
+// authenticate the binding. Returns bytes only after the complete recheck.
+export function capturePublicationSource(
+  skillsRoot: string, skillDir: string, binding: PublicationSourceBinding, check: () => void,
+): { descriptor: PublicationSourceDescriptor; files: Array<{ path: string; contentBase64: string }> } {
+  return inspectPublicationSource(skillsRoot, skillDir, binding, check, true);
+}
+
+function inspectPublicationSource(
+  skillsRoot: string, skillDir: string, binding: PublicationSourceBinding, check: () => void, capture: boolean,
+): { descriptor: PublicationSourceDescriptor; files: Array<{ path: string; contentBase64: string }> } {
   const root = path.resolve(skillsRoot);
   const source = path.resolve(skillDir);
   directory(root, root);
@@ -79,6 +93,7 @@ export function describePublicationSource(
   let count = 0;
   let bytes = 0;
   const facts: Array<[string, string]> = [];
+  const files: Array<{ path: string; contentBase64: string }> = [];
   const observations: Array<[string, fs.Stats]> = [];
   const visit = (current: string, depth: number): void => {
     check();
@@ -114,6 +129,7 @@ export function describePublicationSource(
         unchanged(stat, opened);
         const digest = createHash('sha256');
         const buffer = Buffer.allocUnsafe(64 * 1024);
+        const chunks: Buffer[] = [];
         let size = 0;
         for (;;) {
           check();
@@ -123,12 +139,14 @@ export function describePublicationSource(
           bytes += n;
           if (size > maxFileBytes || bytes > maxBytes) fail();
           digest.update(buffer.subarray(0, n));
+          if (capture) chunks.push(Buffer.from(buffer.subarray(0, n)));
         }
         if (size !== stat.size) fail('publication.source_changed');
         unchanged(opened, fs.fstatSync(fd));
         unchanged(stat, fs.lstatSync(full));
         contained(fs.realpathSync(root), fs.realpathSync(full));
         facts.push([path.relative(source, full).split(path.sep).join('/'), digest.digest('hex')]);
+        if (capture) files.push({ path: path.relative(source, full).split(path.sep).join('/'), contentBase64: Buffer.concat(chunks).toString('base64') });
         observations.push([full, stat]);
       } finally { fs.closeSync(fd); }
     }
@@ -144,14 +162,14 @@ export function describePublicationSource(
   }
   unchanged(sourceStat, fs.lstatSync(source));
   check();
-  return {
+  return { files, descriptor: {
     local_skill_id: identity(root, source),
     workspace_generation: hash(JSON.stringify({
       domain: 'xiaoba-publication-source-v1', binding, root: fs.realpathSync(root),
       source: path.relative(root, source).split(path.sep).join('/'),
       dev: sourceStat.dev, ino: sourceStat.ino, facts,
     })),
-  };
+  } };
 }
 
 // Resolve only a scoped opaque reference, never a caller-provided path. This
