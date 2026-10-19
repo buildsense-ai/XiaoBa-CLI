@@ -1686,7 +1686,12 @@ export class CatsCompanyBot {
     if (!session?.recordSentRemoteIds) {
       // 记不上就是去重失效：远端副本下次会被重复插入。静默跳过与正常记账在
       // 日志上必须能区分，否则线上出现重复时无从查起。
-      Logger.warning(`[${topic}] 未找到群会话，已发送消息的 seq 未记账（回填可能重复）`);
+      //
+      // 措辞刻意保持中性：会话有 60 分钟 TTL，而 lastActiveAt 只在几个离散点
+      // 刷新，跑得比 TTL 还长的回合会被回收——那属于已知的记账盲区，不是配置错误。
+      Logger.warning(
+        `[${topic}] 会话不在内存中（可能已过期回收），本次 ${seqs.length} 条 seq 未记账，回填可能重复`,
+      );
       return;
     }
     try {
