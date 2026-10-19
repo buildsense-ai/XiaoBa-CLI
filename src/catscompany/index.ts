@@ -684,9 +684,10 @@ export class CatsCompanyBot {
     // 已不可写。触发熔断并停止对应会话的循环工作，避免消息发不出去时
     // 仍持续空转（每轮全量推理、发送再被拒）。
     this.sender.onTopicSendBlocked = (topic, code) => this.handleTopicSendBlockedNotice(topic, code);
-    // 发送成功后记账，供回填去重认出「远端那条就是我发的」。挂在发送动作里而
-    // 不是让 18 个调用点各自记得——漏掉任何一个，那条回复下次回填就会重复。
-    this.sender.onTextSent = (topic, seqs) => this.recordSentRemoteIdsForTopic(topic, seqs);
+    // 持久消息发送成功后记账，供回填去重认出「远端那条就是我发的」。挂在 send()
+    // 里而不是让调用方各自记得：文本走 reply、附件走 sendFile，两条路径都经过
+    // send()，漏掉附件同样会在回填时重复插入。
+    this.sender.onDurableMessageSent = (topic, seqs) => this.recordSentRemoteIdsForTopic(topic, seqs);
     this.localDeviceGrant = createCatsCoLocalDeviceGrant({
       bodyId: config.bodyId,
       installationId: config.installationId,
@@ -1679,10 +1680,15 @@ export class CatsCompanyBot {
    */
   private recordSentRemoteIdsForTopic(topic: string, seqs: number[]): void {
     if (!topic.startsWith('grp_') || seqs.length === 0) return;
-    const session = this.sessionManager.get?.(
+    const session = this.sessionManager.get(
       buildCatsCoSessionKey('group', topic, String(this.botUid || this.bot?.uid || '')),
     );
-    if (!session?.recordSentRemoteIds) return;
+    if (!session?.recordSentRemoteIds) {
+      // 记不上就是去重失效：远端副本下次会被重复插入。静默跳过与正常记账在
+      // 日志上必须能区分，否则线上出现重复时无从查起。
+      Logger.warning(`[${topic}] 未找到群会话，已发送消息的 seq 未记账（回填可能重复）`);
+      return;
+    }
     try {
       session.recordSentRemoteIds(REMOTE_CONTEXT_SOURCE, seqs);
     } catch (err: any) {

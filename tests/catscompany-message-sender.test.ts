@@ -1,5 +1,8 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { CatsSendError } from '../src/catscompany/client';
 import { MessageSender } from '../src/catscompany/message-sender';
 
@@ -208,18 +211,22 @@ describe('CatsCompany MessageSender sent-seq bookkeeping', () => {
     const sender = new MessageSender({
       sendStructuredMessage: async () => next++,
     } as any, 'https://app.example.test', 'cc_test');
-    sender.onTextSent = (topic, seqs) => recorded.push({ topic, seqs });
+    sender.onDurableMessageSent = (topic, seqs) => recorded.push({ topic, seqs });
 
     const first = 'a'.repeat(3900);
     const second = 'b'.repeat(300);
     await sender.reply('grp_42', `${first}\n${second}`);
 
-    assert.deepEqual(recorded, [{ topic: 'grp_42', seqs: [700, 701] }]);
+    // 每段各自发送、各自记账；调用方拿到的是逐条 seq。
+    assert.deepEqual(recorded, [
+      { topic: 'grp_42', seqs: [700] },
+      { topic: 'grp_42', seqs: [701] },
+    ]);
   });
 
   test('reports the segments that did go out when a later one fails', async () => {
-    // 已经发出去的分段同样会被回填重复插入。异常穿透时若不交出它们的 seq，
-    // 前面几段就永远认不回来——调用方的 catch 只看得到错误。
+    // 已经发出去的分段同样会被回填重复插入。记账挂在 send() 成功处，所以第 1 段
+    // 的 seq 在异常穿透前就已经记下了。
     const recorded: Array<{ topic: string; seqs: number[] }> = [];
     let calls = 0;
     const sender = new MessageSender({
@@ -229,7 +236,7 @@ describe('CatsCompany MessageSender sent-seq bookkeeping', () => {
         return 900;
       },
     } as any, 'https://app.example.test', 'cc_test');
-    sender.onTextSent = (topic, seqs) => recorded.push({ topic, seqs });
+    sender.onDurableMessageSent = (topic, seqs) => recorded.push({ topic, seqs });
 
     const first = 'a'.repeat(3900);
     const second = 'b'.repeat(300);
@@ -238,12 +245,49 @@ describe('CatsCompany MessageSender sent-seq bookkeeping', () => {
     assert.deepEqual(recorded, [{ topic: 'grp_42', seqs: [900] }]);
   });
 
+  test('reports an attachment send, which does not go through reply()', async () => {
+    // 附件走 sendFile，不经过 reply。服务端把 image/file 列为持久类型，它们同样
+    // 会进回填；只挂 reply 会漏掉这一整条路径。
+    const recorded: Array<{ topic: string; seqs: number[] }> = [];
+    const sender = new MessageSender({
+      uploadFile: async () => ({ url: '/uploads/files/a.txt', name: 'a.txt', size: 3 }),
+      sendStructuredMessage: async () => 1234,
+    } as any, 'https://app.example.test', 'cc_test');
+    sender.onDurableMessageSent = (topic, seqs) => recorded.push({ topic, seqs });
+
+    const filePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cats-sender-')), 'a.txt');
+    fs.writeFileSync(filePath, 'abc');
+    await sender.sendFile('grp_42', filePath, 'a.txt');
+
+    assert.deepEqual(recorded, [{ topic: 'grp_42', seqs: [1234] }]);
+  });
+
+  test('does not report transient kinds that never reach history', async () => {
+    // thinking / tool_use / task_status 不在服务端的持久白名单里，不会进回填，
+    // 记它们只会让运行态无谓增长。
+    const recorded: number[][] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async () => 1,
+    } as any, 'https://app.example.test', 'cc_test');
+    sender.onDurableMessageSent = (_topic, seqs) => recorded.push(seqs);
+
+    await sender.sendThinking('grp_42', '思考中');
+    await sender.sendToolUse('grp_42', 'call_1', 'glob', { pattern: '*' });
+    await sender.sendTaskStatus('grp_42', {
+      run_id: 'run-1',
+      state: 'running',
+      summary: '处理中',
+    });
+
+    assert.deepEqual(recorded, []);
+  });
+
   test('does not report when nothing was sent', async () => {
     const recorded: number[][] = [];
     const sender = new MessageSender({
       sendStructuredMessage: async () => 1,
     } as any, 'https://app.example.test', 'cc_test');
-    sender.onTextSent = (_topic, seqs) => recorded.push(seqs);
+    sender.onDurableMessageSent = (_topic, seqs) => recorded.push(seqs);
 
     await sender.reply('grp_42', '   ');
 
@@ -258,7 +302,7 @@ describe('CatsCompany MessageSender sent-seq bookkeeping', () => {
         return 5;
       },
     } as any, 'https://app.example.test', 'cc_test');
-    sender.onTextSent = () => {
+    sender.onDurableMessageSent = () => {
       throw new Error('bookkeeping blew up');
     };
 

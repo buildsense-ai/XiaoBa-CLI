@@ -139,13 +139,24 @@ export class MessageSender {
   onTopicSendBlocked: ((topic: string, code?: number) => void) | null = null;
 
   /**
-   * 文本发送成功后回调（topic + 本次各分段的 seq）。
+   * 会被回填的持久消息类型，与服务端 durable 白名单的交集
+   * （`server/message_visibility.go`：text / image / voice / file）。只有这些类型
+   * 会出现在群历史回填里，也就只有它们的 seq 需要记住。
    *
-   * 记账放在发送动作内部，而不是让每个调用点自己记得：`reply` 有 18 个调用方，
-   * 漏掉任何一个都会让那条回复在下次回填历史时被重复插入。调用方拿到的是
-   * 「这条是我发的」的凭据，用于认出远端回填回来的副本。
+   * 这里不含 `voice`：客户端不发送该类型（见 `CatsMessageType`）。服务端白名单
+   * 里留着它是给别的上报方用的，与本客户端的记账无关。
    */
-  onTextSent: ((topic: string, seqs: number[]) => void) | null = null;
+  private static readonly DURABLE_MESSAGE_TYPES: ReadonlySet<CatsMessageType> =
+    new Set<CatsMessageType>(['text', 'image', 'file']);
+
+  /**
+   * 持久消息发送成功后回调（topic + 本次各分段的 seq）。
+   *
+   * 记账挂在 `send()` 而不是某个调用方：文本走 `reply`、附件走 `sendFile`，两条
+   * 路径都经过 `send()`。只挂 `reply` 会漏掉附件——bot 自己发的图片和文件同样
+   * 会进回填，认不出就会重复插入。以后新增持久类型也自动覆盖。
+   */
+  onDurableMessageSent: ((topic: string, seqs: number[]) => void) | null = null;
 
   private readonly topicFailureStreak = new Map<string, number>();
 
@@ -183,6 +194,7 @@ export class MessageSender {
     try {
       const seq = await this.bot.sendStructuredMessage(body);
       this.topicFailureStreak.delete(topic);
+      this.notifyDurableMessageSent(topic, type, seq);
       return { seq_id: seq };
     } catch (err: any) {
       if (err instanceof CatsSendError && (err.kind === 'transport' || err.retryableWithHttp)) {
@@ -198,6 +210,7 @@ export class MessageSender {
           const result = await this.sendViaHttp(body);
           this.topicFailureStreak.delete(topic);
           Logger.info(`HTTP 兜底发送成功（${describeMessage(body)}, seq_id=${result.seq_id}）`);
+          this.notifyDurableMessageSent(topic, type, result.seq_id);
           return result;
         } catch (httpErr: any) {
           // WS 兜底到 HTTP 后仍被永久拒绝（例如 WS ack 超时窗口内被踢出群）
@@ -313,8 +326,8 @@ export class MessageSender {
   /**
    * 发送回复，返回各分段在服务端的 seq。
    *
-   * 调用方用这些 seq 记住「这条是我发的」，回填历史时才能认出远端副本，不必
-   * 比对正文——正文会被拆段、剥前缀、被服务端改写。
+   * 记账不在这里做：每段经 `sendText` → `send`，`send` 成功即按持久类型回调，
+   * 所以中途失败时已发出的分段也已经记过账。
    */
   async reply(topic: string, text: string): Promise<number[]> {
     const normalized = typeof text === 'string' ? text.trim() : '';
@@ -325,25 +338,18 @@ export class MessageSender {
     const segments = this.splitText(normalized, MAX_MSG_LENGTH);
     const seqs: number[] = [];
     for (const seg of segments) {
-      let seq: number;
-      try {
-        seq = await this.sendText(topic, seg);
-      } catch (err) {
-        // 已经发出去的分段同样会被回填重复插入，所以失败前也要把它们的 seq
-        // 交出去；否则调用方只能看到异常，前面几段永远认不回来。
-        this.notifyTextSent(topic, seqs);
-        throw err;
-      }
+      const seq = await this.sendText(topic, seg);
       if (Number.isFinite(seq) && seq > 0) seqs.push(seq);
     }
-    this.notifyTextSent(topic, seqs);
     return seqs;
   }
 
-  private notifyTextSent(topic: string, seqs: number[]): void {
-    if (!this.onTextSent || seqs.length === 0) return;
+  private notifyDurableMessageSent(topic: string, type: CatsMessageType, seq: number): void {
+    if (!this.onDurableMessageSent) return;
+    if (!Number.isFinite(seq) || seq <= 0) return;
+    if (!MessageSender.DURABLE_MESSAGE_TYPES.has(type)) return;
     try {
-      this.onTextSent(topic, [...seqs]);
+      this.onDurableMessageSent(topic, [seq]);
     } catch (err: any) {
       // 回调只是记账，失败不该影响已经发出的消息。
       Logger.warning(`发送后回调失败 (topic=${topic}): ${err?.message || err}`);
