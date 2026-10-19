@@ -663,10 +663,6 @@ export class AgentSession {
     return this.lifecycleManager.recordSentRemoteIds(source, ids);
   }
 
-  getSentRemoteIds(source: string): number[] {
-    return this.lifecycleManager.loadSentRemoteIds(source);
-  }
-
   /**
    * 注入给 agent 可见的运行时反馈。
    * 反馈会暂存在 turn-scoped buffer，下一次真正执行 handleMessage 时才进入本轮上下文。

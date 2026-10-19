@@ -200,3 +200,71 @@ describe('CatsCompany MessageSender reply length handling', () => {
     }
   });
 });
+
+describe('CatsCompany MessageSender sent-seq bookkeeping', () => {
+  test('reports every segment seq after a successful reply', async () => {
+    const recorded: Array<{ topic: string; seqs: number[] }> = [];
+    let next = 700;
+    const sender = new MessageSender({
+      sendStructuredMessage: async () => next++,
+    } as any, 'https://app.example.test', 'cc_test');
+    sender.onTextSent = (topic, seqs) => recorded.push({ topic, seqs });
+
+    const first = 'a'.repeat(3900);
+    const second = 'b'.repeat(300);
+    await sender.reply('grp_42', `${first}\n${second}`);
+
+    assert.deepEqual(recorded, [{ topic: 'grp_42', seqs: [700, 701] }]);
+  });
+
+  test('reports the segments that did go out when a later one fails', async () => {
+    // 已经发出去的分段同样会被回填重复插入。异常穿透时若不交出它们的 seq，
+    // 前面几段就永远认不回来——调用方的 catch 只看得到错误。
+    const recorded: Array<{ topic: string; seqs: number[] }> = [];
+    let calls = 0;
+    const sender = new MessageSender({
+      sendStructuredMessage: async () => {
+        calls++;
+        if (calls === 2) throw new Error('send failed');
+        return 900;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+    sender.onTextSent = (topic, seqs) => recorded.push({ topic, seqs });
+
+    const first = 'a'.repeat(3900);
+    const second = 'b'.repeat(300);
+    await assert.rejects(() => sender.reply('grp_42', `${first}\n${second}`));
+
+    assert.deepEqual(recorded, [{ topic: 'grp_42', seqs: [900] }]);
+  });
+
+  test('does not report when nothing was sent', async () => {
+    const recorded: number[][] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async () => 1,
+    } as any, 'https://app.example.test', 'cc_test');
+    sender.onTextSent = (_topic, seqs) => recorded.push(seqs);
+
+    await sender.reply('grp_42', '   ');
+
+    assert.deepEqual(recorded, []);
+  });
+
+  test('a throwing bookkeeping callback does not break the send', async () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return 5;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+    sender.onTextSent = () => {
+      throw new Error('bookkeeping blew up');
+    };
+
+    const seqs = await sender.reply('grp_42', 'hello');
+
+    assert.deepEqual(seqs, [5]);
+    assert.equal(sent.length, 1, '消息本身仍然发出去了');
+  });
+});

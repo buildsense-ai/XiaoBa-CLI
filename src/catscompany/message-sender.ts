@@ -138,6 +138,15 @@ export class MessageSender {
    */
   onTopicSendBlocked: ((topic: string, code?: number) => void) | null = null;
 
+  /**
+   * 文本发送成功后回调（topic + 本次各分段的 seq）。
+   *
+   * 记账放在发送动作内部，而不是让每个调用点自己记得：`reply` 有 18 个调用方，
+   * 漏掉任何一个都会让那条回复在下次回填历史时被重复插入。调用方拿到的是
+   * 「这条是我发的」的凭据，用于认出远端回填回来的副本。
+   */
+  onTextSent: ((topic: string, seqs: number[]) => void) | null = null;
+
   private readonly topicFailureStreak = new Map<string, number>();
 
   constructor(private bot: CatsClient, baseUrl?: string, apiKey?: string) {
@@ -316,10 +325,29 @@ export class MessageSender {
     const segments = this.splitText(normalized, MAX_MSG_LENGTH);
     const seqs: number[] = [];
     for (const seg of segments) {
-      const seq = await this.sendText(topic, seg);
+      let seq: number;
+      try {
+        seq = await this.sendText(topic, seg);
+      } catch (err) {
+        // 已经发出去的分段同样会被回填重复插入，所以失败前也要把它们的 seq
+        // 交出去；否则调用方只能看到异常，前面几段永远认不回来。
+        this.notifyTextSent(topic, seqs);
+        throw err;
+      }
       if (Number.isFinite(seq) && seq > 0) seqs.push(seq);
     }
+    this.notifyTextSent(topic, seqs);
     return seqs;
+  }
+
+  private notifyTextSent(topic: string, seqs: number[]): void {
+    if (!this.onTextSent || seqs.length === 0) return;
+    try {
+      this.onTextSent(topic, [...seqs]);
+    } catch (err: any) {
+      // 回调只是记账，失败不该影响已经发出的消息。
+      Logger.warning(`发送后回调失败 (topic=${topic}): ${err?.message || err}`);
+    }
   }
 
   sendTyping(topic: string): void {
