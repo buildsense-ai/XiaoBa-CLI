@@ -42,6 +42,15 @@ test('default off, explicit authority checks, no hidden transport or source muta
   assert.ok(!JSON.stringify(receipt).includes(root));
 });
 
+test('strict input shape rejects coercion and extra identity fields before filesystem work',async()=>{
+  const good=input();
+  for(const invalid of [{...good,entryId:[good.entryId]},{...good,entryId:1},{...good,token:'not authority'},
+    {...good,binding:{...binding,ownerUid:7}},{...good,source:{...good.source,path:source}}]){
+    await assert.rejects(store().capture(invalid as any,check),code('publication.capture_invalid'));
+  }
+  assert.ok(!fs.existsSync(spool));
+});
+
 test('frozen raw binary and invalid metadata survive restart and source removal',async()=>{
   const malformed='---js\nthrow new Error("never execute")\n---\nprivate-secret';
   fs.writeFileSync(path.join(source,'SKILL.md'),malformed);

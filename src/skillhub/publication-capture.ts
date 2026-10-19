@@ -34,7 +34,7 @@ function canonical(value: any): string {
   return JSON.stringify(value);
 }
 function validateInput(input: PublicationCaptureInput): void {
-  if (!exact(input, 'binding,entryId,source') || !/^pubentry_[a-f0-9]{32}$/.test(input.entryId) ||
+  if (!exact(input, 'binding,entryId,source') || typeof input.entryId !== 'string' || !/^pubentry_[a-f0-9]{32}$/.test(input.entryId) ||
     !exact(input.binding, 'bodyId,botUid,installationId,ownerUid') || !exact(input.source, 'local_skill_id,workspace_generation') ||
     ![input.binding.botUid, input.binding.ownerUid].every(v => typeof v === 'string' && /^[1-9][0-9]{0,18}$/.test(v)) ||
     ![input.binding.bodyId, input.binding.installationId].every(v => typeof v === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(v)) ||
@@ -157,6 +157,9 @@ export class PublicationCaptureStore {
       return await withCurrentBotSkillWorkspaceWrite(context => {
         binding();
         if (context.deviceConnectorMode || context.botId !== input.binding.botUid || context.activeBotId !== input.binding.botUid) fail('publication.capture_conflict');
+        const planned = path.join(fs.realpathSync(runtime), 'data', 'skillhub-publications');
+        const relativeBefore = path.relative(fs.realpathSync(context.skillsRoot), planned);
+        if (!relativeBefore || (!relativeBefore.startsWith(`..${path.sep}`) && relativeBefore !== '..' && !path.isAbsolute(relativeBefore))) fail();
         let root = runtime;
         for (const name of ['data', 'skillhub-publications']) {
           root = path.join(root, name);
