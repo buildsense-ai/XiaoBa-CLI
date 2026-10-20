@@ -116,6 +116,7 @@ import {
 } from './skillhub-rpc';
 import { PUBLICATION_SOURCE_PROBE, publicationSourceProbeEnabled } from '../skillhub/publication-source';
 import { PUBLICATION_CAPTURE, publicationCaptureEnabled } from '../skillhub/publication-capture';
+import { PUBLICATION_UPLOAD, publicationUploadEnabled } from '../skillhub/publication-upload';
 
 interface PendingAttachment {
   fileName: string;
@@ -333,6 +334,7 @@ export function capabilitiesForCatsCompanyRuntimeRole(
     : [...CATSCOMPANY_SERVER_RUNTIME_DEVICE_CAPABILITIES];
   if (publicationSourceProbeEnabled()) capabilities.push(PUBLICATION_SOURCE_PROBE);
   if (publicationCaptureEnabled()) capabilities.push(PUBLICATION_CAPTURE);
+  if (publicationUploadEnabled()) capabilities.push(PUBLICATION_UPLOAD);
   return capabilities;
 }
 
@@ -1156,6 +1158,12 @@ export class CatsCompanyBot {
     if (this.shuttingDown) return;
     const requestID = request.request_id;
     if (!requestID) return;
+    // Upload grants are private bearer material. Bypass generic telemetry,
+    // argument summarization and tool fallback even when this capability is off.
+    if (request.tool_name === PUBLICATION_UPLOAD) {
+      await this.handleSkillHubThinToolRpcRequest(request);
+      return;
+    }
     Logger.info(`[CatsCompany][thin_tool_rpc] target received request: request=${requestID}, tool=${request.tool_name || ''}, targetOwner=${request.target_owner_user_id || ''}, targetDevice=${request.target_device_id || ''}, device=${request.device_id || ''}`);
 
     // Telemetry（仅 grep）：按 request 关联 start → execute-end → result-sent，

@@ -1,6 +1,18 @@
 import * as https from 'node:https';
 import type {IncomingMessage,ClientRequest} from 'node:http';
 import {PublicationCaptureStore,type PublicationCaptureInput} from './publication-capture';
+import {publicationCaptureEnabled} from './publication-capture';
+
+export const PUBLICATION_UPLOAD = 'skillhub.publication.upload.v1' as const;
+export function publicationUploadConfig() {
+  return { issuer: process.env.XIAOBA_SKILLHUB_PUBLICATION_ISSUER?.trim() ?? '',
+    audience: process.env.XIAOBA_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE?.trim() ?? '' };
+}
+export function publicationUploadEnabled(): boolean {
+  const c = publicationUploadConfig();
+  return publicationCaptureEnabled() && /^(1|true)$/i.test(process.env.XIAOBA_SKILLHUB_PUBLICATION_UPLOAD_ENABLED?.trim() ?? '') &&
+    origin(c.issuer) && origin(c.audience) && c.issuer !== c.audience;
+}
 
 const uploadPath='/api/skills/publication-delegations/candidates';
 const maxReply=8192;
@@ -82,9 +94,9 @@ function project(text:string,status:number,g:PublicationUploadGrant):Publication
   return r;
 }
 
-// Internal only: no RPC/tool, capability advertisement, environment enablement,
-// credential acquisition or retry scheduler. The future authenticated CatsCo
-// adapter supplies a byte-bound grant AND a synchronous live-route guard.
+// Internal uploader. Only the reserved authenticated CatsCo upload adapter
+// supplies its byte-bound grant and synchronous live-route guard. No model tool,
+// user entry point or retry scheduler invokes it.
 export class PublicationCandidateUploader {
   #active=0;
   readonly #settings: {runtimeRoot:string;enabled?:boolean;issuer:string;audience:string};

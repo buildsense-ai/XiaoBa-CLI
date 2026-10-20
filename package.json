@@ -25,6 +25,7 @@
     "test:cross-repo:publication-probe": "node scripts/cross-repo-publication-probe.mjs",
     "test:cross-repo:publication-capture": "node scripts/cross-repo-publication-capture.mjs",
     "test:cross-repo:publication-capture-rpc": "node scripts/cross-repo-publication-capture-rpc.mjs",
+    "test:cross-repo:publication-upload-rpc": "node scripts/cross-repo-publication-upload-rpc.mjs",
     "test:cross-repo:catslog-memory": "node scripts/catslog-agent-memory-smoke.mjs",
     "test:legacy": "node scripts/run-tests.mjs legacy",
     "test:all": "node scripts/run-tests.mjs all",

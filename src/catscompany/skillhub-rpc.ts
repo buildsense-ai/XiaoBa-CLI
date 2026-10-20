@@ -42,6 +42,10 @@ import {
   PUBLICATION_CAPTURE, PublicationCaptureStore, publicationCaptureEnabled,
 } from '../skillhub/publication-capture';
 import {
+  PUBLICATION_UPLOAD, PublicationCandidateUploader, PublicationUploadError,
+  publicationUploadEnabled, publicationUploadConfig, type PublicationUploadGrant,
+} from '../skillhub/publication-upload';
+import {
   CatsCoBotSwitchGuardError,
   verifyCatsCoBotSwitchBinding,
 } from './bot-switch-guard';
@@ -137,6 +141,9 @@ export interface SkillHubThinRpcHandlerOptions {
   allowBotSwitch?: boolean;
   publicationProbeEnabled?: boolean;
   publicationCaptureEnabled?: boolean;
+  publicationUploadEnabled?: boolean;
+  /** Internal dependency injection only, never a serialized option. */
+  publicationUploader?: Pick<PublicationCandidateUploader, 'upload'>;
   now?: () => Date;
 }
 
@@ -160,6 +167,9 @@ export class SkillHubThinRpcHandler {
   private readonly publicationCaptureStore: PublicationCaptureStore;
   private readonly publicationCaptureEnabled: boolean;
   private publicationCaptures = 0;
+  private readonly publicationUploadEnabled: boolean;
+  private readonly publicationUploader: Pick<PublicationCandidateUploader, 'upload'>;
+  private publicationUploads = 0;
   private readonly now: () => Date;
   private readonly completed = new Map<string, {
     fingerprint: string;
@@ -196,12 +206,18 @@ export class SkillHubThinRpcHandler {
     this.publicationCaptureStore = new PublicationCaptureStore({
       runtimeRoot: this.runtimeRoot, enabled: this.enabled && this.publicationCaptureEnabled,
     });
+    this.publicationUploadEnabled = this.publicationCaptureEnabled &&
+      (options.publicationUploadEnabled ?? publicationUploadEnabled());
+    this.publicationUploader = options.publicationUploader ?? new PublicationCandidateUploader({
+      runtimeRoot: this.runtimeRoot, enabled: this.enabled && this.publicationUploadEnabled, ...publicationUploadConfig(),
+    }, { timeoutMs: 45_000 });
     this.now = options.now ?? (() => new Date());
   }
 
   supports(toolName: string): boolean {
     if (toolName === PUBLICATION_SOURCE_PROBE) return this.enabled && this.publicationProbeEnabled;
     if (toolName === PUBLICATION_CAPTURE) return this.enabled && this.publicationCaptureEnabled;
+    if (toolName === PUBLICATION_UPLOAD) return this.enabled && this.publicationUploadEnabled;
     return this.enabled
       && Object.values(SKILLHUB_THIN_RPC_TOOLS).includes(toolName as any)
       && (toolName !== SKILLHUB_THIN_RPC_TOOLS.switchBot || this.allowBotSwitch);
@@ -213,6 +229,8 @@ export class SkillHubThinRpcHandler {
     // Retained candidates have their own durable identity. Never cache a receipt
     // by request ID or skip current scope/deadline checks on replay.
     if (request.tool_name === PUBLICATION_CAPTURE) return this.capturePublicationSource(request);
+    // Never retain bearer grants in the generic request-id cache.
+    if (request.tool_name === PUBLICATION_UPLOAD) return this.uploadPublicationCandidate(request);
     this.assertOperational(request);
     if (String(request.tool_name || '').startsWith('knowledge.')) return this.executeOnce(request);
     const requestID = String(request.request_id || '').trim();
@@ -445,6 +463,81 @@ export class SkillHubThinRpcHandler {
         : 'publication.runtime_unavailable';
       throw new SkillHubThinRpcError(code, 'The publication candidate could not be captured. No upload was started.');
     } finally { this.publicationCaptures--; }
+  }
+
+  private async uploadPublicationCandidate(request: CatsThinToolRpcMessage): Promise<Record<string, unknown>> {
+    if (!this.enabled || !this.publicationUploadEnabled) {
+      throw new SkillHubThinRpcError('publication.runtime_unsupported', 'Publication upload is disabled.');
+    }
+    if (this.publicationUploads >= 2) {
+      throw new SkillHubThinRpcError('publication.upload_busy', 'Publication upload is busy.');
+    }
+    this.publicationUploads++;
+    let guard: NodeJS.Timeout | undefined;
+    const abort = new AbortController();
+    try {
+      this.assertOperational(request);
+      const payload = request.payload;
+      if (request.type !== 'request' || request.result !== undefined || request.error !== undefined ||
+        typeof request.request_id !== 'string' || !/^pubuploadrpc_[A-Za-z0-9_-]{16,64}$/.test(request.request_id) ||
+        !Number.isSafeInteger(request.expires_at) || Number(request.expires_at) > Date.now() + 61_000 ||
+        !payload || Array.isArray(payload) || Object.keys(payload).sort().join(',') !== 'bot_uid,entry_id,grant,local_skill_id,workspace_generation' ||
+        typeof payload.entry_id !== 'string' || !/^pubentry_[a-f0-9]{32}$/.test(payload.entry_id) ||
+        typeof payload.bot_uid !== 'string' || !/^[1-9][0-9]{0,18}$/.test(payload.bot_uid) ||
+        typeof payload.local_skill_id !== 'string' || !/^pubsrc-[a-f0-9]{48}$/.test(payload.local_skill_id) ||
+        typeof payload.workspace_generation !== 'string' || !/^[a-f0-9]{64}$/.test(payload.workspace_generation) ||
+        !payload.grant || typeof payload.grant !== 'object' || Array.isArray(payload.grant)) {
+        throw new SkillHubThinRpcError('INVALID_REQUEST', 'Invalid publication upload request.');
+      }
+      // The uploader performs exact grant-schema and byte-binding validation.
+      // Clone nested binding before any asynchronous work; never store/cache it.
+      const raw = payload.grant as PublicationUploadGrant;
+      const grant = { ...raw, binding: raw.binding && { ...raw.binding } };
+      request = { ...request, payload: { ...payload, grant } };
+      const botUid = payload.bot_uid;
+      const binding = this.publicationBinding(botUid);
+      const deadline = Math.min(Number(request.expires_at), Date.now() + 45_000);
+      const check = () => {
+        this.assertOperational(request);
+        if (Date.now() >= deadline) throw new PublicationUploadError('inactive');
+        this.assertRequestScope(request, botUid, true);
+        if (request.target_owner_user_id !== `usr${binding.ownerUid}`) {
+          throw new SkillHubThinRpcError('OWNER_MISMATCH', 'Invalid publication owner.');
+        }
+        if (request.target_device_id !== binding.installationId || request.device_id !== binding.installationId) {
+          throw new SkillHubThinRpcError('DEVICE_MISMATCH', 'Invalid publication device.');
+        }
+        if (JSON.stringify(this.publicationBinding(botUid)) !== JSON.stringify(binding)) {
+          throw new PublicationUploadError('inactive');
+        }
+      };
+      check();
+      // Shutdown/owner/body switches abort stalled network I/O, not just the
+      // eventual response. At most two bounded operations own these timers.
+      guard = setInterval(() => { try { check(); } catch { abort.abort(); } }, 250);
+      guard.unref();
+      const result = await this.publicationUploader.upload({
+        entryId: payload.entry_id, binding,
+        source: { local_skill_id: payload.local_skill_id, workspace_generation: payload.workspace_generation },
+      }, grant, check, abort.signal);
+      check();
+      if (!result.accepted || result.association.entryRequestId !== payload.entry_id) {
+        throw new PublicationUploadError('protocol');
+      }
+      // An untrusted runtime ACK is not CatsCo's authenticated Cloud receipt.
+      // Do not return the bearer, package data, URLs or Cloud task metadata.
+      return { schemaVersion: 1, entryId: payload.entry_id, authorityEpoch: grant.authorityEpoch, accepted: true };
+    } catch (error) {
+      const requestCodes = new Set(['INVALID_REQUEST', 'OWNER_MISMATCH', 'DEVICE_MISMATCH', 'REQUEST_EXPIRED', 'BOT_NOT_ACTIVE']);
+      const code = error instanceof PublicationUploadError ? error.code
+        : error instanceof SkillHubThinRpcError && requestCodes.has(error.code) ? error.code
+        : 'publication.upload_unavailable';
+      throw new SkillHubThinRpcError(code, 'Publication upload could not be confirmed. No publication success is implied.');
+    } finally {
+      if (guard) clearInterval(guard);
+      abort.abort();
+      this.publicationUploads--;
+    }
   }
 
   private async applyDefinition(
