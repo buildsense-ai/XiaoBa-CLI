@@ -71,6 +71,11 @@ export interface McpToolBridgeOptions {
    * undefined = 不过滤（账号可见全部，兼容旧行为）；[] = 仅保留 catsco_run_status。
    */
   resolveAgentSlugs?: () => string[] | undefined;
+  /**
+   * 当前 Agent 的平台 bot_uid（调用时随参数上报，平台据此做归属/清单校验并落会话）。
+   * 返回 undefined / 0 = 不带 bot_uid（账号级调用，兼容旧服务端）。
+   */
+  resolveBotUid?: () => number | undefined;
   /** 最小刷新间隔（默认 30s），避免密集轮次反复打端点。 */
   refreshIntervalMs?: number;
   runStatusToolName?: string;
@@ -102,6 +107,10 @@ const TOOL_ERROR_MESSAGES: Record<string, string> = {
   unauthorized: 'CatsCo 登录态无效或已过期，请在 CatsCo 面板重新登录后重试。',
   subscription_required: '当前账号尚未添加该 Agent 工具，请先在「Agent 工具」面板添加后重试。',
   agent_not_subscribed: '该 Agent 已从当前账号清单中移除，请先在「Agent 工具」面板重新添加后再调用。',
+  agent_not_enabled_for_bot: '这个 Agent 没启用给当前 bot：请先在「Agent 工具」面板勾选启用后重试。',
+  bot_not_owned: '当前登录账号不是这个 bot 的拥有者，无法代其调用。',
+  bot_not_found: '上报的 bot 不存在或已删除。',
+  bot_identity_unavailable: '服务端尚未开启 bot 身份校验，本次调用未上报 bot 身份。',
   session_busy: '该会话已有进行中的运行：请等待其完成，或先用「catsco_run_status」查询进度；若是新任务，请不带 session_id 重新调用。',
   run_id_required: '缺少 run_id 参数。',
   run_not_found: '未找到该 run（可能已过期，或不属于当前账号）。',
@@ -112,6 +121,7 @@ export class CatsCoMcpToolBridge {
   private readonly createClient: McpBridgeClientFactory;
   private readonly resolveEndpoint: () => McpBridgeEndpoint | null;
   private readonly resolveAgentSlugs?: () => string[] | undefined;
+  private readonly resolveBotUid?: () => number | undefined;
   private readonly toolNamePrefix: string;
   private readonly refreshIntervalMs: number;
   private readonly runStatusToolName: string;
@@ -133,6 +143,7 @@ export class CatsCoMcpToolBridge {
     this.createClient = options.createClient;
     this.resolveEndpoint = options.resolveEndpoint;
     this.resolveAgentSlugs = options.resolveAgentSlugs;
+    this.resolveBotUid = options.resolveBotUid;
     this.toolNamePrefix = options.toolNamePrefix ?? DEFAULT_TOOL_PREFIX;
     this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
     this.runStatusToolName = options.runStatusToolName ?? DEFAULT_RUN_STATUS_TOOL;
@@ -290,9 +301,28 @@ export class CatsCoMcpToolBridge {
     };
   }
 
+  /**
+   * 给远端 Agent 工具补上 bot_uid（设计 P1b）：
+   * 只对本桥接前缀的「调用类」工具注入（run_status 查询不需要，也不该多传字段）；
+   * 调用方显式带了 bot_uid 则不覆盖；拿不到 bot 身份则保持账号级调用（兼容旧服务端）。
+   */
+  private withBotIdentity(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+    if (!this.resolveBotUid) return args;
+    if (toolName === this.runStatusToolName) return args;
+    if (!toolName.startsWith(this.toolNamePrefix)) return args;
+    if (args.bot_uid !== undefined) return args;
+    let botUid: number | undefined;
+    try {
+      botUid = this.resolveBotUid();
+    } catch {
+      return args;
+    }
+    if (typeof botUid !== 'number' || !Number.isFinite(botUid) || botUid <= 0) return args;
+    return { ...args, bot_uid: botUid };
+  }
+
   /** 执行远端工具的完整链路：连接 → call →（running 时轮询）→ 映射结果。 */
-  async executeRemoteTool(
-    toolName: string,
+  async executeRemoteTool(    toolName: string,
     args: Record<string, unknown>,
     route?: { conversationSessionKey?: string; conversationTopic?: string },
   ): Promise<ToolExecutionResult> {
@@ -306,7 +336,7 @@ export class CatsCoMcpToolBridge {
     }
     const client = this.createClient(endpoint);
     try {
-      const first = await client.callTool(toolName, args);
+      const first = await client.callTool(toolName, this.withBotIdentity(toolName, args));
       if (first.isError) {
         // 服务端 isError 文本有两种形态：裸码（如 unauthorized）或「码: 说明」
         // （如 session_busy: …）。拆出裸码做程序化匹配，说明文本兜底展示。

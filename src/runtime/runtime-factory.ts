@@ -143,6 +143,16 @@ export class RuntimeFactory {
             return undefined;
           }
         },
+        // 平台 bot 身份：随 tools/call 上报 bot_uid，平台据此做归属/清单校验并落会话（设计 P1b）。
+        resolveBotUid: () => {
+          try {
+            const raw = localConfig.getAuthState().botUid;
+            const botUid = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? '').trim(), 10);
+            return Number.isFinite(botUid) && botUid > 0 ? botUid : undefined;
+          } catch {
+            return undefined;
+          }
+        },
         resolveEndpoint: () => {
           const auth = localConfig.getAuthState();
           const token = (auth.token ?? '').trim();
