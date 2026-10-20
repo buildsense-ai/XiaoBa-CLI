@@ -120,6 +120,11 @@ export class ToolManager implements ToolExecutor {
     this.tools.set(tool.definition.name, tool);
   }
 
+  /** 注销工具（MCP 工具桥按远端清单 diff 增量维护时使用）。 */
+  unregisterTool(name: string): void {
+    this.tools.delete(name);
+  }
+
   setContextDefaults(contextDefaults: Partial<ToolExecutionContext>): void {
     this.contextDefaults = {
       ...this.contextDefaults,

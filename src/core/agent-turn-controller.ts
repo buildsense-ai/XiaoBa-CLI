@@ -172,6 +172,8 @@ export interface AgentTurnServices {
   };
   /** Device-bound CatsLog read capability, scoped to the memory branch. */
   catslogMemory?: CatsLogMemoryBackend;
+  /** CatsCo MCP 工具桥（可选；远端定制 Agent 作为本地工具）。 */
+  mcpToolBridge?: import('../mcp/mcp-tool-bridge').CatsCoMcpToolBridge;
   toolManager: ToolManager;
   skillManager: SkillManager;
   turnSkillSnapshotStore?: TurnSkillSnapshotStore;
@@ -292,6 +294,14 @@ export class AgentTurnController {
       turnStartedAt,
     });
     const episodeId = this.createEpisodeId(turnNumber);
+    // CatsCo Agent 工具桥：本轮的工具清单只在回合开始时快照一次，而桥接首次同步是异步的
+    // ——不等待会出现「首发消息整轮看不到远端工具」。ensureReady 只在从未成功同步时
+    // 有界等待（≤3s，通常 ~1s），之后立即返回；远端清单更新仍是后台 fire-and-forget。
+    const mcpToolBridge = this.options.services.mcpToolBridge;
+    if (mcpToolBridge) {
+      await mcpToolBridge.ensureReady();
+      mcpToolBridge.refreshInBackground();
+    }
     const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
     const branchAgentsEnabled = this.isMemoryBranchEnabled();
     const carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
