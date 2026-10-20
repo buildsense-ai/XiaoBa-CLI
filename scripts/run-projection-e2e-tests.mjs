@@ -23,6 +23,7 @@ const rootDir = path.resolve(__dirname, '..');
 
 const TEST_FILES = [
   'tests/catslog-projection-reference-e2e.test.ts',
+  'tests/catslog-projection-runner.test.ts',
 ];
 
 const tsxCli = path.join(rootDir, 'node_modules', 'tsx', 'dist', 'cli.mjs');

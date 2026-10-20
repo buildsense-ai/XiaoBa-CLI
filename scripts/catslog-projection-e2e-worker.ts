@@ -37,8 +37,9 @@ async function main() {
     assert.equal(artifact.request_counts.bootstrap, 0, 'Skill capability was misused as login token');
     assert.ok(run.requests.every(r => r.capability_matches_initial), 'unexpected capability used');
     assert.ok(run.requests.filter(r => r.path.endsWith('/source/read')).length <= 2, 'shared expansion call budget exceeded');
-    const viewChars = [...run.delivered.values()].reduce((sum, view) => sum + JSON.stringify(view).length, 0);
-    assert.ok(viewChars <= 16_000, 'shared whole-view budget exceeded');
+    const viewBytes = Buffer.byteLength(JSON.stringify({ retained_remote_evidence: [...run.delivered].map(([ref, semantic_view]) => ({ ref, semantic_view })) }), 'utf8');
+    artifact.retained_evidence_bytes = viewBytes;
+    assert.ok(viewBytes <= 16_000, 'shared whole-view budget exceeded');
     const view = run.retained[0].semantic_view;
     artifact.projection_counts = { node_count: view.nodes.length, edge_count: view.edges.length, condition_count: view.conditions.length, omission_count: view.omissions.length };
     for (const [key, expected] of Object.entries(manifest.oracle)) {

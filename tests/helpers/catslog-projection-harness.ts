@@ -191,6 +191,15 @@ export function assertPositiveFlow(run: Awaited<ReturnType<typeof runActualFlow>
   assert.ok(run.cited.length > 0, 'main fake output cited no supplied ref');
   for (const ref of run.cited) assert.ok(run.observed.includes(ref) && run.delivered.has(ref));
   const visible = JSON.stringify([...run.branchCalls.map(c => c.messages), ...run.mainCalls]);
+  for (const response of run.successfulReads.values()) {
+    for (const source of response.sources ?? []) {
+      if (typeof source.text === 'string' && source.text.length > 256) assert.ok(!visible.includes(source.text), 'raw source proof page injected whole');
+    }
+    for (const key of ['PrincipalID', 'MemoryScopeID']) {
+      const privateId = response.projection?.[key];
+      if (typeof privateId === 'string' && privateId.length > 8) assert.ok(!visible.includes(privateId), `private ${key} leaked`);
+    }
+  }
   assert.ok(!visible.includes('RAW_SOURCE_PAGE_REPROOF_ONLY_SENTINEL'), 'raw source page injected');
   assert.ok(!visible.includes('private-principal-sentinel') && !visible.includes('private-scope-sentinel'), 'private identity leaked');
 }

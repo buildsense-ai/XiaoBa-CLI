@@ -88,7 +88,7 @@ test('one shared call/view budget across multiple locators, raw pages excluded',
   const document = syntheticProjectionDocument(); document.nodes[0].text = 'bounded-node-'.repeat(600);
   await scenario({ count: 6, document }, { readAll: true }, (run, fixture) => {
     assertPositiveFlow(run, question, DEFAULT_ROOT_REF); assert.ok(fixture.reads <= 2);
-    assert.ok([...run.delivered.values()].reduce((n: number, v: any) => n + JSON.stringify(v).length, 0) <= 16_000);
+    assert.ok(Buffer.byteLength(JSON.stringify({ retained_remote_evidence: [...run.delivered].map(([ref, semantic_view]: any) => ({ ref, semantic_view })) }), 'utf8') <= 16_000);
     assert.ok(run.delivered.size < fixture.identities.length);
   });
 });

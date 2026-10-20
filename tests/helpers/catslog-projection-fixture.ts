@@ -11,15 +11,16 @@ export const DEFAULT_ROOT_REF = opaqueRef(ROOT_REVISION, ROOT_STREAM);
 export function syntheticProjectionDocument(): any {
   return {
     schema_version: 1, goal: 'Meridian release readiness', summary: 'Meridian supplied pages support a bounded partial release decision.',
-    nodes: Array.from({ length: 10 }, (_, i) => ({ id: `n${i}`, kind: i === 9 ? 'omission' : 'fact', text: `Independent synthetic fact ${i}.` })),
+    nodes: Array.from({ length: 10 }, (_, i) => ({ id: `n${i}`, kind: i === 9 ? 'omission' : 'assertion', text: `Independent synthetic fact ${i}.` })),
     edges: Array.from({ length: 7 }, (_, i) => ({ from: `n${i}`, to: `n${i + 1}`, kind: 'supports' })),
     mappings: Array.from({ length: 10 }, (_, i) => ({ node_id: `n${i}`, source_ref: 'source-page-1' })),
     conditions: ['Only staging deployments.', 'Owner approval required.', 'The inclusive date boundary must be preserved.'],
     omissions: ['Page 2 is withheld; no metric value can be inferred.', 'Operator identity omitted.'],
     provenance: 'derived', model_steps: 'unknown', causality: 'unknown', overall_coverage: 'partial',
     gap_acknowledgement: 'Page 2 remains unknown; absence is not evidence of a zero metric.',
-    aggregate: { contract: 'source_result_synthesis', disclosure: 'partial', coverage_digest: digest('coverage'), source_basis: 'fixture-basis',
-      verified_pages: 4, total_pages: 5, gaps: [{ first_page: 2, last_page: 2, status: 'withheld' }] },
+    aggregate: { contract: 'result_synthesis/v2', version: 2, disclosure: 'derived_memory_projection', coverage_digest: digest('coverage'), source_basis: 'fixture-basis',
+      root_proof: { page: 0, pages: 5 }, ranges: [{ first_page: 0, last_page: 1 }, { first_page: 3, last_page: 4 }],
+      leaves: [], pages: [0, 1, 3, 4].map(page => ({ page, pages: 5 })), gaps: [{ first_page: 2, last_page: 2, status: 'unknown' }] },
   };
 }
 export interface FixtureOptions {

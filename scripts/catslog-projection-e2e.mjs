@@ -10,7 +10,7 @@ if (index < 0 || !process.argv[index + 1]) {
   process.stdout.write(JSON.stringify({ event: 'projection_e2e_fail', error: 'manifest_required' }) + '\n');
   process.exit(2);
 }
-const child = spawn(process.execPath, [path.join(root, 'node_modules/tsx/dist/cli.mjs'),
+const child = spawn(process.execPath, ['--import', path.join(root, 'node_modules/tsx/dist/loader.mjs'),
   path.join(root, 'scripts/catslog-projection-e2e-worker.ts'), process.argv[index + 1]], {
   cwd: root, env: process.env, stdio: ['ignore', 'inherit', 'inherit'], shell: false,
 });
