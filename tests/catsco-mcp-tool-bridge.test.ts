@@ -54,6 +54,7 @@ interface HarnessOptions {
   callTool?: (name: string, args: Record<string, unknown>) => McpBridgeCallResult;
   resolveEndpoint?: () => McpBridgeEndpoint | null;
   resolveAgentSlugs?: () => string[] | undefined;
+  resolveBotUid?: () => number | undefined;
   refreshIntervalMs?: number;
   runPollTimeoutMs?: number;
   runPollIntervalMs?: number;
@@ -75,6 +76,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
     resolveEndpoint: options.resolveEndpoint ?? (() => ({ url: 'https://app.catsco.cc/api/mcp', token: 'test-token' })),
     ...(options.resolveAgentSlugs ? { resolveAgentSlugs: options.resolveAgentSlugs } : {}),
+    ...(options.resolveBotUid ? { resolveBotUid: options.resolveBotUid } : {}),
     refreshIntervalMs: options.refreshIntervalMs ?? 0,
     runPollTimeoutMs: options.runPollTimeoutMs ?? 0,
     runPollIntervalMs: options.runPollIntervalMs ?? 1,
@@ -702,5 +704,103 @@ describe('CatsCo MCP 工具桥', () => {
     const result = await bridge.refresh();
     assert.deepStrictEqual(result?.registered.sort(), ['catsco_codex', 'catsco_hello', 'catsco_run_status']);
     assert.ok(manager.getTool('catsco_hello'));
+  });
+
+  // ---- bot 身份（设计 P1b）：调用类工具随参数上报 bot_uid ----
+
+  test('bot 身份：调用类工具注入 bot_uid', async () => {
+    const executedArgs: Array<Record<string, unknown>> = [];
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      resolveBotUid: () => 1619,
+      callTool: (_name, args) => {
+        executedArgs.push(args);
+        return {
+          isError: false,
+          contentText: 'ok',
+          structured: {
+            contract_version: 'catsco.service-run-result.v1',
+            status: 'completed',
+            run_id: 'r1',
+            session_id: 's1',
+            output: { text: '好' },
+          },
+        };
+      },
+    });
+    await bridge.refresh();
+    const tool = manager.getTool('catsco_hello');
+    assert.ok(tool);
+    await tool.execute({ input: { text: 'hi' } }, context);
+    assert.deepStrictEqual(executedArgs, [{ input: { text: 'hi' }, bot_uid: 1619 }]);
+  });
+
+  test('bot 身份：run_status 查询不带 bot_uid', async () => {
+    const executedArgs: Array<Record<string, unknown>> = [];
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_run_status')],
+      resolveBotUid: () => 1619,
+      callTool: (_name, args) => {
+        executedArgs.push(args);
+        return {
+          isError: false,
+          contentText: 'ok',
+          structured: {
+            contract_version: 'catsco.service-run-result.v1',
+            status: 'completed',
+            run_id: 'r1',
+            session_id: 's1',
+          },
+        };
+      },
+    });
+    await bridge.refresh();
+    const tool = manager.getTool('catsco_run_status');
+    assert.ok(tool);
+    await tool.execute({ run_id: 'r1' }, context);
+    assert.deepStrictEqual(executedArgs, [{ run_id: 'r1' }]);
+  });
+
+  test('bot 身份：显式传入的 bot_uid 不被覆盖', async () => {
+    const executedArgs: Array<Record<string, unknown>> = [];
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      resolveBotUid: () => 1619,
+      callTool: (_name, args) => {
+        executedArgs.push(args);
+        return { isError: true, contentText: 'agent_not_enabled_for_bot' };
+      },
+    });
+    await bridge.refresh();
+    const tool = manager.getTool('catsco_hello');
+    assert.ok(tool);
+    await tool.execute({ input: {}, bot_uid: 42 }, context);
+    assert.deepStrictEqual(executedArgs, [{ input: {}, bot_uid: 42 }]);
+  });
+
+  test('bot 身份：拿不到 bot_uid 时保持账号级调用（不带字段）', async () => {
+    const executedArgs: Array<Record<string, unknown>> = [];
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      resolveBotUid: () => undefined,
+      callTool: (_name, args) => {
+        executedArgs.push(args);
+        return {
+          isError: false,
+          contentText: 'ok',
+          structured: {
+            contract_version: 'catsco.service-run-result.v1',
+            status: 'completed',
+            run_id: 'r1',
+            session_id: 's1',
+          },
+        };
+      },
+    });
+    await bridge.refresh();
+    const tool = manager.getTool('catsco_hello');
+    assert.ok(tool);
+    await tool.execute({ input: {} }, context);
+    assert.deepStrictEqual(executedArgs, [{ input: {} }]);
   });
 });
