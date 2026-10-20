@@ -209,7 +209,7 @@ jobs:
         with:
           repository: buildsense-ai/cats-company
           # Companion PR683: merge CatsCo first; pin the exact upload transport.
-          ref: 2a3f57569521d9d3e02e3fb103cd7cf1d1f2d84c
+          ref: 542048c3c6f7ffbb6778d726960793dcec1ef2c2
           path: cats-company
       - uses: actions/setup-node@v4
         with:
