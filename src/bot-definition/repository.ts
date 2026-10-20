@@ -70,6 +70,10 @@ function isValidDefinition(definition: unknown, expectedBotId: string): definiti
   if (value.skills !== undefined && !isValidBotSkillRefs(value.skills)) {
     return false;
   }
+  if (value.serviceAgents !== undefined) {
+    if (!Array.isArray(value.serviceAgents)) return false;
+    if (value.serviceAgents.some((slug) => typeof slug !== 'string' || !slug.trim())) return false;
+  }
   if (value.model.kind === 'catalog') {
     return Boolean(String(value.model.modelId || '').trim());
   }

@@ -73,6 +73,8 @@ export interface BotDefinition {
   model: BotModelDefinition;
   prompt?: BotPromptDefinition;
   skills?: BotSkillRef[];
+  /** 本 Agent 可调用的 CatsCo 定制 Agent（slug 列表）；缺省=不过滤（账号可见全部）。 */
+  serviceAgents?: string[];
 }
 
 export interface CloudBotDefinition extends Omit<BotDefinition, 'model'> {
