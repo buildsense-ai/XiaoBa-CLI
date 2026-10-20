@@ -9,6 +9,7 @@ import {
   DEFAULT_SESSIONS_URL,
   DEFAULT_SKILL_GRAPH_URL,
   DEFAULT_SKILLS_URL,
+  DEFAULT_SOURCE_READ_URL,
   isSafeCatsLogPath,
 } from './catsco-log-agent-client';
 import type {
@@ -19,6 +20,7 @@ import type {
   CatscoSkillsQuery,
   CatscoSkillsResponse,
   CatscoSkillOutcomeInput,
+  CatscoSourceMemoryProjectionRead,
 } from './catsco-log-agent-client';
 import { getCatscoLogAgentConfig } from './catsco-log-agent-config';
 import type { CatscoLogAgentState } from './catsco-log-agent-state';
@@ -76,6 +78,15 @@ export interface CatsLogMemoryBackend {
     requestId: string;
     refs: string[];
   }, signal?: AbortSignal): Promise<void>;
+  /**
+   * Optional device-bound expansion of a typed `source_reference` locator:
+   * POST {projection_ref} to the knowledge source-read route. Same read
+   * capability/token-state as branch(); callers treat every failure as a
+   * typed reference-only degrade, never retried and never fatal.
+   */
+  readSourceMemoryProjection?(input: {
+    projectionRef: string;
+  }, signal?: AbortSignal): Promise<CatscoSourceMemoryProjectionRead>;
   readSkills?(
     query: CatscoSkillsQuery,
     signal?: AbortSignal,
@@ -100,6 +111,7 @@ interface CatsLogReadCapability {
   skillsUrl: string;
   sessionsUrl: string;
   branchUrl: string;
+  sourceReadUrl: string;
 }
 
 interface CatsLogCapabilities {
@@ -211,6 +223,26 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           ...input,
           token: capability.token,
           branchUrl: capability.branchUrl,
+          signal,
+        });
+      },
+      signal,
+    );
+  }
+
+  /** Expand one typed source_reference through the read capability. */
+  async readSourceMemoryProjection(input: {
+    projectionRef: string;
+  }, signal?: AbortSignal): Promise<CatscoSourceMemoryProjectionRead> {
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).readSourceMemoryProjection !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the source-read route');
+        }
+        return client.readSourceMemoryProjection({
+          ...input,
+          token: capability.token,
+          sourceReadUrl: capability.sourceReadUrl,
           signal,
         });
       },
@@ -463,6 +495,7 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
       skillsUrl: safePathOrDefault(response?.skills_url, DEFAULT_SKILLS_URL),
       sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
       branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
+      sourceReadUrl: safePathOrDefault(response?.knowledge_source_read_url, DEFAULT_SOURCE_READ_URL),
     }
     : null;
   return { ...(read ? { read } : {}) };
@@ -478,6 +511,7 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
     skillsUrl: safePathOrDefault(state.skillsUrl, DEFAULT_SKILLS_URL),
     sessionsUrl: safePathOrDefault(state.sessionsUrl, DEFAULT_SESSIONS_URL),
     branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
+    sourceReadUrl: safePathOrDefault((state as any).knowledgeSourceReadUrl, DEFAULT_SOURCE_READ_URL),
   };
 }
 

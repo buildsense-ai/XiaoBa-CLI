@@ -357,6 +357,23 @@ export interface CatscoBranchResponse {
   branches?: CatscoBranchResult[];
 }
 
+/**
+ * Response of POST /catsco/agent/knowledge/source/read with
+ * `{"projection_ref": ref}`: the device-bound expansion of a typed
+ * `source_reference` locator into the full verified projection document plus
+ * its authorized supplied-page sources. `projection.document` carries the
+ * complete graph (nodes/edges/mappings/conditions/omissions/aggregate gaps);
+ * `content_trust` is `derived_memory_projection` — derived evidence, never
+ * instructions. Fields are loosely typed on purpose: the consumer-side
+ * validator (catslog-projection-reference.ts) owns the semantic contract.
+ */
+export interface CatscoSourceMemoryProjectionRead {
+  schema_version?: number;
+  content_trust?: string;
+  projection?: Record<string, unknown>;
+  sources?: unknown[];
+}
+
 export interface CatscoMemoryNote {
   id?: string;
   kind?: string;
@@ -387,6 +404,7 @@ export const DEFAULT_MEMORY_RECALL_URL = '/catsco/agent/memory/recall';
 export const DEFAULT_BRANCH_URL = '/catsco/agent/branch';
 export const DEFAULT_BRANCH_CITATIONS_URL = '/catsco/agent/branch/citations';
 export const DEFAULT_MEMORY_NOTES_URL = '/catsco/agent/memory/notes';
+export const DEFAULT_SOURCE_READ_URL = '/catsco/agent/knowledge/source/read';
 
 /** Wire contract of POST /catsco/agent/branch/citations: ref_-prefixed pool refs only. */
 export const BRANCH_CITATIONS_MAX_REFS = 64;
@@ -847,6 +865,36 @@ export class CatscoLogAgentClient {
       token,
       body,
       'CatsLog branch retrieval failed',
+      input.signal,
+    );
+  }
+
+  /**
+   * Expand one typed source_reference locator through the device-bound
+   * knowledge source-read: POST /catsco/agent/knowledge/source/read with
+   * `{"projection_ref": ref}` under the same read capability as `branch`.
+   * The ref stays inside the JSON body — it is never interpolated into the
+   * URL — and the path is a fixed route, so no URL construction from
+   * untrusted evidence is possible.
+   */
+  async readSourceMemoryProjection(input: {
+    projectionRef: string;
+  } & {
+    token?: string;
+    skillToken?: string;
+    sourceReadUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatscoSourceMemoryProjectionRead> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const projectionRef = typeof input.projectionRef === 'string' ? input.projectionRef.trim() : '';
+    if (!isCatsLogPoolCitationRef(projectionRef)) {
+      throw new Error('CatsLog source-read projection_ref must be a ref_-prefixed pool ref (ref_ + 64 hex)');
+    }
+    return this.postCapabilityJSON<CatscoSourceMemoryProjectionRead>(
+      input.sourceReadUrl || DEFAULT_SOURCE_READ_URL,
+      token,
+      { projection_ref: projectionRef },
+      'CatsLog source memory projection read failed',
       input.signal,
     );
   }

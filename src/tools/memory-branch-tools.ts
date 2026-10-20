@@ -270,12 +270,12 @@ function validateFinishArgs(args: any):
     return { ok: false, error: 'evidence must contain strings only; use [] when inject is false' };
   }
   const evidence: string[] = args.evidence.map((ref: string) => ref.trim()).filter(Boolean);
-  for (const ref of evidence) {
-    if (!CANONICAL_REF_PATTERN.test(ref)) {
+  const uniqueRefs: string[] = Array.from(new Set(evidence));
+  for (const ref of uniqueRefs) {
+    if (!isMemoryCitationRef(ref)) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }
-  const uniqueRefs: string[] = Array.from(new Set(evidence));
   if (inject && uniqueRefs.length === 0) {
     return { ok: false, error: 'evidence must include at least one canonical memory ref unless inject is false' };
   }
