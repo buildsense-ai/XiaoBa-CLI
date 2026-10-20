@@ -1,13 +1,14 @@
 # Private publication candidate capture
 
 This internal component freezes one source-only candidate for an already
-authenticated CatsCo publication entry. It does not register an RPC, model tool,
-HTTP route, environment flag or advertised capability. Construction is disabled
-unless `enabled:true` is explicitly supplied. Existing publishing is unchanged.
+authenticated CatsCo publication entry. The store itself is disabled unless
+`enabled:true` is explicitly supplied. The reserved RPC adapter below can call
+it only when both runtime gates are enabled. There is no model tool or HTTP
+route, and existing publishing is unchanged.
 
 ## Trust and scope
 
-The future CatsCo capture adapter must authenticate the entry, original human,
+The CatsCo capture adapter must authenticate the entry, original human,
 Bot, exact body/installation and live runtime route before calling this API.
 `checkAuthority` is a mandatory synchronous guard, not a credential or a substitute
 for server authorization. Its promise-returning misuse fails closed. Capture and
@@ -81,7 +82,55 @@ SKILLHUB_CLOUD_REPO=/path/to/catsco-skillhub-cloud npm run test:cross-repo:publi
 It compares three actual runtime captures against Cloud's real validator,
 including malformed/script-like frontmatter and binary/Unicode file names.
 Linux CI provides POSIX permission/link coverage. This is not live Bot upload or
-end-to-end publishing. Next work is the reserved trusted capture dispatch,
-capture-backed grant issuance, pinned upload client and isolated multi-repo
-acceptance. Do not wire this to session-only legacy publication or enable a
-production workflow based on this component alone.
+end-to-end publishing. Capture-backed grant issuance and the pinned upload client
+exist as separate internal components; durable scheduling and grant delivery
+still need to connect them. Do not enable a production workflow based on this
+component alone.
+
+## Reserved capture RPC
+
+The ordinary server/desktop Bot runtime advertises and handles
+`skillhub.publication.capture.v1` only when both
+`XIAOBA_SKILLHUB_PUBLICATION_PROBE_ENABLED` and
+`XIAOBA_SKILLHUB_PUBLICATION_CAPTURE_ENABLED` equal `1` or `true`
+(case-insensitive). Both default off. The handler snapshots these settings at
+construction. This change does not turn on any deployed environment.
+
+The authenticated CatsCo connection carries a server-generated `pubcapture_`
+request ID, an unexpired deadline with at most 31 seconds remaining, and exactly
+four payload fields: `entry_id`, `bot_uid`, `local_skill_id`,
+`workspace_generation`. Owner headers must be exactly `usr` plus the bound
+human UID; target/device headers must both match the installation. CatsCo
+PR676 verifies admission, persisted source verification and current runtime
+route before dispatch, and rechecks authority before recording the response.
+The prefix is correlation, not authentication. Generic browser/model RPCs must
+remain blocked by CatsCo, and generic device tools cannot invoke this operation.
+
+CatsCo's admission selectors are opaque references, not necessarily digests.
+This XiaoBa implementation resolves only its own `publication_source`
+descriptors: `pubsrc-` plus 48 lowercase hex characters and a 64-character
+content fingerprint. Legacy workspace UUIDs and arbitrary admission references
+are not silently mapped to local paths. The existing source probe must succeed
+for the same descriptor before CatsCo dispatches capture.
+
+At most two captures per handler can run or wait. Each rechecks deadline,
+shutdown and binding before locking, under the workspace lock and before
+returning, with the ten-second cooperative capture budget. No owner login
+session is needed; the explicit Bot binding remains mandatory. Retried requests
+read the original durable candidate, not an in-memory request-ID cache.
+
+The only success fields are `schemaVersion`, `entryId`, `candidateRevision`,
+`requestHash`, `sourceSnapshotHash`, `requestBytes`. They contain no source text,
+local path or credential. Errors have controlled codes and a fixed message.
+An uncertain failure can leave a committed private candidate; it does not
+authorize upload or publication. The reserved adapter handles disabled requests
+as disabled, without falling back to ordinary tools or legacy share.
+
+`npm run test:cross-repo:publication-capture-rpc` uses `CATSCOMPANY_REPO` and Go
+overlays without editing that checkout. CI pins the reviewed PR676 merge
+`05245dacc35b6f5b5836a20f63b48ca6bd43e2f1`. Three suites and seven subcases must
+execute without skips: normal/malformed source capture, handler reconstruction
+and replay after source removal, source changes, disabled runtime, owner/workspace
+mismatch, and CatsCo authority changes before a late receipt. It uses actual
+CatsCo transport and XiaoBa handlers/storage, but an in-memory CatsCo store and
+synthetic socket bridge. It does not replace real deployed end-to-end acceptance.

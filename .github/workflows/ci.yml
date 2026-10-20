@@ -198,7 +198,7 @@ jobs:
         run: npm run test:cross-repo:catsco-skills
 
   cross-repo-publication-probe:
-    name: CatsCo/XiaoBa publication probe message round trip
+    name: CatsCo/XiaoBa publication probe and capture round trip
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -208,8 +208,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # PR642 merge: stable counterpart, including transient-error policy.
-          ref: 23f0c9f6ad5d5c05f3bb92ff19f25f5667546023
+          # PR676 merge: reviewed capture transport and opaque admission selectors.
+          ref: 05245dacc35b6f5b5836a20f63b48ca6bd43e2f1
           path: cats-company
       - uses: actions/setup-node@v4
         with:
@@ -228,3 +228,8 @@ jobs:
         env:
           CATSCOMPANY_REPO: ../cats-company
         run: npm run test:cross-repo:publication-probe
+      - name: Run capture transport and retained candidate round trip without skips
+        working-directory: XiaoBa-CLI
+        env:
+          CATSCOMPANY_REPO: ../cats-company
+        run: npm run test:cross-repo:publication-capture-rpc

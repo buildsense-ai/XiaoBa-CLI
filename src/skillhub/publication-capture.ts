@@ -3,8 +3,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { withCurrentBotSkillWorkspaceWrite } from '../bot-skills/runtime';
 import { createCatsCoLocalConfigService, isActiveDeviceConnectorMode } from '../catscompany/local-config';
-import { capturePublicationSource, findPublicationSource, PublicationSourceError,
+import { capturePublicationSource, findPublicationSource, PublicationSourceError, publicationSourceProbeEnabled,
   type PublicationSourceBinding, type PublicationSourceDescriptor } from './publication-source';
+
+export const PUBLICATION_CAPTURE = 'skillhub.publication.capture.v1';
+export function publicationCaptureEnabled(): boolean {
+  const value = (process.env.XIAOBA_SKILLHUB_PUBLICATION_CAPTURE_ENABLED || '').trim().toLowerCase();
+  return publicationSourceProbeEnabled() && (value === '1' || value === 'true');
+}
 
 export interface PublicationCaptureInput {
   entryId: string;
@@ -79,9 +85,9 @@ function regular(p: string): fs.Stats {
   return s;
 }
 
-// Not an RPC/tool/HTTP endpoint. Future trusted CatsCo capture dispatch must
-// authenticate entry/route/capability before calling, and before every upload.
-// Enabled only by explicit construction; no environment/capability side effect.
+// Internal storage, not a tool/HTTP endpoint. The reserved CatsCo capture RPC
+// authenticates its envelope before calling. Uploads require separate authority.
+// Storage is enabled only by explicit construction.
 export class PublicationCaptureStore {
   constructor(private readonly options: { runtimeRoot: string; enabled?: boolean }) {}
 
