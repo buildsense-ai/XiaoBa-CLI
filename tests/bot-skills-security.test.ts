@@ -102,6 +102,10 @@ describe('Bot Skill sync security boundaries', () => {
       path.join(skillRoot, '.venv', 'lib', 'python', 'site-packages', 'runtime.bin'),
       path.join(skillRoot, '__pycache__', 'module.pyc'),
       path.join(skillRoot, '.pytest_cache', 'state.bin'),
+      // The runtime's own scratch space. Sub-agent workspaces are created under
+      // `<cwd>/tmp/subagents/<id>`, so a turn that cd'd into an installed Skill
+      // writes here — see the dedicated test below.
+      path.join(skillRoot, 'tmp', 'subagents', 'sub-cache', 'probe.py'),
     ];
     for (const cachePath of cachePaths) {
       fs.mkdirSync(path.dirname(cachePath), { recursive: true });
@@ -120,6 +124,36 @@ describe('Bot Skill sync security boundaries', () => {
     fs.writeFileSync(cachePaths[0], Buffer.from('runtime cache changed'));
     const second = scanLocalBotSkill(skillRoot);
     assert.equal(second.contentHash, first.contentHash);
+  });
+
+  test('a sub-agent writing into an installed Skill cannot break its cloud-bound hash', () => {
+    // The runtime creates sub-agent workspaces at `<cwd>/tmp/subagents/<id>`, and
+    // a turn's cwd persists after `cd <SKILL_DIR>/connector`. So spawning a
+    // sub-agent from inside an installed Skill writes files into the package —
+    // and hashing them made every connector command of that Skill fail with
+    // "no longer matches its cloud-bound content hash", for a reason that has
+    // nothing to do with the Skill's own content.
+    const skillRoot = createSkill(roots, 'installed-skill');
+    fs.mkdirSync(path.join(skillRoot, 'connector'), { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'connector', 'artifact-cli.mjs'), 'export {};\n');
+
+    const published = scanLocalBotSkill(skillRoot);
+    const publishedPaths = published.files.map(file => file.path);
+    assert.deepEqual(publishedPaths, ['SKILL.md', 'connector/artifact-cli.mjs']);
+
+    // A sub-agent lands its scratch files exactly where the runtime puts them.
+    const scratch = path.join(skillRoot, 'connector', 'tmp', 'subagents', 'sub-abc123');
+    fs.mkdirSync(scratch, { recursive: true });
+    fs.writeFileSync(path.join(scratch, 'probe.py'), 'print("scratch")\n');
+    fs.writeFileSync(path.join(scratch, 'mock-sdk.js'), 'export {};\n');
+
+    const afterScratch = scanLocalBotSkill(skillRoot);
+    assert.equal(afterScratch.contentHash, published.contentHash, 'scratch files must not change the package hash');
+    assert.deepEqual(afterScratch.files.map(file => file.path), publishedPaths);
+
+    // The files are excluded from hashing, not deleted: the sub-agent that wrote
+    // them may still be reading them.
+    assert.equal(fs.existsSync(path.join(scratch, 'probe.py')), true);
   });
 
   test('rejects unsafe reference segments and matches Go byte/control limits', async () => {
