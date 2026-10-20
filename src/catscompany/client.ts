@@ -550,6 +550,10 @@ export class CatsClient extends EventEmitter {
       else Logger.warning('[CatsCompany] Invalid session_fork control ignored');
     } else if (msg.device_rpc) {
       this.handleDeviceRpcMessage(msg.device_rpc);
+    } else if (msg.service_run_receipt) {
+      // 生命周期回注（平台 service_run_receipts 收件箱投递）：
+      // 至少一次投递 + 幂等（receipt_id 稳定），去重与路由交给上层路由表。
+      this.emit('service_run_receipt', msg.service_run_receipt);
     } else if (msg.thin_tool_rpc) {
       this.handleThinToolRpcMessage(msg.thin_tool_rpc);
     } else if (msg.skill_mutation_grant) {
