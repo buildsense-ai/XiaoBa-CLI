@@ -143,6 +143,39 @@ async function main() {
     return finish(artifact, args, envRoot);
   }
 
+  // --- Step 4b: same-principal sibling-scope ref must fail envelope-wide -
+  // The SERVER owns this fence (trusted shared + own-subjects, post-read
+  // revalidation). The client deliberately performs NO local scope check —
+  // it sends the sibling ref verbatim and the artifact records the raw
+  // server verdict. A client-side filter would be pretending authorization.
+  if (typeof manifest.sibling_ref === 'string' && manifest.sibling_ref) {
+    let siblingOutcome;
+    try {
+      const read = provider[expansionMethod]
+        ? provider[expansionMethod].bind(provider)
+        : client[expansionMethod].bind(client);
+      const result = await read({
+        projectionRef: manifest.sibling_ref,
+        token: manifest.device_skill_token,
+        sourceReadUrl: manifest.source_read_path || '/catsco/agent/knowledge/source/read',
+      });
+      siblingOutcome = { http_ok: true, rejected: false };
+      void result;
+    } catch (error) {
+      siblingOutcome = {
+        http_ok: false,
+        rejected: true,
+        status: Number(error?.status) || null,
+        error_class: error?.name ?? null,
+      };
+    }
+    step('sibling_scope_fence', siblingOutcome);
+    if (!siblingOutcome.rejected) {
+      artifact.red_reason = 'same-principal sibling-scope projection_ref was accepted — server fence missing';
+      return finish(artifact, args, envRoot);
+    }
+  }
+
   // --- Step 5: full memory-branch lifecycle with a fake inspectable AI --
   const queue = new InMemorySyntheticObservationQueue();
   const aiCalls = [];
