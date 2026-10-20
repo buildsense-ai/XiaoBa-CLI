@@ -476,8 +476,62 @@ describe('CatsCo MCP 工具桥', () => {
     });
   });
 
-  test('刷新间隔守卫：未到间隔直接跳过（不发网络请求）', async () => {
-    const { bridge, clients } = createHarness({
+  test('未登录不消耗刷新间隔：登录后立即刷新可完成同步', async () => {
+    let endpoint: McpBridgeEndpoint | null = null;
+    let listCalls = 0;
+    const { bridge, manager } = createHarness({
+      resolveEndpoint: () => endpoint,
+      listTools: () => {
+        listCalls += 1;
+        return [toolInfo('catsco_hello')];
+      },
+      refreshIntervalMs: 60_000,
+    });
+
+    assert.equal(await bridge.refresh(), null);
+    assert.equal(listCalls, 0);
+    assert.equal(manager.getTool('catsco_hello'), undefined);
+
+    // 同一节流窗口内登录：必须立即同步（不能因为未登录时的那次空转被节流）
+    endpoint = { url: 'https://app.catsco.cc/api/mcp', token: 'fresh-token' };
+    const synced = await bridge.refresh();
+    assert.deepStrictEqual(synced?.registered, ['catsco_hello']);
+    assert.equal(listCalls, 1);
+    assert.equal(manager.getTool('catsco_hello') !== undefined, true);
+  });
+
+  test('并发 refresh 单飞：只发一次 listTools，返回同一结果', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    let listCalls = 0;
+    const { bridge } = createHarness({
+      listTools: async () => {
+        listCalls += 1;
+        await gate;
+        return [toolInfo('catsco_hello')];
+      },
+      refreshIntervalMs: 0,
+    });
+
+    const first = bridge.refresh();
+    const second = bridge.refresh();
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(listCalls, 1);
+    assert.strictEqual(a, b);
+    assert.deepStrictEqual(a?.registered, ['catsco_hello']);
+  });
+
+  test('ensureReady：未登录时立即返回，不阻塞首轮', async () => {
+    const { bridge } = createHarness({ resolveEndpoint: () => null });
+    const started = Date.now();
+    await bridge.ensureReady(3000);
+    assert.ok(Date.now() - started < 500, '未登录时 ensureReady 应立即返回');
+  });
+
+  test('刷新间隔守卫：未到间隔直接跳过（不发网络请求）', async () => {    const { bridge, clients } = createHarness({
       listTools: () => [toolInfo('catsco_hello')],
       refreshIntervalMs: 60_000,
     });

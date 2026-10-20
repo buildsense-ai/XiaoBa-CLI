@@ -179,7 +179,14 @@ export class CatsCoMcpToolBridge {
     if (this.lastRefreshAt !== 0 && nowMs - this.lastRefreshAt < this.refreshIntervalMs) {
       return null;
     }
-    const run = this.doRefresh().finally(() => {
+    const endpoint = this.resolveEndpoint();
+    if (!endpoint) {
+      // 未登录不算一次同步尝试：**不能消耗最小刷新间隔**——否则「启动 → 登录 →
+      // 立即对话」会因节流在首轮看不到远端工具（lazy 端点变可用后要能立即同步）。
+      this.noteDisabled('未配置 CatsCo 登录态');
+      return null;
+    }
+    const run = this.doRefresh(endpoint).finally(() => {
       this.lastRefreshAt = this.now();
       this.refreshInFlight = null;
     });
@@ -187,12 +194,7 @@ export class CatsCoMcpToolBridge {
     return run;
   }
 
-  private async doRefresh(): Promise<BridgeRefreshResult | null> {
-    const endpoint = this.resolveEndpoint();
-    if (!endpoint) {
-      this.noteDisabled('未配置 CatsCo 登录态');
-      return null;
-    }
+  private async doRefresh(endpoint: McpBridgeEndpoint): Promise<BridgeRefreshResult | null> {
     const client = this.createClient(endpoint);
     try {
       const infos = await client.listTools();
