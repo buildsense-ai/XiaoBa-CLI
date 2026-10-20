@@ -7,6 +7,7 @@ import { createCatsCoLocalConfigService } from '../../../src/catscompany/local-c
 import { BotSkillWorkspaceService } from '../../../src/bot-skills/workspace';
 import { SkillHubThinRpcHandler, SKILLHUB_THIN_RPC_TOOLS } from '../../../src/catscompany/skillhub-rpc';
 import { PUBLICATION_SOURCE_PROBE } from '../../../src/skillhub/publication-source';
+import { PUBLICATION_CAPTURE } from '../../../src/skillhub/publication-capture';
 
 async function main() {
   const root = process.argv[2];
@@ -25,7 +26,7 @@ async function main() {
     account: { uid: '7', token: 'paired-test-only', username: 'paired-owner' },
     device: { bodyId: 'body-42', installationId: 'install-42' },
   });
-  let handler = new SkillHubThinRpcHandler({ runtimeRoot: root, publicationProbeEnabled: true });
+  let handler = new SkillHubThinRpcHandler({ runtimeRoot: root, publicationProbeEnabled: true, publicationCaptureEnabled: true });
   const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
   const listing = await handler.execute({ type: 'request', request_id: 'paired-list',
     target_owner_user_id: 'usr7', target_device_id: 'install-42',
@@ -34,7 +35,8 @@ async function main() {
   });
   const item = (listing.skills as any[])[0];
   assert.ok(item?.publication_source);
-  send({ source: item.publication_source, supported: handler.supports(PUBLICATION_SOURCE_PROBE), can_share: item.can_share });
+  send({ source: item.publication_source, supported: handler.supports(PUBLICATION_SOURCE_PROBE),
+    capture_supported: handler.supports(PUBLICATION_CAPTURE), can_share: item.can_share });
   const statePath = path.join(root, 'data', 'bot-skills', 'active.json');
   const originalState = fs.readFileSync(statePath, 'utf8');
   // Compare the entire test source tree around each real handler call.
@@ -54,8 +56,9 @@ async function main() {
       case 'switching': fs.writeFileSync(statePath, JSON.stringify({ ...JSON.parse(originalState), activeBotId: '43' })); break;
       case 'recover':
         fs.writeFileSync(statePath, originalState);
-        handler = new SkillHubThinRpcHandler({ runtimeRoot: root, publicationProbeEnabled: true });
+        handler = new SkillHubThinRpcHandler({ runtimeRoot: root, publicationProbeEnabled: true, publicationCaptureEnabled: true });
         break;
+      case 'capture':
       case 'probe': {
         const before = files(path.join(root, 'skills'));
         const request = input.request;
@@ -64,7 +67,7 @@ async function main() {
           target_device_id: request.target_device_id, device_id: request.device_id };
         try { reply.result = await handler.execute(request); }
         catch (error: any) { reply.error = { code: error.code, message: error.message }; }
-        assert.deepEqual(files(path.join(root, 'skills')), before, 'Probe changed source files');
+        assert.deepEqual(files(path.join(root, 'skills')), before, 'Publication RPC changed source files');
         send({ reply });
         continue;
       }

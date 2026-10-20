@@ -25,6 +25,7 @@ const skillHubPhase1Tests = [
   'tests/catscompany-skillhub-rpc.test.ts',
   'tests/skillhub-publication-source.test.ts',
   'tests/skillhub-publication-capture.test.ts',
+  'tests/skillhub-publication-capture-rpc.test.ts',
   'tests/skillhub-publication-upload.test.ts',
   'tests/bot-skill-trash-gc.test.ts',
   'tests/bot-definition-skills.test.ts',
