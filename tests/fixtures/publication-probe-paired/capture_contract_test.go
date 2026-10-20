@@ -84,8 +84,20 @@ func TestXiaoBaPublicationCapturePairedFailures(t *testing.T) {
 			f, s := pairedCaptureFixture(t, r)
 			r.action(t, action)
 			result := pairedCaptureCall(t, f, r)
-			if !errors.Is(result.err, store.ErrSkillHubPublicationInvalid) || s.calls != 0 {
+			expected := store.ErrSkillHubPublicationInvalid
+			if action == "switching" {
+				// PR680 preserves transient unavailable replies as retryable.
+				expected = store.ErrSkillHubPublicationBusy
+			}
+			if !errors.Is(result.err, expected) || s.calls != 0 {
 				t.Fatalf("invalid runtime evidence stored: %+v calls=%d", result, s.calls)
+			}
+			if action == "switching" {
+				r.action(t, "recover")
+				recovered := pairedCaptureCall(t, f, r)
+				if recovered.err != nil || recovered.record == nil || s.calls != 1 || recovered.record.Input.EntryID != publicationReadTestID {
+					t.Fatalf("same entry failed after runtime recovered: %+v", recovered)
+				}
 			}
 		})
 	}
