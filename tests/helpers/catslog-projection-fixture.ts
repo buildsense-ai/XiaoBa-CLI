@@ -31,6 +31,7 @@ export interface FixtureOptions {
   failureStatus?: number;
   stale?: boolean;
   malformed?: boolean;
+  networkFailure?: boolean;
   document?: any;
   count?: number;
   hideRecency?: boolean;
@@ -80,6 +81,7 @@ export async function startCatsLogProjectionFixture(options: FixtureOptions = {}
       reads++;
       readStartedResolve();
       if (options.delayRead) return; // held until client abort / fixture close
+      if (options.networkFailure) { req.socket.destroy(); return; }
       if (options.rotateOnRead && reads === 1) return json(401, { error: 'expired' });
       if (options.failureStatus) return json(options.failureStatus, { error: 'source_unavailable', detail: 'synthetic untrusted server error' });
       if (Object.keys(body).join(',') !== 'projection_ref') return json(400, { error: 'invalid_request' });

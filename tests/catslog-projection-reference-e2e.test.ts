@@ -95,6 +95,27 @@ test('one shared call/view budget across multiple locators, raw pages excluded',
 for (const finishRef of [`ref_${'b'.repeat(64)}`, 'kb:KB-11111111-1111-1111-1111-111111111111', 'catslog:skill:unopened@1', 'unopened-stream#1']) test(`finish cannot open undeclared grammar/undelivered ref ${finishRef.slice(0, 35)}`, async () => {
   await scenario({}, { finishRef }, run => { active(run); assert.equal(run.observations.length, 0, 'finish widened unrelated ref grammar'); });
 });
+test('strict positive assertion stays RED when actual session has discovery but NO expansion capability', async () => {
+  await scenario({}, { citeUndelivered: true, injectedBackend: (provider: any) => ({
+    isAvailable: () => provider.isAvailable(), branch: provider.branch.bind(provider),
+  }) }, (run, fixture) => {
+    active(run); assert.equal(fixture.reads, 0); assert.equal(run.observations.length, 0);
+    assert.throws(() => assertPositiveFlow(run, question), /no actual source\/read expansion/);
+  });
+});
+test('transport error leaves only explicit reference_only metadata and suppresses injection', async () => {
+  await scenario({ networkFailure: true }, { citeUndelivered: true }, run => {
+    suppressed(run); assert.ok(run.requests.some((r: any) => r.path.endsWith('/source/read') && r.error_class));
+    assert.match(JSON.stringify(run.branchCalls), /network_error/);
+  });
+});
+test('UTF-8 whole-view budget counts bytes, with no partial Unicode qualifier', async () => {
+  const document = syntheticProjectionDocument(); document.conditions = ['限定'.repeat(3100)];
+  await scenario({ document }, { citeUndelivered: true }, run => {
+    suppressed(run); assert.match(JSON.stringify(run.branchCalls), /semantic_view_over_budget/);
+    assert.ok(!JSON.stringify(run.branchCalls).includes(document.conditions[0]));
+  });
+});
 test('pool refs delivered/retained/cited are subsets of the observed set, not its reverse', async () => {
   await scenario({ count: 6 }, {}, run => {
     assertPositiveFlow(run, question); assert.ok(run.observed.length > run.retained.length);

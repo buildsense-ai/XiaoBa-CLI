@@ -19,7 +19,12 @@ async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'projection-crossrepo-'));
   const targetRoot = process.env.XIAOBA_PROJECTION_TARGET_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const artifact: any = { schema: artifactSchema, ok: false, provider_calls: 0, semantic_judgment: 'not_evaluated',
-    started_at: new Date().toISOString(), checks: [], request_counts: {}, observed_refs: [], delivered_refs: [], retained_refs: [], cited_refs: [] };
+    started_at: new Date().toISOString(), checks: [], request_counts: {}, observed_refs: [], delivered_refs: [], retained_refs: [], cited_refs: [],
+    source_sha256: Object.fromEntries([
+      'src/core/memory-search-branch-session.ts', 'src/core/sidecar-memory-branch.ts', 'src/core/catslog-projection-reference.ts',
+      'src/utils/catslog-memory-provider.ts', 'src/utils/catsco-log-agent-client.ts', 'src/tools/memory-branch-tools.ts', 'src/tools/local-tool-risk.ts',
+    ].filter(file => fs.existsSync(path.join(targetRoot, file))).map(file => [file, hash(fs.readFileSync(path.join(targetRoot, file), 'utf8'))])),
+  };
   try {
     const run = await runActualFlow({ targetRoot, root, baseUrl: manifest.base_url, token: manifest.device_skill_token,
       question: manifest.question_text, keyword: manifest.query_text, forceSearch: true, signal: AbortSignal.timeout(65_000) });

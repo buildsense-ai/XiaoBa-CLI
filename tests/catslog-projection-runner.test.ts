@@ -47,6 +47,16 @@ async function runChild(wrongRoot = false) {
       assert.equal(artifact.provider_calls, 0); assert.equal(counts.bootstrap, 0);
       assert.deepEqual(artifact.delivered_refs, artifact.retained_refs); assert.deepEqual(artifact.retained_refs, artifact.cited_refs);
       assert.ok(artifact.main_requests[0].evidence.length > 0);
+      // Optional persistent, body-free review artifact; default tests clean
+      // every sandbox. This is explicitly a Node-loopback artifact, not PG.
+      const output = process.env.CATSLOG_PROJECTION_TEST_ARTIFACT_DIR;
+      if (output) {
+        assert.ok(path.isAbsolute(output)); fs.mkdirSync(output, { recursive: true, mode: 0o700 });
+        fs.copyFileSync(verdict.artifact_path, path.join(output, 'catslog-projection-e2e-artifact.json'));
+        fs.writeFileSync(path.join(output, 'loopback-server-verification.json'), JSON.stringify({
+          fixture: 'node_loopback', counts, verdict, server_counts_match_attestation: true,
+        }, null, 2), { mode: 0o600 });
+      }
     }
   } finally { await fixture.close(); fs.rmSync(sandbox, { recursive: true, force: true }); }
 }
