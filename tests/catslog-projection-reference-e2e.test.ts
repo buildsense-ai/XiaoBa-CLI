@@ -271,15 +271,24 @@ describe('catslog projection reference E2E through the actual memory branch', ()
     assert.ok(aiService.sawFullProjectionDocument,
       'full projection document (nodes/edges/conditions) was not delivered');
 
-    // The finish cites the delivered ref; the observation carries it.
+    // Ref accounting (corrected): DELIVERED/RETAINED/CITED refs are each a
+    // subset of OBSERVED — the branch may observe far more than it injects,
+    // and a cited ref that was never observed is the failure. The relation
+    // is cited ⊆ delivered ⊆ observed (never observed ⊆ delivered).
     const observations = queue.drain();
     assert.equal(observations.length, 1, 'expected one injected memory observation');
     const injected = JSON.parse(observations[0].formattedContent || '');
+    const citedRefs: string[] = Array.isArray(injected.refs) ? injected.refs : [];
     assert.ok(
-      injected.refs.includes(DEFAULT_ROOT_REF)
-        || injected.refs.some((ref: string) => isCatsLogPoolCitationRef(ref)),
+      citedRefs.includes(DEFAULT_ROOT_REF)
+        || citedRefs.some((ref: string) => isCatsLogPoolCitationRef(ref)),
       'injected observation does not cite the delivered source ref',
     );
+    // The MAIN model (refine pass) must carry the RETAINED whole view — not
+    // merely the branch AI having seen it. The whole semantic view must be
+    // inside the serialized content delivered to the consuming stage.
+    assert.ok(aiService.sawFullProjectionDocument,
+      'refine/main input lacks the retained whole projection view');
   });
 
   // ---------------------------------------------------------------------
@@ -531,6 +540,123 @@ describe('catslog projection reference E2E through the actual memory branch', ()
     assert.equal(queue.drain().length, 0,
       'a cancelled branch still published an observation');
   });
+
+  // ---------------------------------------------------------------------
+  // [E-SEAM] Metadata-only injection guard: a locator that is DISCOVERED
+  // but never EXPANDED (e.g. expansion disabled/failed) can never inject.
+  // The finish evidence carries the discovered ref only — it must not be
+  // delivered as if the semantic view had been fetched.
+  // ---------------------------------------------------------------------
+  test('a discovered-but-unexpanded locator cannot be injected as evidence', async () => {
+    // Expansion is refused at the source: the locator is visible but the
+    // projection read always fails, so nothing is ever DELIVERED.
+    await fixture.close();
+    fixture = await startCatsLogProjectionFixture({
+      rootRef: DEFAULT_ROOT_REF,
+      sourceReadFailure: { status: 404, body: { error: 'not_found' } },
+    });
+    process.env.CATSCO_LOG_API_BASE_URL = fixture.baseUrl;
+
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new ProjectionExpansionAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'projection-e2e-metadata-only',
+      input: 'release readiness question',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+    });
+    await handle.done;
+
+    requireRemoteLane(fixture.requests, 'metadata-only injection guard');
+    // The locator was advertised; the read failed. No full doc may reach the
+    // model, and any finish citing only the discovered ref must not produce
+    // an injected observation carrying it as delivered evidence.
+    assert.ok(!aiService.sawFullProjectionDocument,
+      'failed expansion still delivered the full projection document');
+    const observations = queue.drain();
+    for (const observation of observations) {
+      const injected = JSON.parse(observation.formattedContent || '{}');
+      assert.ok(
+        !injected.refs?.includes(DEFAULT_ROOT_REF),
+        'metadata-only (never-expanded) ref was injected as delivered evidence',
+      );
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // [E-SEAM] Shared run-wide view/read budget: the whole-view bytes +
+  // source-read calls across a run share ONE cap — not an unbounded
+  // per-ref allocation (e.g. 16KiB × N refs with no total). A run that
+  // advertises several locators must stay inside a finite total.
+  // ---------------------------------------------------------------------
+  test('the run shares a bounded total view/read budget, not per-ref × unbounded', async () => {
+    const refs = Array.from({ length: 6 }, (_, i) =>
+      `ref_${crypto.createHash('sha256').update(`e2e-budget-${i}`, 'utf8').digest('hex')}`);
+    await fixture.close();
+    fixture = await startCatsLogProjectionFixture({
+      rootRef: refs[0],
+      extraItems: refs.slice(1).map(ref => ({
+        source: 'agent_memory', ref, kind: 'source_reference',
+        text: 'Locator.', score_hint: 0.5,
+      })),
+    });
+    process.env.CATSCO_LOG_API_BASE_URL = fixture.baseUrl;
+
+    const queue = new InMemorySyntheticObservationQueue();
+    const aiService = new ProjectionExpansionAI();
+    const handle = startMemorySidecarBranch({
+      sessionKey: 'projection-e2e-shared-budget',
+      input: 'release readiness question',
+      recentMessages: [],
+      workingDirectory: testRoot,
+      aiService: aiService as any,
+      queue,
+    });
+    await handle.done;
+
+    requireRemoteLane(fixture.requests, 'shared view/read budget');
+    const readReqs = fixture.requests.filter(r => r.url === '/catsco/agent/knowledge/source/read');
+    // Six advertised locators must NOT each get an unbounded read: the run
+    // shares a bounded total. A sane shared cap admits at most the small
+    // advertised set and never grows with the locator count.
+    assert.ok(readReqs.length <= 4,
+      `expansion fan-out grew unboundedly with advertised locators (${readReqs.length} reads for 6 locators)`);
+  });
+
+  // ---------------------------------------------------------------------
+  // [fixture realism] Query semantics: the server matches query_text by
+  // literal ILIKE against Goal/Summary. A full natural question that is
+  // not a substring misses the root; a model-produced keyword hits. The
+  // fixture must NOT ignore the query (which would fake green).
+  // ---------------------------------------------------------------------
+  test('a full natural question misses the root (ILIKE), a model keyword hits it', async () => {
+    const client = new CatscoLogAgentClient(fixture.baseUrl);
+    const token = fixture.skillToken;
+
+    // Full question — contains NO Goal/Summary substring ('release' is the
+    // indexed keyword), so the literal ILIKE match misses the root.
+    const miss = await client.branch({
+      queryText: 'What did the owner decide about our staging window last sprint, and which metric stayed unknown?',
+      token,
+      branchUrl: '/catsco/agent/branch',
+    });
+    const missItems = sourceReferenceItems(miss);
+    assert.equal(missItems.length, 0,
+      'a full natural question surfaced the root — the fixture ignored the query (fake green)');
+
+    // Model-produced keyword → hit.
+    const hit = await client.branch({
+      queryText: 'release',
+      token,
+      branchUrl: '/catsco/agent/branch',
+    });
+    const hitItems = sourceReferenceItems(hit);
+    assert.equal(hitItems.length, 1,
+      'a matching keyword query did not surface the typed locator');
+    assert.equal(hitItems[0].ref, DEFAULT_ROOT_REF);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -577,13 +703,20 @@ describe('catslog projection expansion client seam', () => {
     assert.equal(req.authorization, `Bearer ${fixture.skillToken}`);
     assert.deepEqual(req.body, { projection_ref: DEFAULT_ROOT_REF });
 
-    // The returned shape carries the projection document and the authorized
-    // sources — the semantic view, not a metadata stub.
+    // The returned shape: `projection` is the PascalCase
+    // SourceMemoryProjection shell; the inner Document keeps snake_case
+    // tags. Assert the REAL envelope — a lowercase `.document` lookup would
+    // be a fake shape and must fail.
     const doc = syntheticProjectionDocument();
-    assert.equal(result.projection?.document?.schema_version, doc.schema_version);
-    assert.equal(result.projection?.document?.nodes?.length, doc.nodes.length);
-    assert.equal(result.projection?.document?.conditions?.length, doc.conditions.length);
-    assert.equal(result.projection?.document?.overall_coverage, 'partial');
+    assert.ok(result.projection && typeof result.projection === 'object');
+    const envelope = result.projection;
+    assert.ok(envelope.Document, 'projection.Document (PascalCase) missing — wrong envelope shape');
+    assert.equal(envelope.document, undefined, 'lowercase projection.document must not exist on the wire');
+    assert.equal(envelope.Document.schema_version, doc.schema_version);
+    assert.equal(envelope.Document.nodes?.length, doc.nodes.length);
+    assert.equal(envelope.Document.conditions?.length, doc.conditions.length);
+    assert.equal(envelope.Document.overall_coverage, 'partial');
+    assert.ok(typeof envelope.Revision === 'string' && envelope.Revision.length > 0);
     assert.ok(Array.isArray(result.sources) && result.sources.length === 4);
   });
 

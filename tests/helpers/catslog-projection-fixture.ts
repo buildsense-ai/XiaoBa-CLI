@@ -46,6 +46,26 @@ export interface ProjectionDocument {
   };
 }
 
+/**
+ * The `projection` member of a source/read response. Mirrors
+ * `store.SourceMemoryProjection` at deployed 339ba0e: the OUTER struct has
+ * NO json tags/custom marshaler, so its fields serialize PascalCase
+ * (Document/Revision/StreamID/…); the INNER Document keeps its snake_case
+ * tags. Faking `.document` (lowercase) here would make every consumer test
+ * silently green on the wrong shape — the wire is PascalCase outer.
+ */
+export interface ProjectionEnvelope {
+  PrincipalID?: string;
+  MemoryScopeID?: string;
+  StreamID?: string;
+  GoalKey?: string;
+  Revision?: string;
+  SourceBasis?: string;
+  SourceRevision?: string;
+  Status?: string;
+  Document: ProjectionDocument;
+}
+
 export interface FixtureOptions {
   /** The ref_<64hex> the typed locator advertises. */
   rootRef: string;
@@ -65,6 +85,15 @@ export interface FixtureOptions {
   projectionDocument?: ProjectionDocument;
   /** Authorized source texts (default 4 pages, page 2 withheld marker). */
   sourceTexts?: string[];
+  /**
+   * Substrings the branch query_text must contain for the fixture to return
+   * the locator. Mirrors the server's literal ILIKE matching: a full
+   * natural-language question that is NOT a Goal/Summary substring misses
+   * the root and returns an EMPTY agent_memory branch. Default
+   * ['release'] — a model-produced keyword. The fixture never ignores the
+   * query, so a fake green from an always-matching stub is impossible.
+   */
+  requiredQuerySubstrings?: string[];
 }
 
 export interface CatsLogProjectionFixture {
@@ -180,8 +209,16 @@ export async function startCatsLogProjectionFixture(
       }
 
       if (req.url === '/catsco/agent/branch') {
+        // Mirror the server's literal ILIKE matching: the query_text must
+        // contain the Goal/Summary substring(s) for the root to surface. A
+        // full natural-language question that is not a substring misses the
+        // root — returning an EMPTY agent_memory branch (no locator).
+        const required = options.requiredQuerySubstrings ?? ['release'];
+        const bodyRecord = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+        const queryText = String(bodyRecord.query_text ?? '').toLowerCase();
+        const queryMatches = required.every(term => queryText.includes(term.toLowerCase()));
         const agentItems: Record<string, unknown>[] = [];
-        if (options.emitSourceReference !== false) {
+        if (queryMatches && options.emitSourceReference !== false) {
           agentItems.push({
             source: 'agent_memory',
             ref: options.advertisedRef ?? options.rootRef,
@@ -190,15 +227,17 @@ export async function startCatsLogProjectionFixture(
             score_hint: 0.5,
           });
         }
-        for (const extra of options.extraItems ?? []) agentItems.push(extra);
+        if (queryMatches) {
+          for (const extra of options.extraItems ?? []) agentItems.push(extra);
+        }
         return json(200, {
           schema_version: 1,
           request_id: 'req-e2e-1',
-          status: 'partial',
+          status: queryMatches && agentItems.length > 0 ? 'partial' : 'empty',
           branches: [
             {
               source: 'agent_memory',
-              status: 'partial',
+              status: queryMatches && agentItems.length > 0 ? 'partial' : 'empty',
               items: agentItems,
               truncated: true,
             },
@@ -226,10 +265,23 @@ export async function startCatsLogProjectionFixture(
         if (projectionRef !== options.rootRef) {
           return json(404, { error: 'not_found', detail: 'projection ref was never issued' });
         }
+        // Real Go shape: `projection` is the PascalCase SourceMemoryProjection
+        // shell (no json tags on the outer struct); only the inner Document
+        // uses snake_case tags. Never serialize a lowercase `.document`.
         return json(200, {
           schema_version: 1,
           content_trust: 'derived_memory_projection',
-          projection: { document },
+          projection: {
+            PrincipalID: 'p-e2e',
+            MemoryScopeID: 'scope-e2e',
+            StreamID: 'stream-e2e',
+            GoalKey: 'goal-e2e',
+            Revision: crypto.createHash('sha256').update('rev-e2e', 'utf8').digest('hex'),
+            SourceBasis: 'synthetic-basis',
+            SourceRevision: crypto.createHash('sha256').update('src-rev', 'utf8').digest('hex'),
+            Status: 'published',
+            Document: document,
+          },
           sources,
         });
       }
@@ -249,19 +301,25 @@ export async function startCatsLogProjectionFixture(
   };
 }
 
-/** Extract the typed source_reference items a projected branch lane surfaced. */
+/** Extract the typed source_reference items a projected branch lane surfaced.
+ *  Only `source==='agent_memory'` items qualify — a source_reference kind on
+ *  any other source is not the advertised trust-root locator. */
 export function sourceReferenceItems(branchEnvelope: unknown): Array<Record<string, unknown>> {
   const record = branchEnvelope as Record<string, unknown>;
   const branches = Array.isArray(record?.branches) ? record.branches : [];
   const items: Array<Record<string, unknown>> = [];
   for (const branch of branches) {
     if (!branch || typeof branch !== 'object') continue;
-    if ((branch as Record<string, unknown>).source !== 'agent_memory') continue;
-    const branchItems = (branch as Record<string, unknown>).items;
+    const branchRecord = branch as Record<string, unknown>;
+    if (branchRecord.source !== 'agent_memory') continue;
+    const branchItems = branchRecord.items;
     if (!Array.isArray(branchItems)) continue;
     for (const item of branchItems) {
-      if (item && typeof item === 'object' && (item as Record<string, unknown>).kind === 'source_reference') {
-        items.push(item as Record<string, unknown>);
+      const record2 = item as Record<string, unknown>;
+      if (record2 && typeof record2 === 'object'
+        && record2.kind === 'source_reference'
+        && (record2.source === undefined || record2.source === 'agent_memory')) {
+        items.push(record2);
       }
     }
   }

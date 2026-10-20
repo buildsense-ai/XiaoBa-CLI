@@ -89,28 +89,47 @@ async function main() {
   }
 
   // --- Step 2: real branch call over real HTTP --------------------------
+  // `question_text` is the natural full current input — the model-facing
+  // surface. `query_text` is what a model/fake produces as keywords under
+  // the normal tool rules; the fixture matches it literally (ILIKE-style)
+  // so a full question that is not a Goal/Summary substring misses, exactly
+  // like the real server. `root_ref` is ASSERT-ONLY: it is never sent as a
+  // read, never fed to the model, never a fallback.
   const provider = new CatsLogMemoryProvider(envRoot, { env: process.env });
+  const branchQueryText = manifest.query_text ?? manifest.question_text;
   let branchResponse;
   try {
-    branchResponse = await provider.branch({ queryText: manifest.query_text });
+    branchResponse = await provider.branch({ queryText: branchQueryText });
   } catch (error) {
     artifact.red_reason = `provider.branch failed: ${error?.message || error}`;
     return finish(artifact, args, envRoot);
   }
   const locators = sourceReferenceItems(branchResponse);
-  step('branch_typed_locators', { count: locators.length });
+  // Assert the surfaced ref matches the manifest's assert-only root_ref —
+  // never fall back to sending root_ref itself as a read.
+  const surfacedRef = locators.length > 0 ? String(locators[0].ref ?? '') : null;
+  step('branch_typed_locators', {
+    count: locators.length,
+    surfaced_ref_matches_manifest: surfacedRef !== null && surfacedRef === manifest.root_ref,
+  });
   if (locators.length === 0) {
     artifact.red_reason = 'agent_memory branch emitted no kind=source_reference item';
     return finish(artifact, args, envRoot);
   }
+  if (surfacedRef !== manifest.root_ref) {
+    artifact.red_reason = `surfaced ref ${surfacedRef} != assert-only root_ref`;
+    return finish(artifact, args, envRoot);
+  }
 
   // --- Step 3: expansion over the device read capability ----------------
+  // Expand the ref the branch ACTUALLY surfaced — never manifest.root_ref
+  // directly (assert-only; a fallback would fake authorization).
   let expansion;
   try {
     expansion = await provider[expansionMethod]
-      ? provider[expansionMethod]({ projectionRef: locators[0].ref })
+      ? provider[expansionMethod]({ projectionRef: surfacedRef })
       : await client[expansionMethod]({
-        projectionRef: locators[0].ref,
+        projectionRef: surfacedRef,
         token: manifest.device_skill_token,
         sourceReadUrl: manifest.source_read_path || '/catsco/agent/knowledge/source/read',
       });
@@ -118,9 +137,14 @@ async function main() {
     artifact.red_reason = `projection expansion failed: ${error?.message || error}`;
     return finish(artifact, args, envRoot);
   }
-  const document = expansion?.projection?.document ?? expansion?.document ?? expansion;
+  // Real Go envelope: `projection` is PascalCase SourceMemoryProjection;
+  // the inner Document is snake_case. Never read a lowercase `.document`.
+  const document = expansion?.projection?.Document
+    ?? expansion?.Document
+    ?? expansion?.projection?.document; // tolerate a transitional lowercase inner only
   step('expansion_shape', {
     has_document: Boolean(document),
+    envelope_is_pascalcase: Boolean(expansion?.projection?.Document ?? expansion?.Document),
     node_count: Array.isArray(document?.nodes) ? document.nodes.length : 0,
     edge_count: Array.isArray(document?.edges) ? document.edges.length : 0,
     condition_count: Array.isArray(document?.conditions) ? document.conditions.length : 0,
@@ -183,16 +207,17 @@ async function main() {
     isToolCallingSupported: () => true,
     async chat(messages) {
       aiCalls.push(JSON.parse(JSON.stringify(messages)));
-      // Finish immediately citing the delivered ref — the finish gate must
-      // accept ONLY because the ref was actually delivered, not because the
-      // string is well-formed.
+      // Finish citing the ref the branch ACTUALLY delivered — never
+      // manifest.root_ref (assert-only). The finish gate must accept only a
+      // delivered ref, not a well-formed metadata-only one.
+      const deliveredRef = surfacedRef;
       return {
         content: null,
         toolCalls: [{
           id: 'finish_1', type: 'function',
           function: { name: 'finish_memory_search', arguments: JSON.stringify({
             summary: 'Expanded projection evidence delivered.',
-            evidence: [manifest.root_ref],
+            evidence: [deliveredRef],
             inject: true,
           }) },
         }],
@@ -202,7 +227,7 @@ async function main() {
   };
   const handle = startMemorySidecarBranch({
     sessionKey: 'projection-e2e-runner',
-    input: manifest.query_text,
+    input: manifest.question_text ?? manifest.query_text,
     recentMessages: [],
     workingDirectory: envRoot,
     aiService: fakeAi,
