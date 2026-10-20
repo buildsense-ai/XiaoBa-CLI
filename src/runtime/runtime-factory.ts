@@ -14,6 +14,7 @@ import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
 import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
 import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { FileBotDefinitionRepository } from '../bot-definition/repository';
 import {
   RuntimeProfile,
   assertValidRuntimeProfile,
@@ -121,13 +122,27 @@ export class RuntimeFactory {
   ): CatsCoMcpToolBridge | undefined {
     if (process.env.CATSCO_MCP_TOOL_BRIDGE === '0') return undefined;
     try {
-      const localConfig = createCatsCoLocalConfigService({
-        runtimeRoot: PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory),
-      });
+      const runtimeRoot = PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory);
+      const localConfig = createCatsCoLocalConfigService({ runtimeRoot });
+      const botDefinitions = new FileBotDefinitionRepository({ runtimeRoot });
       const explicitUrl = process.env.CATSCO_MCP_URL?.trim();
       const bridge = new CatsCoMcpToolBridge({
         toolManager,
         createClient: createSdkMcpBridgeClientFactory(),
+        // 当前 Agent 的工具清单：读 bot definition 的 serviceAgents（云端同步落本地缓存）。
+        // 读不到（未绑定 bot/定义未配置）→ undefined = 账号可见全部（兼容）。
+        resolveAgentSlugs: () => {
+          try {
+            const botUid = String(localConfig.getAuthState().botUid ?? '').trim();
+            if (!botUid) return undefined;
+            const definition = botDefinitions.readCache(botUid) ?? botDefinitions.readCanonical(botUid);
+            const list = definition?.serviceAgents;
+            if (!Array.isArray(list)) return undefined;
+            return list.map((slug) => String(slug).trim()).filter((slug) => slug.length > 0);
+          } catch {
+            return undefined;
+          }
+        },
         resolveEndpoint: () => {
           const auth = localConfig.getAuthState();
           const token = (auth.token ?? '').trim();

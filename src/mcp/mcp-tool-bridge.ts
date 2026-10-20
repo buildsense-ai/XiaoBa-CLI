@@ -66,6 +66,11 @@ export interface McpToolBridgeOptions {
   resolveEndpoint: () => McpBridgeEndpoint | null;
   /** 仅桥接此前缀的远端工具（默认 catsco_）。 */
   toolNamePrefix?: string;
+  /**
+   * 当前 Agent 的工具清单（service agent slug 列表）。
+   * undefined = 不过滤（账号可见全部，兼容旧行为）；[] = 仅保留 catsco_run_status。
+   */
+  resolveAgentSlugs?: () => string[] | undefined;
   /** 最小刷新间隔（默认 30s），避免密集轮次反复打端点。 */
   refreshIntervalMs?: number;
   runStatusToolName?: string;
@@ -106,6 +111,7 @@ export class CatsCoMcpToolBridge {
   private readonly toolManager: McpToolBridgeOptions['toolManager'];
   private readonly createClient: McpBridgeClientFactory;
   private readonly resolveEndpoint: () => McpBridgeEndpoint | null;
+  private readonly resolveAgentSlugs?: () => string[] | undefined;
   private readonly toolNamePrefix: string;
   private readonly refreshIntervalMs: number;
   private readonly runStatusToolName: string;
@@ -126,6 +132,7 @@ export class CatsCoMcpToolBridge {
     this.toolManager = options.toolManager;
     this.createClient = options.createClient;
     this.resolveEndpoint = options.resolveEndpoint;
+    this.resolveAgentSlugs = options.resolveAgentSlugs;
     this.toolNamePrefix = options.toolNamePrefix ?? DEFAULT_TOOL_PREFIX;
     this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
     this.runStatusToolName = options.runStatusToolName ?? DEFAULT_RUN_STATUS_TOOL;
@@ -201,9 +208,15 @@ export class CatsCoMcpToolBridge {
       const seen = new Set<string>();
       const registered: string[] = [];
       const unregistered: string[] = [];
+      const scopedSlugs = this.resolveAgentSlugs?.();
+      const allowedNames = Array.isArray(scopedSlugs)
+        ? new Set(scopedSlugs.map((slug) => `${this.toolNamePrefix}${slug}`))
+        : null;
 
       for (const info of infos) {
         if (!info?.name || !info.name.startsWith(this.toolNamePrefix)) continue;
+        // 当前 Agent 的工具清单：清单内 + run_status（轮询/查询依赖）；清单外直接跳过（既不注册也不进 diff）。
+        if (allowedNames && info.name !== this.runStatusToolName && !allowedNames.has(info.name)) continue;
         seen.add(info.name);
         const definition = this.buildDefinition(info);
         const existing = this.bridged.get(info.name);

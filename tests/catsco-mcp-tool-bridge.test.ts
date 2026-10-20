@@ -53,6 +53,7 @@ interface HarnessOptions {
   listTools?: () => McpBridgeToolInfo[] | Promise<McpBridgeToolInfo[]>;
   callTool?: (name: string, args: Record<string, unknown>) => McpBridgeCallResult;
   resolveEndpoint?: () => McpBridgeEndpoint | null;
+  resolveAgentSlugs?: () => string[] | undefined;
   refreshIntervalMs?: number;
   runPollTimeoutMs?: number;
   runPollIntervalMs?: number;
@@ -73,6 +74,7 @@ function createHarness(options: HarnessOptions = {}) {
       return client;
     },
     resolveEndpoint: options.resolveEndpoint ?? (() => ({ url: 'https://app.catsco.cc/api/mcp', token: 'test-token' })),
+    ...(options.resolveAgentSlugs ? { resolveAgentSlugs: options.resolveAgentSlugs } : {}),
     refreshIntervalMs: options.refreshIntervalMs ?? 0,
     runPollTimeoutMs: options.runPollTimeoutMs ?? 0,
     runPollIntervalMs: options.runPollIntervalMs ?? 1,
@@ -654,5 +656,51 @@ describe('CatsCo MCP 工具桥', () => {
     const second = Date.now();
     await bridge.ensureReady(2000);
     assert.ok(Date.now() - second < 100);
+  });
+
+  test('工具清单：只注册清单内的 agent + run_status', async () => {
+    const tools = [
+      toolInfo('catsco_codex'),
+      toolInfo('catsco_claude'),
+      toolInfo('catsco_hello'),
+      toolInfo('catsco_run_status'),
+    ];
+    const { bridge, manager } = createHarness({
+      listTools: () => tools,
+      resolveAgentSlugs: () => ['codex', 'claude'],
+    });
+    const result = await bridge.refresh();
+    assert.deepStrictEqual(result?.registered.sort(), ['catsco_claude', 'catsco_codex', 'catsco_run_status']);
+    assert.ok(manager.getTool('catsco_codex'));
+    assert.ok(manager.getTool('catsco_claude'));
+    assert.ok(manager.getTool('catsco_run_status'));
+    assert.equal(manager.getTool('catsco_hello'), undefined);
+  });
+
+  test('工具清单：空清单只剩 run_status（已注册的其他工具被注销）', async () => {
+    const tools = [toolInfo('catsco_codex'), toolInfo('catsco_run_status')];
+    const { bridge, manager } = createHarness({
+      listTools: () => tools,
+      resolveAgentSlugs: () => ['codex'],
+    });
+    await bridge.refresh();
+    assert.ok(manager.getTool('catsco_codex'));
+
+    // 清单变空：本轮 diff 应注销 codex，仅保留 run_status
+    const scoped = createHarness({
+      listTools: () => tools,
+      resolveAgentSlugs: () => [],
+    });
+    await scoped.bridge.refresh();
+    assert.equal(scoped.manager.getTool('catsco_codex'), undefined);
+    assert.ok(scoped.manager.getTool('catsco_run_status'));
+  });
+
+  test('工具清单：resolveAgentSlugs 返回 undefined = 不过滤（兼容旧行为）', async () => {
+    const tools = [toolInfo('catsco_codex'), toolInfo('catsco_hello'), toolInfo('catsco_run_status')];
+    const { bridge, manager } = createHarness({ listTools: () => tools, resolveAgentSlugs: () => undefined });
+    const result = await bridge.refresh();
+    assert.deepStrictEqual(result?.registered.sort(), ['catsco_codex', 'catsco_hello', 'catsco_run_status']);
+    assert.ok(manager.getTool('catsco_hello'));
   });
 });

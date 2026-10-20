@@ -370,6 +370,15 @@ function parseCloudBotDefinitionSnapshot(
   const skills = hasSkills
     ? canonicalizeBotSkillRefs((raw.skills ?? []) as BotSkillRef[])
     : undefined;
+  const hasServiceAgents = Object.prototype.hasOwnProperty.call(raw, 'serviceAgents');
+  if (hasServiceAgents && raw.serviceAgents !== null && !Array.isArray(raw.serviceAgents)) {
+    throw new Error('CatsCo cloud returned an invalid BotDefinition serviceAgents field.');
+  }
+  const serviceAgents = hasServiceAgents
+    ? ((raw.serviceAgents ?? []) as unknown[])
+      .map((slug) => String(slug ?? '').trim())
+      .filter((slug) => slug.length > 0)
+    : undefined;
   return {
     configured: true,
     revision,
@@ -379,6 +388,7 @@ function parseCloudBotDefinitionSnapshot(
       model,
       ...(prompt ? { prompt } : {}),
       ...(skills !== undefined ? { skills } : {}),
+      ...(serviceAgents !== undefined ? { serviceAgents } : {}),
     },
     ...(response?.runtime && typeof response.runtime === 'object'
       ? { runtime: response.runtime as Record<string, unknown> }
