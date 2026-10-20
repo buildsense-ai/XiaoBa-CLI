@@ -121,6 +121,7 @@ export type DeviceGrantOperation =
   | 'skillhub.localSkill.share'
   | 'skillhub.publication.sourceProbe.v1'
   | 'skillhub.publication.capture.v1'
+  | 'skillhub.publication.upload.v1'
   | 'skillhub.localSkill.finalize'
   | 'skillhub.localSkill.delete'
   | 'skillhub.localBot.switch'

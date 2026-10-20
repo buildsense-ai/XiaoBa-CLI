@@ -3,11 +3,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import * as assert from 'node:assert/strict';
+import * as https from 'node:https';
 import { createCatsCoLocalConfigService } from '../../../src/catscompany/local-config';
 import { BotSkillWorkspaceService } from '../../../src/bot-skills/workspace';
 import { SkillHubThinRpcHandler, SKILLHUB_THIN_RPC_TOOLS } from '../../../src/catscompany/skillhub-rpc';
 import { PUBLICATION_SOURCE_PROBE } from '../../../src/skillhub/publication-source';
 import { PUBLICATION_CAPTURE } from '../../../src/skillhub/publication-capture';
+import { PublicationCandidateUploader } from '../../../src/skillhub/publication-upload';
 
 async function main() {
   const root = process.argv[2];
@@ -47,6 +49,16 @@ async function main() {
   for await (const line of readline.createInterface({ input: process.stdin, crlfDelay: Infinity })) {
     const input = JSON.parse(line);
     switch (input.action) {
+      case 'upload-config': {
+        // Test-only local TLS endpoint. Never use production credentials/network.
+        const uploader = new PublicationCandidateUploader({
+          runtimeRoot: root, enabled: true, issuer: 'https://cats.example', audience: input.origin,
+        }, { requestImpl: ((url: any, options: any, callback: any) =>
+          https.request(url, { ...options, ca: input.ca }, callback)) as typeof https.request });
+        handler = new SkillHubThinRpcHandler({ runtimeRoot: root, publicationProbeEnabled: true,
+          publicationCaptureEnabled: true, publicationUploadEnabled: true, publicationUploader: uploader });
+        break;
+      }
       case 'change': fs.appendFileSync(path.join(source, 'SKILL.md'), '\nchanged'); break;
       case 'remove': fs.renameSync(source, path.join(root, 'skills', 'renamed')); break;
       case 'disable': handler = new SkillHubThinRpcHandler({ runtimeRoot: root, publicationProbeEnabled: false }); break;
@@ -58,6 +70,7 @@ async function main() {
         fs.writeFileSync(statePath, originalState);
         handler = new SkillHubThinRpcHandler({ runtimeRoot: root, publicationProbeEnabled: true, publicationCaptureEnabled: true });
         break;
+      case 'upload':
       case 'capture':
       case 'probe': {
         const before = files(path.join(root, 'skills'));

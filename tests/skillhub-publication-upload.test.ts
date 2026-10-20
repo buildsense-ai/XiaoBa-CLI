@@ -11,6 +11,9 @@ import {BotSkillWorkspaceService} from '../src/bot-skills/workspace';
 import {PublicationCaptureStore,type PublicationCaptureInput} from '../src/skillhub/publication-capture';
 import {describePublicationSource} from '../src/skillhub/publication-source';
 import {PublicationCandidateUploader,type PublicationUploadGrant} from '../src/skillhub/publication-upload';
+import {PUBLICATION_UPLOAD,publicationUploadEnabled} from '../src/skillhub/publication-upload';
+import {SkillHubThinRpcHandler} from '../src/catscompany/skillhub-rpc';
+import {CatsCompanyBot,capabilitiesForCatsCompanyRuntimeRole} from '../src/catscompany';
 
 let certRoot:string,tls:{key:Buffer;cert:Buffer},root:string,input:PublicationCaptureInput,grant:PublicationUploadGrant;
 let store:PublicationCaptureStore,server:https.Server,origin:string,requests:any[],respond:(req:any,res:any,bytes:Buffer)=>void;
@@ -138,4 +141,98 @@ test('caller mutation during private read cannot change bytes, credential, route
   const g={...grant,binding:{...grant.binding}},i={...input,binding:{...input.binding},source:{...input.source}};
   const pending=uploader().upload(i,g,check);g.token='pubupload_'+'f'.repeat(64);g.binding.ownerUid='8';i.source.local_skill_id='pubsrc-'+'f'.repeat(48);
   await pending;assert.equal(requests[0].headers.authorization,'Bearer '+grant.token);
+});
+
+function rpcRequest(patch:any={}):any{
+  return {type:'request',request_id:'pubuploadrpc_abcdefghijklmnopqrstuvwx',tool_name:PUBLICATION_UPLOAD,
+    target_owner_user_id:'usr7',target_device_id:'install-42',device_id:'install-42',expires_at:Date.now()+55000,
+    payload:{entry_id:input.entryId,bot_uid:'42',...input.source,grant:{...grant,binding:{...grant.binding}}},...patch};
+}
+function rpcHandler(extra:any={}){
+  return new SkillHubThinRpcHandler({runtimeRoot:root,publicationProbeEnabled:true,publicationCaptureEnabled:true,
+    publicationUploadEnabled:true,publicationUploader:uploader(),...extra});
+}
+function rpcError(expected?:string){return (e:any)=>{
+  assert.equal(e.name,'SkillHubThinRpcError');if(expected)assert.equal(e.code,expected);
+  for(const secret of [root,grant.token,'Private source'])assert.ok(!String(e).includes(secret));
+  assert.equal(e.cause,undefined);return true;
+};}
+
+test('upload RPC uses retained bytes and returns only non-authoritative scalar ACK',async()=>{
+  const frozen=await store.readRequest(input,check),h=rpcHandler(),req=rpcRequest();
+  fs.rmSync(path.join(root,'skills','demo'),{recursive:true});
+  assert.deepEqual(await h.execute(req),{schemaVersion:1,entryId:input.entryId,authorityEpoch:1,accepted:true});
+  assert.deepEqual(requests[0].bytes,frozen);
+  assert.equal(requests[0].headers.authorization,'Bearer '+grant.token);
+  // Same request ID has no generic cached response; live identity is rechecked.
+  const config=createCatsCoLocalConfigService({runtimeRoot:root}),old=config.load();
+  config.save({...old,currentBot:{...old.currentBot!,boundByUserUid:'8'}});
+  await assert.rejects(h.execute(req),rpcError());
+  assert.equal(requests.length,1);
+  assert.equal((h as any).completed.size,0);
+});
+
+test('upload RPC strict envelope and grant authority reject without HTTP',async()=>{
+  const req=rpcRequest();
+  for(const patch of [
+    {type:'result'},{request_id:'user-command'},{request_id:'pubcapture_abcdefghijklmnopqrstuvwx'},
+    {result:{}},{error:{code:'x'}},{expires_at:Date.now()+120000},{expires_at:String(Date.now()+50000)},
+    {target_owner_user_id:'usr8'},{target_owner_user_id:'7'},{device_id:undefined},{target_device_id:'other'},
+    {payload:{...req.payload,bot_uid:'43'}},{payload:{...req.payload,path:root}},
+    {payload:{...req.payload,grant:{...grant,action:'commit'}}},
+    {payload:{...req.payload,grant:{...grant,token:'invalid'}}},
+    {payload:{...req.payload,grant:{...grant,binding:{...grant.binding,ownerUid:'8'}}}},
+    {payload:{...req.payload,grant:{...grant,audience:'https://other.example'}}},
+    {payload:{...req.payload,grant:{...grant,requestHash:'f'.repeat(64)}}},
+  ])await assert.rejects(rpcHandler().execute({...req,...patch}),rpcError());
+  assert.equal(requests.length,0);
+});
+
+test('upload RPC bounds concurrent operations and aborts stalled HTTP on shutdown and owner change',async()=>{
+  for(const mode of ['shutdown','owner']){
+    const config=createCatsCoLocalConfigService({runtimeRoot:root}),saved=config.load();
+    let stopping=false;respond=()=>{};
+    const h=rpcHandler({isShuttingDown:()=>stopping}),req=rpcRequest();
+    const a=h.execute(req),b=h.execute({...req,request_id:'pubuploadrpc_secondrequestabcdefghijkl'});
+    const settled=Promise.allSettled([a,b]);
+    await assert.rejects(h.execute(req),rpcError('publication.upload_busy'));
+    const before=requests.length;
+    for(let i=0;i<200 && requests.length<before+2;i++)await delay(5);
+    if(mode==='shutdown')stopping=true;
+    else config.save({...saved,currentBot:{...saved.currentBot!,boundByUserUid:'8'}});
+    const results=await Promise.race([settled,delay(3000).then(()=>{throw new Error('RPC did not abort HTTP');})]);
+    for(const r of results){assert.equal(r.status,'rejected');if(r.status==='rejected')rpcError()(r.reason);}
+    config.save(saved);
+    assert.equal((h as any).publicationUploads,0);
+  }
+});
+
+test('upload capability requires all gates and canonical pinned origins; disabled routing never falls back',async()=>{
+  const names=['XIAOBA_SKILLHUB_PUBLICATION_PROBE_ENABLED','XIAOBA_SKILLHUB_PUBLICATION_CAPTURE_ENABLED',
+    'XIAOBA_SKILLHUB_PUBLICATION_UPLOAD_ENABLED','XIAOBA_SKILLHUB_PUBLICATION_ISSUER','XIAOBA_SKILLHUB_PUBLICATION_CLOUD_AUDIENCE'];
+  const previous=names.map(n=>process.env[n]);
+  try{
+    const set=(values:string[])=>names.forEach((n,i)=>{process.env[n]=values[i];});
+    for(const values of [
+      ['','','','https://cats.example',origin],['1','1','','https://cats.example',origin],
+      ['1','','1','https://cats.example',origin],['1','1','1','http://bad',origin],
+      ['1','1','1',origin,origin],['1','1','1','https://cats.example','https://other/path'],
+    ]){
+      set(values);assert.equal(publicationUploadEnabled(),false);
+      assert.ok(!capabilitiesForCatsCompanyRuntimeRole('server').includes(PUBLICATION_UPLOAD));
+    }
+    set(['1','true','TRUE','https://cats.example',origin]);
+    assert.equal(publicationUploadEnabled(),true);
+    assert.ok(capabilitiesForCatsCompanyRuntimeRole('server').includes(PUBLICATION_UPLOAD));
+    const disabled=rpcHandler({publicationUploadEnabled:false});
+    assert.equal(disabled.supports(PUBLICATION_UPLOAD),false);
+    await assert.rejects(disabled.execute(rpcRequest()),rpcError('publication.runtime_unsupported'));
+    let fallback=0;const sent:any[]=[];
+    const fake:any={shuttingDown:false,skillHubThinRpc:disabled,
+      bot:{sendThinToolRpcResult:async(v:any)=>sent.push(v)},executeLocalThinToolRpcTool:async()=>{fallback++;},
+      handleSkillHubThinToolRpcRequest:(CatsCompanyBot.prototype as any).handleSkillHubThinToolRpcRequest};
+    await (CatsCompanyBot.prototype as any).handleThinToolRpcRequest.call(fake,rpcRequest());
+    assert.equal(fallback,0);assert.equal(sent[0].error.code,'publication.runtime_unsupported');
+    assert.ok(!JSON.stringify(sent).includes(grant.token));assert.equal(requests.length,0);
+  }finally{names.forEach((n,i)=>{if(previous[i]===undefined)delete process.env[n];else process.env[n]=previous[i];});}
 });
