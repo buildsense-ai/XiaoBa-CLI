@@ -572,6 +572,20 @@ describe('CatsCo MCP 工具桥', () => {
     assert.equal(statusCalls, 0);
   });
 
+  test('端点解析抛错（本地配置损坏）：refresh 返回 null 不抛，执行给明确错误', async () => {
+    const { bridge } = createHarness({
+      resolveEndpoint: () => {
+        throw new Error('catsco.json 损坏');
+      },
+    });
+
+    assert.equal(await bridge.refresh(), null);
+    await bridge.ensureReady(500);
+    const result = await bridge.executeRemoteTool('catsco_hello', { input: {} });
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'catsco_mcp_not_configured');
+  });
+
   test('刷新间隔守卫：未到间隔直接跳过（不发网络请求）', async () => {    const { bridge, clients } = createHarness({
       listTools: () => [toolInfo('catsco_hello')],
       refreshIntervalMs: 60_000,
