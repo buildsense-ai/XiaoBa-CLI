@@ -17,11 +17,34 @@ export class Logger {
   private static logStream: fs.WriteStream | null = null;
   private static logFilePath: string | null = null;
   private static silentMode: boolean = false;
+  private static logStreamFailed: boolean = false;
+  private static logFailureNotified: boolean = false;
   private static logContext = new AsyncLocalStorage<LoggerContextStore>();
 
   private static stripAnsi(str: string): string {
     // eslint-disable-next-line no-control-regex
     return str.replace(/\x1B\[[0-9;]*m/g, '');
+  }
+
+  /**
+   * File logging is best-effort. A full disk must never take the agent down:
+   * the stream 'error' event is handled here, and the failed stream is dropped.
+   */
+  private static noteFileLogFailure(context: string, error: unknown): void {
+    this.logStreamFailed = true;
+    if (!this.logFailureNotified) {
+      this.logFailureNotified = true;
+      // stderr directly: console.* may be routed back through Logger.
+      process.stderr.write(`[logger] file logging disabled after ${context} failure: ${String(error)}\n`);
+    }
+  }
+
+  private static dropLogStream(): void {
+    const failed = this.logStream;
+    this.logStream = null;
+    if (failed) {
+      try { failed.destroy(); } catch { /* already broken */ }
+    }
   }
 
   private static writeToFile(level: string, message: string, event?: SessionRuntimeLogEvent): void {
@@ -31,13 +54,18 @@ export class Logger {
       return;
     }
 
-    if (!this.logStream) {
+    if (!this.logStream || this.logStreamFailed) {
       return;
     }
 
     const now = new Date();
     const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}.${String(now.getMilliseconds()).padStart(3, '0')}`;
-    this.logStream.write(`[${ts}] [${level}] ${this.stripAnsi(message)}\n`);
+    try {
+      this.logStream.write(`[${ts}] [${level}] ${this.stripAnsi(message)}\n`);
+    } catch (error) {
+      this.noteFileLogFailure('write', error);
+      this.dropLogStream();
+    }
   }
 
   static runtimeEvent(level: string, message: string, event: SessionRuntimeLogEvent): void {
@@ -76,9 +104,22 @@ export class Logger {
     const fileName = `${hh}-${mm}-${ss}_${suffix}.log`;
     const dir = PathResolver.getLogsPath(dateDir);
 
-    fs.mkdirSync(dir, { recursive: true });
-    this.logFilePath = path.join(dir, fileName);
-    this.logStream = fs.createWriteStream(this.logFilePath, { flags: 'a' });
+    this.logStreamFailed = false;
+    this.logFailureNotified = false;
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      this.logFilePath = path.join(dir, fileName);
+      const stream = fs.createWriteStream(this.logFilePath, { flags: 'a' });
+      stream.on('error', (error) => {
+        this.noteFileLogFailure('write', error);
+        this.dropLogStream();
+      });
+      this.logStream = stream;
+    } catch (error) {
+      this.logFilePath = null;
+      this.dropLogStream();
+      this.noteFileLogFailure('open', error);
+    }
   }
 
   static closeLogFile(): void {
@@ -87,6 +128,8 @@ export class Logger {
       this.logStream = null;
       this.logFilePath = null;
     }
+    this.logStreamFailed = false;
+    this.logFailureNotified = false;
   }
 
   static getLogFilePath(): string | null {
