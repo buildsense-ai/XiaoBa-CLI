@@ -11,6 +11,7 @@ import {
   DEFAULT_SKILLS_URL,
   DEFAULT_SOURCE_READ_URL,
   isSafeCatsLogPath,
+  isCatsLogPoolCitationRef,
 } from './catsco-log-agent-client';
 import type {
   CatscoBranchQuery,
@@ -125,6 +126,8 @@ interface CatsLogCapabilities {
  */
 export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
   private bootstrapPromise: Promise<CatsLogCapabilities> | null = null;
+  /** Private capability snapshot for refs actually issued by this provider's branch calls. */
+  private readonly projectionCapabilities = new Map<string, { token: string; apiBaseUrl: string }>();
 
   constructor(
     private readonly workingDirectory: string,
@@ -180,11 +183,22 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
         if (typeof (client as any).branch !== 'function') {
           throw new CatsLogMemoryUnavailableError('CatsLog client does not support the branch route');
         }
+        const apiBaseUrl = this.currentConfig().apiBaseUrl;
         return client.branch({
           ...query,
           token: capability.token,
           branchUrl: capability.branchUrl,
           signal,
+        }).then(response => {
+          for (const branch of response.branches ?? []) {
+            if (branch?.source !== 'agent_memory') continue;
+            for (const item of Array.isArray(branch.items) ? branch.items.slice(0, 50) : []) {
+              if (item?.source !== 'agent_memory' || item.kind !== 'source_reference' || !isCatsLogPoolCitationRef(item.ref)) continue;
+              if (this.projectionCapabilities.size >= 64) this.projectionCapabilities.delete(this.projectionCapabilities.keys().next().value!);
+              this.projectionCapabilities.set(item.ref, { token: capability.token, apiBaseUrl });
+            }
+          }
+          return response;
         });
       },
       signal,
@@ -234,20 +248,25 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
   async readSourceMemoryProjection(input: {
     projectionRef: string;
   }, signal?: AbortSignal): Promise<CatscoSourceMemoryProjectionRead> {
-    return this.withReadCapability(
-      (capability, client) => {
-        if (typeof (client as any).readSourceMemoryProjection !== 'function') {
-          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the source-read route');
-        }
-        return client.readSourceMemoryProjection({
-          ...input,
-          token: capability.token,
-          sourceReadUrl: capability.sourceReadUrl,
-          signal,
-        });
-      },
-      signal,
-    );
+    const issued = this.projectionCapabilities.get(input.projectionRef);
+    const config = this.currentConfig();
+    const state = loadCatscoLogAgentState(config.stateFilePath);
+    const capability = !state.stateCorrupt && readCapabilityFromState(state, this.now());
+    // Never replay an issued ref under a replacement identity/token. This read
+    // does not refresh, invalidate, bootstrap, or retry on 401.
+    if (!issued || !capability || capability.token !== issued.token || config.apiBaseUrl !== issued.apiBaseUrl) {
+      throw new CatsLogMemoryUnavailableError('CatsLog source reference capability changed or unavailable');
+    }
+    const result = await this.clientFor(issued.apiBaseUrl).readSourceMemoryProjection({
+      ...input, token: capability.token, sourceReadUrl: DEFAULT_SOURCE_READ_URL, signal,
+    });
+    const latestConfig = this.currentConfig();
+    const latestState = loadCatscoLogAgentState(latestConfig.stateFilePath);
+    if (signal?.aborted || latestState.stateCorrupt || clean(latestState.skillToken) !== issued.token
+      || latestConfig.apiBaseUrl !== issued.apiBaseUrl || !this.isAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog source reference capability changed during read');
+    }
+    return result;
   }
 
   async readSkills(query: CatscoSkillsQuery, signal?: AbortSignal): Promise<CatscoSkillsResponse> {
@@ -495,7 +514,7 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
       skillsUrl: safePathOrDefault(response?.skills_url, DEFAULT_SKILLS_URL),
       sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
       branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
-      sourceReadUrl: safePathOrDefault(response?.knowledge_source_read_url, DEFAULT_SOURCE_READ_URL),
+      sourceReadUrl: DEFAULT_SOURCE_READ_URL,
     }
     : null;
   return { ...(read ? { read } : {}) };
@@ -511,7 +530,7 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
     skillsUrl: safePathOrDefault(state.skillsUrl, DEFAULT_SKILLS_URL),
     sessionsUrl: safePathOrDefault(state.sessionsUrl, DEFAULT_SESSIONS_URL),
     branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
-    sourceReadUrl: safePathOrDefault((state as any).knowledgeSourceReadUrl, DEFAULT_SOURCE_READ_URL),
+    sourceReadUrl: DEFAULT_SOURCE_READ_URL,
   };
 }
 

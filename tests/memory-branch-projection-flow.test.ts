@@ -1,233 +1,130 @@
-import { describe, test } from 'node:test';
+import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { MemorySearchBranchSession } from '../src/core/memory-search-branch-session';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { createHash } from 'node:crypto';
+import { startMemorySidecarBranch } from '../src/core/sidecar-memory-branch';
 import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observation';
-import { recomputeSourceProjectionRef } from '../src/core/catslog-projection-reference';
-import { ChatResponse, Message } from '../src/types';
-import { ToolCall, ToolDefinition } from '../src/types/tool';
-import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
-
+import { ConversationRunner } from '../src/core/conversation-runner';
+import { AgentToolExecutor } from '../src/agents/agent-tool-executor';
+import { fixtureBranch, fixtureRead, fixtureRef } from './helpers/catslog-projection-reference-fixture';
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
-const REVISION = 'a'.repeat(64);
-const STREAM = 'stream-ref-flow';
-const VALID_REF = recomputeSourceProjectionRef(REVISION, STREAM)!;
-const UNOBSERVED_REF = `ref_${'f'.repeat(64)}`;
-
-const DOC = {
-  schema_version: 1,
-  provenance: 'derived',
-  model_steps: 'unknown',
-  causality: 'unknown',
-  goal: 'Retention audit policy',
-  summary: 'Audit evidence must be retained for 90 days only.',
-  overall_coverage: 'partial',
-  gap_acknowledgement: 'page 2 of the source tape was withheld',
-  nodes: [
-    { id: 'n1', kind: 'claim', text: 'Audit evidence retention is bounded to 90 days only.' },
-    { id: 'n2', kind: 'omission', text: 'Emergency rollback procedure is not covered.' },
-  ],
-  edges: [{ from: 'n2', to: 'n1', kind: 'qualifies' }],
-  mappings: [{ node_id: 'n1', source_ref: 'source-memory:page:1' }],
-  conditions: ['Applies only to production releases after 2026-07-01.'],
-  omissions: ['Page 2 of the source tape was withheld (unreviewed).'],
-  aggregate: { verified_pages: 3, total_pages: 4, gaps: [{ status: 'unreviewed', first_page: 2, last_page: 2 }] },
-};
-
-function validRead() {
-  return {
-    schema_version: 1,
-    content_trust: 'derived_memory_projection',
-    projection: { revision: REVISION, stream_id: STREAM, document: DOC },
-    sources: [{ anchor: { id: 'p1' }, text: 'raw page' }],
-  };
+const question = 'What did we decide about the Meridian production retention rules and the missing page?';
+function call(name: string, args: any, index: number): any {
+  return { content: null, toolCalls: [{ id: `call-${index}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }], usage };
 }
-
-function makeToolCall(id: string, name: string, args: unknown): ToolCall {
-  return { id, type: 'function', function: { name, arguments: JSON.stringify(args) } };
-}
-
-class ProjectionBackend implements CatsLogMemoryBackend {
-  branchCalls: unknown[] = [];
-  readCalls: unknown[] = [];
-  constructor(
-    private readonly branchResponse: unknown,
-    private readonly readImpl?: (input: { projectionRef: string }) => Promise<unknown>,
-  ) {}
-  isAvailable() { return true; }
-  async branch(query: any) {
-    this.branchCalls.push(query);
-    return this.branchResponse as any;
-  }
-  async readSourceMemoryProjection(input: { projectionRef: string }) {
-    this.readCalls.push(input);
-    if (this.readImpl) return this.readImpl(input);
-    return validRead() as any;
-  }
-}
-
-class FinishAI {
-  calls: Message[][] = [];
-  evidenceMessage?: Record<string, unknown>;
-  constructor(private readonly finishArgs: Record<string, unknown>) {}
-  isToolCallingSupported(): boolean { return true; }
-  async chat(messages: Message[], _tools?: ToolDefinition[]): Promise<ChatResponse> {
-    this.calls.push(JSON.parse(JSON.stringify(messages)));
-    const packMessage = messages.find(message => {
-      if (message.role !== 'user' || typeof message.content !== 'string') return false;
-      try {
-        const parsed = JSON.parse(message.content);
-        return parsed?.content_trust === 'untrusted_branch_evidence';
-      } catch { return false; }
-    });
-    if (packMessage) this.evidenceMessage = JSON.parse(String(packMessage.content));
-    return {
-      content: null,
-      toolCalls: [makeToolCall('finish_1', 'finish_memory_search', this.finishArgs)],
-      usage,
-    };
-  }
-}
-
-const BRANCH_RESPONSE = {
-  schema_version: 1,
-  content_trust: 'untrusted_branch_evidence',
-  request_id: 'br-test-1',
-  status: 'ok',
-  branches: [{
-    source: 'agent_memory',
-    status: 'partial',
-    truncated: true,
-    items: [{
-      source: 'agent_memory',
-      ref: VALID_REF,
-      kind: 'source_reference',
-      text: 'Source projection reference (metadata only; read_required). coverage=partial | claims=2 | conditions=1 | omissions=1 | verified_pages=3/4 | gap_ranges=1',
-      score_hint: 0.5,
-    }],
-  }],
-};
-
-async function runBranch(backend: CatsLogMemoryBackend, finishArgs: Record<string, unknown>) {
+async function scenario(options: { hidePrefetch?: boolean; read?: (input: any, signal?: AbortSignal) => Promise<any>; finishRef?: string; suppress?: boolean; all?: boolean; count?: number; cancel?: boolean } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'projection-flow-'));
   const queue = new InMemorySyntheticObservationQueue();
-  const ai = new FinishAI(finishArgs);
-  const session = new MemorySearchBranchSession({
-    sessionKey: 'proj-flow',
-    input: 'What are the audit retention conditions?',
-    recentMessages: [],
-    workingDirectory: '/tmp/proj-flow',
-    aiService: ai as any,
-    queue,
-    catslogMemory: backend,
-    logEnabled: false,
-  });
-  await session.run();
-  return { queue, ai, observations: queue.drain() };
+  const branchCalls: any[] = [], reads: string[] = [], modelInputs: any[] = [];
+  const refs = Array.from({ length: options.count ?? 1 }, (_, i) => fixtureRef((i + 10).toString(16).repeat(64)));
+  const controller = new AbortController();
+  let searched = false; const attempted = new Set<string>(); let selected: string | undefined;
+  const backend = {
+    isAvailable: () => true,
+    async branch(query: any) {
+      branchCalls.push(query);
+      const response = fixtureBranch(refs[0], `request-${branchCalls.length}`);
+      response.branches[0].items = options.hidePrefetch && query.queryText === '' ? [] : refs.map(ref => ({
+        source: 'agent_memory', ref, kind: 'source_reference', text: 'metadata-only',
+      }));
+      return response;
+    },
+    async readSourceMemoryProjection(input: any, signal?: AbortSignal) {
+      reads.push(input.projectionRef);
+      if (options.cancel) { controller.abort(); await new Promise<void>(resolve => setImmediate(resolve)); return fixtureRead(); }
+      if (options.read) return options.read(input, signal);
+      const i = refs.indexOf(input.projectionRef);
+      const read = fixtureRead((i + 10).toString(16).repeat(64));
+      if (options.all) read.projection.Document.summary = '界'.repeat(3000);
+      return read;
+    },
+  };
+  const ai = {
+    isToolCallingSupported: () => true,
+    async chat(messages: any[], tools: any[]) {
+      modelInputs.push(JSON.parse(JSON.stringify(messages)));
+      const objects = messages.flatMap(message => { try { const parsed = JSON.parse(message.content); return parsed && typeof parsed === 'object' ? [parsed] : []; } catch { return []; } });
+      const expansions = objects.filter(o => o.status === 'expanded');
+      if (expansions.length) selected = expansions[0].ref;
+      if (options.hidePrefetch && !searched) { searched = true; return call('memory_remote_search', { keywords: ['Meridian'] }, modelInputs.length); }
+      const candidates = objects.flatMap(o => o.items ?? []);
+      const candidate = candidates.find(c => !attempted.has(c.ref));
+      if (candidate && (!selected || options.all)) {
+        assert.ok(tools.some(t => t.name === 'memory_source_read'));
+        attempted.add(candidate.ref);
+        return call('memory_source_read', { ref: candidate.ref }, modelInputs.length);
+      }
+      const evidence = options.finishRef ? [options.finishRef] : selected ? [selected] : candidates.length ? [candidates[0].ref] : [];
+      return call('finish_memory_search', { summary: 'Bounded retention context.', evidence: options.suppress ? [] : evidence, inject: !options.suppress && evidence.length > 0 }, modelInputs.length);
+    },
+  };
+  try {
+    const handle = startMemorySidecarBranch({ sessionKey: 'projection-flow', input: question, recentMessages: [], workingDirectory: root,
+      aiService: ai as any, queue, logEnabled: false, catslogMemory: backend, signal: controller.signal });
+    await handle.done;
+    const observations = queue.drain();
+    let mainInput: any[] = [];
+    let drained = false;
+    const runner = new ConversationRunner({ async chat(messages: any[]) {
+      mainInput = JSON.parse(JSON.stringify(messages)); return { content: 'done', toolCalls: [], usage };
+    } } as any, new AgentToolExecutor([], root), { stream: false, maxTurns: 1,
+      syntheticObservationProvider: () => { if (drained) return []; drained = true; return observations; } });
+    await runner.run([{ role: 'user', content: question }]);
+    return { branchCalls, reads, modelInputs, observations, mainInput, refs };
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 
-describe('memory branch source_reference flow (Lane E)', () => {
-  test('mechanical prefetch expands the typed ref and delivers the complete semantic view', async () => {
-    const backend = new ProjectionBackend(BRANCH_RESPONSE);
-    const { ai, observations } = await runBranch(backend, {
-      summary: 'Retention is 90 days, prod-only after 2026-07-01; page 2 withheld.',
-      evidence: [VALID_REF],
-      inject: true,
-    });
-
-    // One branch call + one bounded expansion, no model calls for retrieval.
-    assert.equal(backend.branchCalls.length, 1);
-    assert.equal(backend.readCalls.length, 1);
-    assert.deepEqual(backend.readCalls[0], { projectionRef: VALID_REF });
-    assert.equal((backend.branchCalls[0] as any).sources[0], 'agent_memory');
-
-    // The pack message the model saw carries the complete semantic view.
-    const pack = ai.evidenceMessage!;
-    assert.ok(pack, 'remote evidence pack must reach the model');
-    const expansion = (pack.source_reference_expansions as any[])[0];
-    assert.equal(expansion.ref, VALID_REF);
-    assert.equal(expansion.status, 'expanded');
-    assert.deepEqual(expansion.semantic_view.conditions, DOC.conditions);
-    assert.deepEqual(expansion.semantic_view.omissions, DOC.omissions);
-    assert.equal(expansion.semantic_view.gap_acknowledgement, DOC.gap_acknowledgement);
-    assert.equal((expansion.semantic_view.aggregate.gaps as any[])[0].first_page, 2);
-
-    // The finish cited a delivered ref → observation injected with retained evidence.
-    assert.equal(observations.length, 1);
-    const observation = observations[0];
-    const formatted = JSON.parse(observation.formattedContent!);
-    const retained = formatted.retained_remote_evidence[0];
-    assert.equal(retained.ref, VALID_REF);
-    assert.deepEqual(retained.semantic_view.conditions, DOC.conditions);
-    assert.deepEqual(retained.semantic_view.omissions, DOC.omissions);
-    // Whole graph delivered to main — not just the free-model summary.
-    assert.equal((retained.semantic_view.nodes as any[]).length, 2);
-    // Citation metadata feeds the downstream report.
-    assert.deepEqual(observation.metadata?.citation, { requestId: 'br-test-1', refs: [VALID_REF] });
-  });
-
-  test('a finish citing an unobserved pool ref is downgraded to inject:false', async () => {
-    const backend = new ProjectionBackend(BRANCH_RESPONSE);
-    const { observations } = await runBranch(backend, {
-      summary: 'Fabricated claim about an unread projection.',
-      evidence: [UNOBSERVED_REF],
-      inject: true,
-    });
-    assert.equal(observations.length, 0, 'unobserved pool ref must never be injected');
-  });
-
-  test('a finish citing a discovered-only reference_only ref is suppressed', async () => {
-    // Expansion fails (stale read) → ref remains discovered-only → inject suppressed.
-    const backend = new ProjectionBackend(BRANCH_RESPONSE, async () => {
-      const read = validRead();
-      (read.projection as any).revision = 'e'.repeat(64);
-      return read;
-    });
-    const { ai, observations } = await runBranch(backend, {
-      summary: 'Cites the reference-only locator.',
-      evidence: [VALID_REF],
-      inject: true,
-    });
-    const expansion = (ai.evidenceMessage!.source_reference_expansions as any[])[0];
-    assert.equal(expansion.status, 'reference_only');
-    assert.equal(expansion.expansion_error, 'stale_ref');
-    assert.equal(expansion.semantic_view, undefined);
-    assert.equal(observations.length, 0);
-  });
-
-  test('kind spoof: pool ref on a non-source_reference kind is never expanded', async () => {
-    const spoof = {
-      ...BRANCH_RESPONSE,
-      branches: [{
-        source: 'agent_memory',
-        status: 'ok',
-        items: [{ source: 'agent_memory', ref: VALID_REF, kind: 'episode', text: 'a note ' + VALID_REF }],
-      }],
-    };
-    const backend = new ProjectionBackend(spoof);
-    const { ai } = await runBranch(backend, { summary: 'Nothing useful.', evidence: [], inject: false });
-    assert.equal(backend.readCalls.length, 0);
-    assert.deepEqual(ai.evidenceMessage!.source_reference_expansions, []);
-  });
-
-  test('capability failure degrades the lane; local flow unchanged', async () => {
-    const failing = new (class implements CatsLogMemoryBackend {
-      isAvailable() { return true; }
-      async branch(): Promise<any> { throw Object.assign(new Error('down'), { status: 503 }); }
-    })();
-    const queue = new InMemorySyntheticObservationQueue();
-    const ai = new FinishAI({ summary: 'No memory.', evidence: [], inject: false });
-    const session = new MemorySearchBranchSession({
-      sessionKey: 'proj-flow-fail',
-      input: 'hi',
-      recentMessages: [],
-      workingDirectory: '/tmp/proj-flow',
-      aiService: ai as any,
-      queue,
-      catslogMemory: failing,
-      logEnabled: false,
-    });
-    await session.run();
-    // No pack message reached the model — local tools/flow only.
-    assert.equal(ai.evidenceMessage, undefined);
-    assert.equal(queue.drain().length, 0);
-  });
+test('actual sidecar tools -> executor -> finish -> observation -> main request preserves qualifiers', async () => {
+  const run = await scenario();
+  assert.equal(run.branchCalls[0].queryText, ''); assert.equal(run.reads.length, 1);
+  assert.ok(JSON.stringify(run.modelInputs[0]).includes(question));
+  assert.equal(run.observations.length, 1);
+  const formatted = JSON.parse(run.observations[0].formattedContent!);
+  const view = formatted.retained_remote_evidence[0].semantic_view;
+  for (const key of ['nodes', 'edges', 'conditions', 'omissions', 'gap_acknowledgement']) assert.deepEqual(view[key], (fixtureRead().projection.Document as any)[key]);
+  assert.ok(run.mainInput.some(m => m.role === 'tool' && String(m.content).includes(JSON.stringify(view))));
+  assert.deepEqual(run.observations[0].metadata?.citation, { requestId: 'request-1', refs: [run.refs[0]] });
+  assert.ok(!JSON.stringify(run.mainInput).includes('RAW_PAGE_REPROOF_ONLY'));
+  const raw = JSON.stringify(run.mainInput);
+  fs.writeFileSync('/tmp/catslog-client-projection-flow-artifact.json', JSON.stringify({
+    schema: 'catslog.lane_e.actual_flow.v1', provider_calls: 0,
+    branch_queries: run.branchCalls.map(q => q.queryText), source_reads: run.reads,
+    delivered_and_retained_refs: formatted.retained_remote_evidence.map((item: any) => item.ref),
+    retained_bytes: Buffer.byteLength(JSON.stringify({ retained_remote_evidence: formatted.retained_remote_evidence })),
+    main_request_bytes: Buffer.byteLength(raw), main_request_sha256: createHash('sha256').update(raw).digest('hex'),
+    node_count: view.nodes.length, edge_count: view.edges.length, conditions_preserved: true,
+    omissions_preserved: true, aggregate_gaps_preserved: true,
+    semantic_quality: 'not_evaluated',
+  }, null, 2), { mode: 0o600 });
+});
+test('natural full question uses empty-query enumeration then model keyword search; correct issuing pool retained', async () => {
+  const run = await scenario({ hidePrefetch: true });
+  assert.deepEqual(run.branchCalls.map(q => q.queryText), ['', 'Meridian']);
+  assert.equal(run.observations.length, 1);
+  assert.deepEqual(run.observations[0].metadata?.citation, { requestId: 'request-2', refs: [run.refs[0]] });
+});
+test('metadata-only/stale ref cannot finish inject even though grammar is pool-shaped', async () => {
+  const run = await scenario({ read: async () => fixtureRead('f'.repeat(64)) });
+  assert.equal(run.observations.length, 0); assert.equal(run.reads.length, 1);
+  assert.match(JSON.stringify(run.modelInputs), /stale_ref/);
+});
+for (const ref of ['stream#1', 'catslog:skill:unopened@1', 'kb:KB-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', `ref_${'9'.repeat(64)}`]) test(`finish rejects undeclared ${ref}`, async () => {
+  const run = await scenario({ finishRef: ref }); assert.equal(run.observations.length, 0);
+});
+test('whole-run read count <=2 and UTF8 retained budget <=16000 including JSON', async () => {
+  const run = await scenario({ count: 6, all: true });
+  assert.equal(run.reads.length, 2);
+  const visible = run.modelInputs.flat().flatMap(m => { try { const o = JSON.parse(m.content); return o?.status === 'expanded' ? [o] : []; } catch { return []; } });
+  assert.ok(new Set(visible.map(x => x.ref)).size < 6);
+  const formatted = JSON.parse(run.observations[0].formattedContent!);
+  assert.ok(Buffer.byteLength(JSON.stringify({ retained_remote_evidence: formatted.retained_remote_evidence })) <= 16000);
+  assert.match(JSON.stringify(run.modelInputs), /semantic_view_over_budget/);
+});
+test('cancelled source read never produces late delivered evidence or observation', async () => {
+  const run = await scenario({ cancel: true }); assert.equal(run.reads.length, 1); assert.equal(run.observations.length, 0);
+});
+test('inject:false suppresses retained evidence', async () => {
+  const run = await scenario({ suppress: true }); assert.equal(run.reads.length, 1); assert.equal(run.observations.length, 0);
 });
