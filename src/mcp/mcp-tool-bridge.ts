@@ -92,6 +92,8 @@ export interface McpToolBridgeOptions {
     toolName: string;
     conversationSessionKey?: string;
     conversationTopic?: string;
+    /** 触发本次调用的真人 uid（回执唤醒回合时作为消息发送者）。 */
+    actorUserId?: string;
   }) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -297,6 +299,9 @@ export class CatsCoMcpToolBridge {
         this.executeRemoteTool(definition.name, toArgsRecord(args), {
           ...(context?.sessionId ? { conversationSessionKey: context.sessionId } : {}),
           ...(context?.channel?.chatId ? { conversationTopic: context.channel.chatId } : {}),
+          ...(context?.executionScope?.actorUserId
+            ? { actorUserId: String(context.executionScope.actorUserId) }
+            : {}),
         }),
     };
   }
@@ -324,7 +329,11 @@ export class CatsCoMcpToolBridge {
   /** 执行远端工具的完整链路：连接 → call →（running 时轮询）→ 映射结果。 */
   async executeRemoteTool(    toolName: string,
     args: Record<string, unknown>,
-    route?: { conversationSessionKey?: string; conversationTopic?: string },
+    route?: {
+      conversationSessionKey?: string;
+      conversationTopic?: string;
+      actorUserId?: string;
+    },
   ): Promise<ToolExecutionResult> {
     const endpoint = this.resolveEndpointSafely();
     if (!endpoint) {
@@ -357,6 +366,7 @@ export class CatsCoMcpToolBridge {
             toolName,
             ...(route?.conversationSessionKey ? { conversationSessionKey: route.conversationSessionKey } : {}),
             ...(route?.conversationTopic ? { conversationTopic: route.conversationTopic } : {}),
+            ...(route?.actorUserId ? { actorUserId: route.actorUserId } : {}),
           });
         } catch (error: any) {
           // 登记失败不影响本轮交付。

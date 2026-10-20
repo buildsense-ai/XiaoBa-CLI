@@ -104,6 +104,11 @@ import {
 import { formatSpeakerLabel } from './speaker-label';
 import { mergeQueuedMessageContents } from './queued-message-merge';
 import {
+  buildServiceRunReceiptPrompt,
+  serviceRunReceiptRouter,
+  type ServiceRunReceipt,
+} from './service-run-receipts';
+import {
   SkillHubThinRpcError,
   SkillHubThinRpcHandler,
   SKILLHUB_THIN_RPC_TOOLS,
@@ -147,7 +152,7 @@ interface QueuedMessage {
   /** Device metadata for the interrupted-turn marker if this queued work is running at shutdown. */
   deviceContext?: InterruptedTurnDeviceContext;
   receivedAt: number;
-  source?: 'user' | 'subagent_feedback';
+  source?: 'user' | 'subagent_feedback' | 'service_run_receipt';
   runtimeFeedback?: RuntimeFeedbackInput[];
   nativeFeishuContext?: NativeFeishuContextHydration;
   clearGeneration?: number;
@@ -859,6 +864,14 @@ export class CatsCompanyBot {
       // thin-tool RPC，并将已进入的工作纳入 quiescence 等待。
       if (this.shuttingDown) return;
       await this.runTrackedConversationWork(() => this.handleThinToolRpcRequest(request));
+    });
+
+    // 生命周期回执（平台 service_run_receipts）：长任务终态时唤醒原会话。
+    this.bot.on('service_run_receipt', (receipt: ServiceRunReceipt) => {
+      if (this.shuttingDown) return;
+      void this.runTrackedConversationWork(() => this.handleServiceRunReceipt(receipt)).catch((error: any) => {
+        Logger.warning(`[CatsCompany] 处理服务回执失败: ${error?.message || error}`);
+      });
     });
 
     this.bot.on('error', (err: Error) => {
@@ -3285,8 +3298,7 @@ export class CatsCompanyBot {
     attempts = 0,
     clearGeneration = this.getSessionClearGeneration(sessionKey),
     stopGeneration = this.getSessionStopGeneration(sessionKey),
-  ): void {
-    const queue = this.messageQueue.get(sessionKey) ?? [];
+  ): void {    const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
       userMessage: text,
       topic,
@@ -3302,6 +3314,56 @@ export class CatsCompanyBot {
       clearGeneration,
       stopGeneration,
       attempts,
+    });
+    this.messageQueue.set(sessionKey, queue);
+  }
+
+  /**
+   * 处理平台服务 run 回执（设计 §19）：命中登记项 → 把结果作为一轮上下文唤醒原会话。
+   * 幂等由路由保证（receipt_id 24h 去重 + run 只消费一次）；未登记/重复回执直接忽略。
+   */
+  private async handleServiceRunReceipt(receipt: ServiceRunReceipt): Promise<void> {
+    const consumed = serviceRunReceiptRouter.consume(receipt);
+    if (!consumed) {
+      Logger.info(`[CatsCompany] 忽略服务回执（未登记或重复投递）: run=${receipt?.run_id || '-'}`);
+      return;
+    }
+    const sessionKey = consumed.run.conversationSessionKey;
+    const topic = consumed.run.conversationTopic || '';
+    const senderId = consumed.run.actorUserId;
+    if (!sessionKey || !senderId || !topic) {
+      Logger.warning(
+        `[CatsCompany] 服务回执缺少会话/发送者，无法唤醒: run=${consumed.run.runId} ` +
+        `session=${sessionKey || '-'} sender=${senderId || '-'}`,
+      );
+      return;
+    }
+    const text = buildServiceRunReceiptPrompt(consumed);
+    Logger.info(
+      `[CatsCompany] 服务回执唤醒会话: run=${consumed.run.runId} status=${receipt.status || '-'} ` +
+      `tool=${consumed.run.toolName || '-'}`,
+    );
+    this.enqueueServiceRunReceiptTurn(sessionKey, topic, senderId, text);
+    await this.drainMessageQueue(sessionKey);
+  }
+
+  private enqueueServiceRunReceiptTurn(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    text: string,
+  ): void {
+    const queue = this.messageQueue.get(sessionKey) ?? [];
+    queue.push({
+      userMessage: text,
+      topic,
+      senderId,
+      seq: 0,
+      executionScope: createExecutionScope(createCatsCoMessageEnvelope({ topic, senderId, text })),
+      receivedAt: Date.now(),
+      source: 'service_run_receipt',
+      clearGeneration: this.getSessionClearGeneration(sessionKey),
+      stopGeneration: this.getSessionStopGeneration(sessionKey),
     });
     this.messageQueue.set(sessionKey, queue);
   }

@@ -14,6 +14,7 @@ import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
 import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
 import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { serviceRunReceiptRouter } from '../catscompany/service-run-receipts';
 import { FileBotDefinitionRepository } from '../bot-definition/repository';
 import {
   RuntimeProfile,
@@ -161,6 +162,15 @@ export class RuntimeFactory {
           const url = explicitUrl || (base ? `${base}/api/mcp` : '');
           if (!url) return null;
           return { url, token };
+        },
+        // 长任务：平台先回 running 句柄，终态通过 WS 回执推送（至少一次 + receipt_id 幂等）。
+        // 登记到进程级路由，CatsCompany 服务收到回执时据此唤醒原会话。
+        onRunPending: info => {
+          try {
+            serviceRunReceiptRouter.track(info);
+          } catch (error: any) {
+            Logger.warning(`CatsCo 回执登记失败: ${error?.message ?? error}`);
+          }
         },
       });
       bridge.refreshInBackground();
