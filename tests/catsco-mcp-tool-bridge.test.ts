@@ -531,6 +531,47 @@ describe('CatsCo MCP 工具桥', () => {
     assert.ok(Date.now() - started < 500, '未登录时 ensureReady 应立即返回');
   });
 
+  test('远端定义变化：同名工具按新描述/参数替换注册', async () => {
+    const state = { description: '第一版描述' };
+    const { bridge, manager } = createHarness({
+      listTools: () => [{ ...toolInfo('catsco_hello'), description: state.description }],
+    });
+
+    await bridge.refresh();
+    assert.match(String(manager.getTool('catsco_hello')?.definition.description), /第一版描述/);
+
+    state.description = '第二版描述';
+    const changed = await bridge.refresh();
+    assert.deepStrictEqual(changed?.registered, ['catsco_hello']);
+    assert.deepStrictEqual(changed?.unregistered, []);
+    assert.match(String(manager.getTool('catsco_hello')?.definition.description), /第二版描述/);
+  });
+
+  test('run 轮询关闭（timeout<=0）：running 立即返回句柄，不查 run_status', async () => {
+    let statusCalls = 0;
+    const { bridge } = createHarness({
+      listTools: () => [toolInfo('catsco_hello'), toolInfo('catsco_run_status')],
+      callTool: name => {
+        if (name === 'catsco_run_status') {
+          statusCalls += 1;
+          return { isError: false, contentText: '', structured: { status: 'completed', run_id: 'r1' } };
+        }
+        return {
+          isError: false,
+          contentText: '',
+          structured: { status: 'running', run_id: 'r1', session_id: 's1' },
+        };
+      },
+      runPollTimeoutMs: 0,
+    });
+    await bridge.refresh();
+
+    const result = await bridge.executeRemoteTool('catsco_hello', { input: {} });
+    assert.equal(result.ok, true);
+    assert.match(String(result.content), /仍在运行/);
+    assert.equal(statusCalls, 0);
+  });
+
   test('刷新间隔守卫：未到间隔直接跳过（不发网络请求）', async () => {    const { bridge, clients } = createHarness({
       listTools: () => [toolInfo('catsco_hello')],
       refreshIntervalMs: 60_000,
