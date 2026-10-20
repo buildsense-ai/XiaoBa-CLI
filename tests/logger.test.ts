@@ -152,6 +152,56 @@ describe('Logger', () => {
     });
   });
 
+  test('write stream errors are contained and file logging degrades', async () => {
+    delete require.cache[require.resolve('../src/utils/logger')];
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    Logger = require('../src/utils/logger').Logger;
+
+    Logger.openLogFile('test', undefined, true);
+    const stream: any = (Logger as any).logStream;
+    assert.ok(stream, 'log stream should be open');
+
+    // Simulate the real-world failure we observed on a full disk: the stream
+    // emits an asynchronous 'error' (e.g. EDQUOT/ENOSPC/EBADF). Without a
+    // listener this becomes an unhandled 'error' event and kills the process.
+    stream.destroy(Object.assign(new Error('EDQUOT: Disk quota exceeded'), { code: 'EDQUOT' }));
+    await waitForFlush();
+
+    assert.strictEqual((Logger as any).logStream, null, 'broken stream must be dropped');
+    assert.doesNotThrow(() => Logger.info('after degradation'));
+    assert.doesNotThrow(() => Logger.error('after degradation error'));
+  });
+
+  test('openLogFile survives an unusable log directory', async () => {
+    delete require.cache[require.resolve('../src/utils/logger')];
+    Logger = require('../src/utils/logger').Logger;
+    const { PathResolver } = require('../src/utils/path-resolver');
+
+    // Occupy the logs directory path with a regular file so mkdirSync fails.
+    const logsPath = PathResolver.getLogsPath();
+    fs.mkdirSync(path.dirname(logsPath), { recursive: true });
+    fs.writeFileSync(logsPath, 'not-a-directory');
+
+    assert.doesNotThrow(() => Logger.openLogFile('test', undefined, true));
+    assert.doesNotThrow(() => Logger.info('file logging unavailable'));
+    assert.strictEqual(Logger.getLogFilePath(), null);
+  });
+
+  test('SessionTurnLogger degrades when its log directory cannot be created', () => {
+    delete require.cache[require.resolve('../src/utils/session-turn-logger')];
+    const { SessionTurnLogger } = require('../src/utils/session-turn-logger');
+    const { PathResolver } = require('../src/utils/path-resolver');
+
+    const logsPath = PathResolver.getLogsPath('sessions');
+    fs.mkdirSync(path.dirname(logsPath), { recursive: true });
+    fs.writeFileSync(logsPath, 'not-a-directory');
+
+    let sessionLogger: any;
+    assert.doesNotThrow(() => { sessionLogger = new SessionTurnLogger('catscompany', 'agent:usr1619'); });
+    assert.strictEqual(sessionLogger.getLogFilePath(), '');
+    assert.doesNotThrow(() => sessionLogger.logTurn('hi', 'hello', [], { prompt: 1, completion: 1 }));
+  });
+
 });
 
 function waitForFlush(): Promise<void> {
