@@ -67,6 +67,11 @@ import {
 } from '../bot-definition/prompt-sync';
 import { collectRemoteContextWatermarks } from './remote-context-watermarks';
 import {
+  collectSentRemoteIds,
+  isDuplicateDurableContextEntry,
+  type DurableContextDedupState,
+} from './durable-context-dedup';
+import {
   CHECKPOINT_COMPACTION_COMPLETE_MESSAGE,
   CHECKPOINT_COMPACTION_ERROR_MESSAGE,
   CHECKPOINT_COMPACTION_START_MESSAGE,
@@ -95,6 +100,11 @@ export interface DurableRemoteContextEntry {
   role?: 'user' | 'assistant';
   content: string;
 }
+
+/**
+ * 群历史回填的来源键。回填游标与本运行体发出的 seq 都按它分组。
+ */
+export const REMOTE_CONTEXT_SOURCE = 'catscompany.agent_context';
 
 export const BUSY_MESSAGE = '正在处理上一条消息，请稍候...';
 export const ERROR_MESSAGE = '本次处理未能完成，请稍后再试。';
@@ -577,24 +587,22 @@ export class AgentSession {
     const knownRemoteIds = new Set(this.messages
       .filter(message => message.__remoteContextSource && Number(message.__remoteContextId) > 0)
       .map(message => `${message.__remoteContextSource}:${message.__remoteContextId}`));
-    const remoteContextWatermarks = collectRemoteContextWatermarks(this.messages);
+    const dedupState: DurableContextDedupState = {
+      knownRemoteIds,
+      watermarks: collectRemoteContextWatermarks(this.messages),
+      // 本运行体发出的 seq：本机那条落盘时还没有 id（saveContext 在 reply 之前
+      // 就执行完了），发送成功后把 seq 记进运行态，这里才能认出远端副本。
+      sentRemoteIds: collectSentRemoteIds(
+        REMOTE_CONTEXT_SOURCE,
+        this.lifecycleManager.loadSentRemoteIds(REMOTE_CONTEXT_SOURCE),
+      ),
+    };
     const durableEntries = inputs
       .map(input => typeof input === 'string'
         ? { content: input }
         : input)
       .filter(entry => typeof entry.content === 'string' && entry.content.trim())
-      .filter(entry => {
-        if (!('source' in entry) || !('id' in entry) || !entry.source || entry.id <= 0) return true;
-        const key = `${entry.source}:${entry.id}`;
-        if (
-          knownRemoteIds.has(key)
-          || entry.id <= (remoteContextWatermarks[entry.source] || 0)
-        ) {
-          return false;
-        }
-        knownRemoteIds.add(key);
-        return true;
-      });
+      .filter(entry => !isDuplicateDurableContextEntry(entry, dedupState));
     if (durableEntries.length === 0) {
       return cursorUpdate
         ? this.lifecycleManager.saveRemoteContextCursor(cursorUpdate.source, cursorUpdate.cursor)
@@ -641,6 +649,19 @@ export class AgentSession {
 
   saveRemoteContextCursor(source: string, cursor: number): boolean {
     return this.lifecycleManager.saveRemoteContextCursor(source, cursor);
+  }
+
+  /**
+   * 记下本运行体发出的消息 seq。
+   *
+   * 回填去重按 `source:id` 走，而本机发出的消息落盘时还没有 id——`saveContext`
+   * 在 `reply` 之前就执行完了（见 conversation-runner 的最终消息入列与
+   * index.ts 的发送顺序）。把发出的 seq 记在这里，回填时就能认出「远端那条就是
+   * 我发的」，不必靠比对正文——正文会被拆段、剥前缀、被服务端改写，三种形态都
+   * 比不上一个 id。
+   */
+  recordSentRemoteIds(source: string, ids: number[]): boolean {
+    return this.lifecycleManager.recordSentRemoteIds(source, ids);
   }
 
   /**

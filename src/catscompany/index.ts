@@ -37,6 +37,7 @@ import {
   AgentServices,
   BUSY_MESSAGE,
   type DurableRemoteContextEntry,
+  REMOTE_CONTEXT_SOURCE,
   RuntimeFeedbackInput,
   SessionCallbacks,
 } from '../core/agent-session';
@@ -688,6 +689,10 @@ export class CatsCompanyBot {
     // 已不可写。触发熔断并停止对应会话的循环工作，避免消息发不出去时
     // 仍持续空转（每轮全量推理、发送再被拒）。
     this.sender.onTopicSendBlocked = (topic, code) => this.handleTopicSendBlockedNotice(topic, code);
+    // 持久消息发送成功后记账，供回填去重认出「远端那条就是我发的」。挂在 send()
+    // 里而不是让调用方各自记得：文本走 reply、附件走 sendFile，两条路径都经过
+    // send()，漏掉附件同样会在回填时重复插入。
+    this.sender.onDurableMessageSent = (topic, seqs) => this.recordSentRemoteIdsForTopic(topic, seqs);
     this.localDeviceGrant = createCatsCoLocalDeviceGrant({
       bodyId: config.bodyId,
       installationId: config.installationId,
@@ -1676,6 +1681,40 @@ export class CatsCompanyBot {
   }
 
   // ─── 构建 ChannelCallbacks ──────────────────────
+
+  /**
+   * 记下刚发出的消息 seq，供回填去重认领。
+   *
+   * 回填按 `source:id` 去重，而本机那条落盘时还没有 id（saveContext 在 reply
+   * 之前就执行完了）。发出后把 seq 记进运行态，下次回填就能认出「远端那条就是
+   * 我发的」，不必比对正文——正文会被拆段、剥前缀、被服务端改写。
+   *
+   * 只记群会话：回填只发生在群（`shouldHydrateCatsCompanyGroupContext`），p2p
+   * 没有这段历史，记了也永远不会被读到。
+   */
+  private recordSentRemoteIdsForTopic(topic: string, seqs: number[]): void {
+    if (!topic.startsWith('grp_') || seqs.length === 0) return;
+    const session = this.sessionManager.get(
+      buildCatsCoSessionKey('group', topic, String(this.botUid || this.bot?.uid || '')),
+    );
+    if (!session?.recordSentRemoteIds) {
+      // 记不上就是去重失效：远端副本下次会被重复插入。静默跳过与正常记账在
+      // 日志上必须能区分，否则线上出现重复时无从查起。
+      //
+      // 措辞刻意保持中性：会话有 60 分钟 TTL，而 lastActiveAt 只在几个离散点
+      // 刷新，跑得比 TTL 还长的回合会被回收——那属于已知的记账盲区，不是配置错误。
+      Logger.warning(
+        `[${topic}] 会话不在内存中（可能已过期回收），本次 ${seqs.length} 条 seq 未记账，回填可能重复`,
+      );
+      return;
+    }
+    try {
+      session.recordSentRemoteIds(REMOTE_CONTEXT_SOURCE, seqs);
+    } catch (err: any) {
+      // 记不上只会让回填多插一次自己的回复，不该影响发送本身。
+      Logger.warning(`记录已发送消息 seq 失败 (topic=${topic}): ${err?.message || err}`);
+    }
+  }
 
   /**
    * 为指定 topic 构建通道回调对象。

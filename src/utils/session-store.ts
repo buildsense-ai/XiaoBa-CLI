@@ -157,6 +157,15 @@ function serializeMessages(messages: Message[]): string {
 export interface SessionRuntimeState {
   currentDirectory?: string;
   remoteContextCursors?: Record<string, number>;
+  /**
+   * 本运行体发出的消息在服务端的 seq（按远端 source 分组）。
+   *
+   * 回填（appendDurableContext）按 `source:id` 去重，但本机发出的那条消息
+   * 落盘时还没有 id——saveContext 在 reply 之前就执行完了。把发出的 seq 记
+   * 在这里，回填时就能认出「远端那条就是我刚发的」，而不是靠比对正文
+   * （正文会被分段、剥前缀、被服务端改写，三种形态都比不上）。
+   */
+  sentRemoteIds?: Record<string, number[]>;
   updatedAt?: string;
   /**
    * Set while a conversation turn has not reached a terminal state because the
