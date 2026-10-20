@@ -27,6 +27,13 @@ export function assertWhole(view: any, document: any) {
     assert.deepEqual(view[key], document[key], `whole-view preservation failed: ${key}`);
   }
   if (document.aggregate) assert.deepEqual(view.aggregate?.gaps, document.aggregate.gaps, 'page gap lost');
+  const semanticMappings = (document.mappings ?? []).map((mapping: any) => ({
+    node_id: mapping.node_id,
+    ...(poolRef(mapping.source_ref) ? { source_ref: mapping.source_ref } : {}),
+    ...(typeof mapping.digest === 'string' ? { digest: mapping.digest } : {}),
+    ...(typeof mapping.source_digest === 'string' ? { source_digest: mapping.source_digest } : {}),
+  }));
+  assert.deepEqual(view.mappings, semanticMappings, 'node/source mapping refs or digests lost');
 }
 export async function loadActual(targetRoot: string) {
   const imp = (file: string) => import(pathToFileURL(path.join(targetRoot, file)).href);
@@ -40,6 +47,7 @@ export async function loadActual(targetRoot: string) {
 
 export interface RunOptions {
   targetRoot: string; root: string; baseUrl: string; token: string; question: string; keyword: string;
+  tokenExpiresAt?: string; deviceId?: string; skillTokenId?: string;
   forceSearch?: boolean; citeUndelivered?: boolean; finishRef?: string; readAll?: boolean;
   beforeSourceRead?: (root: string) => void;
   loginToken?: string; signal?: AbortSignal; cancelAtRead?: Promise<void>;
@@ -56,8 +64,9 @@ export async function runActualFlow(options: RunOptions) {
   fs.mkdirSync(path.join(options.root, 'data'), { recursive: true });
   fs.writeFileSync(path.join(options.root, 'empty.env'), '');
   fs.writeFileSync(path.join(options.root, 'data/catsco-log-agent-state.json'), JSON.stringify({
-    schemaVersion: 1, deviceId: 'fixture-device', skillToken: options.token,
-    skillTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(), branchUrl: '/catsco/agent/branch', uploaded: {},
+    schemaVersion: 1, deviceId: options.deviceId ?? 'fixture-device', skillToken: options.token,
+    ...(options.skillTokenId ? { skillTokenId: options.skillTokenId } : {}),
+    skillTokenExpiresAt: options.tokenExpiresAt ?? new Date(Date.now() + 86_400_000).toISOString(), branchUrl: '/catsco/agent/branch', uploaded: {},
   }), { mode: 0o600 });
   const provider = new actual.CatsLogMemoryProvider(options.root, { env });
   const requests: any[] = [];

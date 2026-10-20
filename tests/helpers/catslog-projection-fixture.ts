@@ -13,7 +13,7 @@ export function syntheticProjectionDocument(): any {
     schema_version: 1, goal: 'Meridian release readiness', summary: 'Meridian supplied pages support a bounded partial release decision.',
     nodes: Array.from({ length: 10 }, (_, i) => ({ id: `n${i}`, kind: i === 9 ? 'omission' : 'assertion', text: `Independent synthetic fact ${i}.` })),
     edges: Array.from({ length: 7 }, (_, i) => ({ from: `n${i}`, to: `n${i + 1}`, kind: 'supports' })),
-    mappings: Array.from({ length: 10 }, (_, i) => ({ node_id: `n${i}`, source_ref: 'source-page-1' })),
+    mappings: Array.from({ length: 10 }, (_, i) => ({ node_id: `n${i}`, source_ref: `ref_${digest('source-page-1')}` })),
     conditions: ['Only staging deployments.', 'Owner approval required.', 'The inclusive date boundary must be preserved.'],
     omissions: ['Page 2 is withheld; no metric value can be inferred.', 'Operator identity omitted.'],
     provenance: 'derived', model_steps: 'unknown', causality: 'unknown', overall_coverage: 'partial',

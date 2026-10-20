@@ -27,6 +27,7 @@ async function main() {
   };
   try {
     const run = await runActualFlow({ targetRoot, root, baseUrl: manifest.base_url, token: manifest.device_skill_token,
+      deviceId: manifest.device_id, skillTokenId: manifest.skill_token_id, tokenExpiresAt: manifest.skill_token_expires_at,
       question: manifest.question_text, keyword: manifest.query_text, forceSearch: true, signal: AbortSignal.timeout(65_000) });
     artifact.requests = run.requests;
     artifact.request_counts = Object.fromEntries(['branch', 'source_read', 'bootstrap'].map(name => [name,
