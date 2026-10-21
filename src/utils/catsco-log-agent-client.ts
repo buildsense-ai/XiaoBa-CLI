@@ -357,23 +357,6 @@ export interface CatscoBranchResponse {
   branches?: CatscoBranchResult[];
 }
 
-/**
- * Response of POST /catsco/agent/knowledge/source/read with
- * `{"projection_ref": ref}`: the device-bound expansion of a typed
- * `source_reference` locator into the full verified projection document plus
- * its authorized supplied-page sources. `projection.Document` carries the
- * complete graph (nodes/edges/mappings/conditions/omissions/aggregate gaps);
- * `content_trust` is `derived_memory_projection` — derived evidence, never
- * instructions. Fields are loosely typed on purpose: the consumer-side
- * validator (catslog-projection-reference.ts) owns the semantic contract.
- */
-export interface CatscoSourceMemoryProjectionRead {
-  schema_version?: number;
-  content_trust?: string;
-  projection?: Record<string, unknown>;
-  sources?: unknown[];
-}
-
 export interface CatscoMemoryNote {
   id?: string;
   kind?: string;
@@ -404,7 +387,6 @@ export const DEFAULT_MEMORY_RECALL_URL = '/catsco/agent/memory/recall';
 export const DEFAULT_BRANCH_URL = '/catsco/agent/branch';
 export const DEFAULT_BRANCH_CITATIONS_URL = '/catsco/agent/branch/citations';
 export const DEFAULT_MEMORY_NOTES_URL = '/catsco/agent/memory/notes';
-export const DEFAULT_SOURCE_READ_URL = '/catsco/agent/knowledge/source/read';
 
 /** Wire contract of POST /catsco/agent/branch/citations: ref_-prefixed pool refs only. */
 export const BRANCH_CITATIONS_MAX_REFS = 64;
@@ -867,66 +849,6 @@ export class CatscoLogAgentClient {
       'CatsLog branch retrieval failed',
       input.signal,
     );
-  }
-
-  /**
-   * Expand one typed source_reference locator through the device-bound
-   * knowledge source-read: POST /catsco/agent/knowledge/source/read with
-   * `{"projection_ref": ref}` under the same read capability as `branch`.
-   * The ref stays inside the JSON body — it is never interpolated into the
-   * URL — and the path is a fixed route, so no URL construction from
-   * untrusted evidence is possible.
-   */
-  async readSourceMemoryProjection(input: {
-    projectionRef: string;
-  } & {
-    token?: string;
-    skillToken?: string;
-    sourceReadUrl?: string;
-    signal?: AbortSignal;
-  }): Promise<CatscoSourceMemoryProjectionRead> {
-    const token = requireCapabilityToken(input.token ?? input.skillToken);
-    const projectionRef = typeof input.projectionRef === 'string' ? input.projectionRef.trim() : '';
-    if (!isCatsLogPoolCitationRef(projectionRef)) {
-      throw new Error('CatsLog source-read projection_ref must be a ref_-prefixed pool ref (ref_ + 64 hex)');
-    }
-    const requestPath = input.sourceReadUrl ?? DEFAULT_SOURCE_READ_URL;
-    if (requestPath !== DEFAULT_SOURCE_READ_URL) throw new Error('CatsLog source-read endpoint is invalid');
-    const response = await fetch(this.buildUrl(requestPath), {
-      method: 'POST', redirect: 'error', signal: input.signal,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projection_ref: projectionRef }),
-    });
-    // This endpoint includes proof/source bodies. Bound the wire independently
-    // from the much smaller model-facing semantic view; never log error bodies.
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw Object.assign(new Error(`CatsLog source-read failed: HTTP ${response.status}`), { status: response.status });
-    }
-    const MAX_SOURCE_RESPONSE_BYTES = 2 * 1024 * 1024;
-    if (Number(response.headers.get('content-length')) > MAX_SOURCE_RESPONSE_BYTES) {
-      await response.body?.cancel();
-      throw new Error('CatsLog source-read response exceeds byte budget');
-    }
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('CatsLog source-read returned no response body');
-    const chunks: Uint8Array[] = [];
-    let bytes = 0;
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        bytes += value.byteLength;
-        if (bytes > MAX_SOURCE_RESPONSE_BYTES) {
-          await reader.cancel();
-          throw new Error('CatsLog source-read response exceeds byte budget');
-        }
-        chunks.push(value);
-      }
-    } finally { reader.releaseLock(); }
-    const data: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('CatsLog source-read returned an invalid envelope');
-    return data as CatscoSourceMemoryProjectionRead;
   }
 
   /**

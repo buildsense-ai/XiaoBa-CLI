@@ -22,13 +22,12 @@ const LOW_RISK_TOOLS = new Set([
   'ask_parent',
   'send_text',
   'skill',
-  // Branch-local memory tools. Remote reads remain device-capability scoped
-  // and bounded by the session; no new write or operator capability.
+  // Memory branch pipeline (v1.3): pass-1 assess + pass-2 finish. Both are
+  // branch-local control tools; retrieval itself is mechanical and never a
+  // model-facing tool anymore.
   'memory_search',
   'memory_read_turn',
   'memory_neighbors',
-  'memory_remote_search',
-  'memory_source_read',
   // The device-bound CatsLog read capability is authenticated and scoped by
   // the provider; it does not mutate the local machine or send an external
   // side effect.
