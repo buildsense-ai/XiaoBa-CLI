@@ -26,7 +26,8 @@ const result = spawnSync(process.env.GO_BINARY || 'go', ['test', '-overlay', ove
   cwd: cats, shell: false, encoding: 'utf8', timeout: 180_000, maxBuffer: 8 * 1024 * 1024,
   env: { ...buildIsolatedTestEnvironment(process.env, { homeDir: path.join(temp, 'home'),
     tempDir: path.join(temp, 'tmp'), appRoot: root, dotenvPath: path.join(temp, 'absent.env') }),
-    XIAOBA_PAIRED_ROOT: root, XIAOBA_PAIRED_NODE: process.execPath },
+    XIAOBA_PAIRED_ROOT: root, XIAOBA_PAIRED_NODE: process.execPath,
+    CATSCO_XIAOBA_RUNTIME_V2_ENABLED: '1', CATSCO_DEVICE_GRANT_ENFORCEMENT: 'required' },
 });
 process.stdout.write(result.stdout || '');
 process.stderr.write(result.stderr || '');

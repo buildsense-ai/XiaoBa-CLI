@@ -21,7 +21,9 @@ async function main() {
   assert.equal(input.base, 'http://127.0.0.1:19861');
   const accounts = input.accounts;
   const user = accounts['device-test-user'], other = accounts['device-test-other'], botConfig = accounts.bot;
-  const root = fs.mkdtempSync(path.join(process.cwd(), '.audit-tmp', 'network-devices-'));
+  const scratch = path.join(process.cwd(), '.audit-tmp');
+  fs.mkdirSync(scratch, { recursive: true });
+  const root = fs.mkdtempSync(path.join(scratch, 'network-devices-'));
   const clients: CatsClient[] = [];
   const received: string[] = [];
   let holdA: ((request: any) => Promise<void>) | undefined;
