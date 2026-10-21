@@ -113,10 +113,36 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 					if err := hub.authorizeOrdinaryThinToolRPC(bot, explicit.Wire, 7, "b", "read_file"); err != nil {
 						t.Fatal(err)
 					}
+					t.Run("scope_cannot_be_omitted", func(t *testing.T) {
+						legacyShape := *explicit.Wire
+						legacyShape.TargetScope = ""
+						if err := hub.authorizeOrdinaryThinToolRPC(bot, &legacyShape, 7, "b", "read_file"); err == nil {
+							t.Fatal("explicit B capability executed as a default request")
+						}
+					})
 					forged := *explicit.Wire
 					forged.TargetDeviceID = "a"
 					if err := hub.authorizeOrdinaryThinToolRPC(bot, &forged, 7, "a", "read_file"); err == nil {
 						t.Fatal("B grant executed on A")
+					}
+				})
+				t.Run("legacy_grant_list_stays_default_only", func(t *testing.T) {
+					meta := metadata()
+					identity := meta["catsco_identity"].(map[string]interface{})
+					delete(identity, "device_target_authorizations")
+					grants := identity["device_grants"].([]ScopedDeviceGrant)
+					if len(grants) != 1 || grants[0].DeviceID != "a" || grants[0].TargetScope != "" {
+						t.Fatalf("old consumer got non-default grants: %#v", grants)
+					}
+					got := call(meta, "alice")
+					if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != "a" || got.Wire.TargetScope != "" {
+						t.Fatalf("default A compatibility failed: %+v", got)
+					}
+					if err := hub.authorizeOrdinaryThinToolRPC(bot, got.Wire, 7, "a", "read_file"); err != nil {
+						t.Fatal(err)
+					}
+					if other := call(meta, "b"); other.Route.OK || other.Wire != nil {
+						t.Fatal("legacy grant list authorized non-default B")
 					}
 				})
 				t.Run("both_targets_keep_default_A", func(t *testing.T) {
@@ -141,6 +167,24 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 			}
 		})
 	}
+	t.Run("v1_rollout_keeps_selected_only_authority", func(t *testing.T) {
+		t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "")
+		meta := metadata()
+		identity := meta["catsco_identity"].(map[string]interface{})
+		if _, ok := identity["device_target_authorizations"]; ok {
+			t.Fatal("v1 emitted explicit authorization envelope")
+		}
+		got := call(meta, "alice")
+		if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != "b" || got.Wire.TargetScope != "" {
+			t.Fatalf("v1 default B unavailable: %+v", got)
+		}
+		if err := hub.authorizeOrdinaryThinToolRPC(bot, got.Wire, 7, "b", "read_file"); err != nil {
+			t.Fatal(err)
+		}
+		if other := call(meta, "a"); other.Route.OK || other.Wire != nil {
+			t.Fatal("v1 authorized non-default A")
+		}
+	})
 	t.Run("old_A_wire_rejected_after_switch", func(t *testing.T) {
 		if oldA == nil {
 			t.Fatal("missing A fixture")

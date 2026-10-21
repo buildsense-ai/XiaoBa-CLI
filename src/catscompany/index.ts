@@ -1054,12 +1054,16 @@ export class CatsCompanyBot {
         operation,
         args,
         grant,
+        targetScope,
         targetDeviceId,
         targetDeviceDisplayName: _targetDeviceDisplayName,
         targetDeviceBodyId,
         targetDeviceInstallationId,
         timeoutMs,
       }) => {
+        if (targetScope !== grant?.targetScope) {
+          return { ok: false, errorCode: 'PERMISSION_DENIED', message: '设备目标类型与当前授权不一致。', retryable: false };
+        }
         const deviceId = grant?.deviceId || targetDeviceId;
         if (!deviceId) {
           return {
@@ -1076,6 +1080,7 @@ export class CatsCompanyBot {
         const response = await this.bot.sendDeviceRpcRequest({
           request_id: `device_rpc_${randomUUID()}`,
           grant_id: grant?.grantId || `lightweight_${randomUUID()}`,
+          target_scope: targetScope,
           session_key: sessionKey,
           topic_id: topicId,
           topic_type: topicType,
@@ -1115,9 +1120,10 @@ export class CatsCompanyBot {
         toolName,
         args,
         grant,
+        targetScope,
         timeoutMs = DEVICE_RPC_DEFAULT_TTL_MS,
       }) => {
-        if (!grant?.grantId || grant.identityTrust !== 'server_canonical'
+        if (targetScope !== grant?.targetScope || !grant?.grantId || grant.identityTrust !== 'server_canonical'
           || grant.status !== 'active' || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= Date.now()
           || grant.deviceId !== targetDeviceId || grant.ownerUserId !== targetOwnerUserId
           || !grant.operations.includes(toolName === 'import_file' ? 'send_file' : toolName as DeviceGrantOperation)) {
@@ -1136,6 +1142,7 @@ export class CatsCompanyBot {
         const response = await this.bot.sendThinToolRpcRequest({
           request_id: requestID,
           grant_id: grant.grantId,
+          target_scope: targetScope,
           session_key: grant.sessionKey,
           actor_user_id: grant.actorUserId,
           target_owner_user_id: targetOwnerUserId,

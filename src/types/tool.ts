@@ -110,6 +110,7 @@ export type ToolExecutionResult = (
 };
 
 export interface DeviceRpcToolRequest {
+  targetScope?: 'explicit_device';
   toolName: string;
   operation: ScopedDeviceGrant['operations'][number];
   args: Record<string, unknown>;
@@ -126,6 +127,7 @@ export interface DeviceRpcTransport {
 }
 
 export interface ThinToolRpcRequest {
+  targetScope?: 'explicit_device';
   grant?: ScopedDeviceGrant;
   targetOwnerUserId: string;
   targetDeviceId: string;

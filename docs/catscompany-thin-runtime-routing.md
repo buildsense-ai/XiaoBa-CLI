@@ -2,6 +2,27 @@
 
 This document records the lightweight remote execution design for CatsCompany-backed XiaoBa sessions.
 
+## Current default and explicit target protocol (2026-10-21)
+
+The earlier grant-free routing notes below describe the historical path. Ordinary
+user-device tools now require a current scoped grant. `device_grants` contains
+only the selected default's grant; `speaker_default` and user-name aliases may
+use only that grant. A desktop task with no device named in the user's request
+uses this default, while tool calls without a `target` still run on the Bot host
+for normal Skill and attachment work.
+
+With server v2 enabled, `catsco_identity.device_target_authorizations` (schema
+`catsco.device-targets.v1`) contains separate `explicit_device` capabilities.
+Only exact device names/IDs may select these, and the runtime sends
+`target_scope: "explicit_device"` together with the exact device ID on both RPC
+transports. The server enforces scope and device ID. Old clients read only the
+selected-only field; unknown explicit-envelope schemas are ignored. Never
+interpret the first explicit capability as the default. An explicit or multi-device
+task does not update the picker; offline/missing/ambiguous targets do not permit
+fallback to another computer. Each device task retains its own grant and result.
+
+Server rollout remains gated; these changes do not enable a production flag.
+
 ## Fixed Rules
 
 - CatsCompany has two runtime duties for this path: forward `thin_tool_rpc` requests/results, and inject realtime `xiaoba_runtime.devices` facts for messages delivered to bot recipients.

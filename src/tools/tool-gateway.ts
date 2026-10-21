@@ -15,6 +15,7 @@ export type ToolGatewayDecision =
       mode: 'remote';
       grant?: ScopedDeviceGrant;
       targetDeviceId: string;
+      targetScope?: 'explicit_device';
       targetDeviceDisplayName?: string;
       targetDeviceBodyId?: string;
       targetDeviceInstallationId?: string;

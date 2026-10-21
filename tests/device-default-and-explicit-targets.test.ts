@@ -22,7 +22,11 @@ function fixture(selected: 'selected' | 'unavailable' | 'needs_selection' = 'sel
       active: id !== 'a' || selected !== 'unavailable', routeConnected: true, routable: true })),
   };
   const metadata = {
-    catsco_identity: { device_grants: grants, device_selection: selection, permissions: { source: 'server_canonical_message' } },
+    catsco_identity: {
+      device_grants: selected === 'selected' ? [{ ...grants.find(grant => grant.deviceId === 'a')!, targetScope: undefined, grantId: 'default-a' }] : [],
+      device_target_authorizations: { schema: 'catsco.device-targets.v1', grants },
+      device_selection: selection, permissions: { source: 'server_canonical_message' },
+    },
     // A legacy directory may contain only the most recently active device.
     xiaoba_runtime: { schema: 'xiaoba.runtime.v1', devices: [{ userId: 'usr7', deviceId: 'b', label: 'FFFFFFFK', os: 'windows' }] },
   };
@@ -59,7 +63,8 @@ test('explicit B and multi-device calls use distinct grants without changing def
     assert.equal(result?.ok, true);
   }
   assert.deepEqual(calls.map(call => call.targetDeviceId), ['b', 'a', 'a']);
-  assert.deepEqual(calls.map(call => call.grant.grantId), ['grant-b', 'grant-a', 'grant-a']);
+  assert.deepEqual(calls.map(call => call.grant.grantId), ['grant-b', 'grant-a', 'default-a']);
+  assert.deepEqual(calls.map(call => call.targetScope), ['explicit_device', 'explicit_device', undefined]);
   assert.equal(ctx.deviceSelection?.selectedDeviceId, 'a');
 });
 
@@ -99,8 +104,29 @@ test('canonical directory enrichment does not accept forged permissions or anoth
     const { metadata, scope } = fixture();
     if (kind === 'permission') metadata.catsco_identity.permissions.source = 'client';
     if (kind === 'actor') scope.actorUserId = 'usr8';
-    if (kind === 'grant-revision') metadata.catsco_identity.device_grants.forEach(grant => { grant.selectionRevision = 'old'; });
+    if (kind === 'grant-revision') metadata.catsco_identity.device_target_authorizations.grants.forEach(grant => { grant.selectionRevision = 'old'; });
     assert.notEqual(extractCatsCoRuntimeContext(metadata, scope)?.routes.length, 2, kind);
+  }
+});
+
+test('default requests never borrow explicit grants, including when the default IDs match', () => {
+  const { ctx } = fixture();
+  ctx.deviceGrants = ctx.deviceGrants!.filter(grant => grant.targetScope === 'explicit_device');
+  assert.equal(resolve(ctx, 'speaker_default').ok, false);
+  assert.equal(resolve(ctx, 'Eason').ok, true);
+});
+
+test('explicit capabilities are accepted only from the separate versioned envelope', () => {
+  for (const location of ['legacy-list', 'unknown-envelope']) {
+    const { metadata, scope } = fixture();
+    const explicit = metadata.catsco_identity.device_target_authorizations;
+    if (location === 'legacy-list') {
+      (metadata.catsco_identity.device_grants as any[]).push(...explicit.grants);
+    }
+    explicit.schema = 'unsupported';
+    const grants = extractCatsCoDeviceGrants(metadata, scope)!;
+    assert.equal(grants.length, 1);
+    assert.equal(grants[0].grantId, 'default-a');
   }
 });
 

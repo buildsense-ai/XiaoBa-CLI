@@ -29,6 +29,7 @@ export type ExecutionRoute =
       target: ExecutionTargetId;
       label: string;
       grant?: ScopedDeviceGrant;
+      targetScope?: 'explicit_device';
       targetOwnerUserId?: string;
       targetDeviceId: string;
       targetDeviceDisplayName?: string;
@@ -247,12 +248,16 @@ function authorizeRemoteRoute(
     || selection.topicType !== scope.topicType || selection.source !== scope.source)) {
     return { ok: false, errorCode: 'TARGET_UNAVAILABLE', message: '设备选择与当前会话身份不一致，请重新获取设备上下文。' };
   }
-  const decision = resolveDeviceGrant(context, { deviceId: route.targetDeviceId, operation });
-  if (!decision.ok) return decision;
-  const grant = decision.grant;
   const exactTarget = normalizeTargetText(route.target);
   const explicitDevice = route.target !== 'speaker_default' &&
     (exactTarget === normalizeTargetText(route.targetDeviceId) || exactTarget === normalizeTargetText(route.label));
+  const eligibleGrants = (context.deviceGrants || []).filter(grant => explicitDevice || grant.targetScope !== 'explicit_device');
+  // An exact target prefers its independent authorization. Aliases/defaults
+  // can never consume explicit capabilities, even if the device IDs coincide.
+  if (explicitDevice) eligibleGrants.sort((a, b) => Number(b.targetScope === 'explicit_device') - Number(a.targetScope === 'explicit_device'));
+  const decision = resolveDeviceGrant({ ...context, deviceGrants: eligibleGrants }, { deviceId: route.targetDeviceId, operation });
+  if (!decision.ok) return decision;
+  const grant = decision.grant;
   const explicitGrant = grant.targetScope === 'explicit_device' && grant.ownerUserId === scope.actorUserId;
   if (grant.targetScope === 'explicit_device' && (!selection || typeof selection.revision !== 'string'
     || (grant.selectionRevision || '') !== selection.revision)) {
@@ -270,7 +275,7 @@ function authorizeRemoteRoute(
     || (route.targetOwnerUserId && route.targetOwnerUserId !== grant.ownerUserId)) {
     return { ok: false, errorCode: 'PERMISSION_DENIED', message: '设备授权与目标账号不一致或无效。' };
   }
-  return { ...route, grant, targetOwnerUserId: grant.ownerUserId };
+  return { ...route, grant, targetOwnerUserId: grant.ownerUserId, targetScope: explicitDevice && explicitGrant ? 'explicit_device' : undefined };
 }
 
 function looksLikeSkillScriptCommand(command: unknown): boolean {
@@ -313,6 +318,7 @@ export async function executeRouteIfRemote(
     try {
       result = await context.thinToolRpc.executeTool({
         targetOwnerUserId: route.targetOwnerUserId,
+        targetScope: route.targetScope,
         grant: route.grant,
         targetDeviceId: route.targetDeviceId,
         toolName,
@@ -342,6 +348,7 @@ export async function executeRouteIfRemote(
     ok: true,
     mode: 'remote',
     grant: route.grant,
+    targetScope: route.targetScope,
     targetDeviceId: route.targetDeviceId,
     targetDeviceDisplayName: route.targetDeviceDisplayName,
     targetDeviceBodyId: route.targetDeviceBodyId,
