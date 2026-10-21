@@ -208,8 +208,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          # Companion PR683: merge CatsCo first; pin the exact upload transport.
-          ref: 542048c3c6f7ffbb6778d726960793dcec1ef2c2
+          # CatsCo PR689 merge: keep the paired contract on the durable upload-queue mainline.
+          ref: 9b399165601699f8bb28787874538d2ecafe8a96
           path: cats-company
       - uses: actions/setup-node@v4
         with:
