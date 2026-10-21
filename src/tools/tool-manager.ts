@@ -26,6 +26,7 @@ import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
 import { confirmLocalToolExecution } from './local-tool-risk';
 import { buildToolTargetContext, operationForToolTargetContext } from './tool-target-context';
+import { getDeviceTargetResolutionFailure } from './execution-router';
 
 const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
 const LEGACY_DISABLED_TOOL_NAMES = ['prompt_mode'] as const;
@@ -195,6 +196,17 @@ export class ToolManager implements ToolExecutor {
         };
       }
 
+      // Check before tool-specific local-file-grant/Skill shortcuts too. This
+      // state is owned by the runner, not accepted from model JSON arguments.
+      const targetFailure = operationForToolTargetContext(toolName)
+        ? getDeviceTargetResolutionFailure(context) : undefined;
+      if (targetFailure) {
+        return {
+          tool_call_id: toolCall.id, role: 'tool', name: toolName,
+          content: targetFailure.message, ok: false,
+          errorCode: targetFailure.errorCode, retryable: false,
+        };
+      }
       const confirmation = await confirmLocalToolExecution(toolName, args, context);
       if (confirmation) {
         return {

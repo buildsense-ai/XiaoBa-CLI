@@ -108,6 +108,11 @@ describe('GlobTool', () => {
     ctx.surface = 'catscompany';
     ctx.deviceSelection = selectedDevice(['glob']);
     ctx.deviceGrants = [deviceGrant(['glob'])];
+    ctx.executionScope = {
+      source: 'catscompany', sessionKey: ctx.deviceGrants[0].sessionKey,
+      topicId: 'topic', topicType: 'p2p', actorUserId: 'speaker-user', agentId: 'agent-1',
+      identityTrust: 'server_canonical', isTrusted: true,
+    };
     ctx.deviceRpc = {
       executeTool: async (request) => {
         forwardedRequest = request;

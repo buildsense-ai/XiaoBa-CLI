@@ -109,17 +109,22 @@ jobs:
           else
             echo "e2e=false" >> "$GITHUB_OUTPUT"
           fi
+          if [ -f scripts/cross-repo-multi-device.mjs ]; then
+            echo "multi=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "multi=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Checkout cats-company
-        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true'
+        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true' || steps.scripts.outputs.multi == 'true'
         uses: actions/checkout@v4
         with:
           repository: buildsense-ai/cats-company
-          ref: ${{ vars.CATSCOMPANY_SMOKE_REF || 'codex/feishu-cloud-oauth-events' }}
+          ref: ${{ vars.CATSCOMPANY_SMOKE_REF || 'main' }}
           path: cats-company
 
       - name: Set up Node.js
-        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true'
+        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true' || steps.scripts.outputs.multi == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -127,14 +132,14 @@ jobs:
           cache-dependency-path: XiaoBa-CLI/package-lock.json
 
       - name: Set up Go
-        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true'
+        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true' || steps.scripts.outputs.multi == 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: cats-company/go.mod
           cache-dependency-path: cats-company/go.sum
 
       - name: Install XiaoBa dependencies
-        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true'
+        if: steps.scripts.outputs.smoke == 'true' || steps.scripts.outputs.e2e == 'true' || steps.scripts.outputs.multi == 'true'
         working-directory: XiaoBa-CLI
         run: npm ci --prefer-offline --no-audit --fund=false
 
@@ -152,6 +157,13 @@ jobs:
           CATSCOMPANY_REPO: ../cats-company
           CATSCOMPANY_E2E_DB_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_xiaoba_e2e?sslmode=disable
         run: npm run test:e2e:catsco-cross-repo
+
+      - name: Cross-repo multi-device paired contract
+        if: steps.scripts.outputs.multi == 'true' && hashFiles('cats-company/server/multi_device_stability_test.go') != ''
+        working-directory: XiaoBa-CLI
+        env:
+          CATSCOMPANY_REPO: ../cats-company
+        run: npm run test:cross-repo:multi-device
 
   cross-repo-catsco-skills:
     name: CatsCo/XiaoBa BotDefinition Skills paired contract tests

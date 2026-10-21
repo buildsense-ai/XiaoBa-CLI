@@ -253,6 +253,7 @@ export class ConversationRunner {
   private stream: boolean;
   private shouldContinue?: () => boolean;
   private toolExecutionContext?: Partial<ToolExecutionContext>;
+  private readonly inheritedTargetResolutionState?: object;
   private maxPromptTokens: number;
   private maxTurns?: number;
   private sessionLabel: string;
@@ -298,6 +299,7 @@ export class ConversationRunner {
     this.stream = options?.stream ?? true;
     this.shouldContinue = options?.shouldContinue;
     this.toolExecutionContext = options?.toolExecutionContext;
+    this.inheritedTargetResolutionState = options?.toolExecutionContext?.targetResolutionState;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.runtimeTransientProvider = options?.runtimeTransientProvider;
@@ -347,6 +349,12 @@ export class ConversationRunner {
    * @returns 最终文本回复和完整消息列表
    */
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
+    if (this.toolExecutionContext) {
+      this.toolExecutionContext = {
+        ...this.toolExecutionContext,
+        targetResolutionState: this.inheritedTargetResolutionState || {},
+      };
+    }
     this.removeLegacyArtifactObservations(messages);
     const allTools = this.toolExecutor.getToolDefinitions();
     const supportsToolCalling = (this.aiService as any).isToolCallingSupported?.() !== false;

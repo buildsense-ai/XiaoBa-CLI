@@ -87,6 +87,9 @@ export interface CatsThinToolRpcMessage {
   id?: string;
   type: 'request' | 'result';
   request_id: string;
+  grant_id?: string;
+  session_key?: string;
+  actor_user_id?: string;
   target_owner_user_id?: string;
   target_device_id?: string;
   device_id?: string;

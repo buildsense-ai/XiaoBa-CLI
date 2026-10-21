@@ -73,6 +73,7 @@ export function buildRuntimeContextMessage(params: BuildRuntimeContextParams): M
     params.targetRoutes,
     getCatsCoAttachmentCacheSessionRoot(params.sessionKey),
     params.groupRoster,
+    params.deviceSelection,
   );
   if (!content) return null;
   return { role: 'system', content };
@@ -90,12 +91,13 @@ export function buildRuntimeContextText(
   targetRoutes?: TargetRoutes,
   attachmentDirectory?: string,
   groupRoster?: GroupRosterEntry[],
+  selection?: ScopedDeviceSelection,
 ): string {
   const routes = targetRoutes?.routes || [];
   const lines = [TRANSIENT_RUNTIME_CONTEXT_PREFIX];
   if (attachmentDirectory) {
     lines.push(`当前会话附件缓存目录（XiaoBa 本地运行体）：${attachmentDirectory}`);
-    lines.push('需要查找本会话历史附件时，用不带 target 的 glob 查看该目录；找到具体文件后再传给 read_file、grep 或本机脚本。');
+    lines.push('仅在用户请求涉及本会话附件时，用不带 target 的 glob 查看该目录；找到具体文件后再传给 read_file、grep 或本机脚本。用户指定的设备不可确认时，不要把附件缓存当作替代搜索位置。');
     lines.push('');
   }
   // 群成员名单：让这个助手知道群里谁是人、谁是同伴。
@@ -115,9 +117,12 @@ export function buildRuntimeContextText(
     lines.push('');
   }
   if (routes.length > 0) {
-    lines.push('可操作的用户电脑：');
+    lines.push('当前账号的电脑（在线不代表已获本轮操作授权）：');
     for (const route of routes) {
-      lines.push(`- ${displayTargetUser(route)}：${route.label}，${formatOS(route.os)}`);
+      lines.push(`- ${displayTargetUser(route)}：${JSON.stringify(route.label)}，device_id=${JSON.stringify(route.deviceId)}，${formatOS(route.os)}，${route.status === 'ready' ? '在线' : '暂时不可用'}`);
+    }
+    if (selection) {
+      lines.push(`本轮设备选择：${selection.status}；目标=${JSON.stringify(selection.selectedDeviceDisplayName || selection.selectedDeviceId || '尚未选择')}`);
     }
     lines.push('');
     lines.push('可在用户电脑执行的工具：');
@@ -125,12 +130,17 @@ export function buildRuntimeContextText(
     lines.push('');
   }
   lines.push('规则：');
-  lines.push('- 默认不要传 target，工具会在 XiaoBa 自己的电脑执行。');
-  lines.push('- 只有用户明确要求操作某个用户的电脑、桌面、文件或路径时，才把 target 设为该用户名字，例如 target="Alice"。');
+  lines.push('- 对本来就在 Bot 自身环境进行的工作（如正常 Skill、附件处理），默认不要传 target，工具会在 XiaoBa 自己的电脑执行。这不是查找用户指定设备失败后的回退方式。');
+  lines.push('- 用户指定某台设备时，先核对当前账号设备列表及本轮选择；目标不存在、不明确、不可用或与选择不一致时，先停止并请用户明确目标。不得调用工具在 Bot 自己的电脑、当前选中电脑或附件缓存中碰运气。');
+  lines.push('- 设备名不可见只说明当前上下文无法确认该目标，不得声称它属于其他账号、一定存在或已被权限系统拒绝。不得猜测/改写 Linux 与 Windows 路径以尝试其他电脑。');
+  lines.push('- 只有用户明确要求操作某个用户的电脑、桌面、文件或路径时才设置 target：指定设备用列表中的准确设备名/ID；“我的电脑”等用户别名按本轮选择解析，例如 target="Alice"。不能用当前用户名代替用户明确点名的另一台设备。');
   lines.push('- 只有带 target 参数的工具可以在用户电脑执行；没有 target 参数的工具只能在 XiaoBa 自己电脑执行。');
   lines.push('- 如果 Alice 说“我的电脑/我的桌面/我这边”，target 用 "Alice"。');
   lines.push('- 如果用户说“你的电脑/XiaoBa 的电脑/bot 的电脑”，不要传 target。');
   lines.push('- 工具结果中的路径只属于实际执行设备，换设备后要重新解析路径。');
+  lines.push('- 同账号可能有多台电脑；用户名不是某一台电脑的固定名称，以本轮设备选择为准。多台且未选定时先询问，不按列表顺序挑选。');
+  lines.push('- 已选定的电脑离线时说明它暂时不可用，不能换另一台电脑或改为服务器执行。仅提到其他设备不代表要求切换。');
+  lines.push('- 删除、覆盖等操作也必须使用本轮选定的设备；切换设备后重新解析路径，不能把上一台电脑的路径当作本机路径。');
   lines.push('[/transient_runtime_context]');
   return lines.join('\n');
 }
@@ -197,7 +207,7 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
   const speakerGrant = selected
     ? params.deviceGrants?.find(grant => grant.deviceId === selected.selectedDeviceId)
     : params.deviceGrants?.find(grant => grant.status === 'active') || params.deviceGrants?.[0];
-  const speakerDeviceReady = Boolean(selected?.selectedDeviceId || speakerGrant?.deviceId);
+  const speakerDeviceReady = selected ? selected.status === 'selected' && Boolean(selected.selectedDeviceId) : Boolean(speakerGrant?.deviceId);
   const speakerDeviceLabel = selected?.selectedDeviceDisplayName
     || speakerGrant?.deviceDisplayName
     || `${speakerName} computer`;
@@ -260,6 +270,7 @@ function buildToolRules(type: ExecutionContextSnapshot['conversation']['type']):
     'When the current speaker says "your computer", "bot computer", "XiaoBa computer", "你的电脑", "你自己的电脑", "小八的电脑", or "机器人的电脑", call target="agent_self".',
     'If a user asks for a common directory such as Desktop or Downloads, call resolve_common_directory on the same target before passing the returned path to glob, read_file, write_file, edit_file, or execute_shell.',
     'Paths returned by tools belong only to the target that produced them. Re-resolve paths after switching target.',
+    'A named device that is absent, ambiguous, offline or not selected is an unresolved target, not permission to probe the agent host, attachment cache or another device. Stop and ask for the intended target; never infer device ownership or translate paths to bypass this.',
   ];
 }
 
