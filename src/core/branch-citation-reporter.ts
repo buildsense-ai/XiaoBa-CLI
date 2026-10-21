@@ -29,6 +29,19 @@ const MAX_REPORTED_REFS_PER_REQUEST = 64;
 const MAX_KNOWLEDGE_CITED_REFS = 32;
 const MAX_REQUEST_ID_CHARS = 256;
 
+function observationCitationGroups(observation: SyntheticObservation): Array<{ requestId: string; refs: string[] }> {
+  const metadata = observation.metadata;
+  const raw = [metadata?.citation, ...(Array.isArray(metadata?.citations) ? metadata.citations.slice(0, 16) : [])];
+  const groups: Array<{ requestId: string; refs: string[] }> = [];
+  for (const citation of raw) {
+    if (!citation || typeof citation !== 'object' || Array.isArray(citation)) continue;
+    const requestId = typeof citation.requestId === 'string' ? citation.requestId.trim() : '';
+    if (!requestId || requestId.length > MAX_REQUEST_ID_CHARS || hasControlChar(requestId) || !Array.isArray(citation.refs)) continue;
+    groups.push({ requestId, refs: citation.refs.slice(0, MAX_REPORTED_REFS_PER_REQUEST).filter(isCatsLogPoolCitationRef) });
+  }
+  return groups;
+}
+
 export function matchBranchCitations(
   observations: readonly SyntheticObservation[],
   replyText: string | undefined,
@@ -43,17 +56,13 @@ export function matchBranchCitations(
   for (const observation of observations) {
     const metadata = observation.metadata;
     if (!metadata) continue;
-    const citation = metadata.citation;
-    if (citation && typeof citation === 'object' && !Array.isArray(citation)) {
-      const requestId = typeof citation.requestId === 'string' ? citation.requestId.trim() : '';
-      if (requestId && requestId.length <= MAX_REQUEST_ID_CHARS && !hasControlChar(requestId)) {
-        const cited = reports.get(requestId) ?? new Set<string>();
-        for (const ref of citation.refs ?? []) {
-          if (cited.size >= MAX_REPORTED_REFS_PER_REQUEST) break;
-          if (isCatsLogPoolCitationRef(ref) && text.includes(ref)) cited.add(ref);
-        }
-        if (cited.size > 0) reports.set(requestId, cited);
+    for (const citation of observationCitationGroups(observation)) {
+      const cited = reports.get(citation.requestId) ?? new Set<string>();
+      for (const ref of citation.refs) {
+        if (cited.size >= MAX_REPORTED_REFS_PER_REQUEST) break;
+        if (text.includes(ref)) cited.add(ref);
       }
+      if (cited.size > 0) reports.set(citation.requestId, cited);
     }
     for (const ref of Array.isArray(metadata.refs) ? metadata.refs : []) {
       if (knowledgeRefs.size >= MAX_KNOWLEDGE_CITED_REFS) break;
@@ -268,13 +277,15 @@ function parseObservationRefLanes(
 
 /** Sanitized citation-pool set from valid citation metadata (reporter-side fallback). */
 function citationPoolRefs(observation: SyntheticObservation): Set<string> {
-  const citation = observation.metadata?.citation;
   const pool = new Set<string>();
-  if (!citation || typeof citation !== 'object' || Array.isArray(citation)) return pool;
-  const refs = (citation as { refs?: unknown }).refs;
-  if (!Array.isArray(refs)) return pool;
-  for (const ref of refs) {
-    if (typeof ref === 'string' && ref && ref.length <= MAX_REF_LENGTH) pool.add(ref);
+  const metadata = observation.metadata;
+  // Invalid request IDs prevent remote reports, not local lane classification.
+  const groups = [metadata?.citation, ...(Array.isArray(metadata?.citations) ? metadata.citations.slice(0, 16) : [])];
+  for (const citation of groups) {
+    if (!citation || typeof citation !== 'object' || !Array.isArray(citation.refs)) continue;
+    for (const ref of citation.refs.slice(0, MAX_REPORTED_REFS_PER_REQUEST)) {
+      if (isCatsLogPoolCitationRef(ref)) pool.add(ref);
+    }
   }
   return pool;
 }
@@ -315,15 +326,7 @@ export function collectBranchCitationUsage(
     if (!observation || typeof observation !== 'object') continue;
     const metadata = observation.metadata;
 
-    const citation = metadata?.citation;
-    if (citation && typeof citation === 'object' && !Array.isArray(citation)) {
-      const requestId = typeof (citation as { requestId?: unknown }).requestId === 'string'
-        ? (citation as { requestId: string }).requestId.trim()
-        : '';
-      if (requestId && requestId.length <= MAX_REQUEST_ID_CHARS && !hasControlChar(requestId)) {
-        requestIds.add(requestId);
-      }
-    }
+    for (const citation of observationCitationGroups(observation)) requestIds.add(citation.requestId);
 
     if ((observation.timing ?? metadata?.timing) === 'late_previous_turn') carryover = true;
 
