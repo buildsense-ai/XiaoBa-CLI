@@ -88,7 +88,12 @@ bounded bodies, timeout/abort, held slots and source-workspace lock release.
 This component does not request grants or schedule uploads. Next comes durable
 upload/reconciliation scheduling and isolated three-repository acceptance.
 No Bot/server update, production enabling, UI change or model/billing call is
-part of this PR. Cloud's matching upload endpoint is tracked in Cloud PR45.
+part of this PR. Cloud's matching upload endpoint is tracked in Cloud PR45;
+Cloud PR47 supplies the durable receipt-delivery lane used by the current
+CatsCo queue.
+The paired CI checkout must use the CatsCo PR689 merge commit so it exercises
+the current durable upload-queue contract rather than an older transport-only
+baseline.
 
 After `npm run build`, run `node scripts/cross-repo-publication-upload.mjs` with
 `SKILLHUB_CLOUD_REPO` pointing to that Cloud checkout (optional exact
