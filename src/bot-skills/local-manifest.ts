@@ -47,6 +47,12 @@ const EPHEMERAL_DIRECTORIES = new Set([
   '.ruff_cache',
   '.venv',
   '__pycache__',
+  // Scratch space the runtime itself creates inside whatever directory a turn
+  // is running in (sub-agent workspaces land in `<cwd>/tmp/subagents/<id>`). A
+  // turn that cd's into an installed Skill therefore writes here, and hashing
+  // those files would make the package stop matching its cloud-bound hash —
+  // locking the Skill out for a reason that has nothing to do with its content.
+  'tmp',
 ]);
 const SKIP_FILES = new Set([
   BOT_SKILL_LOCAL_MARKER_FILE,
