@@ -52,6 +52,8 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
   if (operations.length === 0 || createdAt === undefined || expiresAt === undefined) return undefined;
 
   return pruneUndefined({
+    targetScope: record.targetScope === 'explicit_device' ? 'explicit_device' : undefined,
+    selectionRevision: typeof record.selectionRevision === 'string' ? record.selectionRevision : undefined,
     kind: 'user_device_grant',
     source,
     grantId,

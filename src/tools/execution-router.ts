@@ -51,7 +51,7 @@ export function stripExecutionTargetArg<T extends Record<string, unknown>>(args:
 export function targetParameterDescription(): { type: 'string'; description: string } {
   return {
     type: 'string',
-    description: 'Optional. Omit target only for work intended for the host running this agent (including normal Skill/attachment work). For a user computer, use its exact device name/id from the current device directory, or the participant name/id for their currently selected computer. If the requested device is missing, ambiguous, offline or different from the selected device, stop and ask the user to identify/select it. Never omit/change target or translate paths to search another computer as a fallback.',
+    description: 'Optional. Omit target only for work intended for the host running this agent (including normal Skill/attachment work). For a user computer, use its exact device name/id from the current device directory, or speaker_default for the selected default computer. An explicitly requested device may differ from the default when it has its own current grant. For multiple devices, make separate calls with exact targets and report each result; do not change the default. Missing, ambiguous or offline targets must never fall back to another computer or rewritten paths.',
   };
 }
 
@@ -244,13 +244,24 @@ function authorizeRemoteRoute(
   if (selection && (selection.identityTrust !== 'server_canonical'
     || selection.sessionKey !== scope.sessionKey || selection.actorUserId !== scope.actorUserId
     || selection.agentId !== scope.agentId || selection.topicId !== scope.topicId
-    || selection.topicType !== scope.topicType || selection.source !== scope.source
-    || selection.status !== 'selected' || selection.selectedDeviceId !== route.targetDeviceId)) {
-    return { ok: false, errorCode: 'TARGET_UNAVAILABLE', message: '当前选定设备不可用或与请求目标不一致；不会自动改用另一台电脑。请确认目标设备后重试。' };
+    || selection.topicType !== scope.topicType || selection.source !== scope.source)) {
+    return { ok: false, errorCode: 'TARGET_UNAVAILABLE', message: '设备选择与当前会话身份不一致，请重新获取设备上下文。' };
   }
   const decision = resolveDeviceGrant(context, { deviceId: route.targetDeviceId, operation });
   if (!decision.ok) return decision;
   const grant = decision.grant;
+  const exactTarget = normalizeTargetText(route.target);
+  const explicitDevice = route.target !== 'speaker_default' &&
+    (exactTarget === normalizeTargetText(route.targetDeviceId) || exactTarget === normalizeTargetText(route.label));
+  const explicitGrant = grant.targetScope === 'explicit_device' && grant.ownerUserId === scope.actorUserId;
+  if (grant.targetScope === 'explicit_device' && (!selection || typeof selection.revision !== 'string'
+    || (grant.selectionRevision || '') !== selection.revision)) {
+    return { ok: false, errorCode: 'PERMISSION_DENIED', message: '设备授权与当前默认选择版本不一致，请重新获取本轮授权。' };
+  }
+  if (selection && (selection.status !== 'selected' || selection.selectedDeviceId !== route.targetDeviceId)
+    && !(explicitDevice && explicitGrant)) {
+    return { ok: false, errorCode: 'TARGET_UNAVAILABLE', message: '默认设备不可用，或指定设备缺少独立授权；不会自动改用另一台电脑。' };
+  }
   if (route.grant && (route.grant.grantId !== grant.grantId
     || !Number.isFinite(route.grant.expiresAt) || route.grant.expiresAt <= Date.now())) {
     return { ok: false, errorCode: 'PERMISSION_DENIED', message: '路由授权已失效，请重新获取当前会话的设备授权。' };

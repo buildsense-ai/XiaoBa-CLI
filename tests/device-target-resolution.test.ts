@@ -149,8 +149,9 @@ test('delegated runner inherits an existing failed-target guard rather than rese
 
 test('prompt and target schema separate unknown-device intent from legitimate local Skill work', () => {
   const text = buildRuntimeContextText(fixture().ctx.targetRoutes, '/test/attachments');
-  assert.match(text, /目标不存在、不明确、不可用或与选择不一致时/);
+  assert.match(text, /默认目标/);
+  assert.match(text, /该设备可以不同于默认选择，但必须有自己的本轮授权/);
   assert.match(text, /不得猜测\/改写 Linux 与 Windows 路径/);
   assert.match(text, /正常 Skill、附件处理/);
-  assert.match(targetParameterDescription().description, /Never omit\/change target/);
+  assert.match(targetParameterDescription().description, /must never fall back to another computer/);
 });

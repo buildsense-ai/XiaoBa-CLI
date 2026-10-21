@@ -1,10 +1,32 @@
 import type { TargetRoute, TargetRouteOS, TargetRoutes } from '../types/tool';
 import type { ExecutionScope } from '../types/session-identity';
+import { extractCatsCoDeviceGrants } from './device-grants';
+import { extractCatsCoDeviceSelection } from './device-selection';
 
 type UnknownRecord = Record<string, unknown>;
 
 export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | undefined, scope?: ExecutionScope): TargetRoutes | undefined {
   const runtime = asRecord(metadata?.xiaoba_runtime);
+  // New canonical selection metadata carries the full account directory even
+  // when the server still sends a v1 directory for older cloud Bots.
+  if (scope?.isTrusted && scope.identityTrust === 'server_canonical' && scope.source === 'catscompany') {
+    const selection = extractCatsCoDeviceSelection(metadata, scope);
+    const grants = extractCatsCoDeviceGrants(metadata, scope) || [];
+    const explicit = grants.filter(grant => grant.targetScope === 'explicit_device'
+      && grant.ownerUserId === scope.actorUserId && typeof selection?.revision === 'string'
+      && (grant.selectionRevision || '') === selection.revision);
+    if (explicit.length > 0 && selection?.candidates?.length) {
+      const ownerRecord = (Array.isArray(runtime?.devices) ? runtime.devices : []).map(asRecord)
+        .find(device => stringField(device, 'userId') === scope.actorUserId);
+      return buildTargetRoutes(selection.candidates.map(device => ({
+        userId: scope.actorUserId, ownerUserId: scope.actorUserId, deviceId: device.deviceId,
+        userName: stringField(ownerRecord, 'userName'),
+        label: device.displayName || device.deviceId, os: normalizeOS(device.os),
+        status: device.status === 'ready' && explicit.some(grant => grant.deviceId === device.deviceId)
+          ? 'ready' : 'unavailable',
+      })));
+    }
+  }
   const schema = stringField(runtime, 'schema');
   if (!runtime || (schema !== 'xiaoba.runtime.v1' && schema !== 'xiaoba.runtime.v2')) return undefined;
   const ownerUserId = scope?.deviceOwnerUserId || scope?.actorUserId;
