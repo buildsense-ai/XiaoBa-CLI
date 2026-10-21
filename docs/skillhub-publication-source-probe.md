@@ -138,8 +138,8 @@ acceptance are still required. Keep production flags off until those gates pass.
 
 `npm run test:cross-repo:publication-probe` uses `CATSCOMPANY_REPO` (default:
 the sibling `cats-company` checkout) and requires Go, installed XiaoBa Node
-dependencies, and CatsCo including PR642. CI pins that counterpart to the reviewed
-PR676 merge, `05245dacc35b6f5b5836a20f63b48ca6bd43e2f1`, and also runs the
+dependencies, and CatsCo PR689. CI pins that counterpart to the
+`9b399165601699f8bb28787874538d2ecafe8a96` merge, and also runs the
 [capture RPC contract](skillhub-publication-private-capture.md#reserved-capture-rpc).
 
 The Go tests exercise actual CatsCo admission/delivery handlers, pass their

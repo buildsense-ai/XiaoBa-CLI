@@ -127,8 +127,8 @@ authorize upload or publication. The reserved adapter handles disabled requests
 as disabled, without falling back to ordinary tools or legacy share.
 
 `npm run test:cross-repo:publication-capture-rpc` uses `CATSCOMPANY_REPO` and Go
-overlays without editing that checkout. CI pins the reviewed PR676 merge
-`05245dacc35b6f5b5836a20f63b48ca6bd43e2f1`. Three suites and seven subcases must
+overlays without editing that checkout. CI pins the CatsCo PR689 merge
+`9b399165601699f8bb28787874538d2ecafe8a96`. Three suites and seven subcases must
 execute without skips: normal/malformed source capture, handler reconstruction
 and replay after source removal, source changes, disabled runtime, owner/workspace
 mismatch, and CatsCo authority changes before a late receipt. It uses actual
