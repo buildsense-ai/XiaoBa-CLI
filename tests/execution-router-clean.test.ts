@@ -32,7 +32,7 @@ function catsContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecuti
       status: 'active',
       identityTrust: 'server_canonical',
       identitySource: 'lightweight_test',
-      deviceId: 'dev-user-85',
+      deviceId: 'dev-alice-win',
       deviceDisplayName: 'usr85 device',
       ownerUserId: 'usr85',
       sessionKey: 'session:v2:catscompany:p2p:p2p_85_320:agent:usr320',
@@ -40,7 +40,7 @@ function catsContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecuti
       topicType: 'p2p',
       actorUserId: 'usr85',
       agentId: 'usr320',
-      operations: ['glob'],
+      operations: ['glob', 'execute_shell'],
       createdAt: Date.now(),
       expiresAt: Date.now() + 60_000,
     }],
@@ -146,7 +146,7 @@ test('legacy speaker_default fallback still uses Device RPC when runtime routes 
     deviceRpc: {
       executeTool: async request => {
         capturedArgs = request.args;
-        assert.equal(request.targetDeviceId, 'dev-user-85');
+        assert.equal(request.targetDeviceId, 'dev-alice-win');
         return { ok: true, content: 'legacy remote ok' };
       },
     },
@@ -279,7 +279,7 @@ test('runtime context injects short text with username targets instead of JSON',
   assert.ok(message);
   assert.equal(message.role, 'system');
   assert.match(String(message.content), /\[transient_runtime_context\]/);
-  assert.match(String(message.content), /Alice：Alice 的电脑，Windows/);
+  assert.match(String(message.content), /Alice："Alice 的电脑"，device_id="dev-alice-win"，Windows，在线/);
   assert.match(String(message.content), /target="Alice"/);
   assert.doesNotMatch(String(message.content), /"executionTargets"/);
 });

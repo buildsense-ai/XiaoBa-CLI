@@ -1114,8 +1114,15 @@ export class CatsCompanyBot {
         targetDeviceId,
         toolName,
         args,
+        grant,
         timeoutMs = DEVICE_RPC_DEFAULT_TTL_MS,
       }) => {
+        if (!grant?.grantId || grant.identityTrust !== 'server_canonical'
+          || grant.status !== 'active' || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= Date.now()
+          || grant.deviceId !== targetDeviceId || grant.ownerUserId !== targetOwnerUserId
+          || !grant.operations.includes(toolName === 'import_file' ? 'send_file' : toolName as DeviceGrantOperation)) {
+          return { ok: false, errorCode: 'PERMISSION_DENIED', message: '当前设备操作缺少有效会话授权，请重新发送请求获取授权。', retryable: false };
+        }
         if (!targetOwnerUserId || !targetDeviceId || !toolName) {
           return {
             ok: false,
@@ -1128,11 +1135,14 @@ export class CatsCompanyBot {
         Logger.info(`[CatsCompany][thin_tool_rpc] executeTool request: request=${requestID}, tool=${toolName}, targetOwner=${targetOwnerUserId}, targetDevice=${targetDeviceId}, args=${summarizeThinToolRpcArgs(args)}`);
         const response = await this.bot.sendThinToolRpcRequest({
           request_id: requestID,
+          grant_id: grant.grantId,
+          session_key: grant.sessionKey,
+          actor_user_id: grant.actorUserId,
           target_owner_user_id: targetOwnerUserId,
           target_device_id: targetDeviceId,
           tool_name: toolName,
           payload: { args },
-          expires_at: Date.now() + timeoutMs,
+          expires_at: Math.min(grant.expiresAt, Date.now() + timeoutMs),
         }, timeoutMs);
         Logger.info(`[CatsCompany][thin_tool_rpc] executeTool response: request=${requestID}, tool=${toolName}, hasError=${Boolean(response.error)}, hasResult=${Boolean(response.result)}`);
 
@@ -1663,7 +1673,7 @@ export class CatsCompanyBot {
 
   private mapDeviceRpcToolErrorCode(code: unknown): ToolErrorCode {
     const text = String(code || '').toLowerCase();
-    if (text.includes('permission') || text.includes('forbidden') || text.includes('mismatch') || text.includes('unsupported')) {
+    if (text.includes('permission') || text.includes('forbidden') || text.includes('mismatch') || text.includes('unsupported') || text === 'device_authorization_required') {
       return 'PERMISSION_DENIED';
     }
     if (text.includes('timeout') || text.includes('expired')) {
@@ -2757,7 +2767,7 @@ export class CatsCompanyBot {
     const metadata: Record<string, unknown> = {};
     if (deviceContext?.catscoIdentity) metadata.catsco_identity = deviceContext.catscoIdentity;
     if (deviceContext?.xiaobaRuntime) metadata.xiaoba_runtime = deviceContext.xiaobaRuntime;
-    const targetRoutes = extractCatsCoRuntimeContext(metadata);
+    const targetRoutes = extractCatsCoRuntimeContext(metadata, executionScope);
     const deviceGrants = extractCatsCoDeviceGrants(metadata, executionScope);
     const deviceSelection = extractCatsCoDeviceSelection(metadata, executionScope);
     if (targetRoutes?.routes?.length) {
@@ -3127,7 +3137,7 @@ export class CatsCompanyBot {
       botUid: this.botUid,
     });
     const executionScope = createExecutionScope(envelope);
-    const targetRoutes = extractCatsCoRuntimeContext(ctx.metadata);
+    const targetRoutes = extractCatsCoRuntimeContext(ctx.metadata, executionScope);
     if (targetRoutes?.routes?.length) {
       Logger.info(`[CatsCompany][xiaoba_runtime] parsed target routes: topic=${ctx.topic}, sender=${ctx.senderId}, routes=${targetRoutes.routes.map(route => `${route.userName || route.userId || '?'}:${route.ownerUserId}/${route.deviceId}/${route.os}`).join(', ')}`);
     } else {

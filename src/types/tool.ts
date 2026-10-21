@@ -126,6 +126,7 @@ export interface DeviceRpcTransport {
 }
 
 export interface ThinToolRpcRequest {
+  grant?: ScopedDeviceGrant;
   targetOwnerUserId: string;
   targetDeviceId: string;
   toolName: string;
@@ -146,7 +147,7 @@ export interface TargetRoute {
   deviceId: string;
   label: string;
   os: TargetRouteOS;
-  status: 'ready';
+  status: 'ready' | 'unavailable';
 }
 
 export interface TargetRoutes {
@@ -270,6 +271,12 @@ export interface ToolExecutionContext {
   deviceRpc?: DeviceRpcTransport;
   thinToolRpc?: ThinToolRpcTransport;
   targetRoutes?: TargetRoutes;
+  /**
+   * Runtime-owned, per-run identity for failed device-target resolution.
+   * Shared by tool-context copies and delegated tasks, never model arguments
+   * or persisted conversation data. A fresh user run gets a fresh identity.
+   */
+  targetResolutionState?: object;
   /**
    * 群成员名单，供每轮临时上下文渲染"群里有谁"。
    *

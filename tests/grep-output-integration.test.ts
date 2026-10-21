@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { GrepTool } from '../src/tools/grep-tool';
 import { MAX_GREP_OUTPUT_CHARS } from '../src/tools/grep-output';
+import { scopedDeviceContext } from './helpers/scoped-device-context';
 
 test('public GrepTool caps local JSONL previews and declares truncation', { skip: process.platform === 'win32', timeout: 25_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'grep-bound-integration-'));
@@ -42,6 +43,7 @@ test('public GrepTool caps local JSONL previews and declares truncation', { skip
 test('public GrepTool caps remote text too and rejects malformed nontext results', async () => {
   let malformed = false;
   const context: any = {
+    ...scopedDeviceContext('owner', 'device', ['grep']),
     workingDirectory: '/tmp', surface: 'catscompany',
     targetRoutes: {
       routes: [{ userId: 'other-user', userName: 'other', ownerUserId: 'owner', deviceId: 'device', label: 'other', os: 'linux', status: 'ready' }],
