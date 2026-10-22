@@ -1,3 +1,4 @@
+import { DEFAULT_KNOWLEDGE_GRAPH_URL, validateKnowledgeGraphQuery, validateKnowledgeGraph, type CatsLogKnowledgeGraphQuery, type CatsLogKnowledgeGraph } from './catslog-knowledge-graph';
 import type { NativeRecallFeedbackEvent } from '../core/native-recall-feedback-outbox';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -61,6 +62,7 @@ export interface CatscoBootstrapResponse {
   memory_notes_url?: string;
   /** Per-Agent per-day knowledge corpus read routes (capability-relative, safe paths only). */
   knowledge_search_url?: string;
+  knowledge_graph_url?: string;
   knowledge_read_url?: string;
   knowledge_source_read_url?: string;
   knowledge_expand_url?: string;
@@ -895,6 +897,14 @@ export class CatscoLogAgentClient {
    * single stored directed edge). Remote endpoint states are explicit
    * statuses (resolved / target_missing / source_revoked), never fake-empty.
    */
+  async readKnowledgeGraph(input: CatsLogKnowledgeGraphQuery & { token?: string; skillToken?: string; knowledgeGraphUrl?: string; signal?: AbortSignal }): Promise<CatsLogKnowledgeGraph> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const body = validateKnowledgeGraphQuery(input);
+    const graph = await this.postCapabilityJSON<unknown>(input.knowledgeGraphUrl || DEFAULT_KNOWLEDGE_GRAPH_URL,
+      token, { ...body }, 'CatsLog knowledge graph failed', input.signal);
+    return validateKnowledgeGraph(graph, body);
+  }
+
   async expandKnowledge(input: CatsLogKnowledgeExpandQuery & {
     token?: string;
     skillToken?: string;

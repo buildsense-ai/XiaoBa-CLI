@@ -1,3 +1,4 @@
+import { DEFAULT_KNOWLEDGE_GRAPH_URL, type CatsLogKnowledgeGraphQuery, type CatsLogKnowledgeGraph } from './catslog-knowledge-graph';
 import * as os from 'os';
 import { APP_VERSION } from '../version';
 import {
@@ -113,6 +114,7 @@ export interface CatsLogMemoryBackend {
     signal?: AbortSignal,
   ): Promise<CatsLogKnowledgeSearchPage>;
   /** Optional knowledge/1 document read; okf format returns the raw markdown body. */
+  readKnowledgeGraph?(query: CatsLogKnowledgeGraphQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeGraph>;
   readKnowledge?(
     query: CatsLogKnowledgeReadQuery,
     signal?: AbortSignal,
@@ -143,6 +145,7 @@ interface CatsLogReadCapability {
   sessionsUrl: string;
   branchUrl: string;
   knowledgeSearchUrl: string;
+  knowledgeGraphUrl: string;
   knowledgeReadUrl: string;
   knowledgeSourceReadUrl: string;
   knowledgeExpandUrl: string;
@@ -340,6 +343,14 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       },
       signal,
     );
+  }
+
+  async readKnowledgeGraph(query: CatsLogKnowledgeGraphQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeGraph> {
+    if (!this.isKnowledgeRecallAvailable()) throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    return this.withReadCapability((capability, client) => {
+      if (typeof client.readKnowledgeGraph !== 'function') throw new CatsLogMemoryUnavailableError('CatsLog graph reader unavailable');
+      return client.readKnowledgeGraph({ ...query, token: capability.token, knowledgeGraphUrl: capability.knowledgeGraphUrl, signal });
+    }, signal);
   }
 
   async readKnowledgeSource(query: CatsLogKnowledgeSourceQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeSourcePage> {
@@ -548,6 +559,7 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       latest.memoryRecallUrl = safePathOrDefault(response.memory_recall_url, DEFAULT_MEMORY_RECALL_URL);
       latest.branchUrl = safePathOrDefault(response.branch_url, DEFAULT_BRANCH_URL);
       latest.knowledgeSearchUrl = safePathOrDefault(responseRecord.knowledge_search_url, DEFAULT_KNOWLEDGE_SEARCH_URL);
+      latest.knowledgeGraphUrl = safePathOrDefault(responseRecord.knowledge_graph_url, DEFAULT_KNOWLEDGE_GRAPH_URL);
       latest.knowledgeReadUrl = safePathOrDefault(responseRecord.knowledge_read_url, DEFAULT_KNOWLEDGE_READ_URL);
       latest.knowledgeSourceReadUrl = safePathOrDefault(responseRecord.knowledge_source_read_url, DEFAULT_KNOWLEDGE_SOURCE_READ_URL);
       latest.knowledgeExpandUrl = safePathOrDefault(responseRecord.knowledge_expand_url, DEFAULT_KNOWLEDGE_EXPAND_URL);
@@ -628,6 +640,7 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
       sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
       branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
       knowledgeSearchUrl: safePathOrDefault(response?.knowledge_search_url, DEFAULT_KNOWLEDGE_SEARCH_URL),
+      knowledgeGraphUrl: safePathOrDefault(response?.knowledge_graph_url, DEFAULT_KNOWLEDGE_GRAPH_URL),
       knowledgeReadUrl: safePathOrDefault(response?.knowledge_read_url, DEFAULT_KNOWLEDGE_READ_URL),
       knowledgeSourceReadUrl: safePathOrDefault(response?.knowledge_source_read_url, DEFAULT_KNOWLEDGE_SOURCE_READ_URL),
       knowledgeExpandUrl: safePathOrDefault(response?.knowledge_expand_url, DEFAULT_KNOWLEDGE_EXPAND_URL),
@@ -647,6 +660,7 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
     sessionsUrl: safePathOrDefault(state.sessionsUrl, DEFAULT_SESSIONS_URL),
     branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
     knowledgeSearchUrl: safePathOrDefault(state.knowledgeSearchUrl, DEFAULT_KNOWLEDGE_SEARCH_URL),
+    knowledgeGraphUrl: safePathOrDefault(state.knowledgeGraphUrl, DEFAULT_KNOWLEDGE_GRAPH_URL),
     knowledgeReadUrl: safePathOrDefault(state.knowledgeReadUrl, DEFAULT_KNOWLEDGE_READ_URL),
     knowledgeSourceReadUrl: safePathOrDefault(state.knowledgeSourceReadUrl, DEFAULT_KNOWLEDGE_SOURCE_READ_URL),
     knowledgeExpandUrl: safePathOrDefault(state.knowledgeExpandUrl, DEFAULT_KNOWLEDGE_EXPAND_URL),

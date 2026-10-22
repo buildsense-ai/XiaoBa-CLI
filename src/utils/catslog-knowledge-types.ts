@@ -65,10 +65,10 @@ export interface CatsLogKnowledgeEntry {
 }
 
 export type CatsLogKnowledgeLinkKind =
-  | 'derived_from' | 'supplements' | 'corrects' | 'continues' | 'related' | 'used';
+  | 'derived_from' | 'supplements' | 'corrects' | 'continues' | 'related' | 'used' | 'requires';
 
 export const CATSLOG_KNOWLEDGE_LINK_KINDS: readonly CatsLogKnowledgeLinkKind[] = [
-  'derived_from', 'supplements', 'corrects', 'continues', 'related', 'used',
+  'derived_from', 'supplements', 'corrects', 'continues', 'related', 'used', 'requires',
 ];
 
 /**

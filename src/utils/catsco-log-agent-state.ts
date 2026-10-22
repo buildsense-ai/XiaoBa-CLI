@@ -51,6 +51,7 @@ export interface CatscoLogAgentState {
   /** Agent-facing branch retrieval endpoint (ADR 0019). */
   branchUrl?: string;
   knowledgeSearchUrl?: string;
+  knowledgeGraphUrl?: string;
   knowledgeReadUrl?: string;
   knowledgeSourceReadUrl?: string;
   knowledgeExpandUrl?: string;
@@ -141,6 +142,7 @@ export function clearCatscoSkillToken(state: CatscoLogAgentState): void {
   delete state.sessionsUrl;
   delete state.branchUrl;
   delete state.knowledgeSearchUrl;
+  delete state.knowledgeGraphUrl;
   delete state.knowledgeReadUrl;
   delete state.knowledgeSourceReadUrl;
   delete state.knowledgeExpandUrl;

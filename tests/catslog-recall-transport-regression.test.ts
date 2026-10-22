@@ -63,7 +63,14 @@ describe('recall real provider/client transport regressions', () => {
     }
     fs.rmSync(root, { recursive: true, force: true });
   });
-  const provider = () => new CatsLogMemoryProvider(root);
+  // These frozen knowledge/1 fixtures exercise legacy embedders without a
+  // graph capability. The production provider's graph path is tested below
+  // and in catslog-knowledge-graph.test.ts; it must never fall back here.
+  const provider = () => {
+    const p = new CatsLogMemoryProvider(root);
+    Object.defineProperty(p, 'readKnowledgeGraph', { value: undefined });
+    return p;
+  };
   const context = () => ({ workingDirectory: root, workspaceRoot: root, surface: 'cli', permissionProfile: 'default', conversationHistory: [] }) as ToolExecutionContext;
 
   function dailyServer(allLanes = false, hitCount = 2, longCursors = false): void {
@@ -107,6 +114,18 @@ describe('recall real provider/client transport regressions', () => {
       return json({ error: 'unexpected_route' }, 500);
     };
   }
+
+  test('production provider dispatches graph with its live capability and never falls back to read on 422', async () => {
+    const p = new CatsLogMemoryProvider(root);
+    serve = (route, body) => {
+      assert.equal(route, '/catsco/agent/knowledge/graph');
+      assert.deepEqual(body.seeds, [old[0]]);
+      return json({ error: 'knowledge_graph_budget' }, 422);
+    };
+    const result = await new CatsLogKnowledgeRecallTool(p).execute({ action: 'graph', seeds: [old[0]] }, context());
+    assert.equal(result.ok, false); assert.equal(result.errorCode, 'CATSLOG_HTTP_422');
+    assert.equal(calls.length, 1);
+  });
 
   test('native search/read/expand and automatic daily use complete server IDs through real transport', async () => {
     dailyServer();

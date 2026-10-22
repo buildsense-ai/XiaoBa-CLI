@@ -1,3 +1,4 @@
+import { validateKnowledgeGraph, validateKnowledgeGraphQuery, type CatsLogKnowledgeGraphQuery } from '../utils/catslog-knowledge-graph';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import { CatsLogMemoryUnavailableError } from '../utils/catslog-memory-provider';
@@ -20,6 +21,10 @@ export const CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME = 'catslog_knowledge_recall';
  */
 interface RecallArgs {
   action?: unknown;
+  seeds?: unknown;
+  node_budget?: unknown;
+  edge_budget?: unknown;
+  byte_budget?: unknown;
   // search
   query?: unknown;
   limit?: unknown;
@@ -78,6 +83,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     description: [
       '按需检索本 Agent 在 CatsLog 的私有每日知识与历史会话（只读）。',
       'action=search：按关键词搜索每日知识条目（默认包含 draft 未审定条目，status 字段可见，draft 不代表已核验；命中标题/状态/所在文档与日期，全文需 read）。',
+      'action=graph：读取精确条目 seeds 的完整必要条件与补充/修正子图；预算不足整组失败，不返回省掉条件的正文。优先用于搜索后的记忆读取。Skill 是日记经验的可选补充。',
       'action=read：读取指定文档（可选 revision/entry_id）；format=json 返回条目全文分页，format=okf 返回整篇 Open Knowledge Format Markdown。',
       'action=expand：沿某个 typed anchor 展开来向/去向链接（supplements/corrects/…），remote 状态显式返回。',
       'action=read_source（source 同义）：按精确 typed anchor/revision 回读来源及最多前后各 4 个上下文节点，返回角色、时间、全文版本 pin、披露文本 hash 与覆盖。knowledge_entry 必须固定 revision。raw 是脱敏 turn 投影，不是原始日志 bytes；graph/rich result 当前会明确 unsupported。',
@@ -91,9 +97,13 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       properties: {
         action: {
           type: 'string',
-          enum: ['search', 'read', 'expand', 'read_source', 'source', 'history'],
+          enum: ['search', 'read', 'graph', 'expand', 'read_source', 'source', 'history'],
           description: 'search=搜索每日知识；read=读取文档；expand=沿链接扩展；read_source/source=精确来源及上下文；history=历史记录投影。',
         },
+        seeds: { type: 'array', items: { type: 'object' }, description: 'graph 必填：1..8 个精确 knowledge_entry anchor（kind/id/document_id/revision）。' },
+        node_budget: { type: 'number', description: 'graph 节点预算 1..32，默认16。' },
+        edge_budget: { type: 'number', description: 'graph 关系预算 1..128，默认64。' },
+        byte_budget: { type: 'number', description: 'graph 完整 JSON 字节预算 256..262144，默认65536。' },
         query: { type: 'string', description: 'search 必填。检索词。' },
         limit: { type: 'number', description: '可选。每页条数上限（服务端有默认值与上限）。' },
         cursor: { type: 'string', description: '可选。上一页响应原样返回的 next_cursor、before_cursor 或 after_cursor，翻页时必须逐字节一致。' },
@@ -131,7 +141,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
         direction: { type: 'string', enum: ['out', 'in', 'both'], description: '可选。expand 方向，默认 both。' },
         kinds: {
           type: 'array',
-          items: { type: 'string', enum: ['derived_from', 'supplements', 'corrects', 'continues', 'related', 'used'] },
+          items: { type: 'string', enum: ['derived_from', 'supplements', 'corrects', 'continues', 'related', 'used', 'requires'] },
           description: '可选。expand 按关系类型过滤。',
         },
         before: { type: 'number', description: 'read_source 可选。之前的上下文节点数，整数 0..4。' },
@@ -164,6 +174,8 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       switch (input.action) {
         case 'search':
           result = await this.search(input, signal); break;
+        case 'graph':
+          result = await this.graph(input, signal); break;
         case 'read':
           result = await this.read(input, signal); break;
         case 'expand':
@@ -209,6 +221,14 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     return this.pageResult(page, page.next_cursor, page.exhausted);
   }
 
+  private async graph(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {
+    if (!this.backend.readKnowledgeGraph) return this.unavailableResult('当前运行环境未接入完整记忆子图读取');
+    const query = validateKnowledgeGraphQuery({ seeds: input.seeds, node_budget: input.node_budget,
+      edge_budget: input.edge_budget, byte_budget: input.byte_budget } as CatsLogKnowledgeGraphQuery);
+    const graph = validateKnowledgeGraph(await this.backend.readKnowledgeGraph(query, signal), query);
+    return { ok: true, content: JSON.stringify(graph) };
+  }
+
   private async read(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {
     if (typeof input.document_id !== 'string' || !input.document_id.trim()) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'read 需要 document_id' };
@@ -237,6 +257,9 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       };
     }
     const page = result.page;
+    if (query.entry_id && this.backend.readKnowledgeGraph) {
+      return this.graph({ seeds: [{ kind: 'knowledge_entry', id: query.entry_id, document_id: page.document_id, revision: page.revision }] }, signal);
+    }
     return this.pageResult(page, page.next_cursor, page.exhausted);
   }
 
@@ -339,7 +362,10 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       sources.push({ ref, anchor, disclosure, ...(text !== undefined ? { disclosed_text_hash: recallTextHash(text) } : {}) });
       return ref;
     };
-    if (action === 'search') {
+    if ((action === 'graph' || action === 'read') && body.contract === 'memory-graph/1') {
+      body.nodes = body.nodes.map((node: any) => ({ ...node,
+        ref: daily(node.anchor.document_id, node.anchor.revision, node.anchor.id, 'text', node.entry.text) }));
+    } else if (action === 'search') {
       body.hits = (body.hits || []).map((hit: any) => ({ ...hit,
         ref: daily(hit.document_id, hit.revision, hit.entry_id, 'metadata'),
       }));

@@ -1,3 +1,4 @@
+import { selectedDailyGraphs, graphNodeRef } from './catslog-daily-memory-graph';
 import { randomUUID } from 'crypto';
 import { ContentBlock, Message } from '../types';
 import { AIService } from '../utils/ai-service';
@@ -620,6 +621,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       // cursors or other metadata consumed most of the full budget.
       const source = full ? {
         ...this.retrieval.dailyKnowledge,
+        graphs: full.graphs as DailyKnowledgeLaneResult['graphs'],
         status: full.status as DailyKnowledgeLaneResult['status'],
         hits: full.hits as DailyKnowledgeLaneResult['hits'],
         reads: full.reads as DailyKnowledgeLaneResult['reads'],
@@ -919,7 +921,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     } else {
       const unobservedRefs = this.observedRefs.unobservedRefs(payload.refs);
       const visibleRefs = new Set(this.retrieval.refinePresentation?.presentedRefs ?? []);
+      const graphPack = this.retrieval.refinePresentation?.evidencePack.daily_knowledge as Record<string, unknown> | undefined;
+      const closedGraphRefs = new Set(selectedDailyGraphs(graphPack, payload.refs).flatMap(g => g.nodes.map(graphNodeRef)));
       for (const ref of payload.refs) {
+        if (graphPack?.graph_mode === true && ref.startsWith('catslog:knowledge:') && !closedGraphRefs.has(ref)
+          && !unobservedRefs.includes(ref)) unobservedRefs.push(ref);
         if (ref.startsWith('catslog:source:') && !visibleRefs.has(ref) && !unobservedRefs.includes(ref)) unobservedRefs.push(ref);
       }
       decision = unobservedRefs.length === 0
@@ -1047,6 +1053,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         coverage: content.coverage, role: content.role, kind: content.anchor.kind,
         truncated: content.truncated || content.text_truncated === true, redacted: content.redacted }));
     const sourceLocators = this.sourceLocatorPack(payload.refs);
+    const memoryGraphs = selectedDailyGraphs(this.retrieval.refinePresentation?.evidencePack.daily_knowledge as Record<string, unknown> | undefined, payload.refs);
     // Feedback-owner contract: emit canonical envelopes only for refs the
     // branch actually mapped to a source_read item (exact anchor + pin);
     // knowledge refs resolve their own typed anchor. Unmapped hashed refs
@@ -1085,6 +1092,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         source: 'memory',
         summary: payload.summary,
         refs: payload.refs,
+        ...(memoryGraphs.length ? { memory_graphs: memoryGraphs } : {}),
         ...(sourceLocators ? { source_locators: sourceLocators } : {}),
       }),
     };

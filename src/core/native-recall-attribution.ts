@@ -93,6 +93,7 @@ interface ObservedCall {
   delivered: Map<string, 'metadata' | 'text'>;
   precedingAssistant: Set<Message>;
   feedbackScope?: string;
+  graphDigest?: string;
 }
 /** Turn-local ledger. Only runner execution results may register observations;
  * only the actual provider input may mark delivery. A successful read alone
@@ -104,7 +105,8 @@ export class NativeRecallTracker {
   observe(result: ToolResult, precedingMessages: readonly Message[] = [], feedbackScope?: string): void {
     if (result.name !== 'catslog_knowledge_recall' || result.ok !== true || result.errorCode || typeof result.content !== 'string') return;
     try {
-      const raw = JSON.parse(result.content).recall_attribution;
+      const parsed = JSON.parse(result.content);
+      const raw = parsed.recall_attribution;
       if (!raw || !/^recall-[a-f0-9-]{36}$/.test(raw.trace_id) || !Array.isArray(raw.sources)) return;
       const sources = raw.sources.map(sanitizeSource).filter((source: NativeRecallSource | undefined): source is NativeRecallSource => source !== undefined);
       this.calls.set(result.tool_call_id, {
@@ -112,6 +114,7 @@ export class NativeRecallTracker {
         attribution: { trace_id: raw.trace_id, sources, server_feedback: 'not_connected' },
         delivered: new Map(),
         feedbackScope,
+        ...(parsed.contract === 'memory-graph/1' ? { graphDigest: recallTextHash(canonicalRecallJSON({ contract: parsed.contract, seeds: parsed.seeds, nodes: parsed.nodes, edges: parsed.edges, closure_complete: parsed.closure_complete })) } : {}),
         precedingAssistant: new Set(precedingMessages.filter(message => message.role === 'assistant')),
       });
     } catch { /* non-recall/malformed results carry no attribution */ }
@@ -128,7 +131,8 @@ export class NativeRecallTracker {
         if (attribution?.trace_id !== call.attribution.trace_id || !Array.isArray(attribution.sources)) continue;
         const textByRef = new Map<string, string>();
         const body = JSON.parse(message.content);
-        for (const item of [...(body.entries || []), ...(body.hits || []), body.source, ...(body.before || []), ...(body.after || [])]) {
+        if (call.graphDigest && call.graphDigest !== recallTextHash(canonicalRecallJSON({ contract: body.contract, seeds: body.seeds, nodes: body.nodes, edges: body.edges, closure_complete: body.closure_complete }))) continue;
+        for (const item of [...(body.nodes || []).map((node: any) => ({ ref: node.ref, text: node.entry?.text })), ...(body.entries || []), ...(body.hits || []), body.source, ...(body.before || []), ...(body.after || [])]) {
           if (item && typeof item.ref === 'string') textByRef.set(item.ref, typeof item.text === 'string' ? item.text : '');
         }
         for (const edge of body.edges || []) {

@@ -1,3 +1,5 @@
+import { readDailyGraphs, projectDailyGraphs, graphNodeRef } from './catslog-daily-memory-graph';
+import type { CatsLogKnowledgeGraph } from '../utils/catslog-knowledge-graph';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import type {
   CatsLogKnowledgeAnchor,
@@ -151,6 +153,7 @@ export interface DailyKnowledgeSkillLineageAnchor {
 }
 
 export interface DailyKnowledgeLaneResult {
+  graphs?: CatsLogKnowledgeGraph[];
   status: DailyKnowledgeLaneStatus;
   hits: DailyKnowledgeHit[];
   /** Bounded revision-pinned reads (originals + remote updates + related entries). */
@@ -326,6 +329,9 @@ export function collectDailyKnowledgeRefs(lane: DailyKnowledgeLaneResult | undef
 /** Refs from the final bounded view only, including explicitly anchor-only edges. */
 export function collectProjectedDailyKnowledgeRefs(projected: Record<string, unknown>): string[] {
   const refs = new Set<string>();
+  for (const graph of (projected.graphs ?? []) as CatsLogKnowledgeGraph[]) {
+    for (const node of graph.nodes) refs.add(graphNodeRef(node));
+  }
   for (const row of [...(projected.hits as DailyKnowledgeHit[] ?? []), ...(projected.reads as DailyKnowledgeRead[] ?? [])]) {
     refs.add(row.ref);
     for (const update of (row as DailyKnowledgeRead).newer_updates ?? []) {
@@ -465,6 +471,7 @@ export function projectDailyKnowledgeLane(
   if (!Number.isSafeInteger(maxChars) || maxChars < 256) {
     throw new RangeError('daily knowledge presentation budget must be at least 256 characters');
   }
+  if (lane.graphs !== undefined) return projectDailyGraphs(lane, maxChars, maxHits);
   // Work on a copy: retrieval/audit retains the originally read bodies.
   const view = JSON.parse(JSON.stringify(lane)) as DailyKnowledgeLaneResult;
   const omitted = { hits: 0, reads: 0, updates: 0, edges: 0, ...view.presentationOmitted };
@@ -681,6 +688,10 @@ export async function searchDailyKnowledgeLane(
     .filter((hit): hit is DailyKnowledgeHit => hit !== null);
   const hitsCapped = hits.length > MAX_DAILY_KNOWLEDGE_HITS;
   const slicedHits = hits.slice(0, MAX_DAILY_KNOWLEDGE_HITS);
+  if (backend.readKnowledgeGraph) {
+    return readDailyGraphs(backend, { status: 'ok', hits: slicedHits, reads: [], expansions: [], queryUsed, keywordsQueried,
+      hitsCapped, serverTruncated: Boolean(page.next_cursor) || page.exhausted !== true }, slicedHits.slice(0, maxReads), options.signal);
+  }
 
   // Original, update and related reads have separate fixed allowances. A
   // related edge cannot consume the correction allowance. No recursive tool
