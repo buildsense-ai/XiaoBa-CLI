@@ -3,6 +3,7 @@ import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
 import { SyntheticObservationQueue } from './synthetic-observation';
 import { MemorySearchBranchSession } from './memory-search-branch-session';
+import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 
 export interface MemoryBranchPreviousInjection {
   summary: string;
@@ -25,6 +26,7 @@ export interface MemorySidecarBranchOptions {
   signal?: AbortSignal;
   logEnabled?: boolean;
   activationContext?: MemoryBranchActivationContext;
+  catslogMemory?: CatsLogMemoryBackend;
 }
 
 export interface MemorySidecarBranchHandle {

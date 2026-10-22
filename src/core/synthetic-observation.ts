@@ -51,6 +51,8 @@ export interface SyntheticObservationMetadata {
    * pool-shaped refs — telemetry then degrades to local logging only.
    */
   citation?: SyntheticObservationCitation;
+  /** Per-request groups; citation remains the first group for older consumers. */
+  citations?: SyntheticObservationCitation[];
   [key: string]: unknown;
 }
 

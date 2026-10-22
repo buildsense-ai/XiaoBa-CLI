@@ -357,6 +357,46 @@ export interface CatscoBranchResponse {
   branches?: CatscoBranchResult[];
 }
 
+/**
+ * Response of POST /catsco/agent/knowledge/source/read with
+ * `{"projection_ref": ref}`: the device-bound expansion of a typed
+ * `source_reference` locator into the full verified projection document plus
+ * its authorized supplied-page sources. `projection.Document` carries the
+ * complete graph (nodes/edges/mappings/conditions/omissions/aggregate gaps);
+ * `content_trust` is `derived_memory_projection` — derived evidence, never
+ * instructions. Fields are loosely typed on purpose: the consumer-side
+ * validator (catslog-projection-reference.ts) owns the semantic contract.
+ */
+export interface CatscoSourceMemoryProjectionRead {
+  schema_version?: number;
+  content_trust?: string;
+  projection?: Record<string, unknown>;
+  sources?: unknown[];
+}
+
+export interface CatscoSourceAssertionClosureInput {
+  projectionRef: string;
+  memberRef: string;
+  nodeId: string;
+  maxBytes?: number;
+  maxNodes?: number;
+}
+
+export interface CatscoSourceAssertionClosureRead {
+  status?: 'complete' | 'bounded' | 'not_found';
+  read_required?: boolean;
+  content_trust?: string;
+  source_completeness?: string;
+  projection_ref?: string;
+  member_ref?: string;
+  covered_ranges?: unknown[];
+  assertion?: Record<string, unknown>;
+  entries?: unknown[];
+  relations?: unknown[];
+  bytes?: number;
+  nodes?: number;
+}
+
 export interface CatscoMemoryNote {
   id?: string;
   kind?: string;
@@ -387,6 +427,7 @@ export const DEFAULT_MEMORY_RECALL_URL = '/catsco/agent/memory/recall';
 export const DEFAULT_BRANCH_URL = '/catsco/agent/branch';
 export const DEFAULT_BRANCH_CITATIONS_URL = '/catsco/agent/branch/citations';
 export const DEFAULT_MEMORY_NOTES_URL = '/catsco/agent/memory/notes';
+export const DEFAULT_SOURCE_READ_URL = '/catsco/agent/knowledge/source/read';
 
 /** Wire contract of POST /catsco/agent/branch/citations: ref_-prefixed pool refs only. */
 export const BRANCH_CITATIONS_MAX_REFS = 64;
@@ -848,7 +889,77 @@ export class CatscoLogAgentClient {
       body,
       'CatsLog branch retrieval failed',
       input.signal,
+      undefined,
+      2 * 1024 * 1024,
     );
+  }
+
+  /**
+   * Expand one typed source_reference locator through the device-bound
+   * knowledge source-read: POST /catsco/agent/knowledge/source/read with
+   * `{"projection_ref": ref}` under the same read capability as `branch`.
+   * The ref stays inside the JSON body — it is never interpolated into the
+   * URL — and the path is a fixed route, so no URL construction from
+   * untrusted evidence is possible.
+   */
+  async readSourceMemoryProjection(input: {
+    projectionRef: string;
+  } & {
+    token?: string;
+    skillToken?: string;
+    sourceReadUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatscoSourceMemoryProjectionRead> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const projectionRef = typeof input.projectionRef === 'string' ? input.projectionRef.trim() : '';
+    if (!isCatsLogPoolCitationRef(projectionRef)) {
+      throw new Error('CatsLog source-read projection_ref must be a ref_-prefixed pool ref (ref_ + 64 hex)');
+    }
+    const requestPath = input.sourceReadUrl ?? DEFAULT_SOURCE_READ_URL;
+    if (requestPath !== DEFAULT_SOURCE_READ_URL) throw new Error('CatsLog source-read endpoint is invalid');
+    const response = await fetch(this.buildUrl(requestPath), {
+      method: 'POST', redirect: 'error', signal: input.signal,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projection_ref: projectionRef }),
+    });
+    return this.parseBoundedJsonResponse<CatscoSourceMemoryProjectionRead>(response, 'CatsLog source-read failed', 2 * 1024 * 1024);
+  }
+
+  /**
+   * Read one current assertion's bounded qualifier closure from a verified
+   * collection or Delta. This is the existing source/read operation with its
+   * typed `assertion` variant; it never accepts caller-supplied scope or text.
+   */
+  async readSourceAssertionClosure(input: CatscoSourceAssertionClosureInput & {
+    token?: string;
+    skillToken?: string;
+    sourceReadUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatscoSourceAssertionClosureRead> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const projectionRef = String(input.projectionRef ?? '').trim();
+    const memberRef = String(input.memberRef ?? '').trim();
+    const nodeId = String(input.nodeId ?? '').trim();
+    const maxBytes = input.maxBytes ?? 12 * 1024;
+    const maxNodes = input.maxNodes ?? 16;
+    if (!isCatsLogPoolCitationRef(projectionRef) || !isCatsLogPoolCitationRef(memberRef)) {
+      throw new Error('CatsLog assertion closure refs must be ref_-prefixed pool refs');
+    }
+    if (!/^[a-f0-9]{64}$/.test(nodeId) || !Number.isSafeInteger(maxBytes) || maxBytes < 512 || maxBytes > 64 * 1024
+      || !Number.isSafeInteger(maxNodes) || maxNodes < 1 || maxNodes > 64) {
+      throw new Error('CatsLog assertion closure bounds or node ID are invalid');
+    }
+    const requestPath = input.sourceReadUrl ?? DEFAULT_SOURCE_READ_URL;
+    if (requestPath !== DEFAULT_SOURCE_READ_URL) throw new Error('CatsLog source-read endpoint is invalid');
+    const response = await fetch(this.buildUrl(requestPath), {
+      method: 'POST', redirect: 'error', signal: input.signal,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projection_ref: projectionRef, assertion: {
+        member_ref: memberRef, node_id: nodeId, max_bytes: maxBytes, max_nodes: maxNodes,
+      } }),
+    });
+    return this.parseBoundedJsonResponse<CatscoSourceAssertionClosureRead>(response,
+      'CatsLog assertion closure read failed', 64 * 1024);
   }
 
   /**
@@ -1019,6 +1130,7 @@ export class CatscoLogAgentClient {
     fallbackMessage: string,
     signal?: AbortSignal,
     ifNoneMatch?: string,
+    maxResponseBytes?: number,
   ): Promise<T> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -1027,11 +1139,47 @@ export class CatscoLogAgentClient {
     if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
     const response = await fetch(this.buildUrl(requestPath), {
       method: 'POST',
+      ...(maxResponseBytes ? { redirect: 'error' as const } : {}),
       headers,
       signal,
       body: JSON.stringify(body),
     });
-    return this.parseJsonResponse<T>(response, fallbackMessage);
+    return maxResponseBytes
+      ? this.parseBoundedJsonResponse<T>(response, fallbackMessage, maxResponseBytes)
+      : this.parseJsonResponse<T>(response, fallbackMessage);
+  }
+
+  private async parseBoundedJsonResponse<T>(response: Response, fallbackMessage: string, maxBytes: number): Promise<T> {
+    // Do not buffer upstream error bodies or expose them in errors/payloads.
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw Object.assign(new Error(`${fallbackMessage}: HTTP ${response.status}`), { status: response.status });
+    }
+    if (Number(response.headers.get('content-length')) > maxBytes) {
+      await response.body?.cancel();
+      throw new Error(`${fallbackMessage}: response exceeds byte budget`);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error(`${fallbackMessage}: no response body`);
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > maxBytes) {
+          await reader.cancel();
+          throw new Error(`${fallbackMessage}: response exceeds byte budget`);
+        }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+    let data: unknown;
+    try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+    catch { throw new Error(`${fallbackMessage}: invalid JSON response`); }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(`${fallbackMessage}: invalid response envelope`);
+    return data as T;
   }
 
   private async parseJsonResponse<T>(response: Response, fallbackMessage: string): Promise<T> {

@@ -15,11 +15,14 @@ function context(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionCo
 }
 
 describe('CatsLog tool risk classification', () => {
-  test('local read-only Memory tools stay low risk without confirmation', () => {
+  test('bounded Memory reads stay low risk without confirmation', () => {
     for (const toolName of [
       'memory_search',
       'memory_read_turn',
       'memory_neighbors',
+      'memory_remote_search',
+      'memory_source_read',
+      'memory_assertion_read',
       'finish_memory_search',
     ]) {
       const decision = classifyLocalToolRisk(toolName, {}, context());

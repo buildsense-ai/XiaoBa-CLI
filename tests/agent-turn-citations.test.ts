@@ -1,4 +1,9 @@
 import { describe, test } from 'node:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { startMemorySidecarBranch } from '../src/core/sidecar-memory-branch';
+import { fixtureBranch, fixtureRead, fixtureRef } from './helpers/catslog-projection-reference-fixture';
 import * as assert from 'node:assert/strict';
 import { AgentTurnController } from '../src/core/agent-turn-controller';
 import { InMemorySyntheticObservationQueue, SyntheticObservation } from '../src/core/synthetic-observation';
@@ -218,5 +223,43 @@ describe('AgentTurnController branch citation reporting', () => {
     await settleMicrotasks();
 
     assert.deepEqual(citationCalls, []);
+  });
+
+  test('real sidecar two-pool evidence is consumed and both citations dispatched by controller', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'citation-pools-'));
+    const refs = [fixtureRef(), fixtureRef('b'.repeat(64))];
+    const queue = new InMemorySyntheticObservationQueue();
+    let step = 0;
+    const branchAI = { isToolCallingSupported: () => true, async chat() {
+      const actions = [
+        ['memory_source_read', { ref: refs[0] }],
+        ['memory_remote_search', { keywords: ['other'] }],
+        ['memory_source_read', { ref: refs[1] }],
+        ['finish_memory_search', { summary: 'Both source decisions.', evidence: refs, inject: true }],
+      ] as const;
+      const [name, args] = actions[step++];
+      return { content: null, toolCalls: [{ id: `step-${step}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }], usage };
+    } };
+    const citationCalls: RecordedCitationCall[] = [];
+    const backend: CatsLogMemoryBackend = {
+      isAvailable: () => true,
+      branch: async q => fixtureBranch(q.queryText ? refs[1] : refs[0], q.queryText ? 'pool-search' : 'pool-prefetch'),
+      readSourceMemoryProjection: async ({ projectionRef }) => fixtureRead(projectionRef === refs[0] ? 'a'.repeat(64) : 'b'.repeat(64)),
+      reportBranchCitations: async input => { citationCalls.push(input); },
+    };
+    try {
+      await startMemorySidecarBranch({ sessionKey: 'citation-review', input: 'Compare both decisions', recentMessages: [], workingDirectory: root, catslogMemory: backend, aiService: branchAI as any, queue, logEnabled: false }).done;
+      const observations = queue.drain();
+      assert.equal(observations.length, 1);
+      assert.equal(JSON.parse(observations[0].formattedContent!).retained_remote_evidence.length, 2);
+      const { controller, queues } = createCitationController({ responses: ['first', refs.join(' ')], catslogMemory: backend, citationCalls });
+      const first = await controller.run({ input: 'first turn', messages: [], runtimeFeedback: [], shouldContinue: () => true });
+      queues[0].push(observations[0]);
+      const result = await controller.run({ input: 'continue', messages: first.messages, runtimeFeedback: [], shouldContinue: () => true });
+      await settleMicrotasks();
+      assert.ok(refs.every(ref => result.text.includes(ref)));
+      assert.deepEqual(citationCalls, [{ requestId: 'pool-prefetch', refs: [refs[0]] }, { requestId: 'pool-search', refs: [refs[1]] }]);
+      fs.writeFileSync('/tmp/xiaoba-review-citation-pools-artifact.json', JSON.stringify({ schema: 'xiaoba.review.citation_pools.v1', retained_refs: refs, actual_controller_reports: citationCalls, external_provider_calls: 0 }), { mode: 0o600 });
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 });
