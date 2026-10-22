@@ -286,6 +286,21 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(captured.result.device_id, 'install-device');
   });
 
+  test('executes a server-authorized group Device RPC on the target device', async () => {
+    const filePath = path.join(testRoot, 'group-notes.txt');
+    fs.writeFileSync(filePath, 'hello from group target device\n');
+    const captured: { result?: any } = {};
+    const bot = botWithDevice(captured);
+    await bot.handleDeviceRpcRequest(request({
+      session_key: 'session:v2:catscompany:group:grp_1%3Aactor%3Ausr7:agent:usr43',
+      topic_id: 'grp_1', topic_type: 'group',
+      payload: { args: { file_path: filePath } },
+    }));
+    assert.equal(captured.result?.result?.ok, true);
+    assert.match(String(captured.result.result.content), /hello from group target device/);
+    assert.equal(captured.result.device_id, 'install-device');
+  });
+
   test('uploads the original file bytes for a thin import_file request', async () => {
     const captured: { uploaded?: { path: string; type: string; bytes: Buffer } } = {};
     const bot = botWithDevice(captured);

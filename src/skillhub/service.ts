@@ -119,6 +119,14 @@ export class SkillHubService {
     return { kind: 'user', userId: user.id };
   }
 
+  getCatsCoShareTargets(
+    token: string,
+    kind: 'friends' | 'search',
+    query = '',
+  ): Promise<{ users: Array<{ uid: string; username: string; displayName: string }> }> {
+    return this.client.getCatsCoShareTargets(token, kind, query);
+  }
+
   logout(): Promise<{ ok: true }> {
     return this.client.logout();
   }

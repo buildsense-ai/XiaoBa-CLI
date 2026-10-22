@@ -5,11 +5,13 @@ import { executeRemoteDeviceRpcTool, resolveRemoteToolTimeoutMs } from './device
 import { resolveGrepRpcTimeoutMs } from './grep-search-policy';
 import { TOOL_TARGET_CONTEXT_PREFIX, TOOL_TARGET_CONTEXT_SUFFIX } from './tool-target-context';
 import {
+  isArtifactPublishSkillCommand,
   isRevokedBotSkillSnapshotCommand,
   resolveTrustedBotSkillScriptInvocation,
   type TrustedBotSkillScriptInvocation,
 } from '../bot-skills/trusted-script-execution';
 import { Logger } from '../utils/logger';
+import { getDeviceAuthorizationSessionKey, resolveDeviceGrant } from '../core/device-grants';
 
 export type ExecutionTargetId = 'agent_self' | string;
 
@@ -49,11 +51,42 @@ export function stripExecutionTargetArg<T extends Record<string, unknown>>(args:
 export function targetParameterDescription(): { type: 'string'; description: string } {
   return {
     type: 'string',
-    description: 'Optional. Omit target to run on the host computer running this agent. Set target to a chat participant\'s displayed name or user id only when the user explicitly asks to operate that participant\'s computer.',
+    description: 'Optional. Omit target only for work intended for the host running this agent (including normal Skill/attachment work). For a user computer, use its exact device name/id from the current device directory, or the participant name/id for their currently selected computer. If the requested device is missing, ambiguous, offline or different from the selected device, stop and ask the user to identify/select it. Never omit/change target or translate paths to search another computer as a fallback.',
   };
 }
 
+const failedTargetRuns = new WeakSet<object>();
+const TARGET_FAILURE_CODES = new Set(['TARGET_NOT_FOUND', 'TARGET_AMBIGUOUS', 'TARGET_UNAVAILABLE']);
+
+export function getDeviceTargetResolutionFailure(context: ToolExecutionContext): Extract<ExecutionRoute, { ok: false }> | undefined {
+  if (context.surface !== 'catscompany' || context.deviceRpcReceiver
+    || !context.targetResolutionState || !failedTargetRuns.has(context.targetResolutionState)) return undefined;
+  return {
+    ok: false,
+    errorCode: 'TARGET_RESOLUTION_BLOCKED',
+    message: '本轮指定的设备目标未能确认，已停止后续设备/文件操作。不能删除 target、改用其他电脑或 Bot 宿主机，也不能猜测其他系统的路径。请说明目标不可用并等待用户确认目标后发起新请求；不要推断该设备是否存在或属于谁。',
+  };
+}
+
+function rememberTargetFailure(context: ToolExecutionContext, route: ExecutionRoute): void {
+  if (context.surface === 'catscompany' && !context.deviceRpcReceiver && context.targetResolutionState
+    && !route.ok && TARGET_FAILURE_CODES.has(route.errorCode)) {
+    failedTargetRuns.add(context.targetResolutionState);
+  }
+}
+
 export function resolveExecutionRoute(
+  context: ToolExecutionContext,
+  options: Parameters<typeof resolveExecutionRouteUnchecked>[1],
+): ExecutionRoute {
+  const blocked = getDeviceTargetResolutionFailure(context);
+  if (blocked) return blocked;
+  const route = resolveExecutionRouteUnchecked(context, options);
+  rememberTargetFailure(context, route);
+  return route;
+}
+
+function resolveExecutionRouteUnchecked(
   context: ToolExecutionContext,
   options: {
     toolName: string;
@@ -78,6 +111,13 @@ export function resolveExecutionRoute(
         ok: false,
         errorCode: 'PERMISSION_DENIED',
         message: 'The command points to a revoked Bot Skill snapshot. Restore or install the Skill again before running its scripts.',
+      };
+    }
+    else if (isArtifactPublishSkillCommand(options.command, context, { cwd: options.cwd })) {
+      return {
+        ok: false,
+        errorCode: 'PERMISSION_DENIED',
+        message: `The artifact-publish command was rejected: ${decision.reason} No command in the plan was executed. Do not set source fields manually.`,
       };
     }
     else if (looksLikeSkillScriptCommand(options.command) && context.executionScope?.source === 'catscompany') {
@@ -113,7 +153,7 @@ export function resolveExecutionRoute(
         message: `Target "${target}" matched ${runtimeRoute.route.label}, but this runtime has no thin tool RPC transport.`,
       };
     }
-    return {
+    return authorizeRemoteRoute(context, {
       ok: true,
       mode: 'remote',
       target,
@@ -121,12 +161,12 @@ export function resolveExecutionRoute(
       targetOwnerUserId: runtimeRoute.route.ownerUserId,
       targetDeviceId: runtimeRoute.route.deviceId,
       targetDeviceDisplayName: runtimeRoute.route.label,
-    };
+    }, options.operation);
   }
-  if (runtimeRoute.reason === 'not_found' || runtimeRoute.reason === 'ambiguous') {
+  if (runtimeRoute.reason === 'not_found' || runtimeRoute.reason === 'ambiguous' || runtimeRoute.reason === 'unavailable') {
     return {
       ok: false,
-      errorCode: runtimeRoute.reason === 'ambiguous' ? 'TARGET_AMBIGUOUS' : 'TARGET_NOT_FOUND',
+      errorCode: runtimeRoute.reason === 'ambiguous' ? 'TARGET_AMBIGUOUS' : runtimeRoute.reason === 'unavailable' ? 'TARGET_UNAVAILABLE' : 'TARGET_NOT_FOUND',
       message: runtimeRoute.message,
     };
   }
@@ -138,7 +178,7 @@ export function resolveExecutionRoute(
       message: [
         `No ready user computer matched target "${target}".`,
         availableTargetsMessage(context),
-        'Omit target to run on the host computer running this agent.',
+        'Stop and ask the user to identify/select the intended device. Do not omit target or probe another computer or the agent host.',
       ].filter(Boolean).join('\n'),
     };
   }
@@ -150,14 +190,14 @@ export function resolveExecutionRoute(
       errorCode: 'PERMISSION_DENIED',
       message: [
         'No ready current-speaker device is available for this tool call.',
-        'Use target="agent_self" for XiaoBa local execution, or ask the user to start CatsCo on their computer.',
+        'Ask the user to connect/select the intended computer. Do not switch to agent_self or another device as a fallback.',
       ].join('\n'),
     };
   }
 
   if (!context.deviceRpc) {
     if (context.thinToolRpc && remote.ownerUserId) {
-      return {
+      return authorizeRemoteRoute(context, {
         ok: true,
         mode: 'remote',
         target,
@@ -168,7 +208,7 @@ export function resolveExecutionRoute(
         targetDeviceDisplayName: remote.displayName,
         targetDeviceBodyId: remote.bodyId,
         targetDeviceInstallationId: remote.installationId,
-      };
+      }, options.operation);
     }
     return {
       ok: false,
@@ -177,7 +217,7 @@ export function resolveExecutionRoute(
     };
   }
 
-  return {
+  return authorizeRemoteRoute(context, {
     ok: true,
     mode: 'remote',
     target,
@@ -188,7 +228,38 @@ export function resolveExecutionRoute(
     targetDeviceDisplayName: remote.displayName,
     targetDeviceBodyId: remote.bodyId,
     targetDeviceInstallationId: remote.installationId,
-  };
+  }, options.operation);
+}
+
+function authorizeRemoteRoute(
+  context: ToolExecutionContext,
+  route: Extract<ExecutionRoute, { ok: true; mode: 'remote' }>,
+  operation: DeviceGrantOperation,
+): ExecutionRoute {
+  const scope = context.executionScope;
+  if (!scope?.isTrusted || scope.identityTrust !== 'server_canonical' || scope.source !== 'catscompany') {
+    return { ok: false, errorCode: 'PERMISSION_DENIED', message: '远程设备操作缺少可信的当前会话身份。' };
+  }
+  const selection = context.deviceSelection;
+  if (selection && (selection.identityTrust !== 'server_canonical'
+    || selection.sessionKey !== getDeviceAuthorizationSessionKey(scope) || selection.actorUserId !== scope.actorUserId
+    || selection.agentId !== scope.agentId || selection.topicId !== scope.topicId
+    || selection.topicType !== scope.topicType || selection.source !== scope.source
+    || selection.status !== 'selected' || selection.selectedDeviceId !== route.targetDeviceId)) {
+    return { ok: false, errorCode: 'TARGET_UNAVAILABLE', message: '当前选定设备不可用或与请求目标不一致；不会自动改用另一台电脑。请确认目标设备后重试。' };
+  }
+  const decision = resolveDeviceGrant(context, { deviceId: route.targetDeviceId, operation });
+  if (!decision.ok) return decision;
+  const grant = decision.grant;
+  if (route.grant && (route.grant.grantId !== grant.grantId
+    || !Number.isFinite(route.grant.expiresAt) || route.grant.expiresAt <= Date.now())) {
+    return { ok: false, errorCode: 'PERMISSION_DENIED', message: '路由授权已失效，请重新获取当前会话的设备授权。' };
+  }
+  if (grant.identityTrust !== 'server_canonical' || !grant.grantId || !Number.isFinite(grant.expiresAt)
+    || (route.targetOwnerUserId && route.targetOwnerUserId !== grant.ownerUserId)) {
+    return { ok: false, errorCode: 'PERMISSION_DENIED', message: '设备授权与目标账号不一致或无效。' };
+  }
+  return { ...route, grant, targetOwnerUserId: grant.ownerUserId };
 }
 
 function looksLikeSkillScriptCommand(command: unknown): boolean {
@@ -203,7 +274,16 @@ export async function executeRouteIfRemote(
   operation: DeviceGrantOperation,
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
+  const blocked = getDeviceTargetResolutionFailure(context);
+  if (blocked) return { ...blocked, retryable: false };
   if (!route.ok || route.mode !== 'remote') return undefined;
+  // Revalidate at dispatch as grants may expire or the selected device may
+  // change after route resolution. Never retry through an unscoped transport.
+  const authorized = authorizeRemoteRoute(context, route, operation);
+  rememberTargetFailure(context, authorized);
+  if (!authorized.ok) return { ...authorized, retryable: false };
+  if (authorized.mode !== 'remote') return undefined;
+  route = authorized;
   if (context.thinToolRpc && route.targetOwnerUserId) {
     let timeoutMs: number | undefined = toolName === 'send_file' || toolName === 'import_file' ? 300_000 : undefined;
     if (toolName === 'grep') {
@@ -222,6 +302,7 @@ export async function executeRouteIfRemote(
     try {
       result = await context.thinToolRpc.executeTool({
         targetOwnerUserId: route.targetOwnerUserId,
+        grant: route.grant,
         targetDeviceId: route.targetDeviceId,
         toolName,
         args: stripExecutionTargetArg(args),
@@ -352,19 +433,40 @@ function findTargetLabel(context: ToolExecutionContext, target: ExecutionTargetI
 function findRuntimeTargetRoute(context: ToolExecutionContext, target: string): (
   | { ok: true; route: TargetRoute }
   | { ok: false; reason: 'missing_routes' }
-  | { ok: false; reason: 'not_found' | 'ambiguous'; message: string }
+  | { ok: false; reason: 'not_found' | 'ambiguous' | 'unavailable'; message: string }
 ) {
   const targetRoutes = context.targetRoutes;
   if (!targetRoutes || targetRoutes.routes.length === 0) {
     return { ok: false, reason: 'missing_routes' };
   }
   const normalized = normalizeTargetText(target);
+  const scope = context.executionScope;
+  const owner = scope?.deviceOwnerUserId || scope?.actorUserId;
+  const selection = context.deviceSelection;
+  // Resolve a user alias through the server's current selection, not array
+  // ordering. An explicit device label/ID must never silently mean another ID.
+  const isDeviceName = targetRoutes.routes.some(route => normalizeTargetText(route.label) === normalized || normalizeTargetText(route.deviceId) === normalized);
+  const isOwnerAlias = target === 'speaker_default' || (!isDeviceName && targetRoutes.routes.some(route => route.ownerUserId === owner
+    && (normalizeTargetText(route.userId) === normalized || normalizeTargetText(route.userName) === normalized)));
+  if (isOwnerAlias && selection) {
+    if (selection.status !== 'selected' || !selection.selectedDeviceId) {
+      return { ok: false, reason: selection.status === 'needs_selection' ? 'ambiguous' : 'unavailable',
+        message: '当前会话尚未选定可用电脑。请确认目标设备；不会自动切换到另一台电脑。' };
+    }
+    const selected = targetRoutes.routes.find(route => route.ownerUserId === owner && route.deviceId === selection.selectedDeviceId);
+    if (!selected || selected.status !== 'ready') {
+      return { ok: false, reason: 'unavailable', message: `选定电脑 ${selection.selectedDeviceDisplayName || selection.selectedDeviceId} 暂时不可用。不会改用其他电脑执行。` };
+    }
+    return { ok: true, route: selected };
+  }
   const matches = [
     ...(targetRoutes.byUserId.get(normalized) || []),
     ...(targetRoutes.byName.get(normalized) || []),
   ];
   const unique = uniqueRoutes(matches);
-  if (unique.length === 1) return { ok: true, route: unique[0] };
+  if (unique.length === 1) return unique[0].status === 'ready'
+    ? { ok: true, route: unique[0] }
+    : { ok: false, reason: 'unavailable', message: `电脑 ${unique[0].label} 暂时不可用。不会改用其他电脑执行。` };
   if (unique.length > 1) {
     return {
       ok: false,
@@ -372,7 +474,7 @@ function findRuntimeTargetRoute(context: ToolExecutionContext, target: string): 
       message: [
         `Target "${target}" matches multiple user computers.`,
         availableTargetsMessage(context),
-        'Use the exact displayed name or user id.',
+        'Ask the user to confirm a specific device; identical names require a device ID.',
       ].filter(Boolean).join('\n'),
     };
   }
@@ -382,7 +484,7 @@ function findRuntimeTargetRoute(context: ToolExecutionContext, target: string): 
     message: [
       `No ready user computer matched target "${target}".`,
       availableTargetsMessage(context),
-      'Omit target to run on the host computer running this agent.',
+      'Ask the user to confirm the device. Do not run this path on another computer.',
     ].filter(Boolean).join('\n'),
   };
 }
@@ -402,7 +504,7 @@ function uniqueRoutes(routes: TargetRoute[]): TargetRoute[] {
 function availableTargetsMessage(context: ToolExecutionContext): string {
   const routes = context.targetRoutes?.routes || [];
   if (routes.length === 0) return 'No user computer targets are currently available.';
-  return `Available user computer targets: ${routes.map(route => route.userName || route.userId).join(', ')}`;
+  return `User computers: ${routes.map(route => `${route.label} [${route.deviceId}] (${route.status})`).join(', ')}`;
 }
 
 function findSpeakerRemoteTarget(context: ToolExecutionContext): {

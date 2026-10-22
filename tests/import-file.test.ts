@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { ImportFileTool } from '../src/tools/import-file-tool';
 import { SendFileTool } from '../src/tools/send-file-tool';
 import type { TargetRoute, ToolExecutionContext, UploadedFileResult } from '../src/types/tool';
+import { scopedDeviceContext } from './helpers/scoped-device-context';
 
 describe('import_file remote routing', () => {
   test('keeps send_file chat-only and gives import_file a required target', () => {
@@ -53,6 +54,7 @@ describe('import_file remote routing', () => {
       status: 'ready',
     };
     const context: ToolExecutionContext = {
+      ...scopedDeviceContext('usr7', 'lin-laptop', ['send_file']),
       workingDirectory: process.cwd(),
       conversationHistory: [],
       surface: 'catscompany',
@@ -109,6 +111,7 @@ describe('import_file remote routing', () => {
     let received: UploadedFileResult | undefined;
     let chatFileSends = 0;
     const context: ToolExecutionContext = {
+      ...scopedDeviceContext('usr7', 'lin-laptop', ['send_file'], 'session-1'),
       workingDirectory: process.cwd(),
       conversationHistory: [],
       surface: 'catscompany',

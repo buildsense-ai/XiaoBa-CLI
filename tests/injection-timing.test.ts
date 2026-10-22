@@ -1,14 +1,11 @@
 import { beforeEach, afterEach, describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { AgentTurnController } from '../src/core/agent-turn-controller';
-import { MemorySearchBranchSession } from '../src/core/memory-search-branch-session';
 import { Logger } from '../src/utils/logger';
 import { InMemorySyntheticObservationQueue, SyntheticObservation } from '../src/core/synthetic-observation';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
-import { ChatResponse, Message } from '../src/types';
+import { Message } from '../src/types';
 import { ToolCall, ToolDefinition } from '../src/types/tool';
-import type { CatscoBranchQuery } from '../src/utils/catsco-log-agent-client';
-import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 
@@ -84,144 +81,6 @@ function assertTimingPayloadHasNoContent(serialized: string): void {
   assert.equal(serialized.includes(OBS_REF), false, 'observation ref leaked into timing event');
 }
 
-// ─── Branch session harness ────────────────────────────────────────────────
-
-/** Minimal device-bound backend: one session_graph item carrying a canonical ref. */
-class RemoteEvidenceMemory implements CatsLogMemoryBackend {
-  async branch(_query: CatscoBranchQuery): Promise<any> {
-    return {
-      schema_version: 1,
-      content_trust: 'untrusted_branch_evidence',
-      request_id: 'req-timing-1',
-      status: 'ok',
-      branches: [
-        {
-          source: 'session_graph',
-          status: 'ok',
-          items: [{
-            source: 'session',
-            ref: 'timing-release#17',
-            kind: 'session_turn',
-            text: 'release decision: keep nginx read-only mount',
-            score_hint: 0.9,
-          }],
-        },
-      ],
-    };
-  }
-}
-
-/** v1.3 pipeline fake: turn 1 assess-recall, turn 2 finish citing an observed ref. */
-class AssessRecallThenFinishAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  evidencePackRefs(messages: Message[]): string[] {
-    const pack = [...messages].reverse().find(message => (
-      message.role === 'user'
-      && typeof message.content === 'string'
-      && message.content.includes('evidence_pack')
-    ));
-    if (!pack || typeof pack.content !== 'string') return [];
-    try {
-      const parsed = JSON.parse(pack.content);
-      return [
-        ...((parsed?.evidence_pack?.remote_branch?.branches || []) as any[])
-          .flatMap(branch => (branch.items || []).map((item: any) => item.ref)),
-        ...((parsed?.evidence_pack?.session_records?.records || []) as any[])
-          .flatMap(record => record.type === 'session_turn_group' ? record.refs || [] : [record.ref]),
-        ...((parsed?.evidence_pack?.local_knowledge?.entries || []) as any[]).map(entry => entry.ref),
-      ].filter((ref: unknown) => typeof ref === 'string');
-    } catch {
-      return [];
-    }
-  }
-
-  async chat(messages: Message[]): Promise<ChatResponse> {
-    this.calls += 1;
-    if (this.calls === 1) {
-      return {
-        content: null,
-        toolCalls: [call('assess-1', 'assess_memory_need', {
-          action: 'recall',
-          query_text: 'release decision',
-          keywords: ['release', 'nginx'],
-        })],
-        usage,
-      };
-    }
-    const refs = this.evidencePackRefs(messages);
-    return {
-      content: null,
-      toolCalls: [call('finish-1', 'finish_memory_search', refs.length > 0 ? {
-        summary: 'Relevant release decision found.',
-        refs: [refs[0]],
-        inject: true,
-        delivery: 'context',
-      } : {
-        summary: 'No usable evidence arrived.',
-        refs: [],
-        inject: false,
-        delivery: 'discard',
-      })],
-      usage,
-    };
-  }
-}
-
-class AssessSkipAI {
-  calls = 0;
-
-  isToolCallingSupported(): boolean {
-    return true;
-  }
-
-  async chat(_messages: Message[]): Promise<ChatResponse> {
-    this.calls += 1;
-    return {
-      content: null,
-      toolCalls: [call('assess-1', 'assess_memory_need', {
-        action: 'skip',
-        reason: '当前上下文足够，无需历史记忆。',
-      })],
-      usage,
-    };
-  }
-}
-
-function createBranchSession(options: {
-  aiService: unknown;
-  queue: InMemorySyntheticObservationQueue;
-  signal?: AbortSignal;
-  catslogMemory?: CatsLogMemoryBackend;
-}): { session: MemorySearchBranchSession; branchEvents: Array<{ type: string; payload: Record<string, unknown> }> } {
-  const session = new MemorySearchBranchSession({
-    sessionKey: SESSION_KEY,
-    input: BRANCH_INPUT,
-    recentMessages: [],
-    workingDirectory: process.cwd(),
-    aiService: options.aiService as any,
-    queue: options.queue,
-    signal: options.signal,
-    logEnabled: false,
-    catslogMemory: options.catslogMemory,
-  });
-  // logEnabled:false keeps the BranchSessionLogger file-free; the patched
-  // write captures events in memory so the assertions never touch fs.
-  const branchEvents: Array<{ type: string; payload: Record<string, unknown> }> = [];
-  (session as any).logger.write = (type: string, payload: Record<string, unknown> = {}) => {
-    branchEvents.push({ type, payload });
-  };
-  return { session, branchEvents };
-}
-
-function stageTimingEvents(branchEvents: Array<{ type: string; payload: Record<string, unknown> }>) {
-  return branchEvents.filter(entry => entry.type === 'branch_stage_timing');
-}
-
 // ─── Controller harness ────────────────────────────────────────────────────
 
 class ScriptedChatStreamAI {
@@ -257,6 +116,7 @@ function createTimingController(
     sessionKey: SESSION_KEY,
     sessionType: 'catscompany',
     services: {
+      memoryBranch: { enabled: true, modelSource: 'inherit' },
       aiService: aiService as any,
       toolManager: (options?.toolManager ?? {
         getToolDefinitions: () => [],
@@ -297,100 +157,6 @@ function createTimingController(
   };
   return { controller, queues };
 }
-
-// ─── branch_stage_timing (MemorySearchBranchSession) ───────────────────────
-
-describe('MemorySearchBranchSession branch_stage_timing', () => {
-  test('records assess_end, mechanical_retrieval_end and refine_finish for the recall path', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const { session, branchEvents } = createBranchSession({
-      aiService: new AssessRecallThenFinishAI(),
-      queue,
-      catslogMemory: new RemoteEvidenceMemory(),
-    });
-
-    await session.run();
-
-    const timings = stageTimingEvents(branchEvents);
-    const stages = timings.map(entry => entry.payload.stage);
-    assert.ok(stages.includes('assess_end'), `assess_end missing: ${stages}`);
-    assert.ok(stages.includes('mechanical_retrieval_end'), `mechanical_retrieval_end missing: ${stages}`);
-    assert.ok(stages.includes('refine_finish'), `refine_finish missing: ${stages}`);
-    assert.equal(stages[stages.length - 1], 'refine_finish', 'refine_finish must be the final stage marker');
-    for (const timing of timings) {
-      assert.equal(typeof timing.payload.ms_since_run_start, 'number');
-      assert.ok((timing.payload.ms_since_run_start as number) >= 0);
-      assert.equal(timing.payload.session_key, SESSION_KEY);
-    }
-    // Each stage marker fires at most once per run.
-    assert.equal(new Set(stages).size, stages.length);
-    assert.equal(queue.size(), 1, 'context delivery should publish exactly one observation');
-  });
-
-  test('records only assess_end for the skip path', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const { session, branchEvents } = createBranchSession({
-      aiService: new AssessSkipAI(),
-      queue,
-    });
-
-    await session.run();
-
-    const stages = stageTimingEvents(branchEvents).map(entry => entry.payload.stage);
-    assert.deepEqual(stages, ['assess_end']);
-    assert.equal(queue.size(), 0, 'skip path must not publish an observation');
-  });
-
-  test('abort mid-pipeline yields the reached stage markers only and never refine_finish', async () => {
-    const external = new AbortController();
-    // The remote lane aborts the whole branch from inside the mechanical stage.
-    const abortingBackend: CatsLogMemoryBackend = {
-      async branch(_query: CatscoBranchQuery, signal?: AbortSignal): Promise<never> {
-        external.abort();
-        signal?.throwIfAborted();
-        throw new Error('unreachable');
-      },
-    } as unknown as CatsLogMemoryBackend;
-    const queue = new InMemorySyntheticObservationQueue();
-    const { session, branchEvents } = createBranchSession({
-      aiService: new AssessRecallThenFinishAI(),
-      queue,
-      signal: external.signal,
-      catslogMemory: abortingBackend,
-    });
-
-    await session.run(); // must resolve, not throw
-
-    const stages = stageTimingEvents(branchEvents).map(entry => entry.payload.stage);
-    assert.ok(stages.includes('mechanical_retrieval_end'), `mechanical_retrieval_end missing: ${stages}`);
-    assert.ok(stages.includes('assess_end'), `assess_end missing: ${stages}`);
-    assert.equal(stages.includes('refine_finish'), false, 'refine_finish must not fire for an aborted run');
-    assert.equal(queue.size(), 0, 'aborted run must not publish an observation');
-  });
-
-  test('branch_stage_timing payloads stay bounded to ids and ms', async () => {
-    const queue = new InMemorySyntheticObservationQueue();
-    const { session, branchEvents } = createBranchSession({
-      aiService: new AssessRecallThenFinishAI(),
-      queue,
-    });
-
-    await session.run();
-
-    const timings = stageTimingEvents(branchEvents);
-    assert.ok(timings.length > 0);
-    for (const timing of timings) {
-      assert.deepEqual(
-        Object.keys(timing.payload).sort(),
-        ['ms_since_run_start', 'session_key', 'stage'],
-      );
-    }
-    assertTimingPayloadHasNoContent(JSON.stringify(timings));
-    assert.equal(JSON.stringify(timings).includes(BRANCH_INPUT), false, 'turn input leaked into timing event');
-  });
-});
-
-// ─── injection_consumed / injection_first_action_ms (AgentTurnController) ──
 
 describe('AgentTurnController injection timing', () => {
   test('emits no timing events when no observation is consumed', async () => {

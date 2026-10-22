@@ -2,6 +2,23 @@ import type { ExecutionScope, MessageEnvelope, ScopedDeviceGrant, ScopedDeviceSe
 import type { TargetRoutes } from '../types/tool';
 import type { CatsCoDomainFamily } from '../utils/catsco-domains';
 
+/**
+ * 服务端随群消息下发的成员条目。
+ *
+ * 存在的理由：消息里的名字说明不了对方是人还是 AI 助手，而成员数根本不含名字。
+ * 有了它，接收方助手才能区分"人在问我"和"同伴在汇报"。
+ *
+ * 仅发给助手收件人——人的客户端本来就有成员列表。
+ */
+export interface CatsGroupRosterMember {
+  uid: string;
+  name?: string;
+  /** 是否 AI 助手。显式下发，避免靠名字猜。 */
+  is_bot?: boolean;
+  /** 是否被禁言。禁言者无法被指名，打算交接的同伴需要知道点名它会无人应答。 */
+  muted?: boolean;
+}
+
 export type CatsCompanyRuntimeRole = 'desktop' | 'server';
 
 /**
@@ -75,6 +92,12 @@ export interface ParsedCatsMessage {
   mentions?: string[];
   /** 群成员数；用于运行时 session 前门控 */
   memberCount?: number;
+  /** 群内 AI 助手数量；多 bot 群的真正判据（memberCount 判不出来） */
+  botCount?: number;
+  /** 群成员名单（含人/bot 标记）；仅 bot 收件人收到 */
+  roster?: CatsGroupRosterMember[];
+  /** 服务端判定：这条消息是否点名本 bot。缺省表示旧服务端，按原有逻辑判断 */
+  activated?: boolean;
   /** 原始 metadata，由 CatsCo 服务端透传/注入 */
   metadata?: Record<string, unknown>;
   /** 标准化后的消息信封 */

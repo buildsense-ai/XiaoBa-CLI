@@ -250,6 +250,7 @@ function buildDelegatedSubAgentToolContext(context: ToolExecutionContext): Parti
     deviceRpcReceiver: context.deviceRpcReceiver,
     thinToolRpc: context.thinToolRpc,
     targetRoutes: context.targetRoutes,
+    targetResolutionState: context.targetResolutionState,
     executionContext: context.executionContext,
     localFileGrants: context.localFileGrants,
     getCurrentDirectory: context.getCurrentDirectory,

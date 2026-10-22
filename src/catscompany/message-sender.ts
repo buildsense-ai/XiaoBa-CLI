@@ -138,6 +138,26 @@ export class MessageSender {
    */
   onTopicSendBlocked: ((topic: string, code?: number) => void) | null = null;
 
+  /**
+   * 会被回填的持久消息类型，与服务端 durable 白名单的交集
+   * （`server/message_visibility.go`：text / image / voice / file）。只有这些类型
+   * 会出现在群历史回填里，也就只有它们的 seq 需要记住。
+   *
+   * 这里不含 `voice`：客户端不发送该类型（见 `CatsMessageType`）。服务端白名单
+   * 里留着它是给别的上报方用的，与本客户端的记账无关。
+   */
+  private static readonly DURABLE_MESSAGE_TYPES: ReadonlySet<CatsMessageType> =
+    new Set<CatsMessageType>(['text', 'image', 'file']);
+
+  /**
+   * 持久消息发送成功后回调（topic + 本次各分段的 seq）。
+   *
+   * 记账挂在 `send()` 而不是某个调用方：文本走 `reply`、附件走 `sendFile`，两条
+   * 路径都经过 `send()`。只挂 `reply` 会漏掉附件——bot 自己发的图片和文件同样
+   * 会进回填，认不出就会重复插入。以后新增持久类型也自动覆盖。
+   */
+  onDurableMessageSent: ((topic: string, seqs: number[]) => void) | null = null;
+
   private readonly topicFailureStreak = new Map<string, number>();
 
   constructor(private bot: CatsClient, baseUrl?: string, apiKey?: string) {
@@ -174,6 +194,7 @@ export class MessageSender {
     try {
       const seq = await this.bot.sendStructuredMessage(body);
       this.topicFailureStreak.delete(topic);
+      this.notifyDurableMessageSent(topic, type, seq);
       return { seq_id: seq };
     } catch (err: any) {
       if (err instanceof CatsSendError && (err.kind === 'transport' || err.retryableWithHttp)) {
@@ -189,6 +210,7 @@ export class MessageSender {
           const result = await this.sendViaHttp(body);
           this.topicFailureStreak.delete(topic);
           Logger.info(`HTTP 兜底发送成功（${describeMessage(body)}, seq_id=${result.seq_id}）`);
+          this.notifyDurableMessageSent(topic, type, result.seq_id);
           return result;
         } catch (httpErr: any) {
           // WS 兜底到 HTTP 后仍被永久拒绝（例如 WS ack 超时窗口内被踢出群）
@@ -295,20 +317,42 @@ export class MessageSender {
     Logger.info(`Task status 已发送: topic=${topic}, state=${status.state}, run=${status.run_id}`);
   }
 
-  async sendText(topic: string, text: string): Promise<void> {
-    await this.send(topic, 'text', text);
+  async sendText(topic: string, text: string): Promise<number> {
+    const { seq_id } = await this.send(topic, 'text', text);
     Logger.info(`Text 已发送: ${text.slice(0, 50)}...`);
+    return seq_id;
   }
 
-  async reply(topic: string, text: string): Promise<void> {
+  /**
+   * 发送回复，返回各分段在服务端的 seq。
+   *
+   * 记账不在这里做：每段经 `sendText` → `send`，`send` 成功即按持久类型回调，
+   * 所以中途失败时已发出的分段也已经记过账。
+   */
+  async reply(topic: string, text: string): Promise<number[]> {
     const normalized = typeof text === 'string' ? text.trim() : '';
     if (!normalized) {
       Logger.info(`Reply skipped: empty or whitespace-only text (topic=${topic})`);
-      return;
+      return [];
     }
     const segments = this.splitText(normalized, MAX_MSG_LENGTH);
+    const seqs: number[] = [];
     for (const seg of segments) {
-      await this.sendText(topic, seg);
+      const seq = await this.sendText(topic, seg);
+      if (Number.isFinite(seq) && seq > 0) seqs.push(seq);
+    }
+    return seqs;
+  }
+
+  private notifyDurableMessageSent(topic: string, type: CatsMessageType, seq: number): void {
+    if (!this.onDurableMessageSent) return;
+    if (!Number.isFinite(seq) || seq <= 0) return;
+    if (!MessageSender.DURABLE_MESSAGE_TYPES.has(type)) return;
+    try {
+      this.onDurableMessageSent(topic, [seq]);
+    } catch (err: any) {
+      // 回调只是记账，失败不该影响已经发出的消息。
+      Logger.warning(`发送后回调失败 (topic=${topic}): ${err?.message || err}`);
     }
   }
 

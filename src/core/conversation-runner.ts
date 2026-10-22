@@ -1,13 +1,13 @@
 import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
 import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
-import type { TargetRoutes } from '../types/tool';
+import type { GroupRosterEntry, TargetRoutes } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers/provider';
 import { Logger } from '../utils/logger';
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
-import { Metrics } from '../utils/metrics';
+import { MetricsCollector } from '../utils/metrics';
 import {
   CHECKPOINT_COMPACTION_COMPLETE_MESSAGE,
   CHECKPOINT_COMPACTION_ERROR_MESSAGE,
@@ -177,7 +177,7 @@ function isPendingUserInput(value: string | ContentBlock[] | PendingUserInput): 
     && 'content' in value;
 }
 
-export type SyntheticObservationProvider = () => SyntheticObservation[];
+export type SyntheticObservationProvider = (progressMessages: readonly Message[]) => SyntheticObservation[];
 export type RuntimeTransientProvider = () => Message[];
 
 interface ToolExecutionRecord {
@@ -222,6 +222,19 @@ export interface RunnerOptions {
   checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   /** Persists a successful continuation checkpoint before execution resumes. */
   onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
+  /** Coordinates an asynchronous checkpoint only after a complete tool batch. */
+  onCheckpointCandidateBoundary?: (
+    messages: Message[],
+    tools?: ToolDefinition[],
+    promptOverheadTokens?: number,
+    finalizeOnly?: boolean,
+  ) => Message[] | Promise<Message[]>;
+  /** Rejects a provider request when the complete provider prompt remains over budget. */
+  beforeModelRequest?: (
+    messages: Message[],
+    tools: ToolDefinition[],
+    promptOverheadTokens?: number,
+  ) => void | Promise<void>;
   /** Best-effort observer. Its result never participates in reply control flow. */
   cacheTraceSink?: CacheTraceSink;
   /**
@@ -231,6 +244,7 @@ export interface RunnerOptions {
    * in request order regardless of completion order. Default false.
    */
   parallelToolExecution?: boolean;
+  metrics?: MetricsCollector;
 }
 
 /**
@@ -243,6 +257,7 @@ export class ConversationRunner {
   private stream: boolean;
   private shouldContinue?: () => boolean;
   private toolExecutionContext?: Partial<ToolExecutionContext>;
+  private readonly inheritedTargetResolutionState?: object;
   private maxPromptTokens: number;
   private maxTurns?: number;
   private sessionLabel: string;
@@ -256,6 +271,18 @@ export class ConversationRunner {
   private parallelToolExecution: boolean;
   private checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   private onCompactionCheckpoint?: (messages: Message[]) => void | Promise<void>;
+  private onCheckpointCandidateBoundary?: (
+    messages: Message[],
+    tools?: ToolDefinition[],
+    promptOverheadTokens?: number,
+    finalizeOnly?: boolean,
+  ) => Message[] | Promise<Message[]>;
+  private beforeModelRequest?: (
+    messages: Message[],
+    tools: ToolDefinition[],
+    promptOverheadTokens?: number,
+  ) => void | Promise<void>;
+  private metrics: MetricsCollector;
 
   /** 截断字符串用于日志输出，避免日志过大 */
   private static truncateForLog(text: any, maxLen = 200): string {
@@ -276,15 +303,19 @@ export class ConversationRunner {
     this.stream = options?.stream ?? true;
     this.shouldContinue = options?.shouldContinue;
     this.toolExecutionContext = options?.toolExecutionContext;
+    this.inheritedTargetResolutionState = options?.toolExecutionContext?.targetResolutionState;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
     this.runtimeTransientProvider = options?.runtimeTransientProvider;
     this.episodeId = options?.episodeId;
     this.checkpointCompactionCoordinator = options?.checkpointCompactionCoordinator;
     this.onCompactionCheckpoint = options?.onCompactionCheckpoint;
+    this.onCheckpointCandidateBoundary = options?.onCheckpointCandidateBoundary;
+    this.beforeModelRequest = options?.beforeModelRequest;
     this.maxTurns = options?.maxTurns;
     this.suppressFinalResponse = options?.suppressFinalResponse === true;
     this.parallelToolExecution = options?.parallelToolExecution === true;
+    this.metrics = options?.metrics ?? new MetricsCollector();
 
     this.maxPromptTokens = this.resolvePromptBudget(options?.maxContextTokens);
     this.sessionLabel = this.toolExecutionContext?.sessionId
@@ -322,6 +353,12 @@ export class ConversationRunner {
    * @returns 最终文本回复和完整消息列表
    */
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
+    if (this.toolExecutionContext) {
+      this.toolExecutionContext = {
+        ...this.toolExecutionContext,
+        targetResolutionState: this.inheritedTargetResolutionState || {},
+      };
+    }
     this.removeLegacyArtifactObservations(messages);
     const allTools = this.toolExecutor.getToolDefinitions();
     const supportsToolCalling = (this.aiService as any).isToolCallingSupported?.() !== false;
@@ -362,9 +399,16 @@ export class ConversationRunner {
           newMessages,
         };
       }
-      this.injectSyntheticObservations(messages, turns);
+      this.injectSyntheticObservations(messages, turns, newMessages);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);
+      if (this.onCheckpointCandidateBoundary) {
+        const nextMessages = await this.onCheckpointCandidateBoundary(messages, requestTools, 0);
+        if (nextMessages !== messages) {
+          messages.splice(0, messages.length, ...nextMessages);
+          this.refreshRuntimeContextForPendingInput(messages);
+        }
+      }
       // Includes the incoming root/pending input, which was not yet present in
       // AgentSession's pre-turn check. Compact before mechanical budget trimming.
       await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
@@ -415,9 +459,27 @@ export class ConversationRunner {
         currentDirectory,
       });
       nextTurnTransientHints = [];
-      const promptOverheadTokens = estimateMessagesTokens(
+      let promptOverheadTokens = estimateMessagesTokens(
         splitDurableAndTransient(requestMessages).transient,
       );
+      if (this.onCheckpointCandidateBoundary) {
+        const nextMessages = await this.onCheckpointCandidateBoundary(
+          messages,
+          requestTools,
+          promptOverheadTokens,
+        );
+        if (nextMessages !== messages) {
+          messages.splice(0, messages.length, ...nextMessages);
+          this.refreshRuntimeContextForPendingInput(messages);
+          requestMessages = this.buildProviderInputMessages(messages, providerTransientHints, {
+            includeCurrentDirectoryHint: transientPolicy.injectEnvironment,
+            currentDirectory,
+          });
+          promptOverheadTokens = estimateMessagesTokens(
+            splitDurableAndTransient(requestMessages).transient,
+          );
+        }
+      }
       const needsPromptOverheadCompaction = this.checkpointCompactionCoordinator
         ?.needsCompaction;
       if (
@@ -443,6 +505,11 @@ export class ConversationRunner {
             currentDirectory,
           });
         }
+      }
+      await this.beforeModelRequest?.(messages, requestTools, promptOverheadTokens);
+      if (this.beforeModelRequest
+        && estimateMessagesTokens(requestMessages) + estimateToolsTokens(requestTools) > this.maxPromptTokens) {
+        throw new Error('CONTEXT_CHECKPOINT_BLOCKED');
       }
       const promptTrimmed = this.ensurePromptBudget(requestMessages, requestTools);
       if (promptTrimmed && callbacks?.onThinking) {
@@ -505,7 +572,7 @@ export class ConversationRunner {
       Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
 
       if (response.usage) {
-        Metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
+        this.metrics.recordAICall(this.stream ? 'stream' : 'chat', response.usage);
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
         const observeProviderPromptUsage = this.checkpointCompactionCoordinator
           ?.observeProviderPromptUsage;
@@ -784,6 +851,7 @@ export class ConversationRunner {
         };
       }
 
+      await this.coordinateCheckpointCandidateAtBoundary(messages, requestTools);
       await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
       await this.appendPendingUserInput(messages, newMessages, turns);
     }
@@ -893,6 +961,17 @@ export class ConversationRunner {
     return true;
   }
 
+  private async coordinateCheckpointCandidateAtBoundary(
+    messages: Message[],
+    tools?: ToolDefinition[],
+  ): Promise<void> {
+    if (!this.onCheckpointCandidateBoundary) return;
+    const nextMessages = await this.onCheckpointCandidateBoundary(messages, tools, 0);
+    if (nextMessages === messages) return;
+    messages.splice(0, messages.length, ...nextMessages);
+    this.refreshRuntimeContextForPendingInput(messages);
+  }
+
   private async compactMidTurnIfNeeded(
     messages: Message[],
     tools: ToolDefinition[],
@@ -908,6 +987,7 @@ export class ConversationRunner {
       toolTokens: estimateToolsTokens(tools),
       promptOverheadTokens,
       signal: this.toolExecutionContext?.abortSignal,
+      metrics: this.metrics,
       onStatus: callbacks?.onThinking
         ? async event => {
           if (event.status === 'start') {
@@ -978,6 +1058,7 @@ export class ConversationRunner {
       deviceGrants: this.toolExecutionContext?.deviceGrants,
       deviceSelection: this.toolExecutionContext?.deviceSelection,
       targetRoutes: this.toolExecutionContext?.targetRoutes,
+      groupRoster: this.toolExecutionContext?.groupRoster,
       localFileGrants: this.toolExecutionContext?.localFileGrants,
     });
     if (runtimeContext) messages.push(runtimeContext);
@@ -989,11 +1070,11 @@ export class ConversationRunner {
     }
   }
 
-  private injectSyntheticObservations(messages: Message[], turn: number): void {
+  private injectSyntheticObservations(messages: Message[], turn: number, progressMessages: readonly Message[]): void {
     if (!this.syntheticObservationProvider) return;
     let observations: SyntheticObservation[] = [];
     try {
-      observations = this.syntheticObservationProvider();
+      observations = this.syntheticObservationProvider(progressMessages);
     } catch (error: any) {
       Logger.warning(`[${this.sessionLabel}Turn ${turn}] synthetic observation drain failed: ${error.message}`);
       return;
@@ -1629,6 +1710,11 @@ export class ConversationRunner {
       if (!this.isPromptTooLongError(error)) {
         throw error;
       }
+      if (this.beforeModelRequest) {
+        const guardedError = new Error('CONTEXT_CHECKPOINT_BLOCKED');
+        (guardedError as Error & { cause?: unknown }).cause = error;
+        throw guardedError;
+      }
 
       Logger.warning('检测到提示词超长，执行紧急上下文裁剪后重试一次');
       this.forceTrimForOverflow(messages);
@@ -1934,7 +2020,9 @@ export class ConversationRunner {
     const { toolCall, messages, turns, callbacks, toolDefinitions } = args;
     const toolName = toolCall.function.name;
     const toolUseId = toolCall.id;
-    const toolInput = JSON.parse(toolCall.function.arguments);
+    // Parsing errors must reach the tool executor's recoverable argument handler.
+    let toolInput: unknown;
+    try { toolInput = JSON.parse(toolCall.function.arguments); } catch { toolInput = toolCall.function.arguments; }
     const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
     callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
     Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
@@ -1943,7 +2031,7 @@ export class ConversationRunner {
       toolCall, messages, this.toolExecutionContext || {}, turns,
     );
     const toolDuration = Date.now() - toolStart;
-    Metrics.recordToolCall(toolName, toolDuration);
+    this.metrics.recordToolCall(toolName, toolDuration);
     this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
     Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
     this.runObservation(() => callbacks?.onToolExecutionResult?.(result, messages));

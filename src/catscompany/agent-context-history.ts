@@ -1,5 +1,6 @@
 import type { ParsedCatsMessage } from './types';
 import type { CatsAgentContextMessage } from './client';
+import { formatSpeakerLabel } from './speaker-label';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -74,6 +75,13 @@ function normalizedContextRole(
   ) {
     return 'user';
   }
+  // 人类 @别人 的消息：服务端标 context_eligible=false 是为了表达"这不该激活
+  // 你的回合"，客户端却把它当成了"你不该看见"。可见性与回复资格是两件事——
+  // 这条消息仍应进入长期上下文，让下一次真实激活时看到完整对话；是否回复由
+  // 激活门控单独决定，与这里无关。
+  if (message.context_reason === 'group_message_targets_another_member') {
+    return 'user';
+  }
   if (
     message.context_eligible === true
     && (message.context_role === 'user' || message.context_role === 'assistant')
@@ -95,12 +103,9 @@ function formatParticipantMessage(message: CatsAgentContextMessage): string {
   if (!text) return '';
   const metadata = asRecord(message.metadata);
   const identity = asRecord(metadata.catsco_identity);
-  const actor = asRecord(identity.actor);
-  const speaker = stringField(actor, 'display_name')
-    || stringField(actor, 'username')
-    || stringField(actor, 'user_id')
-    || String(message.from_uid || '').trim()
-    || 'User';
+  // 带上（人）/（bot）标记：判定判据要求区分人在提问还是同伴在汇报，而只靠
+  // 名字区分不出来。服务端已下发 actor.is_bot，这里只是渲染它。
+  const speaker = formatSpeakerLabel({ actor: identity.actor, fallbackUid: message.from_uid });
   return `[发言人: ${speaker}]\n${text}`;
 }
 
@@ -124,6 +129,22 @@ function extractMessageText(message: CatsAgentContextMessage): string {
     } catch {
       return text;
     }
+  }
+  // 附件消息（file/image/voice）的正文是富对象。以前这里只认 text block 和字符串，
+  // 附件一律返回空 → 整条被上游过滤掉，群历史回填时同伴发过的文件就凭空消失。
+  // 服务端已在 agent 副本的 description 里带了绝对地址，这里渲染出来，模型才能
+  // 在下次激活时用 read_file 直接读。
+  if (message.content && typeof message.content === 'object') {
+    const rich = message.content as UnknownRecord;
+    const type = stringField(rich, 'type') || String(message.type || message.msg_type || '').trim();
+    const payload = rich.payload && typeof rich.payload === 'object'
+      ? rich.payload as UnknownRecord
+      : rich;
+    const name = stringField(payload, 'name') || stringField(payload, 'file_name');
+    const description = stringField(payload, 'text') || stringField(payload, 'description');
+    if (type === 'file') return `[历史文件${name ? `：${name}` : ''}]${description ? ` ${description}` : ''}`;
+    if (type === 'image') return `[历史图片${name ? `：${name}` : ''}]${description ? ` ${description}` : ''}`;
+    if (type === 'voice') return `[历史语音]${description ? ` ${description}` : ''}`;
   }
   return '';
 }

@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
 import { execFileSync } from 'child_process';
+import { randomUUID } from 'crypto';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { ContentBlock } from '../types';
 import { isReadPathAllowed } from '../utils/safety';
@@ -17,6 +18,7 @@ import { resolveLocalFileAccess, resolveLocalFileReference } from './local-file-
 import { formatCatsCoVisiblePath } from './tool-gateway';
 import { executeRouteIfRemote, resolveExecutionRoute, targetParameterDescription } from './execution-router';
 import { importRemoteFileToAgentWorkspace } from './import-file-tool';
+import { getCatsCoAttachmentCacheSessionRoot } from '../catscompany/attachment-cache';
 
 export const DEFAULT_TEXT_READ_LIMIT = 200;
 export const MAX_TEXT_READ_LIMIT = 2000;
@@ -29,6 +31,41 @@ export const DEFAULT_PDF_IMAGE_FALLBACK_PAGES = 3;
 export const MAX_PDF_IMAGE_FALLBACK_PAGES = 5;
 const MAX_PDF_RENDER_PIXELS = 4_000_000;
 const DEFAULT_PDF_RENDER_SCALE = 1.75;
+
+// A URL is fetched before it is read, so the fetch needs its own bounds: the
+// download runs on the message path and a hung server must not hold the turn.
+export const URL_FETCH_TIMEOUT_MS = 30_000;
+// Remote content is read into memory to be written to the cache, so the cap is
+// what keeps a mislabelled or hostile response from exhausting the runtime.
+export const MAX_URL_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Whether the input is an http(s) URL rather than a filesystem path.
+ *
+ * This has to be decided before any path handling: a URL passed to the local
+ * resolver is treated as a relative path and resolved against the working
+ * directory, which is what produced `file not found: /<cwd>/https:/...`.
+ */
+export function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+/** Derives a safe cache filename from a URL, keeping the extension so the read
+ *  dispatch (PDF, image, notebook, text) still recognises the content. */
+function urlCacheFileName(parsed: URL): string {
+  let raw = '';
+  try {
+    raw = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '');
+  } catch {
+    raw = parsed.pathname.split('/').filter(Boolean).pop() || '';
+  }
+  const safe = raw
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .replace(/^\.+/, '')
+    .slice(0, 120);
+  return safe || 'download';
+}
+
 const PDF_VISUAL_INTENT_PATTERNS = [
   /图片|图像|照片|截图|扫描|扫描件|影印|拍照/,
   /签名|签字|手写|字迹|笔迹|批注/,
@@ -166,16 +203,33 @@ export class ReadTool implements Tool {
       return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '文件路径不能为空' };
     }
 
+    // A URL is fetched first and then read as a local file. Doing it here, before
+    // any path handling, is what keeps the URL out of the local resolver: a URL
+    // handed to it is treated as a relative path, which is what produced
+    // `file not found: <cwd>/https:/...`.
+    let inputPath = file_path;
+    let downloadedFromUrl = false;
+    if (isHttpUrl(file_path)) {
+      const fetched = await this.fetchUrlToCache(file_path, context);
+      if (!fetched.ok) {
+        return { ok: false, errorCode: fetched.errorCode, message: fetched.message };
+      }
+      inputPath = fetched.localPath;
+      downloadedFromUrl = true;
+    }
+
     let absolutePath: string;
-    let displayPath = file_path;
+    let displayPath = inputPath;
     let visiblePath: string;
-    let visibleInputPath = file_path;
+    // The model is told where the content came from, not only where it landed:
+    // a bare cache filename would hide that the input was a URL.
+    let visibleInputPath = downloadedFromUrl ? file_path : inputPath;
     let resolvedFromAttachmentRef = false;
     let authorizedByLocalFileGrant = false;
 
     const reference = resolveLocalFileReference(context, {
       operation: 'read_file',
-      inputPath: file_path,
+      inputPath,
     });
     if (reference.matched) {
       if (!reference.ok) {
@@ -192,9 +246,9 @@ export class ReadTool implements Tool {
       resolvedFromAttachmentRef = true;
       authorizedByLocalFileGrant = true;
     } else {
-      absolutePath = path.isAbsolute(file_path)
-        ? file_path
-        : path.join(context.workingDirectory, file_path);
+      absolutePath = path.isAbsolute(inputPath)
+        ? inputPath
+        : path.join(context.workingDirectory, inputPath);
       visiblePath = absolutePath;
     }
 
@@ -271,23 +325,129 @@ export class ReadTool implements Tool {
 
     const ext = path.extname(absolutePath).toLowerCase();
 
+    // A URL input is read from a cache path the model never supplied. Naming the
+    // original address in the result keeps the provenance visible, so a later
+    // reference to "that file" still resolves to something the user recognises.
+    const withSource = <T extends string | ContentBlock[]>(content: T): T => {
+      if (!downloadedFromUrl) return content;
+      const note = `来源: ${file_path}`;
+      if (typeof content === 'string') return `${note}\n${content}` as T;
+      if (Array.isArray(content)) {
+        return [{ type: 'text', text: note } as ContentBlock, ...content] as T;
+      }
+      return content;
+    };
+
     if (ext === '.pdf') {
       const content = await this.readPDF(absolutePath, displayPath, visiblePath, context, pages, prompt || analysis_prompt);
-      return { ok: true, content };
+      return { ok: true, content: withSource(content) };
     }
 
     if (this.isImageExt(ext)) {
       const content = await this.readImage(absolutePath, displayPath, visiblePath, context, prompt || analysis_prompt);
-      return { ok: true, content: content as any };
+      return { ok: true, content: withSource(content as any) as any };
     }
 
     if (ext === '.ipynb') {
       const content = this.readNotebook(absolutePath, displayPath, visiblePath);
-      return { ok: true, content };
+      return { ok: true, content: withSource(content) };
     }
 
     const content = await this.readTextFile(absolutePath, displayPath, visiblePath, { offset, limit }, context);
-    return { ok: true, content };
+    return { ok: true, content: withSource(content) };
+  }
+
+  /**
+   * Downloads an http(s) URL into the session's attachment cache and returns
+   * the local path.
+   *
+   * The cache directory is deliberate: it is the one location the CatsCo file
+   * gateway treats as server-managed, so the freshly downloaded file can be read
+   * back through the normal path without a per-file grant.
+   *
+   * Failures are returned rather than thrown so the model gets an actionable
+   * message instead of a tool crash.
+   */
+  private async fetchUrlToCache(
+    url: string,
+    context: ToolExecutionContext,
+  ): Promise<{ ok: true; localPath: string } | { ok: false; errorCode: string; message: string }> {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `无法解析的 URL: ${url}` };
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return {
+        ok: false,
+        errorCode: 'TOOL_EXECUTION_ERROR',
+        message: `read_file 只支持 http/https URL，收到的是 ${parsed.protocol}`,
+      };
+    }
+
+    const fileName = urlCacheFileName(parsed);
+    const dir = getCatsCoAttachmentCacheSessionRoot(this.sessionKeyForContext(context));
+    const targetPath = path.join(dir, `${Date.now()}_${randomUUID().slice(0, 8)}_${fileName}`);
+    const partPath = `${targetPath}.part`;
+
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const res = await fetch(parsed.toString(), { signal: AbortSignal.timeout(URL_FETCH_TIMEOUT_MS) });
+      if (!res.ok) {
+        return {
+          ok: false,
+          errorCode: 'TOOL_EXECUTION_ERROR',
+          message: `下载失败: HTTP ${res.status} ${res.statusText || ''} - ${url}`.trim(),
+        };
+      }
+
+      const declared = Number(res.headers.get('content-length') || 0);
+      if (Number.isFinite(declared) && declared > MAX_URL_DOWNLOAD_BYTES) {
+        return {
+          ok: false,
+          errorCode: 'TOOL_EXECUTION_ERROR',
+          message: `远程文件过大（${declared} 字节，上限 ${MAX_URL_DOWNLOAD_BYTES}）：${url}`,
+        };
+      }
+
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length > MAX_URL_DOWNLOAD_BYTES) {
+        return {
+          ok: false,
+          errorCode: 'TOOL_EXECUTION_ERROR',
+          message: `远程文件过大（${buffer.length} 字节，上限 ${MAX_URL_DOWNLOAD_BYTES}）：${url}`,
+        };
+      }
+      // Written via a .part file and renamed, so a concurrent cleanup sweep can
+      // never pick up a half-written download.
+      fs.writeFileSync(partPath, buffer);
+      fs.renameSync(partPath, targetPath);
+      Logger.info(`[read_file] url_download ok url=${formatPathForLog(url)} bytes=${buffer.length}`);
+      return { ok: true, localPath: targetPath };
+    } catch (err: any) {
+      try {
+        fs.unlinkSync(partPath);
+      } catch {
+        // Nothing to clean up if the write never happened.
+      }
+      const reason = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+        ? `下载超时（${URL_FETCH_TIMEOUT_MS}ms）`
+        : `下载失败: ${err?.message || err}`;
+      Logger.warning(`[read_file] url_download failed url=${formatPathForLog(url)} reason=${reason}`);
+      return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `${reason} - ${url}` };
+    }
+  }
+
+  /** Recovers the session key the cache path is scoped by. The context carries
+   *  it inside the session-key-derived route; the working directory is the
+   *  fallback so a URL read still lands somewhere writable. */
+  private sessionKeyForContext(context: ToolExecutionContext): string | undefined {
+    const scope = context.executionScope as { sessionKey?: string } | undefined;
+    if (scope && typeof scope.sessionKey === 'string' && scope.sessionKey.trim()) {
+      return scope.sessionKey.trim();
+    }
+    return context.workingDirectory || undefined;
   }
 
   private normalizeTextReadOptions({ offset, limit }: TextReadOptions): NormalizedTextReadOptions {

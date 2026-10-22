@@ -9,8 +9,27 @@ import type {
   UserDeviceStatus,
 } from '../types/session-identity';
 import type { ToolExecutionContext } from '../types/tool';
+import { buildSessionKeyV2 } from './session-router';
 
 export const DEFAULT_DEVICE_GRANT_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Group history stays shared at cc_group:<topic>. Device authorization is
+ * actor- and bot-specific, matching CatsCompany's buildCatsCoSessionKey.
+ * Derive it from the execution identity, never from a received grant/key.
+ * Other channels and private conversations retain their existing scope.
+ */
+export function getDeviceAuthorizationSessionKey(
+  scope: Pick<ExecutionScope, 'source' | 'topicType' | 'topicId' | 'actorUserId' | 'agentId' | 'sessionKey'>,
+): string {
+  if (scope.source !== 'catscompany' || scope.topicType !== 'group') return scope.sessionKey;
+  return buildSessionKeyV2({
+    source: scope.source,
+    topicType: scope.topicType,
+    topicId: `${scope.topicId}:actor:${scope.actorUserId}`,
+    agentId: scope.agentId,
+  });
+}
 
 export interface CreateUserDeviceInput {
   source: MessageSource;
@@ -103,7 +122,7 @@ export function createDeviceGrant(
     deviceBodyId: device.bodyId,
     deviceInstallationId: device.installationId,
     ownerUserId: device.ownerUserId,
-    sessionKey: scope.sessionKey,
+    sessionKey: getDeviceAuthorizationSessionKey(scope),
     topicId: scope.topicId,
     topicType: scope.topicType,
     actorUserId: scope.actorUserId,
@@ -190,7 +209,7 @@ export function validateDeviceGrant(
 
   const mismatches = [
     ['source', grant.source, scope.source],
-    ['sessionKey', grant.sessionKey, scope.sessionKey],
+    ['sessionKey', grant.sessionKey, getDeviceAuthorizationSessionKey(scope)],
     ['topicId', grant.topicId, scope.topicId],
     ['topicType', grant.topicType, scope.topicType],
     ['actorUserId', grant.actorUserId, scope.actorUserId],

@@ -15,9 +15,11 @@ function context(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionCo
 }
 
 describe('CatsLog tool risk classification', () => {
-  test('the memory pipeline tools stay low risk without confirmation', () => {
+  test('local read-only Memory tools stay low risk without confirmation', () => {
     for (const toolName of [
-      'assess_memory_need',
+      'memory_search',
+      'memory_read_turn',
+      'memory_neighbors',
       'finish_memory_search',
     ]) {
       const decision = classifyLocalToolRisk(toolName, {}, context());
@@ -26,14 +28,12 @@ describe('CatsLog tool risk classification', () => {
     }
   });
 
-  test('v1.2 loop tools and removed per-source CatsLog tools fall back to the default confirmation gate', () => {
+  test('Retired pipeline and per-source CatsLog tools fall back to the default confirmation gate', () => {
     // The v1.3 pipeline no longer exposes these names; if something re-registers
     // them without re-classifying, they must not silently ride the low-risk
     // read list or the old external-write carve-out.
     for (const toolName of [
-      'memory_search',
-      'memory_read_turn',
-      'memory_neighbors',
+      'assess_memory_need',
       'catslog_branch',
       'catslog_skill_memory',
       'catslog_skill_catalog',

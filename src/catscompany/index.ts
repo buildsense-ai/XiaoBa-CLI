@@ -6,8 +6,11 @@ import {
   type CatsSkillMutationGrantMessage,
   type CatsSkillMutationGrantRequest,
   type CatsThinToolRpcMessage,
+  type CatsSessionForkControl,
 } from './client';
-import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo, type CatsCompanyRuntimeRole } from './types';
+import { CatsSessionForkController } from './session-fork';
+import { SessionStore } from '../utils/session-store';
+import { CatsCompanyConfig, ParsedCatsMessage, CatsFileInfo, type CatsCompanyRuntimeRole, type CatsGroupRosterMember } from './types';
 import { MessageSender, type ConversationTaskStatusInput } from './message-sender';
 import { extractContentBlocks } from './content-blocks';
 import { createCatsCoMessageEnvelope, createExecutionScope, buildCatsCoSessionKey } from './message-envelope';
@@ -34,6 +37,7 @@ import {
   AgentServices,
   BUSY_MESSAGE,
   type DurableRemoteContextEntry,
+  REMOTE_CONTEXT_SOURCE,
   RuntimeFeedbackInput,
   SessionCallbacks,
 } from '../core/agent-session';
@@ -41,7 +45,7 @@ import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import type { SubAgentInfo } from '../core/sub-agent-session';
-import { ChannelCallbacks, DeviceRpcTransport, TargetRoutes, ThinToolRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { ChannelCallbacks, DeviceRpcTransport, GroupRosterEntry, TargetRoutes, ThinToolRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
 import type { StreamRetryInfo } from '../providers/provider';
@@ -97,12 +101,22 @@ import {
   CatsCompanyCloudSessionRestorer,
   type CloudSessionRestoreResult,
 } from './cloud-session-restore';
+import { formatSpeakerLabel } from './speaker-label';
+import { mergeQueuedMessageContents } from './queued-message-merge';
+import {
+  buildServiceRunReceiptPrompt,
+  serviceRunReceiptRouter,
+  type ServiceRunReceipt,
+} from './service-run-receipts';
 import {
   SkillHubThinRpcError,
   SkillHubThinRpcHandler,
   SKILLHUB_THIN_RPC_TOOLS,
   SKILLHUB_WORKSPACE_PAGINATION_CAPABILITY,
 } from './skillhub-rpc';
+import { PUBLICATION_SOURCE_PROBE, publicationSourceProbeEnabled } from '../skillhub/publication-source';
+import { PUBLICATION_CAPTURE, publicationCaptureEnabled } from '../skillhub/publication-capture';
+import { PUBLICATION_UPLOAD, publicationUploadEnabled } from '../skillhub/publication-upload';
 
 interface PendingAttachment {
   fileName: string;
@@ -133,11 +147,13 @@ interface QueuedMessage {
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
+  /** 群成员名单；随队列入队，出队时注入每轮临时上下文。 */
+  roster?: CatsGroupRosterMember[];
   localFileGrants?: ScopedLocalFileGrant[];
   /** Device metadata for the interrupted-turn marker if this queued work is running at shutdown. */
   deviceContext?: InterruptedTurnDeviceContext;
   receivedAt: number;
-  source?: 'user' | 'subagent_feedback';
+  source?: 'user' | 'subagent_feedback' | 'service_run_receipt';
   runtimeFeedback?: RuntimeFeedbackInput[];
   nativeFeishuContext?: NativeFeishuContextHydration;
   clearGeneration?: number;
@@ -313,9 +329,13 @@ export const CATSCOMPANY_FULL_RUNTIME_DEVICE_CAPABILITIES = CATSCOMPANY_DESKTOP_
 export function capabilitiesForCatsCompanyRuntimeRole(
   runtimeRole: CatsCompanyRuntimeRole,
 ): DeviceGrantOperation[] {
-  return runtimeRole === 'desktop'
+  const capabilities = runtimeRole === 'desktop'
     ? [...CATSCOMPANY_DESKTOP_RUNTIME_DEVICE_CAPABILITIES]
     : [...CATSCOMPANY_SERVER_RUNTIME_DEVICE_CAPABILITIES];
+  if (publicationSourceProbeEnabled()) capabilities.push(PUBLICATION_SOURCE_PROBE);
+  if (publicationCaptureEnabled()) capabilities.push(PUBLICATION_CAPTURE);
+  if (publicationUploadEnabled()) capabilities.push(PUBLICATION_UPLOAD);
+  return capabilities;
 }
 
 function currentRuntimeOS(): 'windows' | 'macos' | 'linux' | 'unknown' {
@@ -349,15 +369,27 @@ function summarizeThinToolRpcArgs(args: any): string {
   }
 }
 
+/**
+ * 把服务端下发的群成员名单转成每轮临时上下文用的形状。
+ *
+ * 字段名不同（服务端 snake_case，本地 camelCase），所以需要转换——而且只在这里
+ * 转一次，不在每个使用点各转一遍。
+ */
+function toGroupRosterEntries(roster: CatsGroupRosterMember[] | undefined): GroupRosterEntry[] | undefined {
+  if (!Array.isArray(roster) || roster.length === 0) return undefined;
+  return roster.map(member => ({
+    uid: member.uid,
+    name: member.name,
+    isBot: member.is_bot,
+    muted: member.muted,
+  }));
+}
+
 function speakerNameFromMetadata(msg: Pick<ParsedCatsMessage, 'metadata' | 'senderId'>): string {
   const metadata = asRecord(msg.metadata);
   const identity = asRecord(metadata?.catsco_identity);
-  const actor = asRecord(identity?.actor);
-  return stringField(actor, 'display_name')
-    || stringField(actor, 'username')
-    || stringField(actor, 'user_id')
-    || msg.senderId
-    || 'User';
+  // 带上（人）/（bot）标记：判定判据要区分人在提问还是同伴在汇报，只靠名字分不出来。
+  return formatSpeakerLabel({ actor: identity?.actor, fallbackUid: msg.senderId });
 }
 
 function prefixCatsUserMessage(name: string, content: string | ContentBlock[]): string | ContentBlock[] {
@@ -491,7 +523,7 @@ export function createCatsCompanyRuntime(sessionTTL?: number): AdapterRuntimeBun
 }
 
 export function shouldActivateCatsCompanyMessage(
-  message: Pick<MessageContext, 'isGroup' | 'metadata' | 'mentions' | 'memberCount'>,
+  message: Pick<MessageContext, 'isGroup' | 'metadata' | 'mentions' | 'memberCount' | 'botCount' | 'activated'>,
   botUid: string | null | undefined,
 ): boolean {
   if (!message.isGroup) return true;
@@ -507,6 +539,26 @@ export function shouldActivateCatsCompanyMessage(
       || metadata.channel_native_group_triggered === 'true';
   }
 
+  // A room with fewer than two agents needs no coordination: every message is
+  // for the one agent that is there. botCount is the count that answers this;
+  // memberCount cannot, because one agent plus three people and two agents plus
+  // one person both have more than two members.
+  //
+  // botCount is only trusted from 1 upward. A count of 0 cannot be true for a
+  // message that was delivered to an agent, so it means the server did not
+  // compute it — and treating a bad value as "this is a single-agent room" would
+  // make the client answer every message in a busy room.
+  const botCount = message.botCount;
+  if (typeof botCount === 'number' && Number.isSafeInteger(botCount) && botCount >= 1) {
+    if (botCount === 1) return true;
+    // A multi-agent room is decided by the server, which holds the roster, the
+    // agent identities and the transcript. Read its verdict rather than
+    // re-deriving one here.
+    return message.activated === true;
+  }
+
+  // No usable botCount (older server, or a value that cannot be right): fall
+  // back to the behaviour this client has always had rather than guessing.
   const memberCount = message.memberCount;
   if (typeof memberCount === 'number'
     && Number.isSafeInteger(memberCount)
@@ -570,6 +622,8 @@ export class CatsCompanyBot {
   private resumedInterruptedTurns = new Set<string>();
   /** Covers message parsing, cloud restore, attachment download, commands, and the model turn. */
   private activeMessageHandlers = 0;
+  private activeSessionMessageHandlers = new Map<string, number>();
+  private sessionForkController?: CatsSessionForkController;
   /** Invalidates queued or in-flight pre-turn hydration after /clear. */
   private sessionClearGenerations = new Map<string, number>();
   /** Separately invalidates queued work on stop without clearing durable history. */
@@ -584,6 +638,10 @@ export class CatsCompanyBot {
   private botUid: string | null = null;
   private connectorReady = false;
   private shuttingDown = false;
+  // 同类连接错误的连续计数：业务层拒绝（如 409 Body 绑定冲突）会以固定节奏
+  // 长期重试，只保留首条与每 30 条抽样，避免云 worker 日志刷屏。
+  private repeatedConnectorError = '';
+  private repeatedConnectorErrorCount = 0;
   private runtime: AdapterRuntimeBundle;
   private runtimeProfile: AdapterRuntimeBundle['profile'];
   private localDeviceGrant?: ScopedLocalDeviceGrant;
@@ -640,6 +698,10 @@ export class CatsCompanyBot {
     // 已不可写。触发熔断并停止对应会话的循环工作，避免消息发不出去时
     // 仍持续空转（每轮全量推理、发送再被拒）。
     this.sender.onTopicSendBlocked = (topic, code) => this.handleTopicSendBlockedNotice(topic, code);
+    // 持久消息发送成功后记账，供回填去重认出「远端那条就是我发的」。挂在 send()
+    // 里而不是让调用方各自记得：文本走 reply、附件走 sendFile，两条路径都经过
+    // send()，漏掉附件同样会在回填时重复插入。
+    this.sender.onDurableMessageSent = (topic, seqs) => this.recordSentRemoteIdsForTopic(topic, seqs);
     this.localDeviceGrant = createCatsCoLocalDeviceGrant({
       bodyId: config.bodyId,
       installationId: config.installationId,
@@ -742,6 +804,8 @@ export class CatsCompanyBot {
     // 注册事件
     this.bot.on('ready', (info: { uid: string; name: string }) => {
       this.connectorReady = true;
+      this.repeatedConnectorError = '';
+      this.repeatedConnectorErrorCount = 0;
       this.botUid = String(info.uid || '').trim() || this.botUid;
       const botName = info.name.trim() || '(未设置)';
       this.runtimeProfile.displayName = botName;
@@ -768,7 +832,16 @@ export class CatsCompanyBot {
 
     this.bot.on('message', async (ctx: MessageContext) => {
       if (this.shuttingDown) return;
-      await this.onMessage(ctx);
+      await this.onMessage(ctx).catch((error: any) => {
+        Logger.warning(`[CatsCompany] Message processing failed: ${error?.message || error}`);
+      });
+    });
+
+    this.bot.on('session_fork', (control: CatsSessionForkControl) => {
+      if (this.shuttingDown) return;
+      void this.runTrackedConversationWork(() => this.getSessionForkController().handle(control)).catch((error: any) => {
+        Logger.warning(`[CatsCompany] Fork completion uncertain; retry the same request: ${error?.message || error}`);
+      });
     });
 
     this.bot.on('member_kicked', (payload: { topic?: string; userId?: string }) => {
@@ -795,8 +868,25 @@ export class CatsCompanyBot {
       await this.runTrackedConversationWork(() => this.handleThinToolRpcRequest(request));
     });
 
+    // 生命周期回执（平台 service_run_receipts）：长任务终态时唤醒原会话。
+    this.bot.on('service_run_receipt', (receipt: ServiceRunReceipt) => {
+      if (this.shuttingDown) return;
+      void this.runTrackedConversationWork(() => this.handleServiceRunReceipt(receipt)).catch((error: any) => {
+        Logger.warning(`[CatsCompany] 处理服务回执失败: ${error?.message || error}`);
+      });
+    });
+
     this.bot.on('error', (err: Error) => {
-      Logger.error(`CatsCo 连接错误: ${err.message}`);
+      const message = String(err?.message || '');
+      if (message && message === this.repeatedConnectorError) {
+        this.repeatedConnectorErrorCount += 1;
+        if (this.repeatedConnectorErrorCount % 30 !== 0) return;
+        Logger.error(`CatsCo 连接错误: ${message}（同类错误已连续 ${this.repeatedConnectorErrorCount} 次，日志已降频）`);
+        return;
+      }
+      this.repeatedConnectorError = message;
+      this.repeatedConnectorErrorCount = 1;
+      Logger.error(`CatsCo 连接错误: ${message}`);
     });
 
     this.bot.connect();
@@ -1024,8 +1114,15 @@ export class CatsCompanyBot {
         targetDeviceId,
         toolName,
         args,
+        grant,
         timeoutMs = DEVICE_RPC_DEFAULT_TTL_MS,
       }) => {
+        if (!grant?.grantId || grant.identityTrust !== 'server_canonical'
+          || grant.status !== 'active' || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= Date.now()
+          || grant.deviceId !== targetDeviceId || grant.ownerUserId !== targetOwnerUserId
+          || !grant.operations.includes(toolName === 'import_file' ? 'send_file' : toolName as DeviceGrantOperation)) {
+          return { ok: false, errorCode: 'PERMISSION_DENIED', message: '当前设备操作缺少有效会话授权，请重新发送请求获取授权。', retryable: false };
+        }
         if (!targetOwnerUserId || !targetDeviceId || !toolName) {
           return {
             ok: false,
@@ -1038,11 +1135,14 @@ export class CatsCompanyBot {
         Logger.info(`[CatsCompany][thin_tool_rpc] executeTool request: request=${requestID}, tool=${toolName}, targetOwner=${targetOwnerUserId}, targetDevice=${targetDeviceId}, args=${summarizeThinToolRpcArgs(args)}`);
         const response = await this.bot.sendThinToolRpcRequest({
           request_id: requestID,
+          grant_id: grant.grantId,
+          session_key: grant.sessionKey,
+          actor_user_id: grant.actorUserId,
           target_owner_user_id: targetOwnerUserId,
           target_device_id: targetDeviceId,
           tool_name: toolName,
           payload: { args },
-          expires_at: Date.now() + timeoutMs,
+          expires_at: Math.min(grant.expiresAt, Date.now() + timeoutMs),
         }, timeoutMs);
         Logger.info(`[CatsCompany][thin_tool_rpc] executeTool response: request=${requestID}, tool=${toolName}, hasError=${Boolean(response.error)}, hasResult=${Boolean(response.result)}`);
 
@@ -1068,6 +1168,12 @@ export class CatsCompanyBot {
     if (this.shuttingDown) return;
     const requestID = request.request_id;
     if (!requestID) return;
+    // Upload grants are private bearer material. Bypass generic telemetry,
+    // argument summarization and tool fallback even when this capability is off.
+    if (request.tool_name === PUBLICATION_UPLOAD) {
+      await this.handleSkillHubThinToolRpcRequest(request);
+      return;
+    }
     Logger.info(`[CatsCompany][thin_tool_rpc] target received request: request=${requestID}, tool=${request.tool_name || ''}, targetOwner=${request.target_owner_user_id || ''}, targetDevice=${request.target_device_id || ''}, device=${request.device_id || ''}`);
 
     // Telemetry（仅 grep）：按 request 关联 start → execute-end → result-sent，
@@ -1080,7 +1186,8 @@ export class CatsCompanyBot {
     });
     if (rpcTelemetry) Logger.info(rpcTelemetry.received());
 
-    if (this.skillHubThinRpc.supports(String(request.tool_name || ''))) {
+    if (request.tool_name === PUBLICATION_SOURCE_PROBE || request.tool_name === PUBLICATION_CAPTURE ||
+      this.skillHubThinRpc.supports(String(request.tool_name || ''))) {
       await this.handleSkillHubThinToolRpcRequest(request);
       return;
     }
@@ -1566,7 +1673,7 @@ export class CatsCompanyBot {
 
   private mapDeviceRpcToolErrorCode(code: unknown): ToolErrorCode {
     const text = String(code || '').toLowerCase();
-    if (text.includes('permission') || text.includes('forbidden') || text.includes('mismatch') || text.includes('unsupported')) {
+    if (text.includes('permission') || text.includes('forbidden') || text.includes('mismatch') || text.includes('unsupported') || text === 'device_authorization_required') {
       return 'PERMISSION_DENIED';
     }
     if (text.includes('timeout') || text.includes('expired')) {
@@ -1608,6 +1715,40 @@ export class CatsCompanyBot {
   }
 
   // ─── 构建 ChannelCallbacks ──────────────────────
+
+  /**
+   * 记下刚发出的消息 seq，供回填去重认领。
+   *
+   * 回填按 `source:id` 去重，而本机那条落盘时还没有 id（saveContext 在 reply
+   * 之前就执行完了）。发出后把 seq 记进运行态，下次回填就能认出「远端那条就是
+   * 我发的」，不必比对正文——正文会被拆段、剥前缀、被服务端改写。
+   *
+   * 只记群会话：回填只发生在群（`shouldHydrateCatsCompanyGroupContext`），p2p
+   * 没有这段历史，记了也永远不会被读到。
+   */
+  private recordSentRemoteIdsForTopic(topic: string, seqs: number[]): void {
+    if (!topic.startsWith('grp_') || seqs.length === 0) return;
+    const session = this.sessionManager.get(
+      buildCatsCoSessionKey('group', topic, String(this.botUid || this.bot?.uid || '')),
+    );
+    if (!session?.recordSentRemoteIds) {
+      // 记不上就是去重失效：远端副本下次会被重复插入。静默跳过与正常记账在
+      // 日志上必须能区分，否则线上出现重复时无从查起。
+      //
+      // 措辞刻意保持中性：会话有 60 分钟 TTL，而 lastActiveAt 只在几个离散点
+      // 刷新，跑得比 TTL 还长的回合会被回收——那属于已知的记账盲区，不是配置错误。
+      Logger.warning(
+        `[${topic}] 会话不在内存中（可能已过期回收），本次 ${seqs.length} 条 seq 未记账，回填可能重复`,
+      );
+      return;
+    }
+    try {
+      session.recordSentRemoteIds(REMOTE_CONTEXT_SOURCE, seqs);
+    } catch (err: any) {
+      // 记不上只会让回填多插一次自己的回复，不该影响发送本身。
+      Logger.warning(`记录已发送消息 seq 失败 (topic=${topic}): ${err?.message || err}`);
+    }
+  }
 
   /**
    * 为指定 topic 构建通道回调对象。
@@ -1785,7 +1926,44 @@ export class CatsCompanyBot {
   /**
    * 处理收到的消息
    */
+  private getSessionForkController(): CatsSessionForkController {
+    return this.sessionForkController ??= new CatsSessionForkController({
+      agentUid: () => this.botUid,
+      store: SessionStore.getInstance(),
+      getSession: route => this.sessionManager.get(route),
+      isIdle: key => !this.shuttingDown
+        && !(this.activeSessionMessageHandlers?.get(key) || 0)
+        && !this.sessionExecutionReservations?.has(key)
+        && !this.messageQueue?.get(key)?.length
+        && !this.pendingAttachments?.get(key)?.length
+        && !this.cloudSessionRestorePromises?.has(key)
+        && !this.subAgentCompletionBatches?.has(key)
+        && !this.activeConversationTasks?.has(key)
+        && !this.sessionManager.get(key)?.isBusy()
+        && !SubAgentManager.getInstance().hasActiveForParent(key),
+      complete: input => this.bot.completeSessionFork(input),
+    });
+  }
+
   private async onMessage(ctx: MessageContext): Promise<void> {
+    if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
+    const key = createCatsCoMessageEnvelope({ topic: ctx.topic, isGroup: ctx.isGroup,
+      senderId: ctx.senderId, seq: ctx.seq, text: ctx.text || '', metadata: ctx.metadata, botUid: this.botUid }).sessionKey;
+    const handlers = this.activeSessionMessageHandlers ??= new Map<string, number>();
+    handlers.set(key, (handlers.get(key) || 0) + 1);
+    try {
+      const barrier = this.sessionForkController?.waitForSession(key);
+      if (barrier) await barrier;
+      if (this.shuttingDown) return;
+      await this.onMessageInner(ctx);
+    } finally {
+      const remaining = (handlers.get(key) || 1) - 1;
+      if (remaining) handlers.set(key, remaining);
+      else handlers.delete(key);
+    }
+  }
+
+  private async onMessageInner(ctx: MessageContext): Promise<void> {
     if (this.isCancelMessage(ctx)) {
       this.handleCancelMessage(ctx);
       return;
@@ -1880,6 +2058,18 @@ export class CatsCompanyBot {
     const nativeFeishuTrigger = shouldHydrateCatsCompanyGroupContext(msg);
     const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
     let cloudRestoreResult: CloudSessionRestoreResult | undefined;
+    if (sessionRoute && isClearCommand(msg.text)) {
+      // Fence older work before the provenance lookup can yield to it.
+      this.bumpSessionClearGeneration(key);
+      this.cloudSessionRestoreAbortControllers?.get(key)?.abort();
+      this.cloudSessionRestorePromises.delete(key);
+      try {
+        await this.assertForkLocalContextAvailable(sessionRoute);
+      } catch (error: any) {
+        Logger.warning(`[${key}] Missing fork context; clear refused: ${error?.message || error}`);
+        return;
+      }
+    }
     if (sessionRoute && !isClearCommand(msg.text)) {
       cloudRestoreResult = await this.ensureCloudSessionRestored(msg, sessionRoute);
       if (entryClearGeneration !== this.getSessionClearGeneration(key)
@@ -1907,7 +2097,7 @@ export class CatsCompanyBot {
       if (isClear) {
         this.pendingAttachments.delete(key);
         this.messageQueue.delete(key);
-        this.bumpSessionClearGeneration(key);
+        if (!sessionRoute) this.bumpSessionClearGeneration(key);
         const completionBatch = this.subAgentCompletionBatches.get(key);
         if (completionBatch?.timer) clearTimeout(completionBatch.timer);
         this.subAgentCompletionBatches.delete(key);
@@ -2056,6 +2246,7 @@ export class CatsCompanyBot {
         deviceGrants: msg.deviceGrants,
         deviceSelection: msg.deviceSelection,
         targetRoutes: msg.targetRoutes,
+        roster: msg.roster,
         localFileGrants,
         deviceContext: sanitizeDeviceContext(msg.metadata, msg.executionScope),
         receivedAt: Date.now(),
@@ -2114,6 +2305,7 @@ export class CatsCompanyBot {
           deviceGrants: msg.deviceGrants,
           deviceSelection: msg.deviceSelection,
           targetRoutes: msg.targetRoutes,
+          groupRoster: toGroupRosterEntries(msg.roster),
           deviceRpc: this.buildDeviceRpcTransport(),
           thinToolRpc: this.maybeBuildThinToolRpcTransport(),
           localFileGrants,
@@ -2287,7 +2479,7 @@ export class CatsCompanyBot {
     session: { isBusy?: () => boolean },
   ): boolean {
     const reservations = this.sessionExecutionReservations ??= new Set<string>();
-    if (reservations.has(sessionKey) || session.isBusy?.()) return false;
+    if (this.sessionForkController?.isLocked(sessionKey) || reservations.has(sessionKey) || session.isBusy?.()) return false;
     reservations.add(sessionKey);
     return true;
   }
@@ -2471,8 +2663,17 @@ export class CatsCompanyBot {
 
   private async resumeOneInterruptedTurn(candidate: InterruptedTurnCandidate): Promise<void> {
     const { sessionKey, topic } = candidate;
-    // Register before anything can throw so this session cannot be resumed
-    // twice in one process.
+    if (this.shuttingDown || !this.connectorReady) return;
+    const clearGeneration = this.getSessionClearGeneration(sessionKey);
+    const stopGeneration = this.getSessionStopGeneration(sessionKey);
+    await this.assertForkLocalContextAvailable({ sessionKey, topicId: topic }, true);
+    if (this.shuttingDown || !this.connectorReady
+      || clearGeneration !== this.getSessionClearGeneration(sessionKey)
+      || stopGeneration !== this.getSessionStopGeneration(sessionKey)
+      || this.activeConversationTasks.has(sessionKey)
+      || this.activeSessionMessageHandlers?.get(sessionKey)
+      || this.sessionForkController?.isLocked(sessionKey)) return;
+    // Register only after preflight; rejected missing-context checks must not consume a resume.
     this.resumedInterruptedTurns.add(sessionKey);
 
     // Claim the session before spending anything. Doing this after the notice
@@ -2518,7 +2719,7 @@ export class CatsCompanyBot {
       // suppresses replies built for sub-agent observations and would swallow the
       // answer the user is still waiting for.
       await this.runTrackedConversationWork(() =>
-        this.runInterruptedTurnResume(sessionKey, topic, notice, candidate.deviceContext));
+        this.runInterruptedTurnResume(sessionKey, topic, notice, candidate.deviceContext, clearGeneration, stopGeneration));
     } finally {
       // Release before draining, matching every other session work path.
       this.releaseSessionExecution(sessionKey);
@@ -2566,7 +2767,7 @@ export class CatsCompanyBot {
     const metadata: Record<string, unknown> = {};
     if (deviceContext?.catscoIdentity) metadata.catsco_identity = deviceContext.catscoIdentity;
     if (deviceContext?.xiaobaRuntime) metadata.xiaoba_runtime = deviceContext.xiaobaRuntime;
-    const targetRoutes = extractCatsCoRuntimeContext(metadata);
+    const targetRoutes = extractCatsCoRuntimeContext(metadata, executionScope);
     const deviceGrants = extractCatsCoDeviceGrants(metadata, executionScope);
     const deviceSelection = extractCatsCoDeviceSelection(metadata, executionScope);
     if (targetRoutes?.routes?.length) {
@@ -2585,7 +2786,14 @@ export class CatsCompanyBot {
     topic: string,
     notice: string,
     deviceContext?: InterruptedTurnDeviceContext,
+    clearGeneration = this.getSessionClearGeneration(sessionKey),
+    stopGeneration = this.getSessionStopGeneration(sessionKey),
   ): Promise<void> {
+    await this.assertForkLocalContextAvailable({ sessionKey, topicId: topic }, true);
+    if (this.shuttingDown || !this.connectorReady
+      || clearGeneration !== this.getSessionClearGeneration(sessionKey)
+      || stopGeneration !== this.getSessionStopGeneration(sessionKey)
+      || this.sessionForkController?.isLocked(sessionKey)) return;
     // The session was claimed by resumeOneInterruptedTurn() before any
     // user-visible side effect; this only runs the turn.
     const session = this.sessionManager.getOrCreate(sessionKey);
@@ -2741,6 +2949,20 @@ export class CatsCompanyBot {
     return next;
   }
 
+  private async assertForkLocalContextAvailable(
+    sessionRoute: { sessionKey: string; topicId: string }, requireDurable = false,
+  ): Promise<void> {
+    const store = SessionStore.getInstance();
+    if (store.getForkIdentity(sessionRoute.sessionKey)) {
+      store.readContextForFork(sessionRoute.sessionKey);
+      return;
+    }
+    if (store.hasSession(sessionRoute.sessionKey)
+      || (!requireDurable && this.sessionManager.get(sessionRoute.sessionKey))) return;
+    const status = await this.bot.getSessionFork(sessionRoute.topicId);
+    if (status) throw new Error(`session_fork_local_context_missing:${status.state}`);
+  }
+
   private async ensureCloudSessionRestored(
     msg: ParsedCatsMessage,
     sessionRoute: ReturnType<typeof createCatsCoSessionRoute>,
@@ -2779,7 +3001,13 @@ export class CatsCompanyBot {
 
     const abortController = new AbortController();
     (this.cloudSessionRestoreAbortControllers ??= new Map()).set(key, abortController);
-    const restore = this.restoreCloudSessionWithStatus(msg, sessionRoute, abortController.signal)
+    const restore = this.assertForkLocalContextAvailable(sessionRoute)
+      .then(() => {
+        abortController.signal.throwIfAborted();
+        return this.restoreCloudSessionWithStatus(msg, sessionRoute, abortController.signal);
+      })
+      .catch((error): CloudSessionRestoreResult => ({ status: 'failed', restoredMessages: 0,
+        fetchedMessages: 0, compressed: false, error }))
       .finally(() => {
         if (this.cloudSessionRestorePromises.get(key) === restore) {
           this.cloudSessionRestorePromises.delete(key);
@@ -2909,7 +3137,7 @@ export class CatsCompanyBot {
       botUid: this.botUid,
     });
     const executionScope = createExecutionScope(envelope);
-    const targetRoutes = extractCatsCoRuntimeContext(ctx.metadata);
+    const targetRoutes = extractCatsCoRuntimeContext(ctx.metadata, executionScope);
     if (targetRoutes?.routes?.length) {
       Logger.info(`[CatsCompany][xiaoba_runtime] parsed target routes: topic=${ctx.topic}, sender=${ctx.senderId}, routes=${targetRoutes.routes.map(route => `${route.userName || route.userId || '?'}:${route.ownerUserId}/${route.deviceId}/${route.os}`).join(', ')}`);
     } else {
@@ -2927,6 +3155,9 @@ export class CatsCompanyBot {
       text: messageText,
       mentions: ctx.mentions,
       memberCount: ctx.memberCount,
+      botCount: ctx.botCount,
+      roster: ctx.roster,
+      activated: ctx.activated,
       rawContent: ctx.content,
       metadata: ctx.metadata,
       envelope,
@@ -2958,6 +3189,8 @@ export class CatsCompanyBot {
     clearGeneration = this.getSessionClearGeneration(sessionKey),
     stopGeneration = this.getSessionStopGeneration(sessionKey),
   ): Promise<void> {
+    const barrier = this.sessionForkController?.waitForSession(sessionKey);
+    if (barrier) await barrier;
     await this.runTrackedConversationWork(() =>
       this.handleSubAgentFeedbackInner(sessionKey, topic, senderId, text, executionScope, clearGeneration, stopGeneration));
   }
@@ -3083,8 +3316,7 @@ export class CatsCompanyBot {
     attempts = 0,
     clearGeneration = this.getSessionClearGeneration(sessionKey),
     stopGeneration = this.getSessionStopGeneration(sessionKey),
-  ): void {
-    const queue = this.messageQueue.get(sessionKey) ?? [];
+  ): void {    const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
       userMessage: text,
       topic,
@@ -3100,6 +3332,56 @@ export class CatsCompanyBot {
       clearGeneration,
       stopGeneration,
       attempts,
+    });
+    this.messageQueue.set(sessionKey, queue);
+  }
+
+  /**
+   * 处理平台服务 run 回执（设计 §19）：命中登记项 → 把结果作为一轮上下文唤醒原会话。
+   * 幂等由路由保证（receipt_id 24h 去重 + run 只消费一次）；未登记/重复回执直接忽略。
+   */
+  private async handleServiceRunReceipt(receipt: ServiceRunReceipt): Promise<void> {
+    const consumed = serviceRunReceiptRouter.consume(receipt);
+    if (!consumed) {
+      Logger.info(`[CatsCompany] 忽略服务回执（未登记或重复投递）: run=${receipt?.run_id || '-'}`);
+      return;
+    }
+    const sessionKey = consumed.run.conversationSessionKey;
+    const topic = consumed.run.conversationTopic || '';
+    const senderId = consumed.run.actorUserId;
+    if (!sessionKey || !senderId || !topic) {
+      Logger.warning(
+        `[CatsCompany] 服务回执缺少会话/发送者，无法唤醒: run=${consumed.run.runId} ` +
+        `session=${sessionKey || '-'} sender=${senderId || '-'}`,
+      );
+      return;
+    }
+    const text = buildServiceRunReceiptPrompt(consumed);
+    Logger.info(
+      `[CatsCompany] 服务回执唤醒会话: run=${consumed.run.runId} status=${receipt.status || '-'} ` +
+      `tool=${consumed.run.toolName || '-'}`,
+    );
+    this.enqueueServiceRunReceiptTurn(sessionKey, topic, senderId, text);
+    await this.drainMessageQueue(sessionKey);
+  }
+
+  private enqueueServiceRunReceiptTurn(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    text: string,
+  ): void {
+    const queue = this.messageQueue.get(sessionKey) ?? [];
+    queue.push({
+      userMessage: text,
+      topic,
+      senderId,
+      seq: 0,
+      executionScope: createExecutionScope(createCatsCoMessageEnvelope({ topic, senderId, text })),
+      receivedAt: Date.now(),
+      source: 'service_run_receipt',
+      clearGeneration: this.getSessionClearGeneration(sessionKey),
+      stopGeneration: this.getSessionStopGeneration(sessionKey),
     });
     this.messageQueue.set(sessionKey, queue);
   }
@@ -3869,6 +4151,7 @@ export class CatsCompanyBot {
             deviceGrants: msg.deviceGrants,
             deviceSelection: msg.deviceSelection,
             targetRoutes: msg.targetRoutes,
+            groupRoster: toGroupRosterEntries(msg.roster),
             deviceRpc: this.buildDeviceRpcTransport(),
             thinToolRpc: this.maybeBuildThinToolRpcTransport(),
             runtimeFeedback: msg.runtimeFeedback,
@@ -4066,37 +4349,7 @@ export class CatsCompanyBot {
   }
 
   private mergeQueuedMessages(messages: QueuedMessage[]): string | ContentBlock[] {
-    if (messages.length === 1) {
-      return messages[0].userMessage;
-    }
-
-    const header = [
-      `用户在你处理上一轮时又补充了 ${messages.length} 条消息。`,
-      '请把这些补充消息作为当前最新需求一起处理；如果前后要求冲突，以最后一条为准。',
-    ].join('\n');
-
-    const hasRichContent = messages.some(item => Array.isArray(item.userMessage));
-    if (!hasRichContent) {
-      const body = messages
-        .map((item, index) => `${index + 1}. ${item.senderId}: ${item.userMessage as string}`)
-        .join('\n');
-      return `${header}\n\n${body}`;
-    }
-
-    const blocks: ContentBlock[] = [{ type: 'text', text: `${header}\n` }];
-    for (const [index, item] of messages.entries()) {
-      blocks.push({
-        type: 'text',
-        text: `\n[补充消息 ${index + 1} / ${messages.length}，来自 ${item.senderId}]\n`,
-      });
-      if (Array.isArray(item.userMessage)) {
-        blocks.push(...item.userMessage);
-      } else {
-        blocks.push({ type: 'text', text: item.userMessage });
-      }
-    }
-
-    return blocks;
+    return mergeQueuedMessageContents(messages);
   }
 
   /**

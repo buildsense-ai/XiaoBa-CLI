@@ -94,6 +94,7 @@ function createRemoteMediaContext(fileName: string): {
     importedPath,
     rpcCalls,
     context: {
+      ...scopedDeviceContext('usr-alice', 'alice-device', ['read_file', 'send_file']),
       workingDirectory: root,
       workspaceRoot: root,
       conversationHistory: [],
@@ -137,3 +138,4 @@ function createRemoteMediaContext(fileName: string): {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+import { scopedDeviceContext } from './helpers/scoped-device-context';

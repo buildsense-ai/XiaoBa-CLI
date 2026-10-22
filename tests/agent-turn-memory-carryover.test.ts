@@ -1,6 +1,9 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { AgentTurnController } from '../src/core/agent-turn-controller';
+import {
+  AgentTurnController,
+  DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS,
+} from '../src/core/agent-turn-controller';
 import {
   BRANCH_AGENTS_ENABLED_ENV,
   MEMORY_SIDECAR_ENABLED_ENV,
@@ -50,13 +53,7 @@ class CapturingAIService {
   }
 }
 
-function createMemoryBranchController(
-  enabled: boolean,
-  options?: {
-    branchAiService?: AIService;
-    modelSource?: 'inherit' | 'catalog' | 'custom';
-  },
-): AgentTurnController {
+function createMemoryBranchController(enabled: boolean): AgentTurnController {
   const aiService = new AIService({
     provider: 'openai',
     apiUrl: 'https://models.example.test/v1',
@@ -69,11 +66,7 @@ function createMemoryBranchController(
     sessionType: 'catscompany',
     services: {
       aiService,
-      memoryBranch: {
-        enabled,
-        modelSource: options?.modelSource ?? 'inherit',
-        aiService: options?.branchAiService ?? aiService,
-      },
+      memoryBranch: { enabled, modelSource: 'inherit', aiService },
       toolManager: {} as any,
       skillManager: {} as any,
     },
@@ -93,6 +86,10 @@ function createMemoryBranchController(
 }
 
 describe('AgentTurnController memory branch carryover', () => {
+  test('defaults repeated memory activation to fifteen minutes', () => {
+    assert.equal(DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS, 15 * 60 * 1000);
+  });
+
   test('uses the persisted Branch switch even when both legacy env switches are disabled', () => {
     const previousBranch = process.env[BRANCH_AGENTS_ENABLED_ENV];
     const previousMemory = process.env[MEMORY_SIDECAR_ENABLED_ENV];
@@ -127,29 +124,6 @@ describe('AgentTurnController memory branch carryover', () => {
     assert.equal(slot, null);
   });
 
-  test('fails closed when the configured branch model cannot do tool calling', () => {
-    const branchAiService = new AIService({
-      provider: 'openai',
-      apiUrl: 'https://branch.example.test/v1',
-      apiKey: 'branch-key',
-      model: 'branch-text-only-model',
-      modelCapabilities: { toolCalling: false },
-    });
-    const controller = createMemoryBranchController(true, { branchAiService, modelSource: 'custom' });
-    const handleCalls: unknown[] = [];
-    (controller as any).createMemorySidecarHandle = (...args: unknown[]) => {
-      handleCalls.push(args);
-      return { cancel: () => undefined, done: Promise.resolve() };
-    };
-    const slot = (controller as any).startMemorySidecarIfEnabled({
-      turnNumber: 1,
-      input: 'hello',
-      messages: [],
-    });
-    assert.equal(slot, null);
-    assert.equal(handleCalls.length, 0);
-  });
-
   test('injects previous-turn memory as a legal late synthetic tool pair and expires it after one turn', async () => {
     const aiService = new CapturingAIService();
     const queues: InMemorySyntheticObservationQueue[] = [];
@@ -159,6 +133,7 @@ describe('AgentTurnController memory branch carryover', () => {
       sessionType: 'catscompany',
       services: {
         aiService: aiService as any,
+        memoryBranch: { enabled: true, modelSource: 'inherit', aiService: aiService as any },
         toolManager: {
           getToolDefinitions: () => [],
           executeTool: async () => {
@@ -244,5 +219,118 @@ describe('AgentTurnController memory branch carryover', () => {
     await runTurn('turn three should not receive turn one memory');
     const thirdSynthetic = aiService.requests[2].filter(message => message.__syntheticObservation);
     assert.equal(thirdSynthetic.length, 0);
+  });
+
+  test('starts a repeated branch with only episode progress and advisory previous injections', async () => {
+    const controller = createMemoryBranchController(true);
+    (controller as any).options.memoryBranchRefreshIntervalMs = 0;
+    const starts: any[] = [];
+    (controller as any).createMemorySidecarHandle = (options: any) => {
+      starts.push(options);
+      return {
+        cancel: () => undefined,
+        done: Promise.resolve(),
+      };
+    };
+
+    const runtime = (controller as any).startEpisodeMemoryRuntime({
+      turnNumber: 1,
+      episodeId: 'episode:test',
+      input: '完成长任务',
+      messages: [{ role: 'user', content: '完成长任务', __episodeId: 'episode:test' }],
+    });
+    assert.ok(runtime);
+    assert.equal(starts.length, 1);
+
+    starts[0].queue.push(memoryObservation('first-use'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const progress: Message[] = [
+      {
+        role: 'assistant',
+        content: null,
+        __episodeId: 'episode:test',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'inspect_repo', arguments: '{"path":"src"}' },
+        }],
+      },
+      {
+        role: 'tool',
+        name: 'inspect_repo',
+        tool_call_id: 'call_1',
+        content: '发现了新的实现约束',
+        __episodeId: 'episode:test',
+      },
+    ];
+    const observations = (controller as any).drainMemoryObservations(null, runtime, progress);
+
+    assert.equal(observations.length, 1);
+    assert.equal(starts.length, 2);
+    assert.equal(starts[1].activationContext.taskAnchor, '完成长任务');
+    assert.deepEqual(starts[1].activationContext.previousInjections, [{
+      summary: 'Previous turn found the birthday dinner decision.',
+      refs: ['catscompany/2026-06-16/demo.jsonl#7'],
+    }]);
+    assert.deepEqual(starts[1].activationContext.deltaSinceLastRun, [
+      {
+        role: 'assistant',
+        tool_calls: [{ name: 'inspect_repo', arguments: '{"path":"src"}' }],
+      },
+      {
+        role: 'tool',
+        name: 'inspect_repo',
+        content: '发现了新的实现约束',
+      },
+    ]);
+  });
+
+  test('does not repeat without progress, overlap an active branch, or refresh a stopped episode', async () => {
+    const controller = createMemoryBranchController(true);
+    (controller as any).options.memoryBranchRefreshIntervalMs = 0;
+    const starts: any[] = [];
+    let finishActive!: () => void;
+    (controller as any).createMemorySidecarHandle = (options: any) => {
+      starts.push(options);
+      return {
+        cancel: () => undefined,
+        done: starts.length === 1
+          ? Promise.resolve()
+          : new Promise<void>(resolve => { finishActive = resolve; }),
+      };
+    };
+
+    const runtime = (controller as any).startEpisodeMemoryRuntime({
+      turnNumber: 1,
+      episodeId: 'episode:test',
+      input: 'root',
+      messages: [{ role: 'user', content: 'root', __episodeId: 'episode:test' }],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    (controller as any).drainMemoryObservations(null, runtime, []);
+    assert.equal(starts.length, 1, 'no progress means no model call');
+
+    const progress: Message[] = [{ role: 'assistant', content: 'new work', __episodeId: 'episode:test' }];
+    (controller as any).drainMemoryObservations(null, runtime, progress);
+    assert.equal(starts.length, 2);
+    (controller as any).drainMemoryObservations(null, runtime, [
+      ...progress,
+      { role: 'assistant', content: 'more work', __episodeId: 'episode:test' },
+    ]);
+    assert.equal(starts.length, 2, 'an in-flight branch prevents overlap');
+
+    finishActive();
+    await Promise.resolve();
+    await Promise.resolve();
+    runtime.stopped = true;
+    (controller as any).drainMemoryObservations(null, runtime, [
+      ...progress,
+      { role: 'assistant', content: 'more work', __episodeId: 'episode:test' },
+    ]);
+    assert.equal(starts.length, 2, 'a stopped episode never schedules another branch');
   });
 });

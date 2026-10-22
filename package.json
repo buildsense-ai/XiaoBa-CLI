@@ -1,6 +1,6 @@
 {
   "name": "xiaoba-cli",
-  "version": "1.6.1",
+  "version": "1.6.3",
   "description": "CatsCo - local agent runtime and dashboard",
   "main": "electron/main.js",
   "bin": {
@@ -22,7 +22,12 @@
     "test:runtime": "node scripts/run-tests.mjs runtime",
     "test:skillhub-phase1": "node scripts/run-tests.mjs skillhub-phase1",
     "test:cross-repo:catsco-skills": "node scripts/cross-repo-catsco-skills-smoke.mjs",
+    "test:cross-repo:publication-probe": "node scripts/cross-repo-publication-probe.mjs",
+    "test:cross-repo:publication-capture": "node scripts/cross-repo-publication-capture.mjs",
+    "test:cross-repo:publication-capture-rpc": "node scripts/cross-repo-publication-capture-rpc.mjs",
+    "test:cross-repo:publication-upload-rpc": "node scripts/cross-repo-publication-upload-rpc.mjs",
     "test:cross-repo:catslog-memory": "node scripts/catslog-agent-memory-smoke.mjs",
+    "test:cross-repo:multi-device": "node scripts/cross-repo-multi-device.mjs",
     "test:legacy": "node scripts/run-tests.mjs legacy",
     "test:all": "node scripts/run-tests.mjs all",
     "test:list": "node scripts/run-tests.mjs runtime --list",
@@ -36,6 +41,7 @@
     "electron:build:mac:arm64": "npm run build && node scripts/prepare-runtime.mjs darwin arm64 && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --mac --arm64 --publish never",
     "release:check": "node scripts/check-release-branding.mjs",
     "release:verify-version": "node scripts/verify-release-version.js",
+    "test:release-compatibility": "node --test scripts/verify-catscompany-compatibility.test.mjs",
     "worker:artifact": "node scripts/build-linux-worker-artifact.mjs",
     "skillhub:trust-root": "node scripts/update-skillhub-root-key.mjs",
     "version:sync": "node scripts/inject-version.js"
@@ -63,6 +69,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
     "@larksuiteoapi/node-sdk": "^1.58.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@napi-rs/canvas": "^1.0.2",
     "axios": "^1.18.1",
     "chalk": "^4.1.2",
@@ -89,7 +96,7 @@
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
     "electron": "^33.4.11",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "^26.17.0",
     "electron-packager": "^17.1.2",
     "js-yaml": "^4.1.0",
     "playwright": "^1.58.2",

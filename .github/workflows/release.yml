@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: read
+
 concurrency:
   group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
@@ -20,10 +23,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Checkout CatsCompany compatibility manifest
+        uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          ref: main
+          path: cats-company
+          persist-credentials: false
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify paired CatsCompany protocol compatibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-catscompany-compatibility.mjs
+
+      - name: Test paired protocol compatibility checker
+        run: npm run test:release-compatibility
 
       - name: Verify source version matches stable tag
         run: npm run release:verify-version
@@ -443,19 +462,36 @@ jobs:
           name: worker-release
           path: release-worker
 
-      - name: Verify collected macOS release artifacts
+      - name: Verify collected release artifacts
         shell: bash
         run: |
           set -euo pipefail
 
+          require_single_artifact() {
+            local directory="$1"
+            local pattern="$2"
+            local label="$3"
+            local found
+
+            mapfile -t found < <(find "$directory" -maxdepth 1 -type f -name "$pattern")
+            if [ "${#found[@]}" -ne 1 ]; then
+              echo "Expected exactly one $label artifact ($directory/$pattern), found ${#found[@]}"
+              exit 1
+            fi
+          }
+
+          test -f release-win/latest.yml
+          test -f release-linux/latest-linux.yml
+
+          require_single_artifact release-win '*-win.exe' 'Windows installer'
+          require_single_artifact release-win '*-win.exe.blockmap' 'Windows blockmap'
+          require_single_artifact release-linux '*-linux.AppImage' 'Linux AppImage'
+          require_single_artifact release-linux '*-linux.deb' 'Linux deb'
+
           for arch in x64 arm64; do
             test -f "release-mac/$arch/latest-mac.yml"
-            for extension in dmg zip; do
-              mapfile -t artifacts < <(find "release-mac/$arch" -maxdepth 1 -type f -name "*-$arch.$extension")
-              if [ "${#artifacts[@]}" -ne 1 ]; then
-                echo "Expected exactly one macOS $arch .$extension artifact, found ${#artifacts[@]}"
-                exit 1
-              fi
+            for extension in dmg dmg.blockmap zip zip.blockmap; do
+              require_single_artifact "release-mac/$arch" "*-$arch.$extension" "macOS $arch .$extension"
             done
           done
 
@@ -475,6 +511,7 @@ jobs:
           SOURCE_ENDPOINT_URL="https://tos-s3-${TOS_SOURCE_REGION}.volces.com"
           IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"
           replicated_keys=()
+          replicated_sizes=()
 
           upload_source_file() {
             local source_file="$1"
@@ -515,9 +552,11 @@ jobs:
             target_key="$(target_key_for_file "$file")"
             upload_source_file "$file" "$target_key"
             replicated_keys+=("$target_key")
+            replicated_sizes+=("${target_key}"$'\t'"$(stat --format='%s' "$file")")
           done < <(find release-mac release-win release-linux -type f -print0)
 
           printf '%s\n' "${replicated_keys[@]}" > replicated-keys.txt
+          printf '%s\n' "${replicated_sizes[@]}" > replicated-sizes.tsv
 
       - name: Wait for Guangzhou bucket replication
         run: |
@@ -529,19 +568,24 @@ jobs:
 
           wait_for_target_object() {
             local key="$1"
+            local expected_size="$2"
             local attempt=1
+            local remote_size
 
             while [ "$attempt" -le "$ATTEMPTS" ]; do
-              if aws s3api head-object \
+              remote_size="$(aws s3api head-object \
                 --bucket "$TOS_TARGET_BUCKET" \
                 --key "$key" \
                 --endpoint-url "$TARGET_ENDPOINT_URL" \
-                >/dev/null 2>&1; then
-                echo "Replicated: $key"
+                --query 'ContentLength' \
+                --output text 2>/dev/null || true)"
+
+              if [ "$remote_size" = "$expected_size" ]; then
+                echo "Replicated: $key ($remote_size bytes)"
                 return 0
               fi
 
-              echo "Waiting for replicated object $key ($attempt/$ATTEMPTS)..."
+              echo "Waiting for replicated object $key ($attempt/$ATTEMPTS; size ${remote_size:-missing}/$expected_size)..."
               sleep "$DELAY_SECONDS"
               attempt=$((attempt + 1))
             done
@@ -550,10 +594,10 @@ jobs:
             return 1
           }
 
-          while IFS= read -r key; do
+          while IFS=$'\t' read -r key expected_size; do
             [ -n "$key" ] || continue
-            wait_for_target_object "$key"
-          done < replicated-keys.txt
+            wait_for_target_object "$key" "$expected_size"
+          done < replicated-sizes.tsv
 
       - name: Publish private worker artifacts to Guangzhou bucket
         shell: bash
@@ -678,6 +722,83 @@ jobs:
               >/dev/null
           done < replicated-keys.txt
 
+      - name: Verify published release payloads
+        run: |
+          set -euo pipefail
+
+          ATTEMPTS=12
+          DELAY_SECONDS=5
+
+          verify_remote_artifact() {
+            local local_file="$1"
+            local remote_url="$2"
+            local expected_size
+            local expected_sha512
+            local headers
+            local remote_size
+            local remote_sha512
+            local attempt=1
+            expected_size="$(stat --format='%s' "$local_file")"
+            expected_sha512="$(openssl dgst -sha512 -binary "$local_file" | base64 --wrap=0)"
+
+            while [ "$attempt" -le "$ATTEMPTS" ]; do
+              if headers="$(curl --fail --silent --show-error --head --location \
+                --connect-timeout 15 --max-time 60 \
+                --header 'Cache-Control: no-cache' "$remote_url")"; then
+                remote_size="$(printf '%s\n' "$headers" \
+                  | tr -d '\r' \
+                  | awk 'tolower($1) == "content-length:" { value=$2 } END { print value }')"
+                if [ "$remote_size" = "$expected_size" ]; then
+                  if remote_sha512="$(curl --fail --silent --show-error --location \
+                    --connect-timeout 15 --max-time 900 \
+                    --header 'Cache-Control: no-cache' "$remote_url" \
+                    | openssl dgst -sha512 -binary \
+                    | base64 --wrap=0)" \
+                    && [ "$remote_sha512" = "$expected_sha512" ]; then
+                    echo "Published artifact hash matches: $remote_url ($expected_size bytes)"
+                    return 0
+                  fi
+                fi
+              fi
+
+              echo "Waiting for exact artifact at $remote_url ($attempt/$ATTEMPTS; size ${remote_size:-missing}/$expected_size)..."
+              sleep "$DELAY_SECONDS"
+              attempt=$((attempt + 1))
+            done
+
+            echo "Published artifact size or SHA-512 mismatch: $remote_url"
+            return 1
+          }
+
+          verify_published_artifact() {
+            local directory="$1"
+            local pattern="$2"
+            local label="$3"
+            local url_prefix="$4"
+            local found
+            local name
+
+            mapfile -t found < <(find "$directory" -maxdepth 1 -type f -name "$pattern")
+            if [ "${#found[@]}" -ne 1 ]; then
+              echo "Expected exactly one $label artifact ($directory/$pattern), found ${#found[@]}"
+              exit 1
+            fi
+
+            name="$(basename "${found[0]}")"
+            verify_remote_artifact "${found[0]}" "${url_prefix}/${name}"
+          }
+
+          verify_published_artifact release-win '*-win.exe' 'Windows installer' "${XIAOBA_UPDATE_BASE_URL}"
+          verify_published_artifact release-win '*-win.exe.blockmap' 'Windows blockmap' "${XIAOBA_UPDATE_BASE_URL}"
+          verify_published_artifact release-linux '*-linux.AppImage' 'Linux AppImage' "${XIAOBA_UPDATE_BASE_URL}"
+          verify_published_artifact release-linux '*-linux.deb' 'Linux deb' "${XIAOBA_UPDATE_BASE_URL}"
+
+          for arch in x64 arm64; do
+            for extension in dmg dmg.blockmap zip zip.blockmap; do
+              verify_published_artifact "release-mac/$arch" "*-$arch.$extension" "macOS $arch .$extension" "${XIAOBA_UPDATE_BASE_URL}/macos-$arch"
+            done
+          done
+
       - name: Create draft GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -766,65 +887,10 @@ jobs:
             return 1
           }
 
-          verify_remote_artifact() {
-            local local_file="$1"
-            local remote_url="$2"
-            local expected_size
-            local expected_sha512
-            local headers
-            local remote_size
-            local remote_sha512
-            local attempt=1
-            expected_size="$(stat --format='%s' "$local_file")"
-            expected_sha512="$(openssl dgst -sha512 -binary "$local_file" | base64 --wrap=0)"
-
-            while [ "$attempt" -le "$ATTEMPTS" ]; do
-              if headers="$(curl --fail --silent --show-error --head --location \
-                --connect-timeout 15 --max-time 60 \
-                --header 'Cache-Control: no-cache' "$remote_url")"; then
-                remote_size="$(printf '%s\n' "$headers" \
-                  | tr -d '\r' \
-                  | awk 'tolower($1) == "content-length:" { value=$2 } END { print value }')"
-                if [ "$remote_size" = "$expected_size" ]; then
-                  if remote_sha512="$(curl --fail --silent --show-error --location \
-                    --connect-timeout 15 --max-time 900 \
-                    --header 'Cache-Control: no-cache' "$remote_url" \
-                    | openssl dgst -sha512 -binary \
-                    | base64 --wrap=0)" \
-                    && [ "$remote_sha512" = "$expected_sha512" ]; then
-                    echo "Published artifact hash matches: $remote_url ($expected_size bytes)"
-                    return 0
-                  fi
-                fi
-              fi
-
-              echo "Waiting for exact artifact at $remote_url ($attempt/$ATTEMPTS; size ${remote_size:-missing}/$expected_size)..."
-              sleep "$DELAY_SECONDS"
-              attempt=$((attempt + 1))
-            done
-
-            echo "Published artifact size or SHA-512 mismatch: $remote_url"
-            return 1
-          }
-
           verify_metadata release-win/latest.yml "${XIAOBA_UPDATE_BASE_URL}/latest.yml"
           verify_metadata release-linux/latest-linux.yml "${XIAOBA_UPDATE_BASE_URL}/latest-linux.yml"
           verify_metadata release-mac/x64/latest-mac.yml "${XIAOBA_UPDATE_BASE_URL}/macos-x64/latest-mac.yml"
           verify_metadata release-mac/arm64/latest-mac.yml "${XIAOBA_UPDATE_BASE_URL}/macos-arm64/latest-mac.yml"
-
-          for arch in x64 arm64; do
-            for extension in dmg zip; do
-              mapfile -t artifacts < <(find "release-mac/$arch" -maxdepth 1 -type f -name "*.$extension")
-              if [ "${#artifacts[@]}" -ne 1 ]; then
-                echo "Expected exactly one macOS $arch .$extension artifact, found ${#artifacts[@]}"
-                exit 1
-              fi
-
-              name="$(basename "${artifacts[0]}")"
-              url="${XIAOBA_UPDATE_BASE_URL}/macos-$arch/$name"
-              verify_remote_artifact "${artifacts[0]}" "$url"
-            done
-          done
 
       - name: Publish GitHub Release
         shell: bash

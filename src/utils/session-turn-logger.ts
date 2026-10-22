@@ -59,6 +59,7 @@ export class SessionTurnLogger {
   private logFilePath: string;
   private turnCounter = 0;
   private agentIdentity?: SessionLogAgentIdentity;
+  private fileLoggingDisabled = false;
 
   constructor(sessionType: string, sessionId: string, agentIdentity?: SessionLogAgentIdentity) {
     this.sessionType = sessionType;
@@ -68,10 +69,19 @@ export class SessionTurnLogger {
     const date = new Date();
     const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     const dir = path.join(SESSION_LOG_DIR, sessionType, dateStr);
-
-    fs.mkdirSync(dir, { recursive: true });
     const safeSessionId = sessionId.replace(/[:<>"|?*]/g, '_');
-    this.logFilePath = path.join(dir, `${sessionType}_${safeSessionId}.jsonl`);
+    const target = path.join(dir, `${sessionType}_${safeSessionId}.jsonl`);
+
+    // Turn logs are diagnostics only. A full disk (EDQUOT/ENOSPC) must not
+    // prevent the session from starting.
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      this.logFilePath = target;
+    } catch (error) {
+      this.logFilePath = '';
+      this.fileLoggingDisabled = true;
+      console.error('[SessionTurnLogger] session log disabled:', error);
+    }
   }
 
   /**
@@ -211,10 +221,13 @@ export class SessionTurnLogger {
   }
 
   private appendLog(entry: SessionLogEntry): void {
+    if (this.fileLoggingDisabled || !this.logFilePath) {
+      return;
+    }
     try {
       fs.appendFileSync(this.logFilePath, JSON.stringify(entry) + '\n');
     } catch (error) {
-      // 日志写入失败不影响主流程
+      // Diagnostic logging must never break a conversation turn.
       console.error('[SessionTurnLogger] Failed to write log:', error);
     }
   }

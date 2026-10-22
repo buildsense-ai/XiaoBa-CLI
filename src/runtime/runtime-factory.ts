@@ -11,6 +11,11 @@ import { PromptComposer } from './prompt-composer';
 import { composeSessionSystemPromptProvider } from '../core/session-system-prompt';
 import { PathResolver } from '../utils/path-resolver';
 import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
+import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
+import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { serviceRunReceiptRouter } from '../catscompany/service-run-receipts';
+import { FileBotDefinitionRepository } from '../bot-definition/repository';
 import {
   RuntimeProfile,
   assertValidRuntimeProfile,
@@ -100,6 +105,12 @@ export class RuntimeFactory {
       )
       : undefined;
 
+    const toolManager = new ToolManager(profile.workingDirectory, {}, {
+      enabledToolNames: profile.tools.enabled,
+      ...(catslogMemory ? { catslogKnowledge: catslogMemory } : {}),
+    });
+    const mcpToolBridge = this.createMcpToolBridge(toolManager, profile);
+
     return {
       aiService,
       memoryBranch: {
@@ -109,13 +120,77 @@ export class RuntimeFactory {
         budget: { ...branchConfig.branches.memorySearch.budget },
       },
       ...(catslogMemory ? { catslogMemory } : {}),
-      toolManager: new ToolManager(profile.workingDirectory, {}, {
-        enabledToolNames: profile.tools.enabled,
-        ...(catslogMemory ? { catslogKnowledge: catslogMemory } : {}),
-      }),
+      ...(mcpToolBridge ? { mcpToolBridge } : {}),
+      toolManager,
       skillManager: new SkillManager(),
       turnSkillSnapshotStore: this.createTurnSkillSnapshotStore(),
     };
+  }
+
+  /** CatsCo MCP 工具桥：把平台 `/api/mcp` 上的远程工具注册为本地工具（增量能力，失败不阻断）。 */
+  private static createMcpToolBridge(
+    toolManager: ToolManager,
+    profile: RuntimeProfile,
+  ): CatsCoMcpToolBridge | undefined {
+    if (process.env.CATSCO_MCP_TOOL_BRIDGE === '0') return undefined;
+    try {
+      const runtimeRoot = PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory);
+      const localConfig = createCatsCoLocalConfigService({ runtimeRoot });
+      const botDefinitions = new FileBotDefinitionRepository({ runtimeRoot });
+      const explicitUrl = process.env.CATSCO_MCP_URL?.trim();
+      const bridge = new CatsCoMcpToolBridge({
+        toolManager,
+        createClient: createSdkMcpBridgeClientFactory(),
+        // 当前 Agent 的工具清单：读 bot definition 的 serviceAgents（云端同步落本地缓存）。
+        // 读不到（未绑定 bot/定义未配置）→ undefined = 账号可见全部（兼容）。
+        resolveAgentSlugs: () => {
+          try {
+            const botUid = String(localConfig.getAuthState().botUid ?? '').trim();
+            if (!botUid) return undefined;
+            const definition = botDefinitions.readCache(botUid) ?? botDefinitions.readCanonical(botUid);
+            const list = definition?.serviceAgents;
+            if (!Array.isArray(list)) return undefined;
+            return list.map((slug) => String(slug).trim()).filter((slug) => slug.length > 0);
+          } catch {
+            return undefined;
+          }
+        },
+        // 平台 bot 身份：随 tools/call 上报 bot_uid，平台据此做归属/清单校验并落会话（设计 P1b）。
+        resolveBotUid: () => {
+          try {
+            const raw = localConfig.getAuthState().botUid;
+            const botUid = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? '').trim(), 10);
+            return Number.isFinite(botUid) && botUid > 0 ? botUid : undefined;
+          } catch {
+            return undefined;
+          }
+        },
+        resolveEndpoint: () => {
+          const auth = localConfig.getAuthState();
+          const token = (auth.token ?? '').trim();
+          if (!token) return null;
+          const base = (auth.httpBaseUrl ?? '').replace(/\/+$/, '');
+          const url = explicitUrl || (base ? `${base}/api/mcp` : '');
+          if (!url) return null;
+          return { url, token };
+        },
+        // 长任务：平台先回 running 句柄，终态通过 WS 回执推送（至少一次 + receipt_id 幂等）。
+        // 登记到进程级路由，CatsCompany 服务收到回执时据此唤醒原会话。
+        onRunPending: info => {
+          try {
+            serviceRunReceiptRouter.track(info);
+          } catch (error: any) {
+            Logger.warning(`CatsCo 回执登记失败: ${error?.message ?? error}`);
+          }
+        },
+      });
+      bridge.refreshInBackground();
+      return bridge;
+    } catch (error: any) {
+      // 工具桥是增量能力：初始化异常不得影响主流程。
+      Logger.warning(`CatsCo Agent 工具桥初始化失败，已跳过: ${error?.message ?? error}`);
+      return undefined;
+    }
   }
 
   static createSystemPromptProvider(profile: RuntimeProfile): SystemPromptProvider {

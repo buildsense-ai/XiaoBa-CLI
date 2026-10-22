@@ -7,6 +7,7 @@ import type {
   MessageTopicType,
   ScopedDeviceSelection,
 } from '../types/session-identity';
+import { getDeviceAuthorizationSessionKey } from '../core/device-grants';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -80,7 +81,7 @@ function normalizeDeviceSelection(record: UnknownRecord, scope: ExecutionScope):
 function selectionMatchesScope(selection: ScopedDeviceSelection | undefined, scope: ExecutionScope): selection is ScopedDeviceSelection {
   return Boolean(selection)
     && selection!.source === scope.source
-    && selection!.sessionKey === scope.sessionKey
+    && selection!.sessionKey === getDeviceAuthorizationSessionKey(scope)
     && selection!.topicId === scope.topicId
     && selection!.topicType === scope.topicType
     && selection!.actorUserId === scope.actorUserId

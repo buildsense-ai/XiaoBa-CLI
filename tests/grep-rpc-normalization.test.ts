@@ -7,6 +7,7 @@ import {
   normalizeDeviceRpcToolResultPayload,
 } from '../src/tools/device-rpc-tool';
 import { executeRouteIfRemote, type ExecutionRoute } from '../src/tools/execution-router';
+import { scopedDeviceContext } from './helpers/scoped-device-context';
 
 const gateway = { ok: true, mode: 'remote', targetDeviceId: 'device-test' } as const;
 const thinRoute: ExecutionRoute = {
@@ -15,7 +16,7 @@ const thinRoute: ExecutionRoute = {
 const success: ToolExecutionResult = { ok: true, content: 'fixture' };
 
 function context(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
-  return { workingDirectory: '/tmp', surface: 'catscompany', ...overrides };
+  return { workingDirectory: '/tmp', surface: 'catscompany', ...scopedDeviceContext('owner-test', 'device-test', ['grep']), ...overrides };
 }
 
 test('SEARCH_TIMEOUT survives both wire normalization directions and is not automatically retried', () => {

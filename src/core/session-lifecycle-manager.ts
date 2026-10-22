@@ -3,6 +3,12 @@ import { Logger } from '../utils/logger';
 import { SessionStore } from '../utils/session-store';
 import { RuntimeFeedbackInbox } from './runtime-feedback-inbox';
 
+/**
+ * 记多少条「本运行体发出的消息 seq」。回填受游标与分页（每页 100）限制，只可能
+ * 覆盖最近这段历史；更早的早已被游标挡住，多留只会让状态文件无限增长。
+ */
+const MAX_SENT_REMOTE_IDS = 200;
+
 export interface SessionLifecycleManagerOptions {
   sessionKey: string;
   legacySessionKey?: string;
@@ -61,6 +67,13 @@ export class SessionLifecycleManager {
     return messages;
   }
 
+  snapshotForFork(): Message[] {
+    const key = this.resolveExistingSessionKey();
+    if (!key) throw new Error('Source local session is unavailable');
+    const durable = this.sessionStore.readContextForFork(key);
+    return this.pendingRestore ? structuredClone(this.pendingRestore) : durable;
+  }
+
   reset(): ResetSessionStateResult {
     this.pendingRestore = undefined;
     this.options.runtimeFeedbackInbox.reset();
@@ -71,7 +84,7 @@ export class SessionLifecycleManager {
   }
 
   clear(): ClearSessionStateResult {
-    const sessionDeleted = this.sessionStore.deleteSession(this.options.sessionKey);
+    const sessionDeleted = this.sessionStore.deleteSession(this.options.sessionKey, { preserveForkIdentity: true });
     const stateDeleted = this.sessionStore.deleteRuntimeState(this.options.sessionKey);
     let persisted = sessionDeleted && stateDeleted;
     for (const cleanupKey of this.resolveLegacyCleanupKeys()) {
@@ -109,6 +122,37 @@ export class SessionLifecycleManager {
   loadRemoteContextCursor(source: string): number {
     const cursor = Number(this.sessionStore.loadRuntimeState(this.options.sessionKey).remoteContextCursors?.[source]);
     return Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
+  }
+
+  /**
+   * 本运行体发出的消息 seq（按远端 source 分组）。
+   *
+   * 只保留最近若干条：回填只可能覆盖最近这段历史，更早的早已被游标挡在
+   * 外面，留着只会让状态文件无限增长。
+   */
+  loadSentRemoteIds(source: string): number[] {
+    const raw = this.sessionStore.loadRuntimeState(this.options.sessionKey).sentRemoteIds?.[source];
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(value => Number.isFinite(value) && value > 0);
+  }
+
+  recordSentRemoteIds(source: string, ids: number[]): boolean {
+    if (!source) return false;
+    const accepted = ids.filter(id => Number.isFinite(id) && id > 0);
+    if (accepted.length === 0) return false;
+    const state = this.sessionStore.loadRuntimeState(this.options.sessionKey);
+    const previous = state.sentRemoteIds?.[source] || [];
+    const merged = [...new Set([...previous, ...accepted])];
+    const bounded = merged.length > MAX_SENT_REMOTE_IDS
+      ? merged.slice(merged.length - MAX_SENT_REMOTE_IDS)
+      : merged;
+    return this.sessionStore.saveRuntimeState(this.options.sessionKey, {
+      ...state,
+      sentRemoteIds: {
+        ...(state.sentRemoteIds || {}),
+        [source]: bounded,
+      },
+    });
   }
 
   saveRemoteContextCursor(source: string, cursor: number): boolean {

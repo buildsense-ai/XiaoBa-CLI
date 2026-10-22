@@ -12,6 +12,14 @@ import {
   readBotSkillLocalMarker,
 } from './local-manifest';
 import { Logger } from '../utils/logger';
+import { parseArtifactCommandPlan } from './artifact-command-plan';
+
+export interface TrustedArtifactCommandStep {
+  args: string[];
+  scriptPath?: string;
+  workingDirectory: string;
+  after: 'always' | 'success';
+}
 
 export interface TrustedBotSkillScriptInvocation {
   scriptPath: string;
@@ -19,6 +27,10 @@ export interface TrustedBotSkillScriptInvocation {
   skillId: string;
   skillName: string;
   version: string;
+  /** The requested working directory for compound Skill commands (if any). */
+  workingDirectory?: string;
+  /** Fully validated Artifact-only commands; never evaluated by a shell. */
+  steps?: TrustedArtifactCommandStep[];
 }
 
 export type TrustedBotSkillScriptDecision =
@@ -70,6 +82,20 @@ const CONNECTOR_ENV_NAMES = [
 ] as const;
 
 /**
+ * Source attribution hint for a newly-created Cloud Artifact. These values
+ * are deliberately transient environment variables: they are injected only
+ * for the verified artifact-publish Skill entrypoint and are never added to
+ * the model prompt, shell transcript, or persistent session state. This is a
+ * client-side defense-in-depth measure, not an authorization boundary; the
+ * Artifact API must validate the pair against its own canonical message
+ * records.
+ */
+export const ARTIFACT_SOURCE_ENV_NAMES = [
+  'CATSCO_ARTIFACT_SOURCE_TOPIC_ID',
+  'CATSCO_ARTIFACT_SOURCE_MESSAGE_ID',
+] as const;
+
+/**
  * Removes connector capabilities from the shared Runtime environment and
  * injects one only when the verified SkillHub package id matches the grant.
  */
@@ -112,6 +138,97 @@ export function withTrustedBotSkillConnectorEnvironment(
 }
 
 /**
+ * Inject the canonical CatsCo conversation/message pair expected by the
+ * artifact-publish API. The runtime supplies these values on the normal
+ * trusted path and strips inherited stale values. This protects the normal
+ * Skill flow from accidental or stale overrides, but cannot make a bearer API
+ * credential or an arbitrary copied script non-forgeable; server-side
+ * validation remains authoritative.
+ */
+export function withTrustedBotSkillArtifactSourceEnvironment(
+  invocation: TrustedBotSkillScriptInvocation | undefined,
+  context: ToolExecutionContext,
+  environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const isolated = { ...environment };
+  for (const name of ARTIFACT_SOURCE_ENV_NAMES) delete isolated[name];
+  if (!invocation || !isArtifactPublishSkill(invocation.skillId)) return isolated;
+  if (path.basename(invocation.scriptPath) === 'init-connector.mjs') return isolated;
+
+  const scope = context.executionScope;
+  const topicId = stringValue(scope?.topicId);
+  const channelSeq = scope?.channelSeq;
+  if (
+    !isTrustedLocalCatsCoRuntime(context)
+    || !topicId
+    || typeof channelSeq !== 'number'
+    || !Number.isSafeInteger(channelSeq)
+    || channelSeq <= 0
+  ) {
+    return isolated;
+  }
+
+  isolated.CATSCO_ARTIFACT_SOURCE_TOPIC_ID = topicId;
+  isolated.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID = String(channelSeq);
+  return isolated;
+}
+
+function isArtifactPublishSkill(skillId: string): boolean {
+  const normalized = stringValue(skillId).toLowerCase();
+  // Keep this allow-list explicit: the source pair is a privileged runtime
+  // capability, so an arbitrary SkillHub publisher must not gain it merely by
+  // naming a skill `artifact-publish`. `yii` is the original publisher and
+  // `david` is the current David_owner publisher.
+  return normalized === 'yii/artifact-publish'
+    || normalized === 'david/artifact-publish';
+}
+
+function isArtifactPublishSkillPackage(skillId: string): boolean {
+  const normalized = stringValue(skillId).toLowerCase();
+  return normalized === 'artifact-publish' || normalized.endsWith('/artifact-publish');
+}
+
+/**
+ * Detect a command that targets an installed artifact-publish connector but
+ * was not accepted by the trusted direct-spawn parser.  Such commands must
+ * not fall through to the ordinary shell: an inline environment assignment
+ * could otherwise forge the source pair intended to be runtime-only.
+ */
+export function isArtifactPublishSkillCommand(
+  command: unknown,
+  context: ToolExecutionContext,
+  options: { cwd?: unknown } = {},
+): boolean {
+  if (!isTrustedLocalCatsCoRuntime(context) || typeof command !== 'string') return false;
+  const executionDirectory = resolveExecutionDirectory(options.cwd, context.workingDirectory);
+  if (!executionDirectory) return false;
+  const skillsRoot = path.resolve(
+    context.turnSkillSnapshot instanceof TurnSkillSnapshotLease
+      ? context.turnSkillSnapshot.snapshot.rootPath
+      : PathResolver.getSkillsPath(),
+  );
+  return resolveShellScriptEntryPaths(command, executionDirectory).some(scriptPath => {
+    const relative = path.relative(skillsRoot, scriptPath);
+    const segments = relative.split(path.sep).filter(Boolean);
+    if (
+      !relative
+      || relative.startsWith('..')
+      || path.isAbsolute(relative)
+      || segments.length !== 3
+      || segments[1] !== 'connector'
+      || !['artifact-cli.mjs', 'init-connector.mjs'].includes(segments[2].toLowerCase())
+    ) return false;
+    const skillDir = path.join(skillsRoot, segments[0]);
+    const installMarker = readSkillHubInstallMarker(skillDir);
+    return Boolean(
+      installMarker
+      && installMarker.installName === segments[0]
+      && isArtifactPublishSkillPackage(installMarker.skillId),
+    );
+  });
+}
+
+/**
  * Resolve the deliberately narrow compatibility path for script-backed formal
  * Bot Skills. The model still calls execute_shell, but accepted commands never
  * reach a shell: ShellTool spawns the verified Node entrypoint directly.
@@ -128,16 +245,25 @@ export function resolveTrustedBotSkillScriptInvocation(
     return denied('Verified Bot Skill scripts can only run on the current Bot body, without a target override.');
   }
 
-  const tokens = tokenizeDirectCommand(command);
-  if (!tokens || tokens.length < 2 || !isNodeCommand(tokens[0])) {
-    return denied('The command is not one direct Node.js script invocation.');
-  }
-
   const executionDirectory = resolveExecutionDirectory(options.cwd, context.workingDirectory);
   if (!executionDirectory) {
     return denied('The command working directory is missing or unavailable.');
   }
-  const scriptPath = path.resolve(executionDirectory, tokens[1]);
+  if (isArtifactPublishSkillCommand(command, context, options)) {
+    return resolveArtifactCommandPlan(String(command), executionDirectory, context);
+  }
+  const parsed = resolveTrustedSkillCommand(command, executionDirectory);
+  if (!parsed) {
+    return denied('The command is not one direct Node.js script invocation.');
+  }
+  return validateTrustedEntrypoint(parsed, context);
+}
+
+function validateTrustedEntrypoint(
+  parsed: ParsedTrustedSkillCommand,
+  context: ToolExecutionContext,
+): TrustedBotSkillScriptDecision {
+  const { scriptPath, args, workingDirectory } = parsed;
   if (!['.js', '.cjs', '.mjs'].includes(path.extname(scriptPath).toLowerCase())) {
     return denied('The requested entrypoint is not a JavaScript file.');
   }
@@ -149,12 +275,15 @@ export function resolveTrustedBotSkillScriptInvocation(
   );
   const relative = path.relative(skillsRoot, scriptPath);
   const segments = relative.split(path.sep).filter(Boolean);
+  const isScriptsEntrypoint = segments.length >= 3 && segments[1] === 'scripts';
+  const isArtifactConnectorEntrypoint = segments.length === 3
+    && segments[1] === 'connector'
+    && ['artifact-cli.mjs', 'init-connector.mjs'].includes(segments[2].toLowerCase());
   if (
     !relative
     || relative.startsWith('..')
     || path.isAbsolute(relative)
-    || segments.length < 3
-    || segments[1] !== 'scripts'
+    || (!isScriptsEntrypoint && !isArtifactConnectorEntrypoint)
   ) {
     return denied('The requested entrypoint is outside an installed Bot Skill scripts directory.');
   }
@@ -189,6 +318,9 @@ export function resolveTrustedBotSkillScriptInvocation(
   ) {
     return denied('The SkillHub install identity does not match the Bot-bound Skill reference.');
   }
+  if (isArtifactConnectorEntrypoint && !isArtifactPublishSkill(reference.skillId)) {
+    return denied('The connector entrypoint is reserved for the artifact-publish Skill.');
+  }
 
   const agentId = stringValue(context.executionScope?.agentId);
   if (isBotSkillReferenceActive(agentId, reference) !== true) {
@@ -199,11 +331,109 @@ export function resolveTrustedBotSkillScriptInvocation(
     ok: true,
     invocation: {
       scriptPath,
-      args: [scriptPath, ...tokens.slice(2)],
+      args,
       skillId: reference.skillId,
       skillName: installMarker.name,
       version: reference.version,
+      ...(workingDirectory ? { workingDirectory } : {}),
     },
+  };
+}
+
+function resolveArtifactCommandPlan(
+  command: string,
+  executionDirectory: string,
+  context: ToolExecutionContext,
+): TrustedBotSkillScriptDecision {
+  const segments = parseArtifactCommandPlan(command);
+  if (!segments) return denied('Unsupported Artifact command syntax; use verified Node entrypoints joined by &&, semicolons or newlines.');
+  let cwd = executionDirectory;
+  let identity: TrustedBotSkillScriptInvocation | undefined;
+  let packageDirectory: string | undefined;
+  const steps: TrustedArtifactCommandStep[] = [];
+  for (let index = 0; index < segments.length; index++) {
+    const { argv, after } = segments[index];
+    if (index === 0 && argv[0] === 'cd' && argv.length === 2) {
+      const directory = resolveExecutionDirectory(argv[1], cwd);
+      if (!directory) return denied('The Artifact working directory is unavailable.');
+      cwd = directory;
+      continue;
+    }
+    if (!isNodeCommand(argv[0]) || argv.length < 2) return denied('Artifact command plans may only run verified Node entrypoints and node --version.');
+    if (argv.length === 2 && ['--version', '-v'].includes(argv[1])) {
+      steps.push({ args: [argv[1]], workingDirectory: cwd, after });
+      continue;
+    }
+    const scriptPath = path.resolve(cwd, argv[1]);
+    if (!['artifact-cli.mjs', 'init-connector.mjs'].includes(path.basename(scriptPath))) {
+      return denied('This entrypoint is not supported in an Artifact command plan.');
+    }
+    const validated = validateTrustedEntrypoint({ scriptPath, args: [scriptPath, ...argv.slice(2)], workingDirectory: cwd }, context);
+    if (!validated.ok) return validated;
+    if (!isArtifactPublishSkill(validated.invocation.skillId)
+      || (packageDirectory && packageDirectory !== path.dirname(scriptPath))) {
+      return denied('Every Artifact command must belong to the same verified publisher package.');
+    }
+    packageDirectory = path.dirname(scriptPath);
+    identity ??= validated.invocation;
+    steps.push({ args: validated.invocation.args, scriptPath, workingDirectory: cwd, after });
+  }
+  if (!identity) return denied('The plan has no verified Artifact entrypoint.');
+  return { ok: true, invocation: { ...identity, steps } };
+}
+
+/** Recheck integrity/revocation between steps, after a helper may have changed files. */
+export function revalidateTrustedArtifactStep(
+  step: TrustedArtifactCommandStep,
+  context: ToolExecutionContext,
+): TrustedBotSkillScriptDecision {
+  if (!step.scriptPath || !isTrustedLocalCatsCoRuntime(context)) return denied('Not a trusted Artifact script step.');
+  return validateTrustedEntrypoint({ ...step, scriptPath: step.scriptPath }, context);
+}
+
+interface ParsedTrustedSkillCommand {
+  scriptPath: string;
+  args: string[];
+  workingDirectory?: string;
+}
+
+/**
+ * Parse only the two command shapes emitted by verified Skill instructions:
+ * a direct `node <script>` call, or the legacy artifact-publish form
+ * `cd <skill>/connector && node artifact-cli.mjs ...`.  The latter is
+ * converted to a direct process spawn; no shell ever evaluates the compound
+ * command or any additional segment.
+ */
+function resolveTrustedSkillCommand(
+  command: unknown,
+  executionDirectory: string,
+): ParsedTrustedSkillCommand | undefined {
+  const direct = tokenizeDirectCommand(command);
+  if (direct && direct.length >= 2 && isNodeCommand(direct[0])) {
+    return {
+      scriptPath: path.resolve(executionDirectory, direct[1]),
+      args: [path.resolve(executionDirectory, direct[1]), ...direct.slice(2)],
+    };
+  }
+
+  if (typeof command !== 'string') return undefined;
+  const tokens = tokenizeShellCommand(command);
+  if (
+    tokens.length < 5
+    || tokens[0].toLowerCase() !== 'cd'
+    || tokens[2] !== '&&'
+    || !isNodeCommand(tokens[3])
+    || tokens[4].toLowerCase() !== 'artifact-cli.mjs'
+    || tokens.slice(0, 5).some(token => [';', '||', '|', '(', ')'].includes(token))
+  ) {
+    return undefined;
+  }
+  const workingDirectory = path.resolve(executionDirectory, tokens[1]);
+  const scriptPath = path.resolve(workingDirectory, tokens[4]);
+  return {
+    scriptPath,
+    args: [scriptPath, ...tokens.slice(5)],
+    workingDirectory,
   };
 }
 
@@ -589,6 +819,12 @@ function tokenizeShellCommand(value: string): string[] {
       continue;
     }
     if (/\s/.test(character)) {
+      // Shell newlines delimit commands, unlike whitespace inside quotes.
+      if (character === '\n' || character === '\r') {
+        push();
+        tokens.push(';');
+        continue;
+      }
       push();
       continue;
     }

@@ -1,0 +1,219 @@
+// Overlay into CatsCompany's test package. Store/queues are simulated; metadata,
+// CLI parsing/routing/serialization and Go dispatch are production code.
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/openchat/openchat/server/store/types"
+)
+
+func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
+	root, node := os.Getenv("XIAOBA_PAIRED_ROOT"), os.Getenv("XIAOBA_PAIRED_NODE")
+	if root == "" || node == "" {
+		t.Fatal("paired paths required; refusing to skip")
+	}
+	hub, handler := deviceSelectionFixture(t)
+	bot := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud-body", send: make(chan []byte, 32)}
+	hub.addClient(bot)
+	metadata := func() map[string]interface{} {
+		return map[string]interface{}{
+			"catsco_identity": hub.buildCatscoIdentityMetadata(7, 42, "p2p_7_42", 1, "读取我的文件"),
+			"xiaoba_runtime":  hub.buildXiaobaRuntimeMetadata(7, 42, "p2p_7_42"),
+		}
+	}
+	choose := func(device string) {
+		t.Helper()
+		snapshot := selectionSnapshot(t, handler, 7, "p2p_7_42", "42")
+		body := fmt.Sprintf(`{"device_id":%q,"expected_revision":%q}`, device, snapshot["revision"])
+		if reply := selectionRequest(t, handler, 7, "p2p_7_42", "42", http.MethodPost, body); reply.Code != 200 {
+			t.Fatalf("confirmation: %d %s", reply.Code, reply.Body.String())
+		}
+	}
+	type output struct {
+		Route struct {
+			OK   bool   `json:"ok"`
+			Mode string `json:"mode"`
+		} `json:"route"`
+		Wire              *MsgThinToolRPC `json:"wire"`
+		Devices           []string        `json:"devices"`
+		HistorySessionKey string          `json:"historySessionKey"`
+	}
+	call := func(meta map[string]interface{}, target string, identity ...map[string]interface{}) output {
+		t.Helper()
+		input := map[string]interface{}{"metadata": meta, "target": target}
+		for _, fields := range identity {
+			for key, value := range fields {
+				input[key] = value
+			}
+		}
+		payload, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, node, "--import", "tsx", filepath.Join(root, "tests", "fixtures", "multi-device-paired", "runtime.ts"))
+		cmd.Dir, cmd.Stdin = root, bytes.NewReader(payload)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		raw, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("CLI bridge: %v\n%s", err, stderr.String())
+		}
+		var result output
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatalf("CLI output: %v\n%s", err, raw)
+		}
+		return result
+	}
+	var oldA *MsgThinToolRPC
+	t.Run("multiple_devices_require_selection", func(t *testing.T) {
+		got := call(metadata(), "alice")
+		if got.Route.OK || got.Wire != nil || len(got.Devices) != 3 {
+			t.Fatalf("unexpected route/directory: %+v", got)
+		}
+	})
+	for _, device := range []string{"a", "b"} {
+		t.Run("selected_"+device, func(t *testing.T) {
+			choose(device)
+			got := call(metadata(), "alice")
+			if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != device {
+				t.Fatalf("wrong wire: %+v", got)
+			}
+			hub.handleMessage(bot, &ClientMessage{ThinToolRPC: got.Wire})
+			_, receiver := hub.findDeviceRPCTarget(7, UserDevice{DeviceID: device})
+			var forwarded ServerMessage
+			decodeQueuedServerMessage(t, receiver.send, &forwarded)
+			if forwarded.ThinToolRPC == nil || forwarded.ThinToolRPC.TargetDeviceID != device {
+				t.Fatal("real wire was not accepted")
+			}
+			if device == "a" {
+				oldA = got.Wire
+			}
+		})
+	}
+	t.Run("old_A_wire_rejected_after_switch", func(t *testing.T) {
+		if oldA == nil {
+			t.Fatal("missing A fixture")
+		}
+		if err := hub.authorizeOrdinaryThinToolRPC(bot, oldA, 7, "a", "read_file"); err == nil {
+			t.Fatal("stale wire accepted")
+		}
+	})
+	t.Run("legacy_unscoped_wire_requires_upgrade", func(t *testing.T) {
+		msg := &MsgThinToolRPC{Type: "request", TargetOwnerUserID: "usr7", TargetDeviceID: "b", ToolName: "read_file"}
+		err := hub.authorizeOrdinaryThinToolRPC(bot, msg, 7, "b", "read_file")
+		if err == nil || thinToolRPCAuthorizationErrorCode(err) != "device_authorization_required" {
+			t.Fatal("legacy wire bypassed upgrade requirement", err)
+		}
+	})
+	t.Run("server_host_without_desktop_authorization", func(t *testing.T) {
+		got := call(map[string]interface{}{}, "")
+		if !got.Route.OK || got.Route.Mode != "local" || got.Wire != nil {
+			t.Fatalf("cloud host rerouted: %+v", got)
+		}
+	})
+	t.Run("selected_B_offline_does_not_fallback_to_A", func(t *testing.T) {
+		hub.userDevices.now = func() time.Time { return time.Now().Add(hub.userDevices.ttl + time.Minute) }
+		hub.userDevices.touch(7, "a")
+		got := call(metadata(), "alice")
+		if got.Route.OK || got.Wire != nil {
+			t.Fatalf("offline B fell back: %+v", got)
+		}
+	})
+	t.Run("group", func(t *testing.T) {
+		// Independent registry: private-chat selection and clock changes must not
+		// accidentally establish group authorization for this fixture.
+		hub, handler := deviceSelectionFixture(t)
+		bots := map[int64]*Client{}
+		for _, uid := range []int64{42, 43} {
+			bots[uid] = &Client{uid: uid, accountType: types.AccountBot, bodyID: fmt.Sprintf("cloud-%d", uid), send: make(chan []byte, 32)}
+			hub.addClient(bots[uid])
+		}
+		choose := func(actor, agent int64, device string) {
+			t.Helper()
+			botID := fmt.Sprint(agent)
+			snapshot := selectionSnapshot(t, handler, actor, "grp_1", botID)
+			body := fmt.Sprintf(`{"device_id":%q,"expected_revision":%q}`, device, snapshot["revision"])
+			if reply := selectionRequest(t, handler, actor, "grp_1", botID, http.MethodPost, body); reply.Code != 200 {
+				t.Fatalf("group selection: %d %s", reply.Code, reply.Body.String())
+			}
+		}
+		metadata := func(actor, agent int64) map[string]interface{} {
+			return map[string]interface{}{
+				"catsco_identity": hub.buildCatscoIdentityMetadata(actor, agent, "grp_1", 1, "读取我的文件"),
+				"xiaoba_runtime":  hub.buildXiaobaRuntimeMetadata(actor, agent, "grp_1"),
+			}
+		}
+		identity := func(actor, agent int64) map[string]interface{} {
+			return map[string]interface{}{"topic": "grp_1", "senderId": fmt.Sprintf("usr%d", actor), "botUid": fmt.Sprint(agent)}
+		}
+		accept := func(t *testing.T, actor, agent int64, device string) output {
+			t.Helper()
+			got := call(metadata(actor, agent), "speaker_default", identity(actor, agent))
+			if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != device || got.HistorySessionKey != "cc_group:grp_1" {
+				t.Fatalf("wrong group wire/history: %+v", got)
+			}
+			hub.handleMessage(bots[agent], &ClientMessage{ThinToolRPC: got.Wire})
+			_, receiver := hub.findDeviceRPCTarget(actor, UserDevice{DeviceID: device})
+			var forwarded ServerMessage
+			decodeQueuedServerMessage(t, receiver.send, &forwarded)
+			if forwarded.ThinToolRPC == nil || forwarded.ThinToolRPC.TargetDeviceID != device {
+				t.Fatal("real group wire was not accepted")
+			}
+			return got
+		}
+		var oldA *MsgThinToolRPC
+		t.Run("selected_A_preserves_shared_history", func(t *testing.T) {
+			choose(7, 42, "a")
+			oldA = accept(t, 7, 42, "a").Wire
+		})
+		t.Run("other_actor_uses_only_own_device", func(t *testing.T) {
+			got := accept(t, 8, 42, "private")
+			if len(got.Devices) != 1 || got.Devices[0] != "private" {
+				t.Fatalf("actor directory leaked: %+v", got)
+			}
+		})
+		t.Run("other_bot_selection_is_independent", func(t *testing.T) {
+			choose(7, 43, "b")
+			accept(t, 7, 43, "b")
+			accept(t, 7, 42, "a")
+		})
+		t.Run("cross_actor_or_bot_metadata_rejected", func(t *testing.T) {
+			for _, pair := range [][2]int64{{8, 42}, {7, 43}} {
+				got := call(metadata(pair[0], pair[1]), "speaker_default", identity(7, 42))
+				if got.Route.OK || got.Wire != nil {
+					t.Fatalf("foreign group authorization dispatched: %+v", got)
+				}
+			}
+		})
+		t.Run("switch_invalidates_old_wire", func(t *testing.T) {
+			choose(7, 42, "b")
+			if oldA == nil {
+				t.Fatal("missing group A wire")
+			}
+			if err := hub.authorizeOrdinaryThinToolRPC(bots[42], oldA, 7, "a", "read_file"); err == nil {
+				t.Fatal("old group wire accepted")
+			}
+			accept(t, 7, 42, "b")
+		})
+		t.Run("offline_B_never_falls_back_to_A", func(t *testing.T) {
+			hub.userDevices.now = func() time.Time { return time.Now().Add(hub.userDevices.ttl + time.Minute) }
+			hub.userDevices.touch(7, "a")
+			got := call(metadata(7, 42), "speaker_default", identity(7, 42))
+			if got.Route.OK || got.Wire != nil {
+				t.Fatalf("offline group B fell back: %+v", got)
+			}
+		})
+	})
+}

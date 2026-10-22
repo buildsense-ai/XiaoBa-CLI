@@ -17,6 +17,7 @@ import {
 import {
   isRevokedBotSkillSnapshotCommand,
   resolveTrustedBotSkillScriptInvocation,
+  withTrustedBotSkillArtifactSourceEnvironment,
   withTrustedBotSkillConnectorEnvironment,
 } from '../src/bot-skills/trusted-script-execution';
 import { writeSkillHubInstallMarker } from '../src/skillhub/install-marker';
@@ -338,6 +339,185 @@ describe('trusted Bot Skill script execution', () => {
     assert.equal(unrelated.CATSCO_ACTOR_TOKEN, undefined);
     assert.equal(unrelated.CATSCO_SKILL_ID, undefined);
     assert.equal(unrelated.SAFE_VALUE, 'kept');
+  });
+
+  test('injects the canonical source pair only for artifact-publish', () => {
+    const environment = {
+      CATSCO_ARTIFACT_SOURCE_TOPIC_ID: 'stale-topic',
+      CATSCO_ARTIFACT_SOURCE_MESSAGE_ID: '999',
+      SAFE_VALUE: 'kept',
+    };
+    const context = catsContext({
+      executionScope: {
+        ...catsContext().executionScope!,
+        topicId: 'grp_5063',
+        channelSeq: 1328899,
+      },
+    });
+
+    for (const skillId of ['yii/artifact-publish', 'david/artifact-publish']) {
+      const injected = withTrustedBotSkillArtifactSourceEnvironment({
+        scriptPath,
+        args: [scriptPath],
+        skillId,
+        skillName: 'Artifact publish',
+        version: '1.0.7',
+      }, context, environment);
+
+      assert.equal(injected.CATSCO_ARTIFACT_SOURCE_TOPIC_ID, 'grp_5063');
+      assert.equal(injected.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID, '1328899');
+      assert.equal(injected.SAFE_VALUE, 'kept');
+    }
+
+    const unrelated = withTrustedBotSkillArtifactSourceEnvironment({
+      scriptPath,
+      args: [scriptPath],
+      skillId: 'publisher/other-skill',
+      skillName: 'Other skill',
+      version: '1.0.0',
+    }, context, environment);
+    assert.equal(unrelated.CATSCO_ARTIFACT_SOURCE_TOPIC_ID, undefined);
+    assert.equal(unrelated.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID, undefined);
+
+    const untrustedArtifactPublisher = withTrustedBotSkillArtifactSourceEnvironment({
+      scriptPath,
+      args: [scriptPath],
+      skillId: 'attacker/artifact-publish',
+      skillName: 'Artifact publish',
+      version: '1.0.7',
+    }, context, environment);
+    assert.equal(untrustedArtifactPublisher.CATSCO_ARTIFACT_SOURCE_TOPIC_ID, undefined);
+    assert.equal(untrustedArtifactPublisher.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID, undefined);
+  });
+
+  test('does not inject an artifact source pair without a trusted canonical sequence', () => {
+    const invocation = {
+      scriptPath,
+      args: [scriptPath],
+      skillId: 'david/artifact-publish',
+      skillName: 'Artifact publish',
+      version: '1.0.7',
+    };
+    const baseEnvironment = {
+      CATSCO_ARTIFACT_SOURCE_TOPIC_ID: 'stale-topic',
+      CATSCO_ARTIFACT_SOURCE_MESSAGE_ID: '999',
+    };
+    const missingSequence = withTrustedBotSkillArtifactSourceEnvironment(
+      invocation,
+      catsContext(),
+      baseEnvironment,
+    );
+    assert.equal(missingSequence.CATSCO_ARTIFACT_SOURCE_TOPIC_ID, undefined);
+    assert.equal(missingSequence.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID, undefined);
+
+    const untrusted = withTrustedBotSkillArtifactSourceEnvironment(
+      invocation,
+      catsContext({
+        executionScope: {
+          ...catsContext().executionScope!,
+          channelSeq: 42,
+          isTrusted: false,
+        },
+      }),
+      baseEnvironment,
+    );
+    assert.equal(untrusted.CATSCO_ARTIFACT_SOURCE_TOPIC_ID, undefined);
+    assert.equal(untrusted.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID, undefined);
+  });
+
+  test('runs the published artifact-publish connector layout and injects its source pair', async () => {
+    const artifactSkillDir = path.join(runtimeRoot, 'skills', 'artifact-publish');
+    const connectorDir = path.join(artifactSkillDir, 'connector');
+    const artifactCliPath = path.join(connectorDir, 'artifact-cli.mjs');
+    fs.mkdirSync(connectorDir, { recursive: true });
+    fs.writeFileSync(path.join(artifactSkillDir, 'SKILL.md'), [
+      '---',
+      'name: artifact-publish',
+      'description: test fixture',
+      '---',
+      '# Artifact publish',
+      '',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(artifactCliPath, [
+      "import fs from 'node:fs';",
+      "const output = process.argv[2];",
+      "fs.writeFileSync(output, JSON.stringify({ topic: process.env.CATSCO_ARTIFACT_SOURCE_TOPIC_ID, message: process.env.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID }), 'utf8');",
+      "console.log('artifact-cli-ok');",
+      '',
+    ].join('\n'), 'utf8');
+    writeSkillHubInstallMarker(artifactSkillDir, {
+      source: 'skillhub',
+      userId: 'skillhub-user-1',
+      skillId: 'david/artifact-publish',
+      name: 'Artifact publish',
+      installName: 'artifact-publish',
+      version: '1.0.7',
+      packageChecksumSha256: 'b'.repeat(64),
+      signature: {
+        algorithm: 'ed25519',
+        keyId: 'skillhub-test-key',
+        signature: 'signed-artifact-package-fixture',
+      },
+      packageUrl: 'https://skillhub.example/artifact-publish.skillpkg',
+      installedAt: new Date(0).toISOString(),
+    });
+    const initial = scanLocalBotSkill(artifactSkillDir, path.dirname(artifactSkillDir));
+    const artifactReference: BotSkillRef = {
+      source: 'skillhub',
+      skillId: 'david/artifact-publish',
+      version: '1.0.7',
+      contentHash: initial.contentHash,
+    };
+    writeBotSkillLocalMarker(artifactSkillDir, {
+      schema: 'xiaoba.bot-skill-local.v1',
+      localSkillId: initial.localSkillId,
+      reference: artifactReference,
+      origin: { skillId: artifactReference.skillId, version: artifactReference.version },
+    });
+    new FileBotDefinitionRepository({ runtimeRoot }).writeCache({
+      schema: 'xiaoba.bot-definition.v1',
+      botId: 'bot-1',
+      model: { kind: 'catalog', modelId: 'test-model' },
+      skills: [reference, artifactReference],
+    });
+
+    const output = path.join(workspaceRoot, 'artifact-source.json');
+    const command = `cd "${connectorDir}" && node artifact-cli.mjs "${output}"`;
+    const context = catsContext({
+      executionScope: {
+        ...catsContext().executionScope!,
+        topicId: 'grp_artifact',
+        channelSeq: 7331,
+      },
+    });
+    const decision = resolveTrustedBotSkillScriptInvocation(command, context);
+    assert.equal(decision.ok, true);
+    if (decision.ok) {
+      assert.equal(decision.invocation.scriptPath, artifactCliPath);
+      assert.equal(decision.invocation.workingDirectory, connectorDir);
+    }
+
+    const result = await new ShellTool().execute({ command }, context);
+    assert.equal(result.ok, true);
+    assert.match(result.ok ? String(result.content) : '', /artifact-cli-ok/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), {
+      topic: 'grp_artifact',
+      message: '7331',
+    });
+
+    const forged = await new ShellTool().execute({
+      command: `cd "${connectorDir}" && CATSCO_ARTIFACT_SOURCE_TOPIC_ID=attacker_topic CATSCO_ARTIFACT_SOURCE_MESSAGE_ID=424242 node artifact-cli.mjs "${path.join(workspaceRoot, 'forged.json')}"`,
+    }, context);
+    assert.equal(forged.ok, false);
+    assert.equal(forged.ok ? '' : forged.errorCode, 'PERMISSION_DENIED');
+    assert.equal(fs.existsSync(path.join(workspaceRoot, 'forged.json')), false);
+
+    const envForged = await new ShellTool().execute({
+      command: `cd "${connectorDir}" && env CATSCO_ARTIFACT_SOURCE_TOPIC_ID=attacker_topic CATSCO_ARTIFACT_SOURCE_MESSAGE_ID=999999 node artifact-cli.mjs "${path.join(workspaceRoot, 'env-forged.json')}"`,
+    }, context);
+    assert.equal(envForged.ok, false);
+    assert.equal(envForged.ok ? '' : envForged.errorCode, 'PERMISSION_DENIED');
+    assert.equal(fs.existsSync(path.join(workspaceRoot, 'env-forged.json')), false);
   });
 
   test('rejects a verified package that is not enabled for the active Bot', async () => {

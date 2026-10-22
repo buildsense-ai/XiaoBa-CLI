@@ -5,6 +5,9 @@ import crypto from 'crypto';
 import { Logger } from '../utils/logger';
 import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, type CatsCoDomainFamily } from '../utils/catsco-domains';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
+import type { CatsGroupRosterMember } from './types';
+import { normalizeSessionForkControl, type CatsSessionForkCompletion, type CatsSessionForkStatus } from './session-fork';
+export type { CatsSessionForkControl, CatsSessionForkCompletion, CatsSessionForkStatus } from './session-fork';
 
 export type { UploadResult } from './upload';
 
@@ -84,6 +87,9 @@ export interface CatsThinToolRpcMessage {
   id?: string;
   type: 'request' | 'result';
   request_id: string;
+  grant_id?: string;
+  session_key?: string;
+  actor_user_id?: string;
   target_owner_user_id?: string;
   target_device_id?: string;
   device_id?: string;
@@ -146,6 +152,9 @@ export interface MessageContext {
   seq?: number;   // Cats 服务端消息序号，用于排序和补充消息合并
   mentions?: string[]; // 服务端确认的结构化 @mention 目标
   memberCount?: number; // 群成员数；用于运行时在创建 session 前兜底门控
+  botCount?: number; // 群内 AI 助手数量；多 bot 群的真正判据
+  roster?: CatsGroupRosterMember[]; // 群成员名单（含人/bot 标记），仅 bot 收件人收到
+  activated?: boolean; // 服务端判定：这条消息是否点名本 bot
 }
 
 export interface CatsAgentContextMessage {
@@ -205,6 +214,8 @@ const DEFAULT_WS_CONNECT_TIMEOUT_MS = 20_000;
 const DEFAULT_WS_READY_TIMEOUT_MS = 20_000;
 const DEFAULT_RECONNECT_BASE_DELAY_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_DELAY_MS = 30_000;
+// 业务层拒绝（HTTP 4xx）持续重试时的日志降频间隔：前 2 次后每 N 次记录一条。
+const BUSINESS_REJECTION_LOG_INTERVAL = 30;
 
 function maskSecret(value: string): string {
   if (value.length <= 10) return '***';
@@ -232,6 +243,12 @@ function classifyDisconnectCause(forcedCause: string, transportError: string, cl
   if (networkCode) return networkCode.toLowerCase();
   if (transportError) return 'transport_error';
   return closeCode === 1000 ? 'normal_close' : 'abnormal_close';
+}
+
+function isBusinessRejectionCause(cause: string): boolean {
+  // HTTP 升级阶段的 4xx 属于服务端业务层拒绝（401/403 鉴权、409 Body 绑定冲突等）：
+  // 兄弟域名指向同一后端，切换只会重复被拒，还会持续污染日志（生产实测 2 天 5611 次空翻）。
+  return /^upgrade_http_4\d\d$/.test(cause);
 }
 
 export class CatsSendError extends Error {
@@ -280,6 +297,8 @@ export class CatsClient extends EventEmitter {
   private readyTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
+  private lastDisconnectCause = '';
+  private disconnectCauseStreak = 0;
   private endpointCandidates: string[] = [];
   private endpointIndex = 0;
   private pendingServerUrl: string | null = null;
@@ -342,10 +361,12 @@ export class CatsClient extends EventEmitter {
     const serverUrl = this.currentServerUrl();
     this.pendingServerUrl = serverUrl;
     this.attemptReachedReady = false;
-    Logger.info(
-      `[CatsCompany] 正在连接: ${serverUrl}, `
-      + `${connectorToken ? 'connectorToken=present' : `apiKey=${maskSecret(this.config.apiKey || '')}`}, bodyId=${bodyId}`,
-    );
+    if (!this.reconnectLogThrottled()) {
+      Logger.info(
+        `[CatsCompany] 正在连接: ${serverUrl}, `
+        + `${connectorToken ? 'connectorToken=present' : `apiKey=${maskSecret(this.config.apiKey || '')}`}, bodyId=${bodyId}`,
+      );
+    }
     this.supportsClientMessageDedupe = false;
     this.supportsThinToolRpc = false;
     this.connectionOpenedAt = 0;
@@ -403,11 +424,31 @@ export class CatsClient extends EventEmitter {
       const connectedForMs = connectedAt ? Math.max(0, closedAt - connectedAt) : 0;
       const lastActivityAgoMs = this.lastActivityAt ? Math.max(0, closedAt - this.lastActivityAt) : 0;
       const cause = classifyDisconnectCause(this.disconnectCause, this.lastTransportError, code);
-      Logger.warning(
-        `[CatsCompany] WebSocket 已关闭: code=${code}, reason=${oneLine(reason.toString())}, ` +
-        `cause=${cause}, connectedForMs=${connectedForMs}, lastActivityAgoMs=${lastActivityAgoMs}, ` +
-        `error=${oneLine(this.lastTransportError)}`,
-      );
+      const businessRejection = isBusinessRejectionCause(cause);
+      this.disconnectCauseStreak = cause === this.lastDisconnectCause ? this.disconnectCauseStreak + 1 : 1;
+      this.lastDisconnectCause = cause;
+      if (!this.reconnectLogThrottled()) {
+        Logger.warning(
+          `[CatsCompany] WebSocket 已关闭: code=${code}, reason=${oneLine(reason.toString())}, ` +
+          `cause=${cause}, connectedForMs=${connectedForMs}, lastActivityAgoMs=${lastActivityAgoMs}, ` +
+          `error=${oneLine(this.lastTransportError)}`
+          + (businessRejection ? `, consecutive=${this.disconnectCauseStreak}（业务层拒绝持续，重试不会自愈，日志已降频）` : ''),
+        );
+      }
+      // 业务层拒绝首次出现时给出解释性提示：切换域名不会缓解，需要人工处理占用方或凭据。
+      if (businessRejection && this.disconnectCauseStreak === 1) {
+        if (cause === 'upgrade_http_409') {
+          Logger.warning(
+            '[CatsCompany] 服务端以 409 拒绝连接：这个 Bot 的 Body 绑定被另一台设备占用或绑定在其他运行环境。'
+            + '切换域名不会缓解（兄弟域名是同一后端）；请关闭其他设备上的实例，或执行 Body 绑定迁移（body-transfer）后重试。',
+          );
+        } else {
+          Logger.warning(
+            `[CatsCompany] 服务端以 HTTP ${cause.replace('upgrade_http_', '')} 拒绝连接（鉴权/权限问题）。`
+            + '切换域名不会缓解；请检查账号与密钥配置。',
+          );
+        }
+      }
       this.clearConnectTimeout();
       this.clearReadyTimeout();
       this.awaitingReady = false;
@@ -436,12 +477,11 @@ export class CatsClient extends EventEmitter {
         'timeout',
         'WebSocket closed before receiving a Skill mutation grant result'
       ));
-      // 业务层拒绝（就绪超时/鉴权 4xx）不切换端点：兄弟域名是同一后端，
-      // 切过去只会重复被拒。只有连接层失败（超时/网络/DNS 等）才轮换。
+      // 业务层拒绝（就绪超时 / HTTP 4xx：鉴权 401/403、Body 绑定冲突 409 等）不切换端点：
+      // 兄弟域名是同一后端，切过去只会重复被拒。只有连接层失败（超时/网络/DNS 等）才轮换。
       const endpointFailure = !this.attemptReachedReady
         && cause !== 'ready_timeout'
-        && cause !== 'upgrade_http_401'
-        && cause !== 'upgrade_http_403';
+        && !businessRejection;
       if (!this.closed && endpointFailure) {
         this.rotateEndpointAfterConnectFailure(cause);
       }
@@ -454,7 +494,14 @@ export class CatsClient extends EventEmitter {
       if (msg.ctrl.code === 200 && msg.ctrl.params?.build === 'catscompany') {
         this.awaitingReady = false;
         this.clearReadyTimeout();
+        if (this.disconnectCauseStreak > 1 && isBusinessRejectionCause(this.lastDisconnectCause)) {
+          Logger.info(
+            `[CatsCompany] 连接恢复：此前连续 ${this.disconnectCauseStreak} 次被业务层拒绝（${this.lastDisconnectCause}）`,
+          );
+        }
         this.reconnectAttempts = 0;
+        this.disconnectCauseStreak = 0;
+        this.lastDisconnectCause = '';
         this.attemptReachedReady = true;
         this.activeServerUrl = this.pendingServerUrl;
         this.reportEndpointReady();
@@ -500,8 +547,16 @@ export class CatsClient extends EventEmitter {
           }
         }
       }
+    } else if (msg.session_fork) {
+      const control = normalizeSessionForkControl(msg.session_fork);
+      if (control) this.emit('session_fork', control);
+      else Logger.warning('[CatsCompany] Invalid session_fork control ignored');
     } else if (msg.device_rpc) {
       this.handleDeviceRpcMessage(msg.device_rpc);
+    } else if (msg.service_run_receipt) {
+      // 生命周期回注（平台 service_run_receipts 收件箱投递）：
+      // 至少一次投递 + 幂等（receipt_id 稳定），去重与路由交给上层路由表。
+      this.emit('service_run_receipt', msg.service_run_receipt);
     } else if (msg.thin_tool_rpc) {
       this.handleThinToolRpcMessage(msg.thin_tool_rpc);
     } else if (msg.skill_mutation_grant) {
@@ -532,6 +587,18 @@ export class CatsClient extends EventEmitter {
           && msg.data.member_count > 0
           ? msg.data.member_count
           : undefined,
+        botCount: typeof msg.data.bot_count === 'number'
+          && Number.isSafeInteger(msg.data.bot_count)
+          && msg.data.bot_count >= 0
+          ? msg.data.bot_count
+          : undefined,
+        roster: Array.isArray(msg.data.roster)
+          ? msg.data.roster.filter((member: unknown): member is CatsGroupRosterMember => (
+            Boolean(member) && typeof member === 'object'
+            && typeof (member as CatsGroupRosterMember).uid === 'string'
+          ))
+          : undefined,
+        activated: typeof msg.data.activated === 'boolean' ? msg.data.activated : undefined,
       };
       this.emit('message', ctx);
     } else if (msg.pres) {
@@ -690,6 +757,42 @@ export class CatsClient extends EventEmitter {
 
   async sendMessage(topic: string, text: string): Promise<number> {
     return this.sendStructuredMessage({ topic_id: topic, type: 'text', content: text });
+  }
+
+  async getSessionFork(topic: string): Promise<CatsSessionForkStatus | undefined> {
+    const url = new URL(`${this.httpBaseUrl()}/api/bot/session-forks`);
+    url.searchParams.set('topic_id', topic);
+    return this.requestSessionFork(url, { method: 'GET' }, topic, true);
+  }
+
+  async completeSessionFork(input: CatsSessionForkCompletion): Promise<CatsSessionForkStatus> {
+    const status = await this.requestSessionFork(new URL(`${this.httpBaseUrl()}/api/bot/session-forks/complete`), {
+      method: 'POST', body: JSON.stringify(input),
+    }, input.target_topic_id);
+    if (!status || status.request_id !== input.request_id) throw new Error('session_fork_completion_mismatch');
+    return status;
+  }
+
+  private async requestSessionFork(
+    url: URL, init: RequestInit, topic: string, allowAbsent = false,
+  ): Promise<CatsSessionForkStatus | undefined> {
+    if (!this.config.apiKey) throw new Error('session_fork_bot_api_key_required');
+    const bodyId = firstNonEmpty(this.config.bodyId, process.env.CATSCO_BODY_ID, process.env.CATSCOMPANY_BODY_ID,
+      process.env.CATSCO_DEVICE_ID, process.env.CATSCOMPANY_DEVICE_ID);
+    const response = await fetch(url, { ...init, headers: {
+      Authorization: `ApiKey ${this.config.apiKey}`, 'Content-Type': 'application/json',
+      'User-Agent': CATSCOMPANY_CLIENT_UA, ...(bodyId ? { 'X-CatsCo-Body-ID': bodyId } : {}),
+    }, signal: AbortSignal.timeout(15_000) });
+    const payload = await response.json() as Partial<CatsSessionForkStatus>;
+    // An unsupported route (generic 404), authorization failure or malformed reply is not proof of absence.
+    if (allowAbsent && response.status === 404 && payload?.error === 'session_fork_not_found') return undefined;
+    if (!response.ok) throw new Error(`session_fork_http_${response.status}`);
+    if (!payload || payload.target_topic_id !== topic || typeof payload.source_topic_id !== 'string'
+      || typeof payload.request_id !== 'string' || !payload.request_id
+      || !['pending', 'ready', 'failed'].includes(String(payload.state))) {
+      throw new Error('session_fork_status_invalid');
+    }
+    return payload as CatsSessionForkStatus;
   }
 
   async getAgentContextHistory(
@@ -1268,11 +1371,21 @@ export class CatsClient extends EventEmitter {
     }
   }
 
+  private reconnectLogThrottled(): boolean {
+    // 业务层拒绝（如 409 绑定冲突）会以固定节奏长期重试：保留首条与周期性抽样，
+    // 避免每轮两条日志刷屏（生产实测 2 天 5611 次）。
+    return isBusinessRejectionCause(this.lastDisconnectCause)
+      && this.disconnectCauseStreak > 1
+      && this.disconnectCauseStreak % BUSINESS_REJECTION_LOG_INTERVAL !== 0;
+  }
+
   private scheduleReconnect(): void {
     const baseDelay = this.positiveTimeout(this.config.reconnectBaseDelayMs, DEFAULT_RECONNECT_BASE_DELAY_MS);
     const maxDelay = this.positiveTimeout(this.config.reconnectMaxDelayMs, DEFAULT_RECONNECT_MAX_DELAY_MS);
     const delay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), maxDelay);
-    Logger.info(`[CatsCompany] ${delay}ms 后重连 (尝试 ${this.reconnectAttempts + 1})`);
+    if (!this.reconnectLogThrottled()) {
+      Logger.info(`[CatsCompany] ${delay}ms 后重连 (尝试 ${this.reconnectAttempts + 1})`);
+    }
     this.reconnectAttempts++;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {
@@ -1353,6 +1466,8 @@ export class CatsClient extends EventEmitter {
   disconnect(): void {
     this.closed = true;
     this.disconnectCause = 'client_shutdown';
+    this.disconnectCauseStreak = 0;
+    this.lastDisconnectCause = '';
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

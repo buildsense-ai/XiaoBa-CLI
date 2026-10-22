@@ -895,8 +895,8 @@ describe('interrupted turn recovery', () => {
     }
     assert.match(
       connector,
-      /this\.runInterruptedTurnResume\(sessionKey,\s*topic,\s*notice,\s*candidate\.deviceContext\)/,
-      'the scan result must be handed to the resume',
+      /this\.runInterruptedTurnResume\(sessionKey,\s*topic,\s*notice,\s*candidate\.deviceContext,\s*clearGeneration,\s*stopGeneration\)/,
+      'the scan result and original cancellation generations must be handed to the resume',
     );
     assert.match(
       connector,

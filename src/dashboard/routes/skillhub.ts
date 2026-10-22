@@ -83,6 +83,37 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
     }
   });
 
+  router.get('/skillhub/share-targets/:kind', async (req, res) => {
+    try {
+      const kind = String(req.params.kind || '').trim();
+      if (kind !== 'friends' && kind !== 'search') {
+        return res.status(400).json({ error: 'invalid share target kind', code: 'skillhub.share_target_kind_invalid' });
+      }
+      if (!options.getCatsCoAuth) {
+        return res.status(501).json({
+          error: 'CatsCo SkillHub login is not configured',
+          code: 'skillhub.catsco_exchange_unavailable',
+        });
+      }
+      if (kind === 'search' && String(req.query.q || '').trim().length < 2) {
+        return res.status(400).json({ error: 'query too short', code: 'skillhub.share_target_query_invalid' });
+      }
+      const cats = await options.getCatsCoAuth();
+      // Target lookup is request-scoped: exchanging the current CatsCo token
+      // must never replace a user's persisted SkillHub session cookie.
+      const service = serviceFrom(req.query, { sessionScope: 'memory' });
+      await service.loginWithCatsCo(cats);
+      const result = await service.getCatsCoShareTargets(
+        cats.token,
+        kind,
+        String(req.query.q || '').trim(),
+      );
+      res.set('Cache-Control', 'private, no-store').json(result);
+    } catch (error: any) {
+      sendSkillHubError(res, error);
+    }
+  });
+
   router.post('/skillhub/install', async (req, res) => {
     try {
       const skillId = String(req.body?.skillId || '').trim();

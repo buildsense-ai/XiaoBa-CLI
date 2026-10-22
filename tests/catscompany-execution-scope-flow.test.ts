@@ -28,11 +28,17 @@ function nativeFeishuMetadata(actorUserId: string, topicId: string, agentId = 'u
   };
 }
 
-function expectedCatsCoSessionKey(actorUserId: string, topicId: string, agentId = 'usr43') {
+// Keep the wire expectation independent of the production authorization helper.
+function expectedCatsCoAuthorizationSessionKey(actorUserId: string, topicId: string, agentId = 'usr43') {
   const topicType = topicId.startsWith('grp_') ? 'group' : 'p2p';
-  if (topicType === 'group') return `cc_group:${topicId}`;
-  void actorUserId;
-  return `session:v2:catscompany:${topicType}:${encodeURIComponent(topicId)}:agent:${encodeURIComponent(agentId)}`;
+  const authorizationTopic = topicType === 'group' ? `${topicId}:actor:${actorUserId}` : topicId;
+  return `session:v2:catscompany:${topicType}:${encodeURIComponent(authorizationTopic)}:agent:${encodeURIComponent(agentId)}`;
+}
+
+function expectedCatsCoHistorySessionKey(actorUserId: string, topicId: string, agentId = 'usr43') {
+  return topicId.startsWith('grp_')
+    ? `cc_group:${topicId}`
+    : expectedCatsCoAuthorizationSessionKey(actorUserId, topicId, agentId);
 }
 
 function deviceGrant(overrides: Record<string, unknown> = {}) {
@@ -78,12 +84,20 @@ function metadataWithDeviceGrants(actorUserId: string, topicId: string, grants: 
 }
 
 function metadataWithDeviceSelection(actorUserId: string, topicId: string, selection: Record<string, unknown>, agentId = 'usr43', bodyId = 'body-main') {
-  const metadata = metadataWithDeviceGrants(actorUserId, topicId, [deviceGrant()], agentId, bodyId);
+  const metadata = metadataWithDeviceGrants(actorUserId, topicId, [deviceGrant({
+    sessionKey: expectedCatsCoAuthorizationSessionKey(actorUserId, topicId, agentId),
+    topicId,
+    topicType: topicId.startsWith('grp_') ? 'group' : 'p2p',
+    actorUserId,
+    ownerUserId: actorUserId,
+    agentId,
+    agentBodyId: bodyId,
+  })], agentId, bodyId);
   (metadata.catsco_identity as any).device_selection = {
     kind: 'user_device_selection',
     source: 'catscompany',
     status: 'selected',
-    sessionKey: expectedCatsCoSessionKey(actorUserId, topicId, agentId),
+    sessionKey: expectedCatsCoAuthorizationSessionKey(actorUserId, topicId, agentId),
     topicId,
     topicType: topicId.startsWith('grp_') ? 'group' : 'p2p',
     actorUserId,
@@ -177,6 +191,7 @@ function createHarness(options: {
   bot.sessionClearGenerations = new Map();
   bot.botUid = 'usr43';
   bot.bot = {
+    getSessionFork: async () => undefined,
     getAgentContextHistory: async () => ({
       messages: [],
       topic_id: 'grp_80',
@@ -243,7 +258,7 @@ describe('CatsCompany execution scope flow', () => {
       const pending: any = consume();
       assert.match(String(pending?.content ?? pending), /web task follow-up/);
       assert.equal(harness.session.getRemoteContextCursor(), 21);
-      assert.equal(harness.bot.messageQueue.has(expectedCatsCoSessionKey('usr7',topic)), false);
+      assert.equal(harness.bot.messageQueue.has(expectedCatsCoHistorySessionKey('usr7',topic)), false);
     } finally {
       release();
       await original;
@@ -254,7 +269,7 @@ describe('CatsCompany execution scope flow', () => {
   test('retains pending web task input when its context cursor cannot be saved', async () => {
     const harness = createHarness({busy: true});
     const topic = 'grp_80';
-    const key = expectedCatsCoSessionKey('usr7',topic);
+    const key = expectedCatsCoHistorySessionKey('usr7',topic);
     await harness.bot.onMessage({
       topic, senderId: 'usr7', text: 'queued follow-up', content: 'queued follow-up',
       isGroup: true, memberCount: 2, seq: 21, metadata: canonicalMetadata('usr7', topic),
@@ -272,7 +287,7 @@ describe('CatsCompany execution scope flow', () => {
     for (const memberCount of [3, undefined]) {
       const harness = createHarness({busy: true});
       const topic = 'grp_80';
-      const key = expectedCatsCoSessionKey('usr7',topic);
+      const key = expectedCatsCoHistorySessionKey('usr7',topic);
       await harness.bot.onMessage({
         topic, senderId: 'usr7', text: 'group follow-up', content: 'group follow-up',
         isGroup: true, memberCount, mentions: ['usr43'], seq: 21, metadata: canonicalMetadata('usr7', topic),
@@ -286,7 +301,7 @@ describe('CatsCompany execution scope flow', () => {
   test('/stop discards queued follow-ups and permits only new work afterwards', async () => {
     const harness = createHarness({ busy: true });
     const topic = 'p2p_7_43';
-    const key = expectedCatsCoSessionKey('usr7', topic);
+    const key = expectedCatsCoHistorySessionKey('usr7', topic);
     const message = (text: string, seq: number) => ({
       topic, senderId: 'usr7', text, content: text, isGroup: false, seq,
       metadata: canonicalMetadata('usr7', topic),
@@ -328,7 +343,7 @@ describe('CatsCompany execution scope flow', () => {
   test('stop fences late text and progress callbacks but allows fresh callbacks', async () => {
     const harness = createHarness();
     const topic = 'p2p_7_43';
-    const key = expectedCatsCoSessionKey('usr7', topic);
+    const key = expectedCatsCoHistorySessionKey('usr7', topic);
     (harness.session as any).requestInterrupt = () => {};
     const callbacks = harness.bot.buildSessionCallbacks(topic, { sessionKey: key });
     harness.bot.handleCancelMessage({ topic, senderId: 'usr7', isGroup: false });
@@ -558,7 +573,7 @@ describe('CatsCompany execution scope flow', () => {
     };
 
     const oldRestore = harness.bot.ensureCloudSessionRestored({ topic: 'p2p_7_43', seq: 12 } as any, route as any);
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(restoreResolvers.length, 1);
 
     await harness.bot.onMessage({
@@ -572,7 +587,7 @@ describe('CatsCompany execution scope flow', () => {
     });
 
     const newRestore = harness.bot.ensureCloudSessionRestored({ topic: 'p2p_7_43', seq: 14 } as any, route as any);
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(restoreResolvers.length, 2);
 
     restoreResolvers[0]({ status: 'failed', restoredMessages: 0, fetchedMessages: 0, compressed: false });
@@ -1405,7 +1420,7 @@ describe('CatsCompany execution scope flow', () => {
       content: '在我的桌面创建文件夹',
       metadata: metadataWithDeviceGrants('usr7', 'grp_80', [
         deviceGrant({
-          sessionKey: expectedCatsCoSessionKey('usr7', 'grp_80'),
+          sessionKey: expectedCatsCoAuthorizationSessionKey('usr7', 'grp_80'),
           topicId: 'grp_80',
           topicType: 'group',
         }),
@@ -1416,12 +1431,50 @@ describe('CatsCompany execution scope flow', () => {
     });
 
     assert.equal(handledTurns.length, 1);
-    assert.equal(handledTurns[0].options.executionScope.sessionKey, expectedCatsCoSessionKey('usr7', 'grp_80'));
+    assert.equal(handledTurns[0].options.executionScope.sessionKey, expectedCatsCoHistorySessionKey('usr7', 'grp_80'));
     assert.equal(handledTurns[0].options.executionScope.topicId, 'grp_80');
     assert.equal(handledTurns[0].options.deviceGrants?.length, 1);
-    assert.equal(handledTurns[0].options.deviceGrants[0].sessionKey, expectedCatsCoSessionKey('usr7', 'grp_80'));
+    assert.equal(handledTurns[0].options.deviceGrants[0].sessionKey, expectedCatsCoAuthorizationSessionKey('usr7', 'grp_80'));
     assert.equal(handledTurns[0].options.deviceGrants[0].topicId, 'grp_80');
     assert.equal(handledTurns[0].options.deviceGrants[0].actorUserId, 'usr7');
+  });
+
+  test('passes actor-scoped group device selection while keeping shared history', async () => {
+    const { bot, handledTurns, sessionKeys } = createHarness();
+
+    await (bot as any).onMessage({
+      topic: 'grp_80', senderId: 'usr7', text: '读一下本机文件', content: '读一下本机文件',
+      metadata: metadataWithDeviceSelection('usr7', 'grp_80', {}),
+      isGroup: true, memberCount: 2, seq: 12,
+    });
+
+    assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.executionScope.sessionKey, 'cc_group:grp_80');
+    assert.equal(handledTurns[0].options.deviceSelection?.sessionKey,
+      'session:v2:catscompany:group:grp_80%3Aactor%3Ausr7:agent:usr43');
+    assert.equal(handledTurns[0].options.deviceSelection?.selectedDeviceId, 'alice-laptop');
+    assert.equal(handledTurns[0].options.deviceGrants?.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants[0].sessionKey,
+      handledTurns[0].options.deviceSelection.sessionKey);
+  });
+
+  test('drops group device authorization using the shared history key', async () => {
+    const { bot, handledTurns, sessionKeys } = createHarness();
+    const metadata = metadataWithDeviceSelection('usr7', 'grp_80', { sessionKey: 'cc_group:grp_80' });
+    (metadata.catsco_identity as any).device_grants = [deviceGrant({
+      sessionKey: 'cc_group:grp_80', topicId: 'grp_80', topicType: 'group',
+    })];
+
+    await (bot as any).onMessage({
+      topic: 'grp_80', senderId: 'usr7', text: '读一下本机文件', content: '读一下本机文件',
+      metadata, isGroup: true, memberCount: 2, seq: 12,
+    });
+
+    assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
+    assert.equal(handledTurns.length, 1);
+    assert.equal(handledTurns[0].options.deviceGrants, undefined);
+    assert.equal(handledTurns[0].options.deviceSelection, undefined);
   });
 
   test('passes server canonical device selection into CatsCompany session turn', async () => {
@@ -1642,7 +1695,7 @@ describe('CatsCompany execution scope flow', () => {
     });
 
     assert.equal(pendingInputProvider?.(), null);
-    const queued = harness.bot.messageQueue.get(expectedCatsCoSessionKey('usr7', 'p2p_7_43'));
+    const queued = harness.bot.messageQueue.get(expectedCatsCoHistorySessionKey('usr7', 'p2p_7_43'));
     assert.equal(queued?.length, 1);
     assert.equal(queued?.[0].artifactTaskRef, undefined);
 
@@ -1655,7 +1708,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(harness.handledTurns[1].options.artifactTaskRef, undefined);
     assert.equal('artifactTaskRef' in harness.handledTurns[1].options.executionScope, false);
     assert.match(String(harness.handledTurns[1].userMessage), /普通风险项/);
-    assert.equal(harness.bot.messageQueue.has(expectedCatsCoSessionKey('usr7', 'p2p_7_43')), false);
+    assert.equal(harness.bot.messageQueue.has(expectedCatsCoHistorySessionKey('usr7', 'p2p_7_43')), false);
 
     const taskRunIDs = new Set(taskStatuses
       .filter(status => status.artifact_task_ref === taskRef)

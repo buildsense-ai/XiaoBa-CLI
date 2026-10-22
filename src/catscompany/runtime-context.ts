@@ -1,10 +1,15 @@
 import type { TargetRoute, TargetRouteOS, TargetRoutes } from '../types/tool';
+import type { ExecutionScope } from '../types/session-identity';
 
 type UnknownRecord = Record<string, unknown>;
 
-export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | undefined): TargetRoutes | undefined {
+export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | undefined, scope?: ExecutionScope): TargetRoutes | undefined {
   const runtime = asRecord(metadata?.xiaoba_runtime);
-  if (!runtime || stringField(runtime, 'schema') !== 'xiaoba.runtime.v1') return undefined;
+  const schema = stringField(runtime, 'schema');
+  if (!runtime || (schema !== 'xiaoba.runtime.v1' && schema !== 'xiaoba.runtime.v2')) return undefined;
+  const ownerUserId = scope?.deviceOwnerUserId || scope?.actorUserId;
+  if (schema === 'xiaoba.runtime.v2' && (!scope?.isTrusted || scope.identityTrust !== 'server_canonical'
+    || scope.source !== 'catscompany' || !ownerUserId || stringField(runtime, 'ownerUserId') !== ownerUserId)) return undefined;
   const devices = Array.isArray(runtime.devices) ? runtime.devices : [];
   const routes: TargetRoute[] = [];
   for (const item of devices) {
@@ -13,6 +18,7 @@ export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | 
     const userId = stringField(record, 'userId') || stringField(record, 'user_id');
     const deviceId = stringField(record, 'deviceId') || stringField(record, 'device_id');
     if (!userId || !deviceId) continue;
+    if (scope && userId !== ownerUserId) continue;
     const userName = stringField(record, 'userName') || stringField(record, 'user_name');
     const label = stringField(record, 'label') || (userName ? `${userName} 的电脑` : `${userId} 的电脑`);
     routes.push({
@@ -22,7 +28,7 @@ export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | 
       deviceId,
       label,
       os: normalizeOS(stringField(record, 'os')),
-      status: 'ready',
+      status: schema === 'xiaoba.runtime.v1' || record.status === 'ready' ? 'ready' : 'unavailable',
     });
   }
   if (routes.length === 0) return undefined;
@@ -30,17 +36,18 @@ export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | 
 }
 
 export function buildTargetRoutes(routes: TargetRoute[]): TargetRoutes | undefined {
-  const readyRoutes = routes.filter(route => route.status === 'ready' && route.userId && route.deviceId);
-  if (readyRoutes.length === 0) return undefined;
+  const directoryRoutes = routes.filter(route => route.userId && route.deviceId);
+  if (directoryRoutes.length === 0) return undefined;
   const byName = new Map<string, TargetRoute[]>();
   const byUserId = new Map<string, TargetRoute[]>();
-  for (const route of readyRoutes) {
+  for (const route of directoryRoutes) {
     addRoute(byUserId, route.userId, route);
     addRoute(byName, route.userId, route);
     addRoute(byName, route.userName, route);
     addRoute(byName, route.label, route);
+    addRoute(byName, route.deviceId, route);
   }
-  return { routes: readyRoutes, byName, byUserId };
+  return { routes: directoryRoutes, byName, byUserId };
 }
 
 export function normalizeTargetText(value: unknown): string {

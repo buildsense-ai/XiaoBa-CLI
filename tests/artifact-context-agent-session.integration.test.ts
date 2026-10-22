@@ -93,6 +93,7 @@ describe('Artifact refs AgentSession integration', { concurrency: false }, () =>
         surface: 'catscompany',
         artifactContextRef: ARTIFACT_REF,
         artifactTaskRef: ARTIFACT_TASK_REF,
+        ...scopedDeviceContext('usr8', 'alice-device', ['read_file']),
         targetRoutes: buildTargetRoutes([{
           userId: 'usr8',
           userName: 'Alice',
@@ -227,3 +228,4 @@ function skillManagerStub(): object {
     loadSkills: async () => {},
   };
 }
+import { scopedDeviceContext } from './helpers/scoped-device-context';

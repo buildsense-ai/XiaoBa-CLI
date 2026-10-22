@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as http from 'http';
-import { DEFAULT_PDF_IMAGE_FALLBACK_PAGES, DEFAULT_PDF_READ_PAGES, DEFAULT_TEXT_READ_LIMIT, ReadTool } from '../src/tools/read-tool';
+import { DEFAULT_PDF_IMAGE_FALLBACK_PAGES, DEFAULT_PDF_READ_PAGES, DEFAULT_TEXT_READ_LIMIT, MAX_URL_DOWNLOAD_BYTES, ReadTool, isHttpUrl } from '../src/tools/read-tool';
 import { ToolExecutionContext } from '../src/types/tool';
 import { writeOnePixelBmp, writeOnePixelPng } from './helpers/image-fixtures';
 
@@ -874,3 +874,4 @@ describe('ReadTool - ToolExecutionResult', () => {
     }
   });
 });
+

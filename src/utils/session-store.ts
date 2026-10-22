@@ -7,9 +7,12 @@ import {
   stripAssistantTranscriptArtifacts,
 } from './transcript-artifacts';
 import { PathResolver } from './path-resolver';
+import { randomUUID } from 'crypto';
+import type { SessionForkSnapshot, SessionForkIdentity } from '../core/session-fork';
 
 const SESSIONS_DIR = PathResolver.getDataPath('sessions');
 const SESSION_STATE_DIR = PathResolver.getDataPath('session-state');
+const SESSION_FORK_DIR = PathResolver.getDataPath('session-forks');
 
 function ensureDir(): void {
   if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -25,6 +28,30 @@ function filePath(key: string): string {
 
 function stateFilePath(key: string): string {
   return path.join(SESSION_STATE_DIR, keyToFilename(key).replace(/\.jsonl$/, '.json'));
+}
+
+function forkFilePath(key: string): string {
+  return path.join(SESSION_FORK_DIR, keyToFilename(key).replace(/\.jsonl$/, '.json'));
+}
+
+function atomicReplace(target: string, content: string): void {
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, content, { encoding: 'utf8', flag: 'wx' });
+    // Windows readers can briefly block replacement. Never unlink the old target.
+    for (let retry = 0; ; retry++) {
+      try {
+        fs.renameSync(temporary, target);
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (retry >= 3 || !['EBUSY', 'EACCES', 'EPERM'].includes(code || '')) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (retry + 1));
+      }
+    }
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
 }
 
 function escapeRegExp(value: string): string {
@@ -130,6 +157,15 @@ function serializeMessages(messages: Message[]): string {
 export interface SessionRuntimeState {
   currentDirectory?: string;
   remoteContextCursors?: Record<string, number>;
+  /**
+   * 本运行体发出的消息在服务端的 seq（按远端 source 分组）。
+   *
+   * 回填（appendDurableContext）按 `source:id` 去重，但本机发出的那条消息
+   * 落盘时还没有 id——saveContext 在 reply 之前就执行完了。把发出的 seq 记
+   * 在这里，回填时就能认出「远端那条就是我刚发的」，而不是靠比对正文
+   * （正文会被分段、剥前缀、被服务端改写，三种形态都比不上）。
+   */
+  sentRemoteIds?: Record<string, number[]>;
   updatedAt?: string;
   /**
    * Set while a conversation turn has not reached a terminal state because the
@@ -225,6 +261,71 @@ export class SessionStore {
     return SessionStore.instance;
   }
 
+  getForkIdentity(sessionKey: string): SessionForkIdentity | undefined {
+    const snapshot = this.readForkSnapshot(sessionKey);
+    if (!snapshot) return undefined;
+    const { requestId, sourceSessionKey, targetSessionKey, sourceLastSeq } = snapshot;
+    return { requestId, sourceSessionKey, targetSessionKey, sourceLastSeq };
+  }
+
+  /** One immutable bootstrap file is the commit point; later writes use normal storage. */
+  installFork(snapshot: SessionForkSnapshot): 'created' | 'existing' {
+    if (snapshot.version !== 1 || !snapshot.requestId || !snapshot.sourceSessionKey || !snapshot.targetSessionKey
+      || snapshot.sourceSessionKey === snapshot.targetSessionKey || !Number.isSafeInteger(snapshot.sourceLastSeq)
+      || snapshot.sourceLastSeq < 0 || !Array.isArray(snapshot.messages)) {
+      throw new Error('Invalid session fork snapshot');
+    }
+    const existing = this.readForkSnapshot(snapshot.targetSessionKey);
+    if (existing) {
+      if (existing.requestId !== snapshot.requestId || existing.sourceSessionKey !== snapshot.sourceSessionKey
+        || existing.sourceLastSeq !== snapshot.sourceLastSeq) throw new Error('Target exists for a different fork');
+      return 'existing';
+    }
+    if (this.hasSession(snapshot.targetSessionKey) || fs.existsSync(stateFilePath(snapshot.targetSessionKey))) {
+      throw new Error('Target session already exists');
+    }
+    fs.mkdirSync(SESSION_FORK_DIR, { recursive: true });
+    const target = forkFilePath(snapshot.targetSessionKey);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    const durable: SessionForkSnapshot = { version: 1, requestId: snapshot.requestId,
+      sourceSessionKey: snapshot.sourceSessionKey, targetSessionKey: snapshot.targetSessionKey,
+      sourceLastSeq: snapshot.sourceLastSeq, currentDirectory: snapshot.currentDirectory,
+      messages: sanitizeForPersistence(snapshot.messages) };
+    try {
+      fs.writeFileSync(temporary, JSON.stringify(durable), { encoding: 'utf8', flag: 'wx' });
+      // Hard-link publication is atomic and cannot replace another process's target.
+      fs.linkSync(temporary, target);
+    } catch (error: any) {
+      if (error?.code === 'EEXIST') return this.installFork(snapshot);
+      throw error;
+    } finally {
+      if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+    }
+    return 'created';
+  }
+
+  /** Strict, non-migrating read: a damaged source must not become a partial fork. */
+  readContextForFork(sessionKey: string): Message[] {
+    const fp = filePath(sessionKey);
+    if (!fs.existsSync(fp)) {
+      const snapshot = this.readForkSnapshot(sessionKey);
+      if (!snapshot || snapshot.materialized) throw new Error('Source local session is unavailable');
+      return structuredClone(snapshot.messages);
+    }
+    const text = fs.readFileSync(fp, 'utf8').trim();
+    return text ? sanitizeForPersistence(text.split('\n').map(line => JSON.parse(line) as Message)) : [];
+  }
+
+  private readForkSnapshot(sessionKey: string): SessionForkSnapshot | undefined {
+    const target = forkFilePath(sessionKey);
+    if (!fs.existsSync(target)) return undefined;
+    const snapshot = JSON.parse(fs.readFileSync(target, 'utf8')) as SessionForkSnapshot;
+    if (snapshot.version !== 1 || snapshot.targetSessionKey !== sessionKey || !Array.isArray(snapshot.messages)) {
+      throw new Error('Invalid persisted session fork');
+    }
+    return snapshot;
+  }
+
   /** 保存完整 context（覆盖写入）；返回是否真实落盘成功。 */
   saveContext(sessionKey: string, messages: Message[]): boolean {
     try {
@@ -232,7 +333,15 @@ export class SessionStore {
       const fp = filePath(sessionKey);
       const lines = sanitizeForPersistence(messages)
         .map(m => JSON.stringify(m));
-      fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf-8');
+      const fork = this.readForkSnapshot(sessionKey);
+      if (fork) {
+        // Publish before the first normal save: a missing transcript must never
+        // be mistaken for a never-materialized, still-valid initial snapshot.
+        if (!fork.materialized) atomicReplace(forkFilePath(sessionKey), JSON.stringify({ ...fork, materialized: true }));
+        atomicReplace(fp, lines.join('\n') + '\n');
+      } else {
+        fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf-8');
+      }
       return true;
     } catch (err) {
       Logger.error(`保存 context 失败 [${sessionKey}]: ${err}`);
@@ -242,9 +351,11 @@ export class SessionStore {
 
   /** 加载完整 context */
   loadContext(sessionKey: string): Message[] {
+    // Fork history loss is explicit; ordinary legacy repair behavior is unchanged.
+    if (this.readForkSnapshot(sessionKey)) return this.readContextForFork(sessionKey);
     try {
       const fp = filePath(sessionKey);
-      if (!fs.existsSync(fp)) return [];
+      if (!fs.existsSync(fp)) return structuredClone(this.readForkSnapshot(sessionKey)?.messages ?? []);
       const content = fs.readFileSync(fp, 'utf-8').trim();
       if (!content) return [];
       const msgs: Message[] = [];
@@ -268,14 +379,23 @@ export class SessionStore {
   /** 检查是否有会话文件 */
   hasSession(sessionKey: string): boolean {
     this.migrateCatsCoGroupSessionIfNeeded(sessionKey);
-    return fs.existsSync(filePath(sessionKey));
+    if (fs.existsSync(filePath(sessionKey))) return true;
+    const fork = this.readForkSnapshot(sessionKey);
+    return Boolean(fork && !fork.materialized);
   }
 
   /** 删除会话文件；返回是否真实删除成功或本就不存在。 */
-  deleteSession(sessionKey: string): boolean {
+  deleteSession(sessionKey: string, options: { preserveForkIdentity?: boolean } = {}): boolean {
     try {
+      const identity = options.preserveForkIdentity ? this.getForkIdentity(sessionKey) : undefined;
+      const forkPath = forkFilePath(sessionKey);
+      if (identity) {
+        // Clearing content must not let a delayed initialization replay old history.
+        atomicReplace(forkPath, JSON.stringify({ version: 1, ...identity, messages: [] }));
+      }
       const fp = filePath(sessionKey);
       if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      if (!identity && fs.existsSync(forkPath)) fs.unlinkSync(forkPath);
       Logger.info(`会话已删除: ${sessionKey}`);
       return true;
     } catch (err) {
@@ -288,7 +408,12 @@ export class SessionStore {
     try {
       this.migrateCatsCoGroupStateIfNeeded(sessionKey);
       const fp = stateFilePath(sessionKey);
-      if (!fs.existsSync(fp)) return {};
+      if (!fs.existsSync(fp)) {
+        const snapshot = this.readForkSnapshot(sessionKey);
+        return snapshot ? {
+          ...(snapshot.currentDirectory ? { currentDirectory: snapshot.currentDirectory } : {}),
+        } : {};
+      }
       const parsed = JSON.parse(fs.readFileSync(fp, 'utf-8')) as SessionRuntimeState;
       return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (err) {

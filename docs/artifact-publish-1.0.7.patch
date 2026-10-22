@@ -1,0 +1,100 @@
+diff --git a/SKILL.md b/SKILL.md
+index a69d4f6..0082bf2 100644
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -2,7 +2,7 @@
+ name: artifact-publish
+ description: 把本机运行的前后端应用发布成固定公网地址（Artifact），并让应用识别访问者身份用于权限控制；同时负责查询、修改、下架自己已发布的应用。当用户要求"把某个应用发布/上线/放到公网"、"给它一个固定地址"、"从我侧栏能打开它"、"让别人能访问我本机的服务"，或要求查看/改名/下架已发布的应用时使用。不用于需要公网 IP 或开放入站端口的环境。
+ skillhub_author: "yii"
+-skillhub_version: "1.0.6"
++skillhub_version: "1.0.7"
+ skillhub_uploaded_at: "2026-09-29T05:35:22.689Z"
+ ---
+ 
+@@ -89,7 +89,13 @@ cd <SKILL_DIR>/connector
+ node artifact-cli.mjs publish <应用id> "显示名" <本地端口>
+ ```
+ 
+-凭据和公钥都由脚本自己取。返回里 `remote_port` 第 4 步要用。
++凭据和公钥都由脚本自己取。由 CatsCo 当前对话启动的可信 Skill 运行时还会自动附带
++当前会话和触发发布的人类消息作为 Artifact 来源；不要手工填写
++`source_topic_id` / `source_message_id`。这两个字段只是运行时的来源提示，最终真实性
++必须由 Artifact API 服务端根据自己的消息记录校验。返回里 `remote_port` 第 4 步要用。
++
++新建 Artifact 必须从当前 CatsCo 对话发布。若运行时没有可信来源，脚本会停止并提示
++重新从当前对话发起；对已经存在的应用，改名、换端口或调整上传上限仍可按下方管理命令
++重新发布，不需要重复提供来源字段。
+ 
+ 要收上传的话，把上限作为第 4 个参数加上：
+ 
+diff --git a/connector/artifact-cli.mjs b/connector/artifact-cli.mjs
+index 2d8467c..16a8d1b 100644
+--- a/connector/artifact-cli.mjs
++++ b/connector/artifact-cli.mjs
+@@ -10,6 +10,10 @@
+ // from the key pair `init-connector.mjs` created), so the key never has to be copied
+ // by hand — a mistyped or empty key is rejected by the gateway as an invalid
+ // registration, which is a confusing way to learn about a copy-paste mistake.
++// For a new application the XiaoBa runtime supplies the canonical conversation
++// and human-message pair through CATSCO_ARTIFACT_SOURCE_* environment
++// variables. They are intentionally not accepted as command-line options.
++// This is a client-side defense-in-depth hint; the Artifact API remains the
++// authority and must validate the pair against its own canonical message store.
+ import fs from 'node:fs';
+ import path from 'node:path';
+ import { resolveBotCredential, authHeader } from './credential.mjs';
+@@ -55,6 +59,25 @@ async function call(method, path, body) {
+   return { status: response.status, body: parsed, text };
+ }
+ 
++function readArtifactSourceFromRuntime() {
++  const topicId = String(process.env.CATSCO_ARTIFACT_SOURCE_TOPIC_ID || '').trim();
++  const messageId = String(process.env.CATSCO_ARTIFACT_SOURCE_MESSAGE_ID || '').trim();
++  if (!topicId && !messageId) return null;
++  if (!topicId || !/^\d+$/.test(messageId) || !Number.isSafeInteger(Number(messageId)) || Number(messageId) <= 0) {
++    throw new Error('运行时注入的 Artifact 来源不完整或无效；请从 CatsCo 当前对话重新发起发布。');
++  }
++  return { source_topic_id: topicId, source_message_id: Number(messageId) };
++}
++
++async function readExistingArtifact(id) {
++  const result = await call('GET', `/api/artifacts/apps/${encodeURIComponent(id)}`);
++  if (result.status === 404) return { exists: false };
++  if (result.status !== 200) {
++    throw new Error(`检查 Artifact 是否已存在失败 HTTP ${result.status}: ${result.text.slice(0, 300)}`);
++  }
++  return { exists: true, body: result.body };
++}
++
+ if (command === 'whoami') {
+   console.log(JSON.stringify({
+     botUid: credential.botUid,
+@@ -94,6 +117,28 @@ if (command === 'publish') {
+   }
+   const payload = { id, title, publicKey, localPort };
+   if (uploadArg) payload.uploadLimitMb = Number(uploadArg);
++  let source;
++  try {
++    source = readArtifactSourceFromRuntime();
++  } catch (error) {
++    console.error(error.message);
++    process.exit(2);
++  }
++  if (source) {
++    Object.assign(payload, source);
++  } else {
++    let existing;
++    try {
++      existing = await readExistingArtifact(id);
++    } catch (error) {
++      console.error(error.message);
++      process.exit(1);
++    }
++    if (!existing.exists) {
++      console.error('新建 Artifact 必须来自当前 CatsCo 对话；未收到可信来源，请不要手工补 source_topic_id/source_message_id，重新从当前对话发布。');
++      process.exit(2);
++    }
++  }
+   const { status, body, text } = await call('POST', '/api/artifacts/apps', payload);
+   if (status !== 201 && status !== 200) {
+     console.error(`发布失败 HTTP ${status}: ${text.slice(0, 500)}`);

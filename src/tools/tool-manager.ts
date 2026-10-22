@@ -28,6 +28,7 @@ import { confirmLocalToolExecution } from './local-tool-risk';
 import { buildToolTargetContext, operationForToolTargetContext } from './tool-target-context';
 import { CatsLogKnowledgeRecallTool, CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from './catslog-knowledge-recall-tool';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
+import { getDeviceTargetResolutionFailure } from './execution-router';
 
 const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
 const LEGACY_DISABLED_TOOL_NAMES = ['prompt_mode'] as const;
@@ -137,6 +138,11 @@ export class ToolManager implements ToolExecutor {
     this.tools.set(tool.definition.name, tool);
   }
 
+  /** 注销工具（MCP 工具桥按远端清单 diff 增量维护时使用）。 */
+  unregisterTool(name: string): void {
+    this.tools.delete(name);
+  }
+
   setContextDefaults(contextDefaults: Partial<ToolExecutionContext>): void {
     this.contextDefaults = {
       ...this.contextDefaults,
@@ -207,6 +213,17 @@ export class ToolManager implements ToolExecutor {
         };
       }
 
+      // Check before tool-specific local-file-grant/Skill shortcuts too. This
+      // state is owned by the runner, not accepted from model JSON arguments.
+      const targetFailure = operationForToolTargetContext(toolName)
+        ? getDeviceTargetResolutionFailure(context) : undefined;
+      if (targetFailure) {
+        return {
+          tool_call_id: toolCall.id, role: 'tool', name: toolName,
+          content: targetFailure.message, ok: false,
+          errorCode: targetFailure.errorCode, retryable: false,
+        };
+      }
       const confirmation = await confirmLocalToolExecution(toolName, args, context);
       if (confirmation) {
         return {

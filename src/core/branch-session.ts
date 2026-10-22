@@ -25,6 +25,8 @@ export interface BranchSessionOptions {
   deadlineMs?: number;
   /** Optional prompt-token budget for each runner pass. */
   maxContextTokens?: number;
+  /** Memory's restored autonomous tool loop uses the original serial execution. */
+  parallelToolExecution?: boolean;
 }
 
 export interface BranchRunOutcome {
@@ -212,7 +214,7 @@ export abstract class BranchSession {
       // Branch tools are read-only and independent, so multiple calls emitted
       // in one model turn run concurrently (results stay keyed to their
       // tool_use ids; the shared abortSignal cancels the whole batch).
-      parallelToolExecution: true,
+      parallelToolExecution: this.options.parallelToolExecution ?? true,
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
         sessionId: `branch:${this.options.type}:${this.options.id}`,
