@@ -36,9 +36,12 @@ const events = result.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.par
 const suite = 'TestXiaoBaMultiDevicePairedContract';
 const names = ['', '/multiple_devices_require_selection', '/selected_a', '/selected_b',
   '/old_A_wire_rejected_after_switch', '/legacy_unscoped_wire_requires_upgrade',
-  '/server_host_without_desktop_authorization', '/selected_B_offline_does_not_fallback_to_A'];
+  '/server_host_without_desktop_authorization', '/selected_B_offline_does_not_fallback_to_A',
+  '/group', '/group/selected_A_preserves_shared_history', '/group/other_actor_uses_only_own_device',
+  '/group/other_bot_selection_is_independent', '/group/cross_actor_or_bot_metadata_rejected',
+  '/group/switch_invalidates_old_wire', '/group/offline_B_never_falls_back_to_A'];
 const passed = new Set(events.filter(event => event.Action === 'pass').map(event => event.Test));
 if (names.some(name => !passed.has(suite + name)) || events.some(event => event.Action === 'skip' || event.Action === 'fail')) {
   throw new Error('Required paired scenarios did not all pass');
 }
-console.log('[multi-device-paired] 7 scenarios passed; real metadata/CLI wire/server dispatch, simulated storage/devices, not deployed E2E.');
+console.log('[multi-device-paired] 13 scenarios passed (private + group); real metadata/CLI wire/server dispatch, simulated storage/devices, not deployed E2E.');

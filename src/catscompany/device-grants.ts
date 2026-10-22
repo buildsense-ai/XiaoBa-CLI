@@ -7,7 +7,7 @@ import type {
   MessageTopicType,
   ScopedDeviceGrant,
 } from '../types/session-identity';
-import { isDelegatedDeviceGrant } from '../core/device-grants';
+import { getDeviceAuthorizationSessionKey, isDelegatedDeviceGrant } from '../core/device-grants';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -79,7 +79,7 @@ function grantMatchesScope(grant: ScopedDeviceGrant, scope: ExecutionScope): boo
   return grant.status === 'active'
     && grant.identityTrust === 'server_canonical'
     && grant.source === scope.source
-    && grant.sessionKey === scope.sessionKey
+    && grant.sessionKey === getDeviceAuthorizationSessionKey(scope)
     && grant.topicId === scope.topicId
     && grant.topicType === scope.topicType
     && grant.actorUserId === scope.actorUserId

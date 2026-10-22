@@ -11,7 +11,7 @@ import {
   type TrustedBotSkillScriptInvocation,
 } from '../bot-skills/trusted-script-execution';
 import { Logger } from '../utils/logger';
-import { resolveDeviceGrant } from '../core/device-grants';
+import { getDeviceAuthorizationSessionKey, resolveDeviceGrant } from '../core/device-grants';
 
 export type ExecutionTargetId = 'agent_self' | string;
 
@@ -242,7 +242,7 @@ function authorizeRemoteRoute(
   }
   const selection = context.deviceSelection;
   if (selection && (selection.identityTrust !== 'server_canonical'
-    || selection.sessionKey !== scope.sessionKey || selection.actorUserId !== scope.actorUserId
+    || selection.sessionKey !== getDeviceAuthorizationSessionKey(scope) || selection.actorUserId !== scope.actorUserId
     || selection.agentId !== scope.agentId || selection.topicId !== scope.topicId
     || selection.topicType !== scope.topicType || selection.source !== scope.source
     || selection.status !== 'selected' || selection.selectedDeviceId !== route.targetDeviceId)) {
