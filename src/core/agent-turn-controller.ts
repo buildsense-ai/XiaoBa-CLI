@@ -788,7 +788,6 @@ export class AgentTurnController {
       recentMessages: options.messages,
       workingDirectory: this.options.getCurrentDirectory(),
       aiService: this.options.services.memoryBranch?.aiService ?? this.options.services.aiService,
-      catslogMemory: this.options.services.catslogMemory,
       queue: options.queue,
       signal: options.abortSignal,
       activationContext: options.activationContext,

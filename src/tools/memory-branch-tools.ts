@@ -164,92 +164,6 @@ export class MemoryNeighborsTool implements Tool {
   }
 }
 
-/**
- * In-loop expansion of a typed CatsLog `source_reference` locator
- * Candidates discovered during the 3s metadata prefetch remain eligible
- * for an explicit read with its own 15s deadline. The session owns the
- * two-read/16KB whole-run budget and delivered-reference membership.
- */
-export class MemorySourceReadTool implements Tool {
-  definition: ToolDefinition = {
-    name: 'memory_source_read',
-    description: [
-      '按 ref_<64hex> 展开一个已发现的 source_reference 定位符为完整派生投影。',
-      '只能读取本次检索中 agent_memory 通道实际返回的 source_reference ref；读取共享整轮调用与视图预算，耗尽后返回 reference_only。',
-      '返回紧凑 JSON：{ref,status:"expanded"|"reference_only"|"rejected",semantic_view?|expansion_error?}。',
-    ].join(' '),
-    parameters: {
-      type: 'object',
-      properties: {
-        ref: {
-          type: 'string',
-          description: '本 run 发现的 source_reference 的 ref_<64hex>。',
-        },
-      },
-      required: ['ref'],
-    },
-  };
-
-  constructor(
-    private readonly expand: (ref: string, signal?: AbortSignal) => Promise<Record<string, unknown>>,
-  ) {}
-
-  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
-    try {
-      const result = await this.expand(String(args?.ref || ''), context?.abortSignal);
-      return { ok: true, content: jsonToolResult(result) };
-    } catch (error: any) {
-      return toolError(error);
-    }
-  }
-}
-
-/**
- * Model-driven remote recall over the device-bound agent_memory branch lane.
- * One model-selected literal term (<=64 code points) per search. Empty-query
- * prefetch enumerates bounded candidates in server source-native order;
- * it makes no relevance claim. Expansion remains a separate bounded read.
- */
-export class MemoryRemoteSearchTool implements Tool {
-  definition: ToolDefinition = {
-    name: 'memory_remote_search',
-    description: [
-      '按关键词检索 device-bound CatsLog agent_memory 通道的 typed source_reference 定位符。',
-      'keywords 只能传一个由你选择的 literal 子串（≤64 code points）；底层为 ILIKE，不是语义检索。',
-      '返回紧凑 JSON {status,items:[{ref,kind,text}]}；item 只是元数据定位符，需要 memory_source_read 展开。',
-      '整句任务描述几乎不可能命中——请拆成具体实体名、术语、项目名等短关键词。',
-    ].join(' '),
-    parameters: {
-      type: 'object',
-      properties: {
-        keywords: {
-          type: 'array',
-          description: '一个具体检索词（单元素数组，每项 ≤64 个 code point）。',
-          items: { type: 'string' },
-        },
-      },
-      required: ['keywords'],
-    },
-  };
-
-  constructor(
-    private readonly search: (keywords: string[], signal?: AbortSignal) => Promise<Record<string, unknown>>,
-  ) {}
-
-  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
-    try {
-      const keywords = Array.isArray(args?.keywords) ? args.keywords : [];
-      if (keywords.some((keyword: unknown) => typeof keyword !== 'string')) return {
-        ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'keywords must contain strings only', retryable: true,
-      };
-      const result = await this.search(keywords, context?.abortSignal);
-      return { ok: true, content: jsonToolResult(result) };
-    } catch (error: any) {
-      return toolError(error);
-    }
-  }
-}
-
 export class FinishMemorySearchTool implements Tool {
   definition: ToolDefinition = {
     name: 'finish_memory_search',
@@ -286,13 +200,10 @@ export class FinishMemorySearchTool implements Tool {
 
   private invalidAttempts = 0;
 
-  constructor(
-    private readonly onFinish: MemorySearchFinishHandler,
-    private readonly isDeliveredPoolRef: (ref: string) => boolean = () => false,
-  ) {}
+  constructor(private readonly onFinish: MemorySearchFinishHandler) {}
 
   async execute(args: any): Promise<ToolExecutionResult> {
-    const validation = validateFinishArgs(args, this.isDeliveredPoolRef);
+    const validation = validateFinishArgs(args);
     if (!validation.ok) {
       return this.invalidResult(validation.error);
     }
@@ -341,7 +252,7 @@ export class FinishMemorySearchTool implements Tool {
   }
 }
 
-function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => boolean):
+function validateFinishArgs(args: any):
   | { ok: true; payload: MemorySearchFinishPayload }
   | { ok: false; error: string } {
   const summary = String(args?.summary || '').trim();
@@ -359,15 +270,12 @@ function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => bool
     return { ok: false, error: 'evidence must contain strings only; use [] when inject is false' };
   }
   const evidence: string[] = args.evidence.map((ref: string) => ref.trim()).filter(Boolean);
-  const uniqueRefs: string[] = Array.from(new Set(evidence));
-  for (const ref of uniqueRefs) {
-    // The active local grammar remains unchanged. Pool refs are an explicit
-    // run-local extension, admitted only after complete delivery.
-    if (!CANONICAL_REF_PATTERN.test(ref)
-      && !(CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) && isDeliveredPoolRef(ref))) {
+  for (const ref of evidence) {
+    if (!CANONICAL_REF_PATTERN.test(ref)) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }
+  const uniqueRefs: string[] = Array.from(new Set(evidence));
   if (inject && uniqueRefs.length === 0) {
     return { ok: false, error: 'evidence must include at least one canonical memory ref unless inject is false' };
   }
