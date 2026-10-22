@@ -36,6 +36,10 @@ Server rollout remains gated; these changes do not enable a production flag.
 - Normal local CLI sessions do not inject remote device rules.
 - History/replay messages do not carry executable `xiaoba_runtime` facts.
 
+## Group History and Device Authorization
+
+Group chat history, restore/cleanup and attachment scope retain the shared key `cc_group:<topic>`. Device grants and device selection use a separate, server-issued authorization key scoped to the group, speaking user and Bot: `session:v2:catscompany:group:<encodeURIComponent(topic + ':actor:' + actorUserId)>:agent:<encodeURIComponent(agentId)>`. The CLI derives that authorization key from the trusted execution identity when matching or validating device authorization; the shared history key is never accepted as a device authorization key. Private-chat keys are unchanged.
+
 ## Runtime Facts
 
 CatsCompany injects this shape only on realtime messages sent to bot recipients:

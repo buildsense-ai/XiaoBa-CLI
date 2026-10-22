@@ -18,7 +18,8 @@
 
 1. 确认代码已经合入并推送到远端分支
 2. 如需更新默认版本，先修改 `package.json` 里的 `version`
-3. 创建发布 tag，例如：
+3. 确认 CatsCompany 的兼容清单中声明的每个配套协议都已包含在当前待发布 commit 中，并且配套客户端/服务端的上线顺序已经完成
+4. 创建发布 tag，例如：
 
 ```bash
 git tag v0.1.2
@@ -30,12 +31,13 @@ git push origin v0.1.2
 ## Workflow 会做什么
 
 1. 在 macOS、Windows、Linux 三个平台分别执行 `npm ci`
-2. 运行 `node scripts/inject-version.js`
-3. 构建三端 Electron 安装包
-4. 上传各平台产物为 workflow artifacts
-5. 上传并确认 CDN 不可变产物
-6. 创建 draft GitHub Release，并挂载三端安装包
-7. 最后发布更新元数据，核对 CDN 内容后再公开 GitHub Release
+2. 在 `release-preflight` 中读取 CatsCompany 的跨仓兼容清单，检查被 tag 的准确 commit 是否包含所有最低客户端协议 commit
+3. 运行 `node scripts/inject-version.js`
+4. 构建三端 Electron 安装包
+5. 上传各平台产物为 workflow artifacts
+6. 上传并确认 CDN 不可变产物
+7. 创建 draft GitHub Release，并挂载三端安装包
+8. 最后发布更新元数据，核对 CDN 内容后再公开 GitHub Release
 
 ## 产物说明
 
@@ -53,3 +55,4 @@ git push origin v0.1.2
 - GitHub Release 在远端验证完成前保持 draft，避免留下“Release 已公开但自动更新未完成”的半发布状态
 - 如果 tag 打错了，先删除远端 tag，再重新打正确的 tag
 - `scripts/release.sh` 是旧流程遗留，不作为当前标准发布入口
+- 如果 CatsCompany 分支还没有兼容清单，preflight 会输出明确的 rollout skip；一旦清单存在，缺少配套 commit 会直接阻断发布，不能用 warning 放行

@@ -1,6 +1,6 @@
 import type { DeviceGrantOperation, ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalDeviceGrant } from '../types/session-identity';
 import type { ToolErrorCode, ToolExecutionContext } from '../types/tool';
-import { isDelegatedDeviceGrant, resolveDeviceGrant } from '../core/device-grants';
+import { getDeviceAuthorizationSessionKey, isDelegatedDeviceGrant, resolveDeviceGrant } from '../core/device-grants';
 
 export type ToolGatewayDecision =
   | {
@@ -363,7 +363,7 @@ function validateSelectionScope(
   }
   const mismatches = [
     ['source', selection.source, scope.source],
-    ['sessionKey', selection.sessionKey, scope.sessionKey],
+    ['sessionKey', selection.sessionKey, getDeviceAuthorizationSessionKey(scope)],
     ['topicId', selection.topicId, scope.topicId],
     ['topicType', selection.topicType, scope.topicType],
     ['actorUserId', selection.actorUserId, scope.actorUserId],

@@ -13,8 +13,8 @@ import type { ToolExecutionContext } from '../../../src/types/tool';
 async function main() {
   console.log = console.error; // Keep stdout as a single JSON response.
   const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-  const envelope = createCatsCoMessageEnvelope({ topic: 'p2p_7_42', senderId: 'usr7',
-    text: '读取我的文件', seq: 1, botUid: '42', metadata: input.metadata });
+  const envelope = createCatsCoMessageEnvelope({ topic: input.topic ?? 'p2p_7_42', senderId: input.senderId ?? 'usr7',
+    text: '读取我的文件', seq: 1, botUid: input.botUid ?? '42', metadata: input.metadata });
   const executionScope = createExecutionScope(envelope);
   let wire: unknown;
   const client = Object.create(CatsClient.prototype) as any;
@@ -39,7 +39,7 @@ async function main() {
   };
   const route = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file', target: input.target });
   const result = await executeRouteIfRemote(ctx, route, 'read_file', 'read_file', { file_path: 'fixture-only', target: input.target });
-  process.stdout.write(JSON.stringify({ route, result, wire,
+  process.stdout.write(JSON.stringify({ route, result, wire, historySessionKey: envelope.sessionKey,
     devices: ctx.targetRoutes?.routes.map(item => item.deviceId) }));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
