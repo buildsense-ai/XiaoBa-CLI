@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: read
+
 concurrency:
   group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
@@ -20,10 +23,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Checkout CatsCompany compatibility manifest
+        uses: actions/checkout@v4
+        with:
+          repository: buildsense-ai/cats-company
+          ref: main
+          path: cats-company
+          persist-credentials: false
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify paired CatsCompany protocol compatibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-catscompany-compatibility.mjs
+
+      - name: Test paired protocol compatibility checker
+        run: npm run test:release-compatibility
 
       - name: Verify source version matches stable tag
         run: npm run release:verify-version
