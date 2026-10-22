@@ -29,6 +29,7 @@ jobs:
           repository: buildsense-ai/cats-company
           ref: main
           path: cats-company
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

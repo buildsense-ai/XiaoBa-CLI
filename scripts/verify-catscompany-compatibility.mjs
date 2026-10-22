@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const DEFAULT_MANIFEST = path.resolve(process.cwd(), 'cats-company', 'docs', 'xiaoba-cli-compatibility.json');
+export const DEFAULT_MANIFEST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'cats-company', 'docs', 'xiaoba-cli-compatibility.json');
 
 function readManifest(manifestPath = DEFAULT_MANIFEST) {
   if (!fs.existsSync(manifestPath)) {
@@ -15,11 +15,11 @@ function readManifest(manifestPath = DEFAULT_MANIFEST) {
   } catch (error) {
     throw new Error(`Cannot read CatsCompany compatibility manifest: ${error.message}`);
   }
-  if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.clientRepository !== 'string' || !Array.isArray(manifest.protocols)) {
+  if (!manifest || manifest.schemaVersion !== 1 || typeof manifest.clientRepository !== 'string' || !manifest.clientRepository.trim() || !Array.isArray(manifest.protocols) || manifest.protocols.length === 0) {
     throw new Error('CatsCompany compatibility manifest has an invalid schema');
   }
   for (const protocol of manifest.protocols) {
-    if (!protocol || typeof protocol.id !== 'string' || typeof protocol.minimumClientCommit !== 'string') {
+    if (!protocol || typeof protocol.id !== 'string' || !protocol.id.trim() || typeof protocol.minimumClientCommit !== 'string' || !protocol.minimumClientCommit.trim()) {
       throw new Error('Every CatsCompany compatibility protocol needs id and minimumClientCommit');
     }
   }
@@ -53,7 +53,7 @@ async function containsCommit(repository, requiredCommit, targetRef, token, fetc
 export async function verifyCompatibility({ manifestPath = DEFAULT_MANIFEST, token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN, currentSha = currentCommit(), fetchImpl = globalThis.fetch } = {}) {
   const manifest = readManifest(manifestPath);
   if (!manifest) {
-    return ['CatsCompany compatibility manifest is not present; check skipped.'];
+    return ['[compatibility] CatsCompany manifest is not present on this branch; compatibility check skipped during rollout.'];
   }
   const failures = [];
   for (const protocol of manifest.protocols) {
