@@ -47,6 +47,41 @@ count. The explicit internal `readRequest` returns bytes only after fresh checks
 Never send its result to chats, generic RPC logs, model context or browser state.
 Captures contain no upload credential and authorize neither upload nor publish.
 
+## Read-only repair preparation
+
+`readRepairCandidate(input, expectedReceipt, checkAuthority)` is an internal,
+explicitly constructed preflight for the future publication repair coordinator.
+It is not registered as an RPC, model tool or HTTP route and has no production
+caller. The caller must authenticate current server authority, obtain the exact
+capture receipt associated with the trusted rejection report, and match the
+report's candidate hash to that receipt before invoking this method. A browser
+hint, model-generated hash, or successful preflight is never an execution grant.
+
+Under the existing workspace lock and time budget, preparation validates the
+retained request bytes/receipt, exact Bot/Owner/body/installation and active
+workspace, then resolves the original opaque source and recomputes its current
+generation. Metadata is not parsed or executed, so invalid YAML and missing
+descriptions remain available for later repair. It re-reads the retained evidence
+and checks authority again before returning a fresh buffer of the frozen bytes.
+Inputs and receipt are copied before lock acquisition.
+
+Missing/damaged captures cannot be silently recreated. Source edits, deletion,
+replacement by another same-named Skill, changed bindings, unsafe files and lost
+authority stop preparation with fixed errors; paths, source contents and raw
+exceptions are not included. No candidate file is edited or created, no counter
+is advanced, and no upload, model call or publication is started. Existing private
+storage directories may be initialized by the shared locking helper. The live
+Skill and original capture remain intact.
+
+This check is intentionally stricter than upload recovery: `readCandidate` and
+`readRequest` must still replay the original frozen bytes after source changes or
+removal. They retain their existing behavior. Source verification is a
+point-in-time observation under cooperative locking, not protection against an
+uncooperative local writer. Future edit/submit operations must independently
+recheck authority and source; they must also enforce durable three-round budgets,
+description draft confirmation and semantic/security stop conditions. None of
+that execution is enabled by this preflight.
+
 New directories/files request POSIX modes 0700/0600 and reject broad final modes;
 Windows protection relies on the runtime root's inherited user ACL. Source/store
 symlinks and hardlinked files are rejected. Cooperative locking and path checks
