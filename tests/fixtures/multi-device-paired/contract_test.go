@@ -44,12 +44,19 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 			OK   bool   `json:"ok"`
 			Mode string `json:"mode"`
 		} `json:"route"`
-		Wire    *MsgThinToolRPC `json:"wire"`
-		Devices []string        `json:"devices"`
+		Wire              *MsgThinToolRPC `json:"wire"`
+		Devices           []string        `json:"devices"`
+		HistorySessionKey string          `json:"historySessionKey"`
 	}
-	call := func(meta map[string]interface{}, target string) output {
+	call := func(meta map[string]interface{}, target string, identity ...map[string]interface{}) output {
 		t.Helper()
-		payload, err := json.Marshal(map[string]interface{}{"metadata": meta, "target": target})
+		input := map[string]interface{}{"metadata": meta, "target": target}
+		for _, fields := range identity {
+			for key, value := range fields {
+				input[key] = value
+			}
+		}
+		payload, err := json.Marshal(input)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,5 +130,90 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 		if got.Route.OK || got.Wire != nil {
 			t.Fatalf("offline B fell back: %+v", got)
 		}
+	})
+	t.Run("group", func(t *testing.T) {
+		// Independent registry: private-chat selection and clock changes must not
+		// accidentally establish group authorization for this fixture.
+		hub, handler := deviceSelectionFixture(t)
+		bots := map[int64]*Client{}
+		for _, uid := range []int64{42, 43} {
+			bots[uid] = &Client{uid: uid, accountType: types.AccountBot, bodyID: fmt.Sprintf("cloud-%d", uid), send: make(chan []byte, 32)}
+			hub.addClient(bots[uid])
+		}
+		choose := func(actor, agent int64, device string) {
+			t.Helper()
+			botID := fmt.Sprint(agent)
+			snapshot := selectionSnapshot(t, handler, actor, "grp_1", botID)
+			body := fmt.Sprintf(`{"device_id":%q,"expected_revision":%q}`, device, snapshot["revision"])
+			if reply := selectionRequest(t, handler, actor, "grp_1", botID, http.MethodPost, body); reply.Code != 200 {
+				t.Fatalf("group selection: %d %s", reply.Code, reply.Body.String())
+			}
+		}
+		metadata := func(actor, agent int64) map[string]interface{} {
+			return map[string]interface{}{
+				"catsco_identity": hub.buildCatscoIdentityMetadata(actor, agent, "grp_1", 1, "读取我的文件"),
+				"xiaoba_runtime":  hub.buildXiaobaRuntimeMetadata(actor, agent, "grp_1"),
+			}
+		}
+		identity := func(actor, agent int64) map[string]interface{} {
+			return map[string]interface{}{"topic": "grp_1", "senderId": fmt.Sprintf("usr%d", actor), "botUid": fmt.Sprint(agent)}
+		}
+		accept := func(t *testing.T, actor, agent int64, device string) output {
+			t.Helper()
+			got := call(metadata(actor, agent), "speaker_default", identity(actor, agent))
+			if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != device || got.HistorySessionKey != "cc_group:grp_1" {
+				t.Fatalf("wrong group wire/history: %+v", got)
+			}
+			hub.handleMessage(bots[agent], &ClientMessage{ThinToolRPC: got.Wire})
+			_, receiver := hub.findDeviceRPCTarget(actor, UserDevice{DeviceID: device})
+			var forwarded ServerMessage
+			decodeQueuedServerMessage(t, receiver.send, &forwarded)
+			if forwarded.ThinToolRPC == nil || forwarded.ThinToolRPC.TargetDeviceID != device {
+				t.Fatal("real group wire was not accepted")
+			}
+			return got
+		}
+		var oldA *MsgThinToolRPC
+		t.Run("selected_A_preserves_shared_history", func(t *testing.T) {
+			choose(7, 42, "a")
+			oldA = accept(t, 7, 42, "a").Wire
+		})
+		t.Run("other_actor_uses_only_own_device", func(t *testing.T) {
+			got := accept(t, 8, 42, "private")
+			if len(got.Devices) != 1 || got.Devices[0] != "private" {
+				t.Fatalf("actor directory leaked: %+v", got)
+			}
+		})
+		t.Run("other_bot_selection_is_independent", func(t *testing.T) {
+			choose(7, 43, "b")
+			accept(t, 7, 43, "b")
+			accept(t, 7, 42, "a")
+		})
+		t.Run("cross_actor_or_bot_metadata_rejected", func(t *testing.T) {
+			for _, pair := range [][2]int64{{8, 42}, {7, 43}} {
+				got := call(metadata(pair[0], pair[1]), "speaker_default", identity(7, 42))
+				if got.Route.OK || got.Wire != nil {
+					t.Fatalf("foreign group authorization dispatched: %+v", got)
+				}
+			}
+		})
+		t.Run("switch_invalidates_old_wire", func(t *testing.T) {
+			choose(7, 42, "b")
+			if oldA == nil {
+				t.Fatal("missing group A wire")
+			}
+			if err := hub.authorizeOrdinaryThinToolRPC(bots[42], oldA, 7, "a", "read_file"); err == nil {
+				t.Fatal("old group wire accepted")
+			}
+			accept(t, 7, 42, "b")
+		})
+		t.Run("offline_B_never_falls_back_to_A", func(t *testing.T) {
+			hub.userDevices.now = func() time.Time { return time.Now().Add(hub.userDevices.ttl + time.Minute) }
+			hub.userDevices.touch(7, "a")
+			got := call(metadata(7, 42), "speaker_default", identity(7, 42))
+			if got.Route.OK || got.Wire != nil {
+				t.Fatalf("offline group B fell back: %+v", got)
+			}
+		})
 	})
 }
