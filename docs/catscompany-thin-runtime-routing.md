@@ -23,7 +23,23 @@ fallback to another computer. Each device task retains its own grant and result.
 
 Server rollout remains gated; these changes do not enable a production flag.
 
-## Fixed Rules
+### Rollout and rollback
+
+Merge and release the client while retaining selected-only server behavior.
+The independent envelope and `target_scope` support require the server changes
+already merged in CatsCompany #706/#713; a new client must not assume that
+merging it activates this protocol. Upgrade each cloud Bot runtime before adding
+its UID to `CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS`, then verify the effective server
+configuration and default, explicit, multi-device and offline behavior. Keep
+`CATSCO_XIAOBA_RUNTIME_V2_ENABLED` disabled during that staged rollout.
+
+The currently accepted canary is David (UID 573) only. Desktop Connectors keep
+their existing receiver protocol, and non-canary Bots retain selected-only
+authority. Before rolling a canary Bot back to an older runtime, remove its UID
+from the allowlist and apply/verify the server configuration first. A successful
+client build or merge is not evidence that the deployed combination is enabled.
+
+## Historical Grant-Free Routing Rules
 
 - CatsCompany has two runtime duties for this path: forward `thin_tool_rpc` requests/results, and inject realtime `xiaoba_runtime.devices` facts for messages delivered to bot recipients.
 - The new path does not read `device_grants`, `device_selection`, or `grant_id` to choose a thin RPC target.

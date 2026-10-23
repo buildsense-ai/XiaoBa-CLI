@@ -6,6 +6,7 @@ import { extractCatsCoDeviceSelection } from '../src/catscompany/device-selectio
 import { extractCatsCoRuntimeContext } from '../src/catscompany/runtime-context';
 import { buildRuntimeContextSnapshot, buildRuntimeContextText } from '../src/core/runtime-context-builder';
 import { resolveExecutionRoute, executeRouteIfRemote } from '../src/tools/execution-router';
+import { CatsCompanyBot } from '../src/catscompany';
 import type { ToolExecutionContext } from '../src/types/tool';
 
 function fixture(selected: 'selected' | 'unavailable' | 'needs_selection' = 'selected') {
@@ -66,6 +67,58 @@ test('explicit B and multi-device calls use distinct grants without changing def
   assert.deepEqual(calls.map(call => call.grant.grantId), ['grant-b', 'grant-a', 'default-a']);
   assert.deepEqual(calls.map(call => call.targetScope), ['explicit_device', 'explicit_device', undefined]);
   assert.equal(ctx.deviceSelection?.selectedDeviceId, 'a');
+});
+
+test('both RPC transports preserve exact target scope and keep default requests unscoped', async () => {
+  for (const transport of ['thin', 'device']) {
+    const { ctx } = fixture();
+    const wires: any[] = [];
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    const capture = async (wire: any) => {
+      wires.push(wire);
+      return { result: { ok: true, content: 'fixture only' } };
+    };
+    bot.bot = { sendThinToolRpcRequest: capture, sendDeviceRpcRequest: capture };
+    for (const target of ['FFFFFFFK', 'speaker_default']) {
+      // Resolve through the canonical directory, then exercise each dispatch
+      // path independently, including the Device RPC fallback serializer.
+      ctx.thinToolRpc = bot.buildThinToolRpcTransport();
+      ctx.deviceRpc = bot.buildDeviceRpcTransport();
+      const route = resolve(ctx, target);
+      assert.ok(route.ok && route.mode === 'remote');
+      if (transport === 'device') ctx.thinToolRpc = undefined;
+      const result = await executeRouteIfRemote(ctx, route, 'write_file', 'write_file',
+        { target, file_path: 'fixture-only', content: 'test' });
+      assert.equal(result?.ok, true, transport);
+    }
+    assert.deepEqual(wires.map(wire => wire.target_scope), ['explicit_device', undefined], transport);
+    assert.deepEqual(wires.map(wire => wire.target_device_id ?? wire.device_id), ['b', 'a'], transport);
+    assert.deepEqual(wires.map(wire => wire.grant_id), ['grant-b', 'default-a'], transport);
+    assert.ok(wires.every(wire => wire.payload.args.target === undefined));
+    assert.equal(ctx.deviceSelection?.selectedDeviceId, 'a');
+  }
+});
+
+test('both RPC transports reject target scope and grant mismatches before sending', async () => {
+  const { ctx } = fixture();
+  let sent = 0;
+  const bot = Object.create(CatsCompanyBot.prototype) as any;
+  bot.bot = {
+    sendThinToolRpcRequest: async () => { sent++; },
+    sendDeviceRpcRequest: async () => { sent++; },
+  };
+  for (const transport of [bot.buildThinToolRpcTransport(), bot.buildDeviceRpcTransport()]) {
+    for (const grant of ctx.deviceGrants!) {
+      const result = await transport.executeTool({
+        toolName: 'write_file', operation: 'write_file', args: {}, grant,
+        targetDeviceId: grant.deviceId, targetOwnerUserId: grant.ownerUserId,
+        targetScope: grant.targetScope ? undefined : 'explicit_device',
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    }
+  }
+  assert.equal(sent, 0);
 });
 
 test('offline default A never falls back to B, but explicitly requested B remains usable', () => {
