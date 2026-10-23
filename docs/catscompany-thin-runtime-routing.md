@@ -21,6 +21,17 @@ interpret the first explicit capability as the default. An explicit or multi-dev
 task does not update the picker; offline/missing/ambiguous targets do not permit
 fallback to another computer. Each device task retains its own grant and result.
 
+Target-resolution failures are remembered per target within a run, including
+copied contexts and delegated runners. A failed device cannot be retried through
+its unique name, ID or default alias, but it does not block another independently
+authorized device. Shared or ambiguous names do not mark every matching device
+as failed; exact IDs still require their own authorization. An in-flight request
+retains its own target. Unrelated Bot-host
+Skill/attachment tools and text replies may continue: omitted `target` and
+`agent_self` still mean the Bot host, not a retry of the failed device's task.
+The guard does not infer natural-language intent; the model must not reuse a
+failed device's task or paths on another device or the Bot host.
+
 Server rollout remains gated; these changes do not enable a production flag.
 
 ### Rollout and rollback

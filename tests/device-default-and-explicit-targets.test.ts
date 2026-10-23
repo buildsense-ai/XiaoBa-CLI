@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createExecutionScope, createCatsCoMessageEnvelope } from '../src/catscompany/message-envelope';
 import { extractCatsCoDeviceGrants } from '../src/catscompany/device-grants';
 import { extractCatsCoDeviceSelection } from '../src/catscompany/device-selection';
-import { extractCatsCoRuntimeContext } from '../src/catscompany/runtime-context';
+import { buildTargetRoutes, extractCatsCoRuntimeContext } from '../src/catscompany/runtime-context';
 import { buildRuntimeContextSnapshot, buildRuntimeContextText } from '../src/core/runtime-context-builder';
 import { resolveExecutionRoute, executeRouteIfRemote } from '../src/tools/execution-router';
 import { CatsCompanyBot } from '../src/catscompany';
@@ -36,6 +36,7 @@ function fixture(selected: 'selected' | 'unavailable' | 'needs_selection' = 'sel
   const calls: any[] = [];
   const ctx: ToolExecutionContext = {
     surface: 'catscompany', workingDirectory: '.', executionScope: scope,
+    targetResolutionState: {},
     deviceGrants: extractCatsCoDeviceGrants(metadata, scope),
     deviceSelection: extractCatsCoDeviceSelection(metadata, scope),
     targetRoutes: extractCatsCoRuntimeContext(metadata, scope),
@@ -128,6 +129,61 @@ test('offline default A never falls back to B, but explicitly requested B remain
   assert.equal(resolve(ctx, 'speaker_default').ok, false);
 });
 
+test('one offline task does not poison another device or default task in the same run', async () => {
+  for (const failFirst of [true, false]) {
+    const { ctx, calls } = fixture();
+    const b = ctx.targetRoutes!.routes.find(route => route.deviceId === 'b')!;
+    b.status = 'unavailable';
+    const targets = failFirst ? ['FFFFFFFK', 'Eason', 'speaker_default'] : ['Eason', 'FFFFFFFK', 'speaker_default'];
+    const results: boolean[] = [];
+    for (const target of targets) {
+      const route = resolve(ctx, target);
+      const result = route.ok
+        ? await executeRouteIfRemote(ctx, route, 'write_file', 'write_file', { file_path: 'fixture-only', content: 'test' })
+        : route;
+      results.push(result?.ok === true);
+    }
+    assert.deepEqual(results, failFirst ? [false, true, true] : [true, false, true]);
+    assert.deepEqual(calls.map(call => call.targetDeviceId), ['a', 'a']);
+    assert.deepEqual(calls.map(call => call.grant.grantId), ['grant-a', 'default-a']);
+    assert.equal(ctx.deviceSelection?.selectedDeviceId, 'a');
+    const retryByID = resolve(ctx, 'b');
+    assert.ok(!retryByID.ok && retryByID.errorCode === 'TARGET_RESOLUTION_BLOCKED');
+  }
+});
+
+test('failed default aliases stay blocked while another exact device can still execute', async () => {
+  const { ctx, calls } = fixture('unavailable');
+  assert.equal(resolve(ctx, 'speaker_default').ok, false);
+  for (const target of ['speaker_default', 'a', 'Eason']) {
+    const route = resolve(ctx, target);
+    assert.ok(!route.ok && route.errorCode === 'TARGET_RESOLUTION_BLOCKED', target);
+  }
+  const other = resolve(ctx, 'FFFFFFFK');
+  assert.ok(other.ok && other.mode === 'remote');
+  const result = await executeRouteIfRemote(ctx, other, 'write_file', 'write_file', { file_path: 'fixture-only', content: 'test' });
+  assert.equal(result?.ok, true);
+  assert.deepEqual(calls.map(call => call.targetDeviceId), ['b']);
+});
+
+test('failed IDs and ambiguous shared names do not poison a different exact device ID', async () => {
+  for (const failedTarget of ['b', 'Same name']) {
+    const { ctx, calls } = fixture();
+    ctx.targetRoutes = buildTargetRoutes(ctx.targetRoutes!.routes.map(route => ({
+      ...route, label: 'Same name', status: route.deviceId === 'b' ? 'unavailable' : 'ready',
+    })));
+    const failure = resolve(ctx, failedTarget);
+    assert.ok(!failure.ok && failure.errorCode === (failedTarget === 'b' ? 'TARGET_UNAVAILABLE' : 'TARGET_AMBIGUOUS'));
+    assert.equal(resolve(ctx, failedTarget).ok, false);
+    const ready = resolve(ctx, 'a');
+    assert.ok(ready.ok && ready.mode === 'remote' && ready.targetDeviceId === 'a');
+    const result = await executeRouteIfRemote(ctx, ready, 'write_file', 'write_file', { file_path: 'fixture-only', content: 'test' });
+    assert.equal(result?.ok, true);
+    assert.deepEqual(calls.map(call => call.targetDeviceId), ['a']);
+    assert.equal(ctx.deviceSelection?.selectedDeviceId, 'a');
+  }
+});
+
 test('without a default an exact device is usable; snapshot must not advertise the first grant as default', () => {
   const { ctx } = fixture('needs_selection');
   assert.equal(resolve(ctx, 'FFFFFFFK').ok, true);
@@ -160,6 +216,31 @@ test('canonical directory enrichment does not accept forged permissions or anoth
     if (kind === 'grant-revision') metadata.catsco_identity.device_target_authorizations.grants.forEach(grant => { grant.selectionRevision = 'old'; });
     assert.notEqual(extractCatsCoRuntimeContext(metadata, scope)?.routes.length, 2, kind);
   }
+});
+
+test('online directory entries are not mislabeled offline when they lack an explicit grant', () => {
+  const { metadata, scope, ctx } = fixture();
+  metadata.catsco_identity.device_target_authorizations.grants = metadata.catsco_identity.device_target_authorizations.grants
+    .filter(grant => grant.deviceId === 'b');
+  const routes = extractCatsCoRuntimeContext(metadata, scope)!;
+  assert.equal(routes.routes.find(route => route.deviceId === 'a')?.status, 'ready');
+  ctx.targetRoutes = routes;
+  ctx.deviceGrants = extractCatsCoDeviceGrants(metadata, scope);
+  assert.equal(resolve(ctx, 'speaker_default').ok, true);
+  metadata.catsco_identity.device_grants = [];
+  ctx.deviceGrants = extractCatsCoDeviceGrants(metadata, scope);
+  const denied = resolve(ctx, 'speaker_default');
+  assert.ok(!denied.ok && denied.errorCode === 'PERMISSION_DENIED');
+});
+
+test('an unselected default never borrows another grant label or a stale selection label', () => {
+  const { ctx } = fixture('needs_selection');
+  ctx.deviceGrants!.forEach(grant => { grant.deviceDisplayName = `nondefault-${grant.deviceId}`; });
+  const snapshot = buildRuntimeContextSnapshot({ sessionKey: ctx.executionScope!.sessionKey, executionScope: ctx.executionScope,
+    deviceSelection: { ...ctx.deviceSelection!, selectedDeviceDisplayName: 'stale selection label' }, deviceGrants: ctx.deviceGrants });
+  const target = snapshot?.executionTargets.find(target => target.id === 'speaker_default');
+  assert.equal(target?.status, 'unavailable');
+  assert.equal(target?.label, 'usr7 computer');
 });
 
 test('default requests never borrow explicit grants, including when the default IDs match', () => {

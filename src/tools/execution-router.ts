@@ -56,34 +56,72 @@ export function targetParameterDescription(): { type: 'string'; description: str
   };
 }
 
-const failedTargetRuns = new WeakSet<object>();
+const failedTargetRuns = new WeakMap<object, Set<string>>();
 const TARGET_FAILURE_CODES = new Set(['TARGET_NOT_FOUND', 'TARGET_AMBIGUOUS', 'TARGET_UNAVAILABLE']);
 
-export function getDeviceTargetResolutionFailure(context: ToolExecutionContext): Extract<ExecutionRoute, { ok: false }> | undefined {
-  if (context.surface !== 'catscompany' || context.deviceRpcReceiver
-    || !context.targetResolutionState || !failedTargetRuns.has(context.targetResolutionState)) return undefined;
+export function getDeviceTargetResolutionFailure(context: ToolExecutionContext, target?: unknown): Extract<ExecutionRoute, { ok: false }> | undefined {
+  if (context.surface !== 'catscompany' || context.deviceRpcReceiver || !context.targetResolutionState) return undefined;
+  const failed = failedTargetRuns.get(context.targetResolutionState);
+  if (!failed || failed.size === 0) return undefined;
+  const keys = targetFailureKeys(context, target);
+  if (keys.size === 0 || ![...keys].some(key => failed.has(key))) return undefined;
   return {
     ok: false,
     errorCode: 'TARGET_RESOLUTION_BLOCKED',
-    message: '本轮指定的设备目标未能确认，已停止后续设备/文件操作。不能删除 target、改用其他电脑或 Bot 宿主机，也不能猜测其他系统的路径。请说明目标不可用并等待用户确认目标后发起新请求；不要推断该设备是否存在或属于谁。',
+    message: '本轮这个设备目标未能确认，已停止对该目标的后续操作。不能把该目标的任务或路径改到其他电脑或 Bot 宿主机执行，也不能猜测其他系统的路径。其他独立任务可使用各自准确且有授权的设备目标；请分别报告结果，不要推断失败目标是否存在或属于谁。',
   };
 }
 
-function rememberTargetFailure(context: ToolExecutionContext, route: ExecutionRoute): void {
+function rememberTargetFailure(context: ToolExecutionContext, route: ExecutionRoute, target?: unknown): void {
   if (context.surface === 'catscompany' && !context.deviceRpcReceiver && context.targetResolutionState
     && !route.ok && TARGET_FAILURE_CODES.has(route.errorCode)) {
-    failedTargetRuns.add(context.targetResolutionState);
+    const keys = targetFailureKeys(context, target);
+    if (keys.size === 0) return;
+    let failed = failedTargetRuns.get(context.targetResolutionState);
+    if (!failed) failedTargetRuns.set(context.targetResolutionState, failed = new Set());
+    for (const key of keys) failed.add(key);
   }
+}
+
+function targetFailureKeys(context: ToolExecutionContext, target: unknown): Set<string> {
+  const explicitTarget = normalizeExecutionTarget(target);
+  const normalized = normalizeTargetText(target);
+  if (!normalized || explicitTarget === 'agent_self') return new Set();
+  const keys = new Set([`target:${normalized}`]);
+  const selection = context.deviceSelection;
+  const directory = context.targetRoutes;
+  const owner = context.executionScope?.deviceOwnerUserId || context.executionScope?.actorUserId;
+  const isDeviceName = directory?.routes.some(route => normalizeTargetText(route.deviceId) === normalized
+    || normalizeTargetText(route.label) === normalized) === true;
+  const isDefaultAlias = explicitTarget === 'speaker_default' || (!isDeviceName && directory?.routes.some(route =>
+    route.ownerUserId === owner && (normalizeTargetText(route.userId) === normalized
+      || normalizeTargetText(route.userName) === normalized)) === true);
+  if (isDefaultAlias && selection) {
+    if (selection.selectedDeviceId) keys.add(`device:${JSON.stringify([owner, selection.selectedDeviceId])}`);
+    return keys;
+  }
+  // Use the same unique matches as routing, not a transitive closure of display
+  // names: different devices may share a name. An ambiguous name blocks only
+  // that unresolved name; an exact device ID still requires its own grant.
+  const matching = uniqueRoutes([
+    ...(directory?.byUserId.get(normalized) || []),
+    ...(directory?.byName.get(normalized) || []),
+  ]);
+  if (matching.length === 1) {
+    const route = matching[0];
+    keys.add(`device:${JSON.stringify([route.ownerUserId, route.deviceId])}`);
+  }
+  return keys;
 }
 
 export function resolveExecutionRoute(
   context: ToolExecutionContext,
   options: Parameters<typeof resolveExecutionRouteUnchecked>[1],
 ): ExecutionRoute {
-  const blocked = getDeviceTargetResolutionFailure(context);
+  const blocked = getDeviceTargetResolutionFailure(context, options.target);
   if (blocked) return blocked;
   const route = resolveExecutionRouteUnchecked(context, options);
-  rememberTargetFailure(context, route);
+  rememberTargetFailure(context, route, options.target);
   return route;
 }
 
@@ -290,13 +328,13 @@ export async function executeRouteIfRemote(
   operation: DeviceGrantOperation,
   args: Record<string, unknown>,
 ): Promise<ToolExecutionResult | undefined> {
-  const blocked = getDeviceTargetResolutionFailure(context);
+  const blocked = getDeviceTargetResolutionFailure(context, route.ok && route.mode === 'remote' ? route.target : undefined);
   if (blocked) return { ...blocked, retryable: false };
   if (!route.ok || route.mode !== 'remote') return undefined;
   // Revalidate at dispatch as grants may expire or the selected device may
   // change after route resolution. Never retry through an unscoped transport.
   const authorized = authorizeRemoteRoute(context, route, operation);
-  rememberTargetFailure(context, authorized);
+  rememberTargetFailure(context, authorized, authorized.ok && authorized.mode === 'remote' ? authorized.target : route.target);
   if (!authorized.ok) return { ...authorized, retryable: false };
   if (authorized.mode !== 'remote') return undefined;
   route = authorized;

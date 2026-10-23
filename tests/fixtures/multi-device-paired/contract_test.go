@@ -49,6 +49,13 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 		Wire              *MsgThinToolRPC `json:"wire"`
 		Devices           []string        `json:"devices"`
 		HistorySessionKey string          `json:"historySessionKey"`
+		Attempts          []struct {
+			Route struct {
+				OK        bool   `json:"ok"`
+				ErrorCode string `json:"errorCode"`
+			} `json:"route"`
+			Wire *MsgThinToolRPC `json:"wire"`
+		} `json:"attempts"`
 	}
 	call := func(meta map[string]interface{}, target string, identity ...map[string]interface{}) output {
 		t.Helper()
@@ -231,6 +238,30 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 		}
 		if err := hub.authorizeOrdinaryThinToolRPC(bot, got.Wire, 7, "a", "read_file"); err != nil {
 			t.Fatal(err)
+		}
+	})
+	t.Run("partial_failure_same_run_preserves_authorized_A", func(t *testing.T) {
+		got := call(metadata(), "", map[string]interface{}{"targets": []string{"b", "a", "speaker_default", "b"}})
+		if len(got.Attempts) != 4 {
+			t.Fatalf("missing per-target results: %+v", got)
+		}
+		for index, attempt := range got.Attempts {
+			if index == 1 {
+				if !attempt.Route.OK || attempt.Wire == nil || attempt.Wire.TargetDeviceID != "a" {
+					t.Fatalf("offline B poisoned explicit A: %+v", attempt)
+				}
+				if err := hub.authorizeOrdinaryThinToolRPC(bot, attempt.Wire, 7, "a", "read_file"); err != nil {
+					t.Fatal(err)
+				}
+			} else if attempt.Route.OK || attempt.Wire != nil {
+				t.Fatalf("offline B dispatched or fell back: %+v", attempt)
+			}
+		}
+		if got.Attempts[3].Route.ErrorCode != "TARGET_RESOLUTION_BLOCKED" {
+			t.Fatal("same failed target was not remembered")
+		}
+		if selectionSnapshot(t, handler, 7, "p2p_7_42", "42")["selected_device_id"] != "b" {
+			t.Fatal("partial failure changed the default")
 		}
 	})
 	t.Run("group", func(t *testing.T) {

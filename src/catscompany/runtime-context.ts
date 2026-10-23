@@ -22,8 +22,7 @@ export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | 
         userId: scope.actorUserId, ownerUserId: scope.actorUserId, deviceId: device.deviceId,
         userName: stringField(ownerRecord, 'userName'),
         label: device.displayName || device.deviceId, os: normalizeOS(device.os),
-        status: device.status === 'ready' && explicit.some(grant => grant.deviceId === device.deviceId)
-          ? 'ready' : 'unavailable',
+        status: device.status === 'ready' ? 'ready' : 'unavailable',
       })));
     }
   }

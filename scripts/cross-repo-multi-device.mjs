@@ -39,6 +39,7 @@ const names = ['', '/multiple_devices_require_selection', '/selected_a', '/selec
   '/selected_a/explicit_B_while_default_A/scope_cannot_be_omitted',
   '/selected_a/legacy_grant_list_stays_default_only', '/v1_rollout_keeps_selected_only_authority',
   '/explicit_A_while_default_B_offline',
+  '/partial_failure_same_run_preserves_authorized_A',
   '/old_A_wire_rejected_after_switch', '/legacy_unscoped_wire_requires_upgrade',
   '/server_host_without_desktop_authorization', '/selected_B_offline_does_not_fallback_to_A',
   '/group', '/group/selected_A_preserves_shared_history', '/group/other_actor_uses_only_own_device',
@@ -48,4 +49,4 @@ const passed = new Set(events.filter(event => event.Action === 'pass').map(event
 if (names.some(name => !passed.has(suite + name)) || events.some(event => event.Action === 'skip' || event.Action === 'fail')) {
   throw new Error('Required paired scenarios did not all pass');
 }
-console.log(`[multi-device-paired] ${names.length - 2} scenarios passed (private + group); real metadata/CLI wire/server dispatch, simulated storage/devices, not deployed E2E.`);
+console.log(`[multi-device-paired] ${names.filter(Boolean).length} scenarios passed (private + group); real metadata/CLI wire/server dispatch, simulated storage/devices, not deployed E2E.`);
