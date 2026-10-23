@@ -155,6 +155,8 @@ export interface UserDevice {
 }
 
 export interface ScopedDeviceGrant {
+  targetScope?: 'explicit_device';
+  selectionRevision?: string;
   kind: 'user_device_grant';
   source: MessageSource;
   grantId: string;
@@ -178,6 +180,8 @@ export interface ScopedDeviceGrant {
 }
 
 export interface DeviceSelectionCandidate {
+  os?: string;
+  status?: 'ready' | 'unavailable';
   deviceId: string;
   displayName?: string;
   operations?: DeviceGrantOperation[];
@@ -185,6 +189,7 @@ export interface DeviceSelectionCandidate {
 }
 
 export interface ScopedDeviceSelection {
+  revision?: string;
   kind: 'user_device_selection';
   source: MessageSource;
   status: DeviceSelectionStatus;

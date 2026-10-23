@@ -41,12 +41,21 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 	}
 	type output struct {
 		Route struct {
-			OK   bool   `json:"ok"`
-			Mode string `json:"mode"`
+			OK        bool   `json:"ok"`
+			Mode      string `json:"mode"`
+			ErrorCode string `json:"errorCode"`
+			Message   string `json:"message"`
 		} `json:"route"`
 		Wire              *MsgThinToolRPC `json:"wire"`
 		Devices           []string        `json:"devices"`
 		HistorySessionKey string          `json:"historySessionKey"`
+		Attempts          []struct {
+			Route struct {
+				OK        bool   `json:"ok"`
+				ErrorCode string `json:"errorCode"`
+			} `json:"route"`
+			Wire *MsgThinToolRPC `json:"wire"`
+		} `json:"attempts"`
 	}
 	call := func(meta map[string]interface{}, target string, identity ...map[string]interface{}) output {
 		t.Helper()
@@ -83,6 +92,17 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 			t.Fatalf("unexpected route/directory: %+v", got)
 		}
 	})
+	t.Run("no_default_explicit_B", func(t *testing.T) {
+		// A picker GET initializes an empty revision, without choosing a default.
+		selectionSnapshot(t, handler, 7, "p2p_7_42", "42")
+		got := call(metadata(), "b")
+		if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != "b" {
+			t.Fatalf("exact B requires no default: %+v", got)
+		}
+		if err := hub.authorizeOrdinaryThinToolRPC(bot, got.Wire, 7, "b", "read_file"); err != nil {
+			t.Fatal(err)
+		}
+	})
 	for _, device := range []string{"a", "b"} {
 		t.Run("selected_"+device, func(t *testing.T) {
 			choose(device)
@@ -99,9 +119,86 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 			}
 			if device == "a" {
 				oldA = got.Wire
+				t.Run("explicit_B_while_default_A", func(t *testing.T) {
+					explicit := call(metadata(), "b")
+					if !explicit.Route.OK || explicit.Wire == nil || explicit.Wire.TargetDeviceID != "b" {
+						t.Fatalf("default A blocked explicit B: %+v", explicit)
+					}
+					if err := hub.authorizeOrdinaryThinToolRPC(bot, explicit.Wire, 7, "b", "read_file"); err != nil {
+						t.Fatal(err)
+					}
+					t.Run("scope_cannot_be_omitted", func(t *testing.T) {
+						legacyShape := *explicit.Wire
+						legacyShape.TargetScope = ""
+						if err := hub.authorizeOrdinaryThinToolRPC(bot, &legacyShape, 7, "b", "read_file"); err == nil {
+							t.Fatal("explicit B capability executed as a default request")
+						}
+					})
+					forged := *explicit.Wire
+					forged.TargetDeviceID = "a"
+					if err := hub.authorizeOrdinaryThinToolRPC(bot, &forged, 7, "a", "read_file"); err == nil {
+						t.Fatal("B grant executed on A")
+					}
+				})
+				t.Run("legacy_grant_list_stays_default_only", func(t *testing.T) {
+					meta := metadata()
+					identity := meta["catsco_identity"].(map[string]interface{})
+					delete(identity, "device_target_authorizations")
+					grants := identity["device_grants"].([]ScopedDeviceGrant)
+					if len(grants) != 1 || grants[0].DeviceID != "a" || grants[0].TargetScope != "" {
+						t.Fatalf("old consumer got non-default grants: %#v", grants)
+					}
+					got := call(meta, "alice")
+					if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != "a" || got.Wire.TargetScope != "" {
+						t.Fatalf("default A compatibility failed: %+v", got)
+					}
+					if err := hub.authorizeOrdinaryThinToolRPC(bot, got.Wire, 7, "a", "read_file"); err != nil {
+						t.Fatal(err)
+					}
+					if other := call(meta, "b"); other.Route.OK || other.Wire != nil {
+						t.Fatal("legacy grant list authorized non-default B")
+					}
+				})
+				t.Run("both_targets_keep_default_A", func(t *testing.T) {
+					meta := metadata()
+					for _, target := range []string{"a", "b", "alice"} {
+						explicit := call(meta, target)
+						want := target
+						if target == "alice" {
+							want = "a"
+						}
+						if !explicit.Route.OK || explicit.Wire == nil || explicit.Wire.TargetDeviceID != want {
+							t.Fatalf("wrong multi-target route: %+v", explicit)
+						}
+						if err := hub.authorizeOrdinaryThinToolRPC(bot, explicit.Wire, 7, want, "read_file"); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if selectionSnapshot(t, handler, 7, "p2p_7_42", "42")["selected_device_id"] != "a" {
+						t.Fatal("explicit task changed persisted default")
+					}
+				})
 			}
 		})
 	}
+	t.Run("v1_rollout_keeps_selected_only_authority", func(t *testing.T) {
+		t.Setenv("CATSCO_XIAOBA_RUNTIME_V2_ENABLED", "")
+		meta := metadata()
+		identity := meta["catsco_identity"].(map[string]interface{})
+		if _, ok := identity["device_target_authorizations"]; ok {
+			t.Fatal("v1 emitted explicit authorization envelope")
+		}
+		got := call(meta, "alice")
+		if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != "b" || got.Wire.TargetScope != "" {
+			t.Fatalf("v1 default B unavailable: %+v", got)
+		}
+		if err := hub.authorizeOrdinaryThinToolRPC(bot, got.Wire, 7, "b", "read_file"); err != nil {
+			t.Fatal(err)
+		}
+		if other := call(meta, "a"); other.Route.OK || other.Wire != nil {
+			t.Fatal("v1 authorized non-default A")
+		}
+	})
 	t.Run("old_A_wire_rejected_after_switch", func(t *testing.T) {
 		if oldA == nil {
 			t.Fatal("missing A fixture")
@@ -124,11 +221,47 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 		}
 	})
 	t.Run("selected_B_offline_does_not_fallback_to_A", func(t *testing.T) {
-		hub.userDevices.now = func() time.Time { return time.Now().Add(hub.userDevices.ttl + time.Minute) }
-		hub.userDevices.touch(7, "a")
+		_, receiver := hub.findDeviceRPCTarget(7, UserDevice{DeviceID: "b"})
+		if receiver == nil {
+			t.Fatal("missing B fixture")
+		}
+		hub.unbindDeviceClient(receiver)
 		got := call(metadata(), "alice")
 		if got.Route.OK || got.Wire != nil {
 			t.Fatalf("offline B fell back: %+v", got)
+		}
+	})
+	t.Run("explicit_A_while_default_B_offline", func(t *testing.T) {
+		got := call(metadata(), "a")
+		if !got.Route.OK || got.Wire == nil || got.Wire.TargetDeviceID != "a" {
+			t.Fatalf("offline default blocked explicitly requested A: %+v", got)
+		}
+		if err := hub.authorizeOrdinaryThinToolRPC(bot, got.Wire, 7, "a", "read_file"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("partial_failure_same_run_preserves_authorized_A", func(t *testing.T) {
+		got := call(metadata(), "", map[string]interface{}{"targets": []string{"b", "a", "speaker_default", "b"}})
+		if len(got.Attempts) != 4 {
+			t.Fatalf("missing per-target results: %+v", got)
+		}
+		for index, attempt := range got.Attempts {
+			if index == 1 {
+				if !attempt.Route.OK || attempt.Wire == nil || attempt.Wire.TargetDeviceID != "a" {
+					t.Fatalf("offline B poisoned explicit A: %+v", attempt)
+				}
+				if err := hub.authorizeOrdinaryThinToolRPC(bot, attempt.Wire, 7, "a", "read_file"); err != nil {
+					t.Fatal(err)
+				}
+			} else if attempt.Route.OK || attempt.Wire != nil {
+				t.Fatalf("offline B dispatched or fell back: %+v", attempt)
+			}
+		}
+		if got.Attempts[3].Route.ErrorCode != "TARGET_RESOLUTION_BLOCKED" {
+			t.Fatal("same failed target was not remembered")
+		}
+		if selectionSnapshot(t, handler, 7, "p2p_7_42", "42")["selected_device_id"] != "b" {
+			t.Fatal("partial failure changed the default")
 		}
 	})
 	t.Run("group", func(t *testing.T) {

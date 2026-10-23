@@ -199,7 +199,7 @@ export class ToolManager implements ToolExecutor {
       // Check before tool-specific local-file-grant/Skill shortcuts too. This
       // state is owned by the runner, not accepted from model JSON arguments.
       const targetFailure = operationForToolTargetContext(toolName)
-        ? getDeviceTargetResolutionFailure(context) : undefined;
+        ? getDeviceTargetResolutionFailure(context, (args && typeof args === 'object' ? (args as Record<string, unknown>).target : undefined)) : undefined;
       if (targetFailure) {
         return {
           tool_call_id: toolCall.id, role: 'tool', name: toolName,

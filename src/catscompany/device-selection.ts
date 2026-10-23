@@ -47,6 +47,7 @@ function normalizeDeviceSelection(record: UnknownRecord, scope: ExecutionScope):
   if (!sessionKey || !topicId || !actorUserId) return undefined;
 
   return pruneUndefined({
+    revision: typeof record.revision === 'string' ? record.revision : undefined,
     kind: 'user_device_selection',
     source,
     status,
@@ -97,6 +98,8 @@ function normalizeCandidates(value: unknown): DeviceSelectionCandidate[] | undef
       const deviceId = stringField(record, 'deviceId') || stringField(record, 'device_id');
       if (!deviceId) return undefined;
       return pruneUndefined({
+        os: stringField(record, 'os'),
+        status: record.active === true && record.routeConnected === true && record.routable === true ? 'ready' : 'unavailable',
         deviceId,
         displayName: stringField(record, 'displayName') || stringField(record, 'display_name'),
         operations: normalizeOperations(record.operations),

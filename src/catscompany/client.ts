@@ -58,6 +58,7 @@ export interface CatsDeviceRpcError {
 }
 
 export interface CatsDeviceRpcMessage {
+  target_scope?: 'explicit_device';
   id?: string;
   type: 'request' | 'result';
   request_id: string;
@@ -84,6 +85,7 @@ export interface CatsDeviceRpcMessage {
 }
 
 export interface CatsThinToolRpcMessage {
+  target_scope?: 'explicit_device';
   id?: string;
   type: 'request' | 'result';
   request_id: string;

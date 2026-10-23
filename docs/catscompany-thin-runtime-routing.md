@@ -2,7 +2,55 @@
 
 This document records the lightweight remote execution design for CatsCompany-backed XiaoBa sessions.
 
-## Fixed Rules
+## Current default and explicit target protocol (2026-10-21)
+
+The earlier grant-free routing notes below describe the historical path. Ordinary
+user-device tools now require a current scoped grant. `device_grants` contains
+only the selected default's grant; `speaker_default` and user-name aliases may
+use only that grant. A desktop task with no device named in the user's request
+uses this default, while tool calls without a `target` still run on the Bot host
+for normal Skill and attachment work.
+
+With server v2 enabled, `catsco_identity.device_target_authorizations` (schema
+`catsco.device-targets.v1`) contains separate `explicit_device` capabilities.
+Only exact device names/IDs may select these, and the runtime sends
+`target_scope: "explicit_device"` together with the exact device ID on both RPC
+transports. The server enforces scope and device ID. Old clients read only the
+selected-only field; unknown explicit-envelope schemas are ignored. Never
+interpret the first explicit capability as the default. An explicit or multi-device
+task does not update the picker; offline/missing/ambiguous targets do not permit
+fallback to another computer. Each device task retains its own grant and result.
+
+Target-resolution failures are remembered per target within a run, including
+copied contexts and delegated runners. A failed device cannot be retried through
+its unique name, ID or default alias, but it does not block another independently
+authorized device. Shared or ambiguous names do not mark every matching device
+as failed; exact IDs still require their own authorization. An in-flight request
+retains its own target. Unrelated Bot-host
+Skill/attachment tools and text replies may continue: omitted `target` and
+`agent_self` still mean the Bot host, not a retry of the failed device's task.
+The guard does not infer natural-language intent; the model must not reuse a
+failed device's task or paths on another device or the Bot host.
+
+Server rollout remains gated; these changes do not enable a production flag.
+
+### Rollout and rollback
+
+Merge and release the client while retaining selected-only server behavior.
+The independent envelope and `target_scope` support require the server changes
+already merged in CatsCompany #706/#713; a new client must not assume that
+merging it activates this protocol. Upgrade each cloud Bot runtime before adding
+its UID to `CATSCO_XIAOBA_RUNTIME_V2_BOT_UIDS`, then verify the effective server
+configuration and default, explicit, multi-device and offline behavior. Keep
+`CATSCO_XIAOBA_RUNTIME_V2_ENABLED` disabled during that staged rollout.
+
+The currently accepted canary is David (UID 573) only. Desktop Connectors keep
+their existing receiver protocol, and non-canary Bots retain selected-only
+authority. Before rolling a canary Bot back to an older runtime, remove its UID
+from the allowlist and apply/verify the server configuration first. A successful
+client build or merge is not evidence that the deployed combination is enabled.
+
+## Historical Grant-Free Routing Rules
 
 - CatsCompany has two runtime duties for this path: forward `thin_tool_rpc` requests/results, and inject realtime `xiaoba_runtime.devices` facts for messages delivered to bot recipients.
 - The new path does not read `device_grants`, `device_selection`, or `grant_id` to choose a thin RPC target.

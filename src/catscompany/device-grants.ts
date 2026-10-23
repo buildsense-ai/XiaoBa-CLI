@@ -20,9 +20,18 @@ export function extractCatsCoDeviceGrants(
   const permissions = asRecord(identity?.permissions);
   if (stringField(permissions, 'source') !== 'server_canonical_message') return undefined;
 
-  const rawGrants = arrayField(identity, 'device_grants')
-    ?? arrayField(permissions, 'device_grants');
-  if (!rawGrants || rawGrants.length === 0) return undefined;
+  const legacyGrants = arrayField(identity, 'device_grants')
+    ?? arrayField(permissions, 'device_grants') ?? [];
+  const targets = asRecord(identity?.device_target_authorizations);
+  const explicitGrants = targets?.schema === 'catsco.device-targets.v1'
+    ? arrayField(targets, 'grants') ?? [] : [];
+  // A v1 client only sees selected-device grants. Explicit authorizations are
+  // accepted exclusively from the separately versioned server envelope.
+  const rawGrants = [
+    ...legacyGrants.filter(value => asRecord(value)?.targetScope === undefined),
+    ...explicitGrants.filter(value => asRecord(value)?.targetScope === 'explicit_device'),
+  ];
+  if (rawGrants.length === 0) return undefined;
 
   const grants = rawGrants
     .map(normalizeDeviceGrant)
@@ -52,6 +61,8 @@ function normalizeDeviceGrant(value: unknown): ScopedDeviceGrant | undefined {
   if (operations.length === 0 || createdAt === undefined || expiresAt === undefined) return undefined;
 
   return pruneUndefined({
+    targetScope: record.targetScope === 'explicit_device' ? 'explicit_device' : undefined,
+    selectionRevision: typeof record.selectionRevision === 'string' ? record.selectionRevision : undefined,
     kind: 'user_device_grant',
     source,
     grantId,

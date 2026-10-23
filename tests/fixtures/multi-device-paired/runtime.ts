@@ -32,14 +32,20 @@ async function main() {
   bot.bot = client;
   const ctx: ToolExecutionContext = {
     workingDirectory: '.', surface: 'catscompany', executionScope,
+    targetResolutionState: {},
     targetRoutes: extractCatsCoRuntimeContext(input.metadata, executionScope),
     deviceGrants: extractCatsCoDeviceGrants(input.metadata, executionScope),
     deviceSelection: extractCatsCoDeviceSelection(input.metadata, executionScope),
     thinToolRpc: bot.buildThinToolRpcTransport(),
   };
-  const route = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file', target: input.target });
-  const result = await executeRouteIfRemote(ctx, route, 'read_file', 'read_file', { file_path: 'fixture-only', target: input.target });
-  process.stdout.write(JSON.stringify({ route, result, wire, historySessionKey: envelope.sessionKey,
+  const attempts = [];
+  for (const target of input.targets ?? [input.target]) {
+    wire = undefined;
+    const route = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file', target });
+    const result = await executeRouteIfRemote(ctx, route, 'read_file', 'read_file', { file_path: 'fixture-only', target });
+    attempts.push({ route, result, wire });
+  }
+  process.stdout.write(JSON.stringify({ ...attempts[attempts.length - 1], attempts, historySessionKey: envelope.sessionKey,
     devices: ctx.targetRoutes?.routes.map(item => item.deviceId) }));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

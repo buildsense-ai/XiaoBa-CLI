@@ -66,6 +66,7 @@ export async function executeRemoteDeviceRpcTool(
       operation,
       args: stripTransportOnlyArgs(args),
       grant: gateway.grant,
+      targetScope: gateway.targetScope,
       targetDeviceId: gateway.targetDeviceId,
       targetDeviceDisplayName: gateway.targetDeviceDisplayName,
       targetDeviceBodyId: gateway.targetDeviceBodyId,
