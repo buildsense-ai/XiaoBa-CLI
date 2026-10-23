@@ -91,29 +91,43 @@ test('Branch full/refine budget keeps all graph conditions or no body, never inv
   assert.deepEqual(failed.graphs,[]); assert.deepEqual(failed.reads,[]);
 });
 
-for (const oversized of [false, true]) test(`two-call Branch preserves closure or audits omitted graph (oversized=${oversized})`, async () => {
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'memory-graph-branch-'));
-  const previous=process.env.XIAOBA_USER_DATA_DIR;process.env.XIAOBA_USER_DATA_DIR=root;
-  const queue=new InMemorySyntheticObservationQueue();const calls:string[]=[];
-  const graph=fixture();if(oversized)graph.nodes[0].entry.text='x'.repeat(6000);
-  const toolCall=(name:string,args:any)=>({id:name,type:'function',function:{name,arguments:JSON.stringify(args)}});
-  const ai:any={isToolCallingSupported:()=>true,async chat(messages:any[],tools:any[]){
-    const name=tools[0].name;calls.push(name);
-    if(name==='assess_memory_need')return{content:null,toolCalls:[toolCall(name,{action:'recall',query_text:'restore',keywords:['restore']})]};
-    const pack=JSON.parse(messages.find(m=>typeof m.content==='string'&&m.content.startsWith('{"evidence_pack":')).content).evidence_pack;
-    assert.equal(pack.daily_knowledge.graphs.length,oversized?0:1);
-    if(!oversized)assert.equal(pack.daily_knowledge.graphs[0].nodes.length,3);
-    return{content:null,toolCalls:[toolCall(name,{delivery:'context',summary:'Restore using the recalled experience.',refs:[graphNodeRef(fixture().nodes[0])]})]};
-  },async chatStream(){throw new Error('unexpected checkpoint');}};
-  try{
-    const session=new MemorySearchBranchSession({sessionKey:'graph-e2e',input:'restore',recentMessages:[],workingDirectory:root,aiService:ai,queue,catslogMemory:backend(graph),logEnabled:false});
-    await session.run();assert.deepEqual(calls,['assess_memory_need','finish_memory_search']);
-    assert.equal(queue.size(),oversized?0:1);
-    if(oversized)return;
-    const message=buildSyntheticObservationMessages(queue.drain()).find(m=>m.role==='tool')!;
-    const body=JSON.parse(message.content as string);
-    assert.equal(body.memory_graphs.length,1);assert.equal(body.memory_graphs[0].nodes.length,3);
-    assert.match(message.content as string,/Verify the backup checksum/);assert.match(message.content as string,/stop writes/);
-    assert.equal(body.memory_graphs[0].edges.length,2);
-  }finally{if(previous===undefined)delete process.env.XIAOBA_USER_DATA_DIR;else process.env.XIAOBA_USER_DATA_DIR=previous;fs.rmSync(root,{recursive:true,force:true});}
+for (const oversized of [false, true]) test(`current Branch loop preserves closure or rejects omitted graph (oversized=${oversized})`, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-graph-branch-'));
+  const previous = process.env.XIAOBA_USER_DATA_DIR; process.env.XIAOBA_USER_DATA_DIR = root;
+  const queue = new InMemorySyntheticObservationQueue();
+  const graph = fixture(); if (oversized) graph.nodes[0].entry.text = 'x'.repeat(16000);
+  const ref = graphNodeRef(graph.nodes[0]);
+  const exchanges: string[] = [];
+  const toolCall = (name: string, args: any) => ({ id: `${name}-${exchanges.length}`, type: 'function', function: { name, arguments: JSON.stringify(args) } });
+  const ai: any = { isToolCallingSupported: () => true, async chat(messages: any[], tools: any[]) {
+    assert.ok(tools.some(t => t.name === 'memory_knowledge_search'));
+    let name: string, args: any;
+    if (!exchanges.length) { name = 'memory_knowledge_search'; args = { query: 'restore' }; }
+    else if (exchanges.length === 1) {
+      const search = JSON.parse(messages.filter(m => m.role === 'tool').at(-1).content);
+      assert.equal(search.status, 'metadata_only'); assert.equal(search.hits[0].ref, ref);
+      name = 'memory_knowledge_graph'; args = { ref };
+    } else {
+      name = 'finish_memory_search'; args = { summary: 'Restore using recalled evidence.', evidence: [ref], inject: true };
+      if (exchanges.length === 2) {
+        const result = JSON.parse(messages.filter(m => m.role === 'tool').at(-1).content);
+        assert.equal(result.status, oversized ? 'reference_only' : 'expanded');
+        if (!oversized) { assert.equal(result.graph.nodes.length, 3); assert.equal(result.graph.edges.length, 2); }
+      }
+    }
+    exchanges.push(name);
+    return { content: null, toolCalls: [toolCall(name, args)] };
+  }, async chatStream() { throw new Error('unexpected checkpoint'); } };
+  try {
+    const session = new MemorySearchBranchSession({ sessionKey: 'graph-e2e', input: 'restore', recentMessages: [], workingDirectory: root, aiService: ai, queue, catslogMemory: backend(graph), logEnabled: false });
+    await session.run();
+    assert.deepEqual(exchanges.slice(0, 3), ['memory_knowledge_search', 'memory_knowledge_graph', 'finish_memory_search']);
+    assert.equal(queue.size(), oversized ? 0 : 1);
+    if (oversized) { assert.equal(exchanges.length, 5, 'three invalid finishes exhaust without injecting unread metadata'); return; }
+    const message = buildSyntheticObservationMessages(queue.drain()).find(m => m.role === 'tool')!;
+    const body = JSON.parse(message.content as string);
+    assert.equal(body.memory_graphs.length, 1); assert.equal(body.memory_graphs[0].nodes.length, 3);
+    assert.match(message.content as string, /Verify the backup checksum/); assert.match(message.content as string, /stop writes/);
+    assert.equal(body.memory_graphs[0].edges.length, 2);
+  } finally { if (previous === undefined) delete process.env.XIAOBA_USER_DATA_DIR; else process.env.XIAOBA_USER_DATA_DIR = previous; fs.rmSync(root, { recursive: true, force: true }); }
 });

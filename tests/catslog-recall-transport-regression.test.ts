@@ -235,7 +235,7 @@ describe('recall real provider/client transport regressions', () => {
     assert.match(page.note, /不完整/);
   });
 
-  for (const fixture of ['daily', 'all-lanes', 'all-lanes-long-cursors']) test(`default 16k Branch: legal maximum CJK response ${fixture} keeps assess+finish`, async () => {
+  for (const fixture of ['daily', 'all-lanes', 'all-lanes-long-cursors']) test(`legacy presentation helper preserves bounded CJK evidence: ${fixture}`, async () => {
     const allLanes = fixture !== 'daily';
     dailyServer(allLanes, 8, fixture === 'all-lanes-long-cursors');
     if (allLanes) {
@@ -247,43 +247,15 @@ describe('recall real provider/client transport regressions', () => {
         fs.writeFileSync(path.join(docs, `${kbId}.md`), `---\n${JSON.stringify(metadata)}\n---\n\nrelease ${'知'.repeat(2_000)}\n`);
       }
     }
-    const kinds: string[] = [];
-    let finishMessages: any[] = [];
-    let finishTools: any[] = [];
-    const ai = {
-      isToolCallingSupported: () => true,
-      async chat(messages: any[], tools: any[]) {
-        kinds.push(tools[0].name);
-        if (tools[0].name === 'assess_memory_need') return { content: null, toolCalls: [toolCall('assess_memory_need', { action: 'recall', query_text: 'release', keywords: ['release'] })], usage };
-        finishMessages = JSON.parse(JSON.stringify(messages)); finishTools = tools;
-        const packMessage = messages.find(m => typeof m.content === 'string' && m.content.startsWith('{"evidence_pack":'));
-        assert.ok(packMessage, 'intact parseable evidence at finish, without checkpoint');
-        const daily = JSON.parse(packMessage.content).evidence_pack.daily_knowledge;
-        return { content: null, toolCalls: [toolCall('finish_memory_search', { summary: 'Synthetic old and corrected evidence.', refs: daily.reads.filter((r: any) => r.text).map((r: any) => r.ref), delivery: 'context' })], usage };
-      },
-      async chatStream() { kinds.push('checkpoint'); return { content: 'unexpected checkpoint', usage }; },
-    };
-    const queue = new InMemorySyntheticObservationQueue();
-    const session = new MemorySearchBranchSession({ sessionKey: 'synthetic-budget', input: 'release', recentMessages: [], workingDirectory: root,
-      queue, aiService: ai as any, catslogMemory: provider(), logEnabled: false });
-    await session.run();
-    assert.deepEqual(kinds, ['assess_memory_need', 'finish_memory_search']);
-    assert.equal(queue.size(), 1, 'exact presented corpus refs pass the real finish guard');
-    const state = (session as any).retrieval;
-    const full = state.presentation.evidencePack;
-    const refine = state.refinePresentation.evidencePack;
-    assert.ok(JSON.stringify(full).length <= 40_400);
-    assert.ok(JSON.stringify(refine).length <= 12_400);
-    assert.ok(JSON.stringify(full.daily_knowledge).length <= 16_000);
-    assert.ok(JSON.stringify(refine.daily_knowledge).length <= 6_000);
-    const completePromptTokens = estimateMessagesTokens(finishMessages) + estimateToolsTokens(finishTools);
-    assert.ok(completePromptTokens < 16_000);
-    assert.ok(finishMessages.some(m => m.role === 'system'), 'include the real Branch system prompt');
-    assert.ok(finishMessages.some(m => m.tool_calls?.some((call: any) => call.function.name === 'assess_memory_need')), 'include assess exchange');
-    assert.ok(finishMessages.some(m => m.role === 'tool'), 'include the assess tool result');
+    // The current Branch uses explicit in-loop tools. Keep the old embedding
+    // adapter's presentation contract covered without resurrecting its runner.
+    const lane = await searchDailyKnowledgeLane({ backend: provider(), queryText: 'release', keywords: ['release'] });
+    const fullDaily: any = projectDailyKnowledgeLane(lane, 16_000);
+    const daily: any = projectDailyKnowledgeLane(lane, 6_000);
+    assert.ok(JSON.stringify(fullDaily).length <= 16_000);
+    assert.ok(JSON.stringify(daily).length <= 6_000);
     assert.equal(calls.filter(c => c.route.endsWith('/knowledge/read')).length, 4);
     assert.equal(calls.filter(c => c.route.endsWith('/knowledge/expand')).length, 2);
-    const daily = refine.daily_knowledge;
     assert.equal(daily.reads.length, 4, 'both original and corrected bodies survive as marked excerpts');
     assert.equal(daily.truncated, true);
     assert.ok(daily.presentation_omitted.edges > 0);
@@ -305,21 +277,8 @@ describe('recall real provider/client transport regressions', () => {
       }
     }
     assert.ok(daily.reads[0].newer_updates.some((u: any) => u.remote_read_ref === ref(anchor(100))));
-    assert.ok(state.refinePresentation.presentedRefs.every((r: string) => state.presentation.presentedRefs.includes(r)));
-    assert.ok(collectProjectedDailyKnowledgeRefs(daily).every(r => state.presentation.presentedRefs.includes(r)), 'actual model-visible refs are a full-view subset');
-    console.log(JSON.stringify({ fixture, full_pack_chars: JSON.stringify(full).length, refine_pack_chars: JSON.stringify(refine).length,
-      daily_chars: JSON.stringify(daily).length, finish_prompt_tokens_including_tools: completePromptTokens, call_kinds: kinds,
-      full_refs: state.presentation.presentedRefs.length, refine_refs: state.refinePresentation.presentedRefs.length }));
-    assert.equal(state.dailyKnowledge.reads[0].text, '旧'.repeat(4_000), 'projection leaves retrieval evidence intact');
-    if (allLanes) {
-      assert.ok(full.local_knowledge.entries.length > 0, 'real bundled KB search participates');
-      assert.ok(refine.local_knowledge.entries.length > 0, 'R1: at least the relevant metadata floor survives');
-      assert.ok(refine.remote_branch.branches.some((b: any) => b.items?.length > 0));
-      assert.ok(refine.session_records.records.length > 0, 'actual finish retains four nonempty lanes');
-      assert.ok(JSON.stringify(refine.remote_branch).length <= 3_000);
-      assert.ok(JSON.stringify(refine.session_records).length <= 1_800);
-      assert.ok(JSON.stringify(refine.local_knowledge).length <= 1_200);
-    }
+    assert.ok(collectProjectedDailyKnowledgeRefs(daily).every(r => collectProjectedDailyKnowledgeRefs(fullDaily).includes(r)));
+    assert.equal(lane.reads[0].text, '旧'.repeat(4_000), 'projection leaves retrieval evidence intact');
   });
 
   test('small aggregate budget clears omitted remote body claims while keeping exact anchor and gap', async () => {

@@ -14,12 +14,9 @@ import { SessionTurnLogger } from '../src/utils/session-turn-logger';
 import type { Message } from '../src/types';
 import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
 
-const DOC = `akd-${'a'.repeat(24)}`;
-const ENTRY = `ake-${'b'.repeat(24)}`;
-const REV = `akr-${'c'.repeat(64)}`;
-const RAW = { kind: 'session_query' as const, id: 'turn-1', session_id: 's-1', stream_id: 'st-1', byte_offset: 12, revision: 'd'.repeat(64) };
-const SOURCE = `catslog:source:${'e'.repeat(64)}`;
-const POOL = `ref_${'f'.repeat(64)}`;
+const DOC = `akd-${'a'.repeat(24)}`, ENTRY = `ake-${'b'.repeat(24)}`, REV = `akr-${'c'.repeat(64)}`;
+const SOURCE = `catslog:source:${'e'.repeat(64)}`, POOL = `ref_${'f'.repeat(64)}`;
+const KNOWLEDGE = `catslog:knowledge:${DOC}:${REV}:${ENTRY}`;
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 const call = (id: string, name: string, args: any) => ({ id, type: 'function' as const, function: { name, arguments: JSON.stringify(args) } });
 
@@ -33,8 +30,7 @@ test('typed source refs tag and count in their own lane, including fallback/carr
     timing: 'late_previous_turn', metadata: { refs: [SOURCE, POOL], citation: { requestId: 'request-1', refs: [SOURCE, POOL] } } };
   const counts = collectBranchCitationUsage([observation], SOURCE);
   assert.equal(counts?.carryover, true);
-  assert.equal(counts?.injectedByLane.source, 1);
-  assert.equal(counts?.citedByLane.source, 1);
+  assert.equal(counts?.injectedByLane.source, 1); assert.equal(counts?.citedByLane.source, 1);
   assert.equal(counts?.citedByLane.remote_pool, 0);
   assert.deepEqual(matchBranchCitations([observation], SOURCE), { reports: [], knowledgeRefs: [], sourceRefs: [SOURCE] });
   assert.deepEqual(matchBranchCitations([observation], `${SOURCE} ${POOL}`).reports, [{ requestId: 'request-1', refs: [POOL] }]);
@@ -43,103 +39,85 @@ test('typed source refs tag and count in their own lane, including fallback/carr
 test('source citation ref collection uses the source injection bound, not the old 32-document KB bound', () => {
   const refs = Array.from({ length: 40 }, (_, index) => `catslog:source:${index.toString(16).padStart(64, '0')}`);
   const observation: any = { source: 'memory', summary: 'Source summary', status: 'completed', relevance: 'medium', metadata: { refs } };
-  const corpus = refs.join('\n');
-  assert.equal(collectBranchCitationUsage([observation], corpus)?.citedByLane.source, 40);
-  assert.deepEqual(matchBranchCitations([observation], corpus).sourceRefs, refs);
+  assert.equal(collectBranchCitationUsage([observation], refs.join('\n'))?.citedByLane.source, 40);
+  assert.deepEqual(matchBranchCitations([observation], refs.join('\n')).sourceRefs, refs);
 });
 
-async function actualSourceBranch(root: string, forged = false) {
+// Follow main's current explicit tool loop, rather than the retired assess/refine runner.
+async function actualGraphBranch(root: string, forged = false) {
   const queue = new InMemorySyntheticObservationQueue();
-  let sourceReads = 0;
-  let presentedRef = '';
-  let pass = 0;
+  let pass = 0, graphReads = 0;
+  const anchor = { kind: 'knowledge_entry' as const, document_id: DOC, id: ENTRY, revision: REV };
   const backend: CatsLogMemoryBackend = {
-    isAvailable: () => true,
-    isKnowledgeRecallAvailable: () => true,
-    searchKnowledge: async () => ({ hits: [{ document_id: DOC, entry_id: ENTRY, day: '2026-10-08', title: 'Deployment guard', status: 'active', revision: REV }], exhausted: true }),
-    readKnowledge: async () => ({ format: 'json', page: { document_id: DOC, revision: REV, day: '2026-10-08', generated_at: '2026-10-08T00:00:00Z', generated_by: 'test',
-      entries: [{ id: ENTRY, title: 'Deployment guard', text: 'Relevant historical constraint', status: 'active', source_anchors: [RAW] }], exhausted: true } }),
-    expandKnowledge: async () => ({ edges: [], exhausted: true }),
-    readKnowledgeSource: async () => { sourceReads++; return {
-      source: { anchor: RAW, status: 'read', role: 'organic', speaker: 'user_assistant', occurred_at: '2026-10-08T00:00:00Z',
-        text: 'user: do not deploy\nassistant: wait for explicit approval', content_hash: `sha256:${'1'.repeat(64)}`,
-        coverage: 'complete', truncated: false, redacted: true, missing: false, revoked: false },
-      before: [], after: [], before_exhausted: true, after_exhausted: true, context_truncated: false, served_at: '2026-10-08T12:00:00Z',
-    }; },
+    isAvailable: () => true, isKnowledgeRecallAvailable: () => true,
+    searchKnowledge: async () => ({ hits: [{ document_id: DOC, entry_id: ENTRY, day: '2026-10-08', title: 'Deployment guard', status: 'draft', revision: REV }], exhausted: true }),
+    readKnowledgeGraph: async () => {
+      graphReads++;
+      return { contract: 'memory-graph/1', seeds: [anchor], closure_complete: true, edges: [], nodes: [{
+        anchor, day: '2026-10-08', head_revision: REV, current_status: 'draft',
+        entry: { id: ENTRY, title: 'Deployment guard', text: 'Do not deploy without explicit approval.', status: 'draft' },
+      }] };
+    },
   };
   const ai: any = { isToolCallingSupported: () => true, chat: async (messages: Message[]) => {
     pass++;
-    if (pass === 1) return { content: null, toolCalls: [call('assess', 'assess_memory_need', { action: 'recall', query_text: 'deploy guard', keywords: ['deploy'] })], usage };
-    const message = [...messages].reverse().find(message => message.role === 'user' && typeof message.content === 'string' && message.content.includes('evidence_pack'));
-    assert.ok(message);
-    const pack = JSON.parse(String(message.content));
-    const rows = pack.evidence_pack.daily_knowledge.source_reads;
-    assert.equal(rows.length, 1, 'real reader result survives refine presentation');
-    assert.equal(rows[0].source.disclosure, 'text');
-    assert.match(rows[0].source.text, /do not deploy/);
-    presentedRef = rows[0].source.ref;
-    assert.equal(deriveBranchRefLane(presentedRef), 'source');
-    return { content: null, toolCalls: [call('finish', 'finish_memory_search', { summary: 'Prior source says wait for explicit deployment approval.',
-      refs: [forged ? SOURCE : presentedRef], inject: true, delivery: 'context' })], usage };
+    if (pass === 1) return { content: null, toolCalls: [call('search', 'memory_knowledge_search', { query: 'deploy' })], usage };
+    if (pass === 2) return { content: null, toolCalls: [call('graph', 'memory_knowledge_graph', { ref: KNOWLEDGE })], usage };
+    if (pass === 3) {
+      const tool = messages.filter(message => message.role === 'tool').at(-1)!;
+      assert.match(String(tool.content), /Do not deploy/);
+    }
+    return { content: null, toolCalls: [call(`finish-${pass}`, 'finish_memory_search', {
+      summary: 'Prior evidence says wait for explicit deployment approval.', evidence: [forged ? SOURCE : KNOWLEDGE], inject: true,
+    })], usage };
   } };
-  await startMemorySidecarBranch({ sessionKey: 'branch-source-test', input: 'What is the deployment guard?', recentMessages: [],
+  await startMemorySidecarBranch({ sessionKey: 'branch-graph-test', input: 'What is the deployment guard?', recentMessages: [],
     workingDirectory: root, aiService: ai, queue, catslogMemory: backend, logEnabled: false }).done;
-  assert.equal(sourceReads, 1);
-  return { queue, presentedRef };
+  assert.equal(graphReads, 1);
+  return queue;
 }
 
-test('presented source -> real Branch finish guard -> parent injection -> assistant corpus citation -> local persisted event', async () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'branch-source-attribution-'));
-  const logger = new SessionTurnLogger('cli', `branch-source-test-${randomUUID()}`);
+test('current Branch graph -> parent injection -> assistant corpus citation -> separate knowledge lane event', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'branch-graph-attribution-'));
+  const logger = new SessionTurnLogger('cli', `branch-graph-test-${randomUUID()}`);
   try {
-    const { queue, presentedRef } = await actualSourceBranch(root);
+    const queue = await actualGraphBranch(root);
     assert.equal(queue.size(), 1);
-    let modelPass = 0;
-    const received: Message[][] = [];
-    let remoteReports = 0;
+    let modelPass = 0, remoteReports = 0;
     const ai: any = { chatStream: async (messages: Message[]) => {
-      modelPass++; received.push(messages);
+      modelPass++;
       if (modelPass === 1) {
-        assert.ok(messages.some(message => message.role === 'tool' && String(message.content).includes(presentedRef)), 'source ref is really injected');
-        return { content: null, toolCalls: [call('parent-action', 'noop', { evidence: presentedRef })], usage };
+        assert.ok(messages.some(message => message.role === 'tool' && String(message.content).includes('memory_graphs')
+          && String(message.content).includes('Do not deploy')), 'complete graph is in actual parent input');
+        return { content: null, toolCalls: [call('parent-action', 'noop', { evidence: KNOWLEDGE })], usage };
       }
       return { content: 'I will wait for explicit approval.', toolCalls: [], usage };
     } };
-    const controller = new AgentTurnController({ sessionKey: 'branch-source-test', sessionType: 'cli',
+    const controller = new AgentTurnController({ sessionKey: 'branch-graph-test', sessionType: 'cli',
       services: { aiService: ai, catslogMemory: { reportBranchCitations: async () => { remoteReports++; } },
         toolManager: { getToolDefinitions: () => [{ name: 'noop', description: 'test action', parameters: { type: 'object', properties: {} } }],
-          executeTool: async (tool: any) => ({ role: 'tool', name: 'noop', tool_call_id: tool.id, content: 'done', ok: true }) },
-        skillManager: {} } as any,
+          executeTool: async (tool: any) => ({ role: 'tool', name: 'noop', tool_call_id: tool.id, content: 'done', ok: true }) }, skillManager: {} } as any,
       skillRuntime: { reloadSkills: async () => {}, buildSkillsListMessage: () => null } as any,
       planRuntime: undefined as any, turnContextBuilder: new TurnContextBuilder(), turnLogRecorder: { recordTurn: () => {} } as any,
       workspaceRoot: root, getCurrentDirectory: () => root, updateCurrentDirectory: () => {},
     });
-    (controller as any).startMemorySidecarIfEnabled = () => ({ queue, originTurn: 1, done: true,
-      handle: { cancel: () => {}, done: Promise.resolve() } });
-    await Logger.withSessionContext('branch-source-test', logger, () => controller.run({ input: 'Recall deployment guard', messages: [], runtimeFeedback: [], shouldContinue: () => true }));
+    (controller as any).startMemorySidecarIfEnabled = () => ({ queue, originTurn: 1, done: true, handle: { cancel: () => {}, done: Promise.resolve() } });
+    await Logger.withSessionContext('branch-graph-test', logger, () => controller.run({ input: 'Recall deployment guard', messages: [], runtimeFeedback: [], shouldContinue: () => true }));
     const records = readFileSync(logger.getLogFilePath(), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    const events = records.filter(record => record.event?.type === 'branch_source_usage');
-    assert.equal(events.length, 1);
-    assert.deepEqual(events[0].event.payload.injected_refs, [presentedRef]);
-    assert.deepEqual(events[0].event.payload.cited_refs, [presentedRef]);
-    assert.deepEqual(events[0].event.payload.retained_refs, [], 'interim tool arguments are distinct from final explicit retention');
-    assert.equal(events[0].event.payload.delivery_semantics, 'branch_summary_with_refs_not_source_body');
-    assert.equal(events[0].event.payload.server_feedback, 'not_connected');
+    const event = records.find(record => record.event?.type === 'branch_knowledge_citations').event.payload;
+    assert.deepEqual(event.refs, [KNOWLEDGE]); assert.deepEqual(event.retained_refs, []);
     const lane = records.find(record => record.event?.type === 'branch_citation_usage').event.payload;
-    assert.equal(lane.injectedByLane.source, 1);
-    assert.equal(lane.citedByLane.source, 1);
-    assert.equal(lane.retainedByLane.source, 0);
-    assert.equal(remoteReports, 0);
-    assert.equal(records.filter(record => record.event?.type === 'native_recall_source_usage').length, 0, 'Branch reader did not run native tool');
-    assert.doesNotMatch(JSON.stringify(events[0].event.payload), /principal|session_id|stream_id|user: do not deploy/);
+    assert.equal(lane.injectedByLane.knowledge, 1); assert.equal(lane.citedByLane.knowledge, 1); assert.equal(lane.retainedByLane.knowledge, 0);
+    assert.equal(lane.injectedByLane.source, 0, 'a graph does not disclose original source bodies');
+    assert.equal(remoteReports, 0, 'knowledge refs never enter the legacy pool reporter');
+    assert.equal(records.filter(record => record.event?.type === 'native_recall_source_usage').length, 0);
   } finally { rmSync(logger.getLogFilePath(), { force: true }); rmSync(root, { recursive: true, force: true }); }
 });
 
-test('a source ref absent from refine presentation fails finish guard and never gets injected or counted', async () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'branch-source-forged-'));
+test('a source hash outside the current graph cannot finish or be injected and counted', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'branch-graph-forged-'));
   try {
-    const { queue } = await actualSourceBranch(root, true);
-    assert.equal(queue.size(), 0);
-    assert.equal(collectBranchCitationUsage(queue.drain(), SOURCE), undefined);
+    const queue = await actualGraphBranch(root, true);
+    assert.equal(queue.size(), 0); assert.equal(collectBranchCitationUsage(queue.drain(), SOURCE), undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

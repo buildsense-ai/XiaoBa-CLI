@@ -3,6 +3,7 @@ import { validateKnowledgeGraph, graphEntryAnchor, type CatsLogKnowledgeGraph } 
 import { graphNodeRef } from './catslog-daily-memory-graph';
 import type { CatsLogKnowledgeAnchor } from '../utils/catslog-knowledge-types';
 import { isCatsLogKnowledgeCitationRef } from '../tools/memory-branch-tools';
+import { NativeRecallFeedbackOutbox } from './native-recall-feedback-outbox';
 import { randomUUID } from 'crypto';
 import { ContentBlock, Message } from '../types';
 import { AIService } from '../utils/ai-service';
@@ -48,6 +49,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private readonly delivered = new Map<string, Record<string, unknown>>();
   private readonly knowledgeCandidates = new Map<string, CatsLogKnowledgeAnchor>();
   private readonly knowledgeGraphs: CatsLogKnowledgeGraph[] = [];
+  private readonly graphFeedbackScopes = new Map<CatsLogKnowledgeGraph, string | undefined>();
   private readCalls = 0;
   private searchCalls = 0;
 
@@ -179,6 +181,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     if (this.readCalls >= MAX_SOURCE_REFERENCE_EXPANSIONS || !this.shouldContinue()) return unavailable('budget_exhausted');
     this.readCalls++;
     const deadline = boundedSignal(SOURCE_READ_TIMEOUT_MS, this.remoteAbort.signal, this.memoryOptions.signal, external);
+    const feedbackScope = new NativeRecallFeedbackOutbox(this.memoryOptions.workingDirectory).captureScope();
     try {
       const query = { seeds: [seed], node_budget: 16, edge_budget: 64, byte_budget: MAX_TOTAL_PROJECTION_VIEW_CHARS };
       const graph = validateKnowledgeGraph(await abortable(backend.readKnowledgeGraph(query, deadline.signal), deadline.signal), query);
@@ -186,6 +189,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       const view = { ...graph, nodes: graph.nodes.map(n => ({ ...n, ref: graphNodeRef(n) })) };
       if (this.contextBytes([...this.knowledgeGraphs, view]) > MAX_TOTAL_PROJECTION_VIEW_CHARS) return unavailable('graph_closure_over_budget');
       this.knowledgeGraphs.push(view);
+      this.graphFeedbackScopes.set(view, feedbackScope);
       return { status: 'expanded', content_trust: 'untrusted_branch_evidence', graph: view };
     } catch (error) { return unavailable(classifyExpansionError(error, deadline.signal)); }
     finally { deadline.dispose(); }
@@ -232,6 +236,11 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
 
   protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
     const memoryGraphs = this.knowledgeGraphs.filter(g => g.nodes.some(n => payload.refs.includes(graphNodeRef(n))));
+    const graphScopes = new Set(memoryGraphs.map(g => this.graphFeedbackScopes.get(g)));
+    const feedbackScope = graphScopes.size === 1 ? [...graphScopes][0] : undefined;
+    const feedbackSources = feedbackScope ? [...new Map(memoryGraphs.flatMap(g => g.nodes)
+      .filter(n => payload.refs.includes(graphNodeRef(n)))
+      .map(n => [graphNodeRef(n), { ref: graphNodeRef(n), anchor: n.anchor, disclosure: 'metadata' }])).values()] : [];
     const retained: Array<{ ref: string; semantic_view: Record<string, unknown> }> = [];
     const dropped: string[] = [];
     if (payload.inject) for (const ref of payload.refs) {
@@ -251,6 +260,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       source: 'memory', status: 'completed', relevance: payload.refs.length ? 'medium' : 'low', summary: payload.summary,
       metadata: {
         branchId: this.options.id, branchType: this.options.type, refs: payload.refs,
+        ...(feedbackSources.length ? { feedback_sources: feedbackSources, feedback_scope: feedbackScope } : {}),
         ...(retained.length ? { deliveredRemoteRefs: retained.map(item => item.ref) } : {}),
         ...(requestId && citationRefs.length ? { citation: { requestId, refs: citationRefs } } : {}),
         refLanes: collectBranchRefLanes(payload.refs, pool),

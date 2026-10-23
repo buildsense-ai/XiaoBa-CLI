@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { searchDailyKnowledgeLane, projectDailyKnowledgeLane, collectProjectedDailyKnowledgeRefs } from '../src/core/catslog-daily-knowledge-lane';
 import { consolidateMemoryEvidencePack } from '../src/core/branch-evidence-pack';
-import { MemorySearchBranchSession, MAX_MEMORY_SOURCE_LOCATORS, MAX_MEMORY_SOURCE_LOCATOR_CHARS } from '../src/core/memory-search-branch-session';
+import { MemorySearchBranchSession } from '../src/core/memory-search-branch-session';
 import { InMemorySyntheticObservationQueue, buildSyntheticObservationMessages } from '../src/core/synthetic-observation';
 import { CatsLogKnowledgeRecallTool } from '../src/tools/catslog-knowledge-recall-tool';
 import { hashedRecallRef } from '../src/core/native-recall-attribution';
@@ -237,130 +237,32 @@ test('secondary KB packing retains metadata before excerpts and reports actual p
   assert.equal(JSON.stringify(full), raw);
 });
 
-const toolCall = (name: string, args: unknown) => ({ id: `coverage-${name}`, type: 'function' as const, function: { name, arguments: JSON.stringify(args) } });
-test('finish cannot cite a source omitted from refine even when full audit observed it', () => {
+// The current Branch uses explicit in-loop reads. Source/context replay is
+// an explicit native operation; source hashes alone never pass its finish guard.
+test('current Branch rejects an unissued source hash instead of treating metadata as body', () => {
   const session: any = new MemorySearchBranchSession({ sessionKey: 'source-omission-guard', input: 'release', recentMessages: [],
     workingDirectory: os.tmpdir(), aiService: {} as any, queue: new InMemorySyntheticObservationQueue(), logEnabled: false });
   const seenRef = hashedRecallRef('source', [sourceAnchor(1), 'hash']);
-  session.observedRefs.recordPresentedRefs([seenRef]);
-  session.retrieval.refinePresentation = { presentedRefs: [], evidencePack: {}, diagnostics: {} };
-  const decision = session.resolveFinishDecision({ summary: 'unseen source body', refs: [seenRef], inject: true, delivery: 'context' }, 'context');
-  assert.equal(decision.delivery, 'audit');
-  assert.deepEqual(decision.unobservedRefs, [seenRef]);
-  assert.ok(decision.evidence.observedRefs.includes(seenRef));
-});
-test('injected source locators fit a hard budget, prioritize cited primaries, and exclude uncited/full-only sources and bodies', () => {
-  const session: any = new MemorySearchBranchSession({ sessionKey: 'bounded-source-locators', input: 'release', recentMessages: [],
-    workingDirectory: os.tmpdir(), aiService: {} as any, queue: new InMemorySyntheticObservationQueue(), logEnabled: false });
-  const projected = (item: CatsLogKnowledgeSourceContent) => ({ ...item,
-    ref: hashedRecallRef('source', [item.anchor, item.content_hash ?? null]), disclosure: item.text ? 'text' : 'metadata' });
-  const pages = [1, 2, 3].map(n => ({ ...sourcePage(sourceAnchor(n)),
-    source: projected({ ...source(sourceAnchor(n), `private primary body ${n}`), ...(n === 3 ? { coverage: 'partial' as const, truncated: true } : {}) }),
-    before: [projected(source(sourceAnchor(100 + n), `private before body ${n}`))],
-    after: [projected(source(sourceAnchor(200 + n), `private after body ${n}`))],
-  }));
-  const uncited = projected(source(sourceAnchor(777), 'UNCITED-PRIVATE-BODY'));
-  pages[0].after.push(uncited);
-  const fullOnly = projected(source(sourceAnchor(888), 'FULL-ONLY-PRIVATE-BODY'));
-  session.retrieval.presentation = { evidencePack: { daily_knowledge: { source_reads: [{ source: fullOnly, before: [], after: [] }] } } };
-  session.retrieval.refinePresentation = { evidencePack: { daily_knowledge: { source_reads: pages } } };
-  // Put neighbors first in finish refs: locator retention still prefers the
-  // primary for every selected page, independent of payload ref ordering.
-  const selected = pages.flatMap(page => [...page.before, ...page.after.filter(item => item.ref !== uncited.ref), page.source]).map(item => item.ref);
-  session.observedRefs.recordPresentedRefs(selected);
-  session.retrieval.refinePresentation.presentedRefs = selected;
-  const observation = session.buildObservation({ summary: 'bounded source summary', refs: selected, delivery: 'context', inject: true });
-  const modelMessage = buildSyntheticObservationMessages([observation]).find(message => message.role === 'tool')!;
-  const body = JSON.parse(modelMessage.content as string);
-  const pack = body.source_locators;
-  assert.ok(pack.items.length <= MAX_MEMORY_SOURCE_LOCATORS);
-  assert.ok(JSON.stringify(pack).length <= MAX_MEMORY_SOURCE_LOCATOR_CHARS);
-  assert.ok(pack.omitted > 0, 'fixture exercises real locator omission');
-  assert.equal(pack.omitted, selected.length - pack.items.length);
-  assert.deepEqual(pack.items.slice(0, 3).map((item: any) => item.ref), pages.map(page => page.source.ref));
-  assert.ok(pack.items.every((item: any) => selected.includes(item.ref)));
-  assert.ok(!pack.items.some((item: any) => item.ref === uncited.ref || item.ref === fullOnly.ref));
-  assert.ok(!JSON.stringify(body).includes('PRIVATE-BODY'));
-  assert.ok(!JSON.stringify(body).includes('private primary body'));
-  assert.ok(!JSON.stringify(body).includes('private before body'));
-  assert.match(pack.note, /Unmapped refs cannot be read from their hash/);
-  assert.ok(pack.items.every((item: any) => item.disclosure === 'metadata' && !('text' in item)));
-  const partial = pack.items.find((item: any) => item.ref === pages[2].source.ref);
-  assert.equal(partial.coverage, 'partial');
-  assert.equal(partial.truncated, true);
-  assert.equal(partial.read_content_hash, pages[2].source.content_hash);
+  const disposition = session.getObservationDisposition({ summary: 'unseen source body', refs: [seenRef], inject: true });
+  // The parser is the primary fence for non-pool/non-local refs.
+  const finish = session.buildTools().find((tool: any) => tool.definition.name === 'finish_memory_search');
+  return finish.execute({ summary: 'unseen source', evidence: [seenRef], inject: true }).then((result: any) => {
+    assert.equal(result.ok, false);
+  });
 });
 
-test('actual two-call Branch retains managed KB with 100-char daily and delivers source/context refs under fixed budgets', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-coverage-branch-'));
-  const previous = process.env.XIAOBA_USER_DATA_DIR;
-  process.env.XIAOBA_USER_DATA_DIR = root;
-  const kbId = 'KB-11111111-2222-4333-8444-000000000001';
-  const docs = path.join(root, 'knowledge', 'documents'); fs.mkdirSync(docs, { recursive: true });
-  fs.writeFileSync(path.join(docs, `${kbId}.md`), `---\n${JSON.stringify({ id: kbId, title: 'release 发布决策', summary: 'release 知识约束', category: 'deploy', updatedAt: '2026-10-07T00:00:00Z', change: 'coverage regression', sources: [] })}\n---\n\nrelease 发布决策 ${'知识更正'.repeat(600)}`);
-  const calls: string[] = [];
-  const queue = new InMemorySyntheticObservationQueue();
-  let pack: any;
-  let finishTokens = 0;
-  const ai: any = { isToolCallingSupported: () => true, async chat(messages: any[], tools: any[]) {
-    const name = tools[0].name; calls.push(name);
-    const promptTokens = estimateMessagesTokens(messages) + estimateToolsTokens(tools);
-    const usage = { promptTokens, completionTokens: 40, totalTokens: promptTokens + 40 };
-    if (name === 'assess_memory_need') return { content: null, toolCalls: [toolCall(name, { action: 'recall', query_text: 'release', keywords: ['release'] })], usage };
-    finishTokens = promptTokens;
-    pack = JSON.parse(messages.find(m => typeof m.content === 'string' && m.content.startsWith('{"evidence_pack":')).content).evidence_pack;
-    assert.equal(pack.local_knowledge.entries.length, 1, 'R1: 100-char daily must not displace metadata');
-    assert.ok(pack.local_knowledge.entries[0].excerpt?.text.length > 0, JSON.stringify(pack.local_knowledge));
-    const src = pack.daily_knowledge.source_reads[0];
-    return { content: null, toolCalls: [toolCall(name, { delivery: 'context', summary: 'release 条件与原 session 投影，含独立邻近节点。', refs: [`kb:${kbId}`, src.source.ref, src.before[0].ref, src.after[0].ref] })], usage };
-  }, async chatStream() { throw new Error('unexpected checkpoint'); } };
-  try {
-    const session: any = new MemorySearchBranchSession({ sessionKey: 'coverage-real-branch', input: 'release 发布决策', recentMessages: [], workingDirectory: root, aiService: ai, queue, catslogMemory: backend(), logEnabled: false });
-    await session.run();
-    assert.deepEqual(calls, ['assess_memory_need', 'finish_memory_search']);
-    assert.ok(finishTokens < 13600);
-    assert.ok(JSON.stringify(pack.local_knowledge).length <= 1200);
-    assert.ok(JSON.stringify(pack.daily_knowledge).length <= 6000);
-    const observed = new Set(session.observedRefs.snapshot().observedRefs);
-    assert.ok(session.retrieval.refinePresentation.presentedRefs.every((r: string) => observed.has(r)), 'actual observed tracker contains all refine refs');
-    assert.equal(queue.size(), 1, 'successful finish delivered context');
-    const delivered = queue.drain()[0];
-    assert.equal(delivered.metadata?.refs?.length, 4);
-    assert.equal((delivered.metadata?.sourceDisclosures as any[]).length, 3);
-    assert.ok((delivered.metadata?.sourceDisclosures as any[]).every(s => s.disclosure === 'text'));
-    const modelMessage = buildSyntheticObservationMessages([delivered]).find(message => message.role === 'tool')!;
-    const parentInput = JSON.parse(modelMessage.content as string);
-    const locatorPack = parentInput.source_locators;
-    assert.equal(locatorPack.items.length, 3, 'source and both neighbors retain independently replayable locators');
-    assert.equal(locatorPack.omitted, 0);
-    assert.ok(JSON.stringify(locatorPack).length <= MAX_MEMORY_SOURCE_LOCATOR_CHARS);
-    assert.ok(!JSON.stringify(parentInput).includes('before body'), 'source text is not sent through the locator mapping');
-    const replayed: CatsLogKnowledgeAnchor[] = [];
-    const native = new CatsLogKnowledgeRecallTool(backend({ readKnowledgeSource: async q => {
-      replayed.push(q.anchor);
-      const text = q.anchor.id === sourceAnchor(98).id ? 'before body' : q.anchor.id === sourceAnchor(99).id ? 'after body' : 'source body';
-      return { source: source(q.anchor, text), before: [], after: [], before_exhausted: true, after_exhausted: true, context_truncated: false, served_at: '2026-10-08T00:00:00Z' };
-    } }));
-    for (const locator of locatorPack.items) {
-      assert.equal(locator.disclosure, 'metadata');
-      assert.equal(locator.branch_disclosure, 'text');
-      const expected = [pack.daily_knowledge.source_reads[0].source, ...pack.daily_knowledge.source_reads[0].before, ...pack.daily_knowledge.source_reads[0].after]
-        .find((item: any) => item.ref === locator.ref);
-      assert.deepEqual(locator.anchor, expected.anchor);
-      const result = await native.execute({ action: 'read_source', anchor: locator.anchor, before: 0, after: 0, max_bytes: 2048 }, { workingDirectory: root } as any);
-      assert.equal(result.ok, true);
-      const body = JSON.parse(result.content as string);
-      assert.deepEqual(body.source.anchor, locator.anchor);
-      assert.equal(body.source.ref, locator.ref, 'actual injected canonical anchor replays the same source ref through native reader');
-      assert.equal(body.source.content_hash, locator.read_content_hash);
-    }
-    assert.equal(replayed.length, 3);
-    console.log(JSON.stringify({ fixture: 'R1-managed-KB-plus-source', finish_kb_entries: pack.local_knowledge.entries.length,
-      full_kb_chars: JSON.stringify(session.retrieval.presentation.evidencePack.local_knowledge).length,
-      refine_kb_chars: JSON.stringify(pack.local_knowledge).length, excerpt_chars: pack.local_knowledge.entries[0].excerpt.text.length,
-      source_pages: pack.daily_knowledge.source_reads.length, finish_prompt_tokens: finishTokens, calls }));
-  } finally {
-    if (previous === undefined) delete process.env.XIAOBA_USER_DATA_DIR; else process.env.XIAOBA_USER_DATA_DIR = previous;
-    fs.rmSync(root, { recursive: true, force: true });
-  }
+test('explicit native source/context read preserves three independently replayable identities within its budget', async () => {
+  const replayed: CatsLogKnowledgeAnchor[] = [];
+  const native = new CatsLogKnowledgeRecallTool(backend({ readKnowledgeSource: async q => {
+    replayed.push(q.anchor);
+    return sourcePage(q.anchor);
+  } }));
+  const result = await native.execute({ action: 'read_source', anchor: sourceAnchor(1), before: 1, after: 1, max_bytes: 2048 }, { workingDirectory: os.tmpdir() } as any);
+  assert.equal(result.ok, true);
+  const page = JSON.parse(result.content as string);
+  const items = [page.source, ...page.before, ...page.after];
+  assert.equal(items.length, 3);
+  assert.equal(new Set(items.map((item: any) => item.ref)).size, 3);
+  assert.ok(items.every((item: any) => item.anchor.revision && item.content_hash));
+  assert.deepEqual(replayed, [sourceAnchor(1)]);
 });

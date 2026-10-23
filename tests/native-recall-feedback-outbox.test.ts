@@ -168,66 +168,40 @@ test('branch_source events enqueue and flush through the same durable path', asy
   assert.deepEqual(res.acknowledged, [(ev as any).event_id]);
 });
 
-test('branch observation emits feedback_sources only with proven scope and exact envelopes', async () => {
+test('current Branch graph feedback retains read-time identity and only selected exact knowledge envelopes', async () => {
   const { MemorySearchBranchSession } = await import('../src/core/memory-search-branch-session');
   const { InMemorySyntheticObservationQueue } = await import('../src/core/synthetic-observation');
-  const { createHash } = await import('node:crypto');
-  const sourceAnchor = (n: number) => ({ kind: 'session_query' as const, id: `ref_${createHash('sha256').update(`fb-stream\0${n}`).digest('hex')}`,
-    session_id: 'fb-session', stream_id: 'fb-stream', byte_offset: n * 100, revision: String(n).padStart(64, '0') });
-  const source = (a: any, text = 'branch body') => ({ anchor: a, status: 'read' as const, role: 'organic' as const, speaker: 'user_assistant' as const,
-    occurred_at: null, text, content_hash: `sha256:${createHash('sha256').update(text).digest('hex')}`,
-    coverage: 'complete' as const, truncated: false, redacted: false, missing: false, revoked: false });
-  const dailyRef = KNOWLEDGE_REF;
-  // Refs are computed exactly like the lane does: hashedRecallRef
-  // canonicalizes the anchor before hashing.
-  const sourceRef = hashedRecallRef('source', [sourceAnchor(1), `sha256:${createHash('sha256').update('branch body').digest('hex')}`]);
-  const pages = [{ source: { ...source(sourceAnchor(1)), ref: sourceRef, disclosure: 'metadata' }, before: [], after: [] }];
-  const finishPayload = { summary: 's', refs: [sourceRef, dailyRef, hashedRecallRef('history', [{ x: 1 }])], delivery: 'context', inject: true };
-  const baseOptions = { sessionKey: 'fb-branch', input: 'x', recentMessages: [] as any[], aiService: {} as any, queue: new InMemorySyntheticObservationQueue(), logEnabled: false };
-
-  // Without a capability, metadata without proven origin scope stays local-only.
-  const bare = new MemorySearchBranchSession({ ...baseOptions, workingDirectory: dir() }) as any;
-  bare.retrieval.refinePresentation = { presentedRefs: [], evidencePack: { daily_knowledge: { source_reads: pages } }, diagnostics: {} };
-  bare.observedRefs.recordPresentedRefs([sourceRef, dailyRef]);
-  bare.retrieval.refinePresentation.presentedRefs = [sourceRef, dailyRef];
-  const bareObservation = bare.buildObservation(finishPayload);
-  assert.equal(bareObservation.metadata.feedback_sources, undefined);
-  assert.equal(bareObservation.metadata.feedback_scope, undefined);
-
-  // With a capability the observation carries canonical envelopes + scope.
-  // The production session builds its outbox from process.env, so the
-  // fixture sets a bounded sandbox capability and restores afterwards.
+  const anchor = { kind: 'knowledge_entry', document_id: DOC, revision: REV, id: ENTRY };
+  const graph: any = { contract: 'memory-graph/1', closure_complete: true, seeds: [anchor], edges: [], nodes: [{ anchor,
+    day: '2026-10-08', head_revision: REV, current_status: 'draft', entry: { id: ENTRY, title: 'T', text: 'required condition', status: 'draft' } }] };
+  const backend: any = { isAvailable: () => true, isKnowledgeRecallAvailable: () => true, readKnowledgeGraph: async () => graph };
+  const base = { sessionKey: 'fb-branch', input: 'x', recentMessages: [], aiService: {} as any,
+    queue: new InMemorySyntheticObservationQueue(), logEnabled: false, catslogMemory: backend };
   const working = dir(); state(working);
-  const previousEnv: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(env('https://example.test'))) {
-    previousEnv[key] = process.env[key]; process.env[key] = value as string;
-  }
-  const capable = new MemorySearchBranchSession({ ...baseOptions, workingDirectory: working }) as any;
-  capable.retrieval.refinePresentation = { presentedRefs: [], evidencePack: { daily_knowledge: { source_reads: pages } }, diagnostics: {} };
-  capable.observedRefs.recordPresentedRefs([sourceRef, dailyRef]);
-  capable.retrieval.refinePresentation.presentedRefs = [sourceRef, dailyRef];
-  const observation = capable.buildObservation(finishPayload);
-  const sources = observation.metadata.feedback_sources;
-  const scope = observation.metadata.feedback_scope;
-  assert.ok(scope && /^[a-f0-9]{64}$/.test(scope), 'feedback_scope must be a captured identity hash');
-  assert.ok(Array.isArray(sources) && sources.length === 2, `want daily+source envelopes, got ${JSON.stringify(sources)}`);
-  const byRef = new Map(sources.map((s: any) => [s.ref, s]));
-  assert.deepEqual(byRef.get(dailyRef)?.anchor, { kind: 'knowledge_entry', id: ENTRY, document_id: DOC, revision: REV });
-  assert.equal(byRef.get(sourceRef)?.anchor.revision, sourceAnchor(1).revision);
-  // Unmapped/unobserved refs never enter the envelope list.
-  const historyRef = hashedRecallRef('history', [{ x: 1 }]);
-  assert.ok(!byRef.has(historyRef));
-  // The envelopes must survive the outbox's own whole-event gate.
-  const outbox = new NativeRecallFeedbackOutbox(working, { env: env('https://example.test') });
-  const event = { event_id: 'feedback-branch-obs', trace_id: 'recall-branch-obs', kind: 'branch_source',
-    outcome: 'completed', occurred_at_ms: 1, observed: sources,
-    delivered: sources.map((s: any) => ({ ref: s.ref, disclosure: 'metadata' })),
-    cited: [], retained: [], citation_semantics: 'explicit_ref_match_not_causal_use',
-    delivery_semantics: 'branch_summary_with_refs_not_source_body',
-    retained_semantics: 'final_explicit_ref_match_not_semantic_adoption', lifecycle: 'turn_local_no_carryover' };
-  assert.equal(outbox.enqueue([event], scope), 1);
-  for (const [key, value] of Object.entries(previousEnv)) {
-    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  const previous: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env('https://example.test'))) { previous[key] = process.env[key]; process.env[key] = value as string; }
+  try {
+    const session: any = new MemorySearchBranchSession({ ...base, workingDirectory: working });
+    session.knowledgeCandidates.set(KNOWLEDGE_REF, anchor);
+    const read = await session.readKnowledgeInLoop(KNOWLEDGE_REF);
+    assert.equal(read.status, 'expanded');
+    const readScope = new NativeRecallFeedbackOutbox(working, { env: env('https://example.test') }).captureScope()!;
+    state(working, 'replacement-token');
+    const observation = session.buildObservation({ summary: 's', refs: [KNOWLEDGE_REF], inject: true });
+    assert.equal(observation.metadata.feedback_scope, readScope, 'finish cannot rebind old evidence to the replacement identity');
+    assert.deepEqual(observation.metadata.feedback_sources, [{ ref: KNOWLEDGE_REF, anchor, disclosure: 'metadata' }]);
+    const outbox = new NativeRecallFeedbackOutbox(working, { env: env('https://example.test') });
+    const event = { event_id: 'feedback-branch-obs', trace_id: 'recall-branch-obs', kind: 'branch_source', outcome: 'completed',
+      occurred_at_ms: 1, observed: observation.metadata.feedback_sources, delivered: [{ ref: KNOWLEDGE_REF, disclosure: 'metadata' }],
+      cited: [], retained: [], citation_semantics: 'explicit_ref_match_not_causal_use', delivery_semantics: 'branch_summary_with_refs_not_source_body',
+      retained_semantics: 'final_explicit_ref_match_not_semantic_adoption', lifecycle: 'turn_local_no_carryover' };
+    assert.equal(outbox.enqueue([event], readScope), 0, 'rotated identity rejects old graph feedback');
+    state(working);
+    assert.equal(outbox.enqueue([event], readScope), 1, 'exact envelope passes the outbox whole-event gate');
+    const unknown = session.buildObservation({ summary: 's', refs: [hashedRecallRef('history', [{ x: 1 }])], inject: true });
+    assert.equal(unknown.metadata.feedback_sources, undefined);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   }
 });
 
