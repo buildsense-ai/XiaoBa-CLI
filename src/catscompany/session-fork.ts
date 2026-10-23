@@ -1,7 +1,7 @@
 import type { Message } from '../types';
 import type { SessionRoute } from '../types/session-identity';
 import type { SessionRuntimeState } from '../utils/session-store';
-import { prepareForkMessages, type SessionForkIdentity, type SessionForkSnapshot } from '../core/session-fork';
+import { prepareForkMessages, truncateAtTurn, type SessionForkIdentity, type SessionForkSnapshot } from '../core/session-fork';
 import { createCatsCoSessionRoute } from '../core/session-router';
 import { createCatsCoMessageEnvelope } from './message-envelope';
 
@@ -12,6 +12,15 @@ export interface CatsSessionForkControl {
   actor_user_id: string;
   agent_uid: string;
   source_last_seq: number;
+  /**
+   * Complete turns in the copied range, or 0/absent for a whole-conversation copy.
+   *
+   * A live session records cloud message IDs only on the restore path, so the
+   * transcript carries almost none of them: an observed session had them on 1 of
+   * 202 messages. The server therefore tells the runtime how far the copy reaches
+   * as a turn count, not as a message ID.
+   */
+  source_turn_count?: number;
   message_id_map: Record<string, number>;
 }
 
@@ -49,6 +58,8 @@ export function normalizeSessionForkControl(value: unknown): CatsSessionForkCont
     || typeof v.target_topic_id !== 'string' || !/^grp_[1-9]\d*$/.test(v.target_topic_id)
     || v.source_topic_id === v.target_topic_id
     || !Number.isSafeInteger(v.source_last_seq) || Number(v.source_last_seq) < 0
+    || (v.source_turn_count !== undefined
+      && (!Number.isSafeInteger(v.source_turn_count) || Number(v.source_turn_count) < 0))
     || !v.message_id_map || typeof v.message_id_map !== 'object' || Array.isArray(v.message_id_map)) return undefined;
   if (v.source_topic_id.startsWith('p2p_')) {
     const members = v.source_topic_id.slice(4).split('_').map(normalizeForkUid);
@@ -63,7 +74,8 @@ export function normalizeSessionForkControl(value: unknown): CatsSessionForkCont
     targets.add(mapped);
   }
   return { request_id: v.request_id, source_topic_id: v.source_topic_id, target_topic_id: v.target_topic_id,
-    actor_user_id: actor, agent_uid: agent, source_last_seq: Number(v.source_last_seq), message_id_map: map };
+    actor_user_id: actor, agent_uid: agent, source_last_seq: Number(v.source_last_seq),
+    source_turn_count: Number(v.source_turn_count || 0), message_id_map: map };
 }
 
 export function forkSessionRoute(topic: string, actor: string, agent: string): SessionRoute {
@@ -73,7 +85,7 @@ export function forkSessionRoute(topic: string, actor: string, agent: string): S
 }
 
 interface ForkSession {
-  exportForkContext(idMap: Record<string, number>): { messages: Message[]; currentDirectory?: string };
+  exportForkContext(idMap: Record<string, number>, turnCount?: number): { messages: Message[]; currentDirectory?: string };
 }
 
 export interface CatsSessionForkDependencies {
@@ -145,14 +157,20 @@ export class CatsSessionForkController {
         // This strict read also rejects missing/corrupt sources when a live object exists.
         const durable = store.readContextForFork(source.sessionKey);
         const session = this.deps.getSession(source);
-        const context = session ? session.exportForkContext(control.message_id_map) : {
-          messages: prepareForkMessages(durable, control.message_id_map), currentDirectory: state.currentDirectory,
+        // Both paths must cut identically: the live session and the durable
+        // transcript are two views of the same conversation, and the copy must
+        // not end in a different place depending on which one answered.
+        const turnCount = control.source_turn_count || 0;
+        const context = session ? session.exportForkContext(control.message_id_map, turnCount) : {
+          messages: prepareForkMessages(truncateAtTurn(durable, turnCount), control.message_id_map),
+          currentDirectory: state.currentDirectory,
         };
         store.installFork({ version: 1, ...identity, ...context });
       }
     } catch (error) {
       const publicErrors = new Set(['session_fork_agent_mismatch', 'session_fork_request_conflict',
-        'session_fork_source_busy', 'session_fork_target_exists', 'session_fork_source_interrupted']);
+        'session_fork_source_busy', 'session_fork_target_exists', 'session_fork_source_interrupted',
+        'session_fork_source_turn_mismatch']);
       const code = error instanceof Error && publicErrors.has(error.message) ? error.message : 'session_fork_initialization_failed';
       await this.reportFailure(control, code);
       return;
