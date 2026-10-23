@@ -1,0 +1,50 @@
+name: Service worker cross-OS
+
+# 内嵌 service worker 真的会拉起子进程：Windows 走 cmd（shell 模式），
+# Linux/macOS 走 sh -c。引号、PATH、进程树杀灭在三套系统上都不一样，
+# 而这些差异**打桩的单元测试永远发现不了**（曾经 Windows 上带引号的命令
+# 会静默变成空输出、超时后孙进程还活着继续跑）。
+#
+# 所以这条流水线只做一件事：在三个系统上跑同一批「真拉起子进程」的用例。
+on:
+  pull_request:
+    paths:
+      - 'src/catscompany/service-worker-supervisor.ts'
+      - 'src/catscompany/service-worker-runtime.ts'
+      - 'tests/service-worker-supervisor.test.ts'
+      - '.github/workflows/service-worker-cross-os.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/catscompany/service-worker-supervisor.ts'
+      - 'tests/service-worker-supervisor.test.ts'
+      - '.github/workflows/service-worker-cross-os.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: service-worker-cross-os-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  execute:
+    name: Real child process (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --fund=false
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Run supervisor tests against the real shell
+        run: node node_modules/tsx/dist/cli.mjs --test tests/service-worker-supervisor.test.ts
