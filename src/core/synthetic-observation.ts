@@ -24,7 +24,7 @@ export interface SyntheticObservationUse {
 }
 
 /** Lane that produced an injected ref (local usage telemetry only). */
-export type SyntheticObservationRefLane = 'remote_pool' | 'session' | 'knowledge' | 'other';
+export type SyntheticObservationRefLane = 'remote_pool' | 'session' | 'knowledge' | 'source' | 'other';
 
 /** One injected ref tagged with its producing lane at injection time. */
 export interface SyntheticObservationRefLaneTag {
