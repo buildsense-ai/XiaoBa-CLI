@@ -71,10 +71,15 @@ describe('CatsCompany client body identity', () => {
     servers.push(server);
     await new Promise<void>(resolve => server.once('listening', resolve));
 
+    let resolveHello: (value: any) => void;
+    const helloPromise = new Promise<any>(resolve => { resolveHello = resolve; });
     const headersPromise = new Promise<Record<string, string | string[] | undefined>>(resolve => {
       server.once('connection', (socket, request) => {
         resolve(request.headers);
-        socket.close();
+        socket.once('message', data => {
+          resolveHello(JSON.parse(data.toString()));
+          socket.close();
+        });
       });
     });
 
@@ -90,12 +95,14 @@ describe('CatsCompany client body identity', () => {
 
     client.connect();
     const headers = await headersPromise;
+    const hello = await helloPromise;
     client.disconnect();
 
     assert.equal(headers['x-api-key'], 'cc-test-key');
     assert.equal(headers['x-catsco-body-id'], 'body-test');
     assert.equal(headers['x-catsco-installation-id'], 'install-test');
     assert.equal(headers['x-catsco-runtime-credential'], 'runtime-credential-test');
+    assert.deepEqual(hello.hi.runtime_capabilities, ['device-targets.v1']);
   });
 
   test('does not send the privileged Runtime header when no credential is configured', async () => {

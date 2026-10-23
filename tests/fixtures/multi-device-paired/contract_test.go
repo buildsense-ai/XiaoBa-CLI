@@ -24,6 +24,11 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 	}
 	hub, handler := deviceSelectionFixture(t)
 	bot := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud-body", send: make(chan []byte, 32)}
+	// The paired runtime bridge is the new CLI under test. Model the same
+	// authenticated handshake declaration that client.ts sends before it may use
+	// explicit-device authorizations. Legacy compatibility is covered separately
+	// by the server's no-capability delivery tests.
+	bot.setRuntimeCapabilities([]string{xiaobaDeviceTargetsCapability})
 	hub.addClient(bot)
 	metadata := func() map[string]interface{} {
 		return map[string]interface{}{
