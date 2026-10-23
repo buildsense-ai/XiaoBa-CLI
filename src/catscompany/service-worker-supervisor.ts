@@ -167,12 +167,59 @@ export function defaultServiceWorkerInstanceId(): string {
   return `xiaoba-${host}-${process.pid}`.slice(0, 64);
 }
 
+/**
+ * 杀掉「整条命令」的进程树。
+ *
+ * 只 kill 那个 shell 不够：Windows 上 shell:true 之后真正干活的是 cmd.exe 的孙进程，
+ * 只杀 cmd.exe 会留下孤儿继续跑（实测：超时后 4 秒它还能写文件）；POSIX 上
+ * sh -c 一旦是管道或带收尾操作也不会 exec 成单进程。所以：
+ *   - Windows：taskkill /t /f 整棵树；
+ *   - POSIX：spawn 时 detached 建新进程组，kill(-pid) 打整组。
+ * 两条都失败时退化为单进程 kill。
+ */
+const killCommandTree = (child: import('node:child_process').ChildProcess): void => {
+  const pid = child.pid;
+  if (!pid) {
+    try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+    return;
+  }
+  if (process.platform === 'win32') {
+    try {
+      const killer = spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore' });
+      killer.on('error', () => {
+        try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+      });
+      return;
+    } catch {
+      try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+      return;
+    }
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+  }
+};
+
 const execWithShell: ExecCommand = (command, options) =>
   new Promise((resolve) => {
     const isWindows = process.platform === 'win32';
+    // Windows 分支必须用「整条命令 + shell:true」，不能写 spawn('cmd', ['/c', command])。
+    // 后者会把命令再丢给 cmd.exe 重新分词，命令里内嵌的双引号就此被吃掉：
+    //   node -e "console.log('x')"  → SyntaxError: Unterminated string constant
+    //   node -e "console.log(process.env.CATSCO_AGENT)" → 静默空输出、exit 0
+    // 用户写的 claude -p "总结一下" 会直接失效，且失败得毫无痕迹。
+    // shell:true 时 Node 用 windowsVerbatimArguments 传 /d /s /c "<command>"，引号原样保留。
+    // POSIX 上 detached 是为了建进程组，让超时能打掉整个组（见 killCommandTree）。
+    const spawnOptions = {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      ...(isWindows ? {} : { detached: true }),
+    };
     const child = isWindows
-      ? spawn('cmd', ['/c', command], { cwd: options.cwd, env: { ...process.env, ...options.env } })
-      : spawn('sh', ['-c', command], { cwd: options.cwd, env: { ...process.env, ...options.env } });
+      ? spawn(command, { ...spawnOptions, shell: true })
+      : spawn('sh', ['-c', command], spawnOptions);
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let settled = false;
@@ -186,11 +233,11 @@ const execWithShell: ExecCommand = (command, options) =>
       });
     };
     const timer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+      killCommandTree(child);
       finish(-1);
     }, options.timeoutMs);
     const onAbort = () => {
-      try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+      killCommandTree(child);
       finish(-1);
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });

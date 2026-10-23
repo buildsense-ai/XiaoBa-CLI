@@ -1,4 +1,8 @@
 import { strict as assert } from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import {
   buildServiceRunResult,
@@ -409,4 +413,136 @@ test('默认实例 id 带 xiaoba 前缀且不超过 64 字符', () => {
   const id = defaultServiceWorkerInstanceId();
   assert.match(id, /^xiaoba-/);
   assert.ok(id.length <= 64);
+});
+
+/**
+ * 下面两条**不传 execImpl**：真的拉起子进程（Windows=cmd /c，其他=sh -c）。
+ *
+ * 为什么要单独有这两条：其余用例都把 exec 打桩了，只能证明「协议自洽」，
+ * 证明不了「在用户那台机器上命令真的跑得起来」。跨平台的差异恰好全在
+ * 这一层（cmd 与 sh 的引号/重定向、PATH 解析、环境变量继承、输入文件路径）。
+ * 命令统一用 node -e，三个平台都必然存在，避免引入 shell 方言。
+ */
+test('真实拉起子进程：默认 exec 在 cmd/sh 下继承环境变量并读到输入文件', async () => {
+  const command = `node -e "console.log(process.env.CATSCO_AGENT); console.log(require('fs').readFileSync(process.env.CATSCO_INPUT_FILE, 'utf8'))"`;
+  const { fetchImpl, requests } = createFakeServer({
+    '/session': () => ({ body: { token: 't', expires_at: new Date(Date.now() + 3600_000).toISOString() } }),
+    '/claim': () => ({
+      body: {
+        runs: [withCommand({
+          run_id: 'run_real',
+          session_id: 'sess_real',
+          agent_slug: 'real-exec-agent',
+          input: { text: 'real-exec-marker' },
+          definition: { runner: { type: 'worker', command } },
+        })],
+      },
+    }),
+    '/complete': () => ({ body: { ok: true } }),
+    '/fail': () => ({ body: { ok: true } }),
+  });
+
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w1',
+    fetchImpl,
+    logger: silentLogger,
+  });
+
+  assert.equal(await supervisor.runOnce(), 1);
+  // 没有 fail（说明真的跑成功了，不是 no_command / exit_N）
+  assert.equal(requests.filter((r) => r.path.endsWith('/fail')).length, 0);
+  const complete = requests.find((r) => r.path.endsWith('/runs/run_real/complete'));
+  assert.ok(complete, 'should complete through the real child process');
+  const text = String((complete?.body.result.output as { text?: string })?.text ?? '');
+  // 环境变量（CATSCO_AGENT）与输入文件（CATSCO_INPUT_FILE）都要真的到达子进程。
+  assert.match(text, /real-exec-agent/);
+  assert.match(text, /real-exec-marker/);
+  supervisor.stop();
+});
+
+test('真实超时：命令卡住时默认 exec 会杀掉子进程并回填 timeout', async () => {
+  const command = `node -e "setTimeout(function(){}, 5000)"`;
+  const { fetchImpl, requests } = createFakeServer({
+    '/session': () => ({ body: { token: 't', expires_at: new Date(Date.now() + 3600_000).toISOString() } }),
+    '/claim': () => ({
+      body: {
+        runs: [withCommand({
+          run_id: 'run_stuck',
+          session_id: 'sess_stuck',
+          agent_slug: 'stuck-agent',
+          definition: { runner: { type: 'worker', command } },
+        })],
+      },
+    }),
+    '/complete': () => ({ body: { ok: true } }),
+    '/fail': () => ({ body: { ok: true } }),
+  });
+
+  const started = Date.now();
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w1',
+    fetchImpl,
+    runTimeoutMs: 1000,
+    logger: silentLogger,
+  });
+
+  await supervisor.runOnce();
+  const elapsed = Date.now() - started;
+  const fail = requests.find((r) => r.path.endsWith('/runs/run_stuck/fail'));
+  assert.ok(fail, 'timeout must be reported through /fail');
+  assert.equal(fail?.body.retryable, true);
+  assert.match(String(fail?.body.error_text), /^timeout/);
+  // 真被杀掉了：不能等满命令自身的 5 秒。
+  assert.ok(elapsed < 4000, `timeout should abort early, took ${elapsed}ms`);
+  supervisor.stop();
+});
+
+/**
+ * 只杀 shell 是不够的：真正干活的是孙进程。这条用例让命令在 2.5 秒后写一个
+ * 标记文件——如果超时只结束了 shell、把孙进程留成孤儿，标记就会落盘。
+ *
+ * 打桩永远发现不了这个问题（实测：旧的 cmd-array 写法在 Windows 上会静默
+ * 变成空输出，换成 shell:true 后又留下孤儿，两种都必须被这条用例挡住）。
+ */
+test('真实超时：整条命令的进程树被杀掉，不留孤儿继续跑', async () => {
+  const marker = path.join(os.tmpdir(), `catsco-orphan-probe-${process.pid}-${Date.now()}.txt`);
+  const markerURL = pathToFileURL(marker).href;
+  const command = `node -e "setTimeout(function(){require('fs').writeFileSync(new URL('${markerURL}'), 'alive')}, 2500)"`;
+  const { fetchImpl, requests } = createFakeServer({
+    '/session': () => ({ body: { token: 't', expires_at: new Date(Date.now() + 3600_000).toISOString() } }),
+    '/claim': () => ({
+      body: {
+        runs: [withCommand({
+          run_id: 'run_orphan',
+          session_id: 'sess_orphan',
+          agent_slug: 'orphan-agent',
+          definition: { runner: { type: 'worker', command } },
+        })],
+      },
+    }),
+    '/fail': () => ({ body: { ok: true } }),
+    '/complete': () => ({ body: { ok: true } }),
+  });
+
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w1',
+    fetchImpl,
+    runTimeoutMs: 1000,
+    logger: silentLogger,
+  });
+
+  await supervisor.runOnce();
+  assert.ok(
+    requests.some((r) => r.path.endsWith('/runs/run_orphan/fail')),
+    'timeout should be reported',
+  );
+  // 等过命令本来会写标记的时间点，再确认没有孤儿活下来。
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  const survived = fs.existsSync(marker);
+  if (survived) fs.rmSync(marker, { force: true });
+  assert.equal(survived, false, 'the command process tree must be killed, not left running');
+  supervisor.stop();
 });
