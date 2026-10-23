@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareForkMessages } from '../src/core/session-fork';
+import { prepareForkMessages, truncateAtTurn } from '../src/core/session-fork';
 
 test('fork preserves summaries and tool exchanges but not runtime context or provider replay', () => {
   const source: any[] = [
@@ -35,4 +35,55 @@ test('fork supports parallel completed tools, rejects malformed durable messages
   ], {}).length, 3);
   assert.throws(() => prepareForkMessages([{ role: 'unknown', content: 'corrupt' } as any], {}), /invalid/i);
   assert.throws(() => prepareForkMessages([{ role: 'user', content: { invalid: true } } as any], {}), /invalid/i);
+});
+
+test('bounded fork cuts after the last complete turn and drops stale summaries', () => {
+  const source: any[] = [
+    { role: 'user', content: 'turn one' },
+    { role: 'assistant', content: 'answer one' },
+    { role: 'user', content: 'turn two' },
+    { role: 'assistant', content: 'answer two' },
+    { role: 'user', content: 'turn three' },
+    { role: 'assistant', content: 'answer three' },
+  ];
+  // Two complete turns keep everything up to the third user message.
+  assert.deepEqual(truncateAtTurn(source, 2).map(message => message.content),
+    ['turn one', 'answer one', 'turn two', 'answer two']);
+  // Zero and negative mean "unbounded", which is the pre-existing behaviour.
+  assert.equal(truncateAtTurn(source, 0).length, 6);
+  assert.equal(truncateAtTurn(source, -1).length, 6);
+
+  const withSummary: any[] = [
+    { role: 'user', content: 'summary of the future', __checkpointSummary: true },
+    { role: 'user', content: 'turn one' },
+    { role: 'assistant', content: 'answer one' },
+    { role: 'user', content: 'turn two' },
+  ];
+  // The summary may already describe turns beyond the cut, so it must not travel.
+  assert.deepEqual(truncateAtTurn(withSummary, 1).map(message => message.content), ['turn one', 'answer one']);
+});
+
+test('bounded fork ignores synthetic user messages when counting turns', () => {
+  const source: any[] = [
+    { role: 'user', content: 'turn one' },
+    { role: 'assistant', content: 'answer one' },
+    // Synthetic user-role rows must not look like new turns, or the cut drifts.
+    { role: 'user', content: 'observation', __runtimeObservation: true },
+    { role: 'user', content: 'feedback', __runtimeFeedback: true },
+    { role: 'user', content: 'turn two' },
+    { role: 'assistant', content: 'answer two' },
+  ];
+  assert.equal(truncateAtTurn(source, 2).length, source.length);
+  // The synthetic rows sit inside turn one, so cutting after it keeps them: they
+  // belong to that turn rather than opening a new one.
+  assert.equal(truncateAtTurn(source, 1).length, 4);
+});
+
+test('bounded fork fails closed instead of cutting somewhere unexpected', () => {
+  // The server counted more turns than this transcript holds: the two sides
+  // disagree, so guessing a boundary would produce a mismatched copy.
+  assert.throws(() => truncateAtTurn([{ role: 'user', content: 'only' }], 2), /session_fork_source_turn_mismatch/);
+  // A trailing turn with no answer is not complete, so the server would not have
+  // counted it; accepting it here would keep a turn the server never copied.
+  assert.throws(() => truncateAtTurn([{ role: 'user', content: 'asked' }], 1), /session_fork_source_turn_mismatch/);
 });

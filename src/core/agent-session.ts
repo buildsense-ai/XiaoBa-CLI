@@ -42,7 +42,7 @@ import { TurnLogRecorder } from './turn-log-recorder';
 import { TurnContextBuilder } from './turn-context-builder';
 import { AgentTurnController, AgentTurnRunError } from './agent-turn-controller';
 import { SessionLifecycleManager } from './session-lifecycle-manager';
-import { prepareForkMessages } from './session-fork';
+import { prepareForkMessages, truncateAtTurn } from './session-fork';
 import { PlanRuntime } from './plan-runtime';
 import { SubAgentManager } from './sub-agent-manager';
 import type { PendingUserInputProvider } from './conversation-runner';
@@ -1334,13 +1334,15 @@ export class AgentSession {
   }
 
   /** Snapshot only: no init, compaction, tool execution, or source mutation. */
-  exportForkContext(idMap: Record<string, number>): { messages: Message[]; currentDirectory: string } {
+  exportForkContext(idMap: Record<string, number>, turnCount = 0): { messages: Message[]; currentDirectory: string } {
     if (this.busy || this.resumeInFlight || SubAgentManager.getInstance().hasActiveForParent(this.key)) {
       throw new Error('Source session is busy');
     }
     const durable = this.lifecycleManager.snapshotForFork();
     const messages = this.initialized ? this.messages : durable;
-    return { messages: prepareForkMessages(messages, idMap), currentDirectory: this.currentDirectory };
+    // Bound before remapping: the server counted turns over the copied range, so
+    // the same transcript has to be cut first for both sides to agree.
+    return { messages: prepareForkMessages(truncateAtTurn(messages, turnCount), idMap), currentDirectory: this.currentDirectory };
   }
 
   /** 请求中断当前运行中的对话回合 */
