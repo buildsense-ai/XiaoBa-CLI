@@ -10,6 +10,10 @@ import { PathResolver } from '../utils/path-resolver';
 import { prepareBoundBotDefinition } from '../bot-definition/activation';
 import { createCatsCoLocalConfigService, resolveCatsCoRuntimeMode, type CatsCoAuthSnapshot } from '../catscompany/local-config';
 import {
+  ensureCatsCoServiceWorker,
+  resetCatsCoServiceWorkerForTests,
+} from '../catscompany/service-worker-runtime';
+import {
   acknowledgeCloudBotModelSelection,
   pullCloudBotModelSelection,
   redactCloudBotModelError,
@@ -203,6 +207,8 @@ export async function catscompanyCommand(): Promise<void> {
       await cloudModelReloadPromise;
       await skillActivationAckWorker?.stop();
       await stopRuntimeCommandSupport();
+      // 先停内嵌 worker：避免正在跑的 run 在上报时撞上已关闭的连接。
+      resetCatsCoServiceWorkerForTests();
       await bot.destroy();
     } finally {
       lock?.release();
@@ -228,6 +234,14 @@ export async function catscompanyCommand(): Promise<void> {
   try {
     await bot.start();
     await startRuntimeCommandSupport();
+    // 内嵌 service worker：连上平台后就开始替「我的电脑」上的应用接单。
+    // 用的是本进程已有的账号登录态（内存换短期券），用户不需要任何密钥或额外命令。
+    try {
+      ensureCatsCoServiceWorker({ runtimeRoot });
+    } catch (error: any) {
+      // 增量能力：起不来不影响 connector 主流程。
+      Logger.warning(`CatsCo 内嵌 worker 启动失败，已跳过: ${error?.message ?? error}`);
+    }
     if (deviceConnectorMode) {
       Logger.success('CatsCo 本机设备已连接，等待云端 Bot 的设备请求...');
       return;
