@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { withCurrentBotSkillWorkspaceWrite } from '../bot-skills/runtime';
 import { createCatsCoLocalConfigService, isActiveDeviceConnectorMode } from '../catscompany/local-config';
-import { capturePublicationSource, findPublicationSource, PublicationSourceError, publicationSourceProbeEnabled,
+import { capturePublicationSource, describePublicationSource, findPublicationSource, PublicationSourceError, publicationSourceProbeEnabled,
   type PublicationSourceBinding, type PublicationSourceDescriptor } from './publication-source';
 
 export const PUBLICATION_CAPTURE = 'skillhub.publication.capture.v1';
@@ -145,6 +145,40 @@ export class PublicationCaptureStore {
     return this.locked(input, checkAuthority, root => {
       const saved = this.load(path.join(root, `${input.entryId}.json`), input);
       return { receipt: saved.receipt, bytes: Buffer.from(saved.requestBody) };
+    });
+  }
+
+  // Repair preparation is stricter than upload replay: the original live
+  // source must still match. The trusted coordinator supplies the exact capture
+  // receipt bound to its rejected report, never a model/browser-provided hash.
+  // This is a point-in-time read, not authority to edit, upload or publish.
+  async readRepairCandidate(input: PublicationCaptureInput, expected: PublicationCaptureReceipt,
+    checkAuthority: () => void): Promise<{ receipt: PublicationCaptureReceipt; bytes: Buffer }> {
+    validateInput(input);
+    if (!exact(expected, 'candidateRevision,entryId,requestBytes,requestHash,schemaVersion,sourceSnapshotHash') ||
+      expected.schemaVersion !== 1 || expected.entryId !== input.entryId || expected.candidateRevision !== 1 ||
+      ![expected.requestHash, expected.sourceSnapshotHash].every(v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)) ||
+      !Number.isSafeInteger(expected.requestBytes) || expected.requestBytes < 1 || expected.requestBytes > maxRecord) {
+      fail('publication.repair_invalid');
+    }
+    input = { ...input, binding: { ...input.binding }, source: { ...input.source } };
+    expected = { ...expected };
+    return this.locked(input, checkAuthority, (root, skills, check) => {
+      const file = path.join(root, `${input.entryId}.json`);
+      if (!fs.existsSync(file)) fail('publication.repair_capture_missing');
+      const saved = this.load(file, input);
+      if (canonical(saved.receipt) !== canonical(expected)) fail('publication.repair_capture_mismatch');
+      const source = findPublicationSource(skills, input.source.local_skill_id, check);
+      const binding = { botUid: input.binding.botUid, ownerUid: input.binding.ownerUid,
+        bodyId: input.binding.bodyId, installationId: input.binding.installationId };
+      const descriptor = describePublicationSource(skills, source, binding, check);
+      if (canonical(descriptor) !== canonical(input.source)) fail('publication.source_changed');
+      // Re-read retained evidence after inspecting the live source. Neither
+      // byte corruption nor a lost authority check may return stale evidence.
+      check();
+      const latest = this.load(file, input);
+      if (canonical(latest.receipt) !== canonical(expected)) fail('publication.repair_capture_mismatch');
+      return { receipt: latest.receipt, bytes: Buffer.from(latest.requestBody) };
     });
   }
 
