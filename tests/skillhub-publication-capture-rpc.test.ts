@@ -9,7 +9,8 @@ import { CatsCompanyBot, capabilitiesForCatsCompanyRuntimeRole } from '../src/ca
 import { BotSkillWorkspaceService } from '../src/bot-skills/workspace';
 import { withBotSkillWorkspaceLock } from '../src/bot-skills/lock';
 import { describePublicationSource } from '../src/skillhub/publication-source';
-import { PUBLICATION_CAPTURE, publicationCaptureEnabled, PublicationCaptureStore } from '../src/skillhub/publication-capture';
+import { PUBLICATION_CAPTURE, PUBLICATION_REPAIR_SOURCE, publicationCaptureEnabled, publicationRepairSourceEnabled,
+  PublicationCaptureStore } from '../src/skillhub/publication-capture';
 
 let root: string, skills: string, source: string, spool: string;
 const binding = { botUid: '42', ownerUid: '7', bodyId: 'body-42', installationId: 'install-42' };
@@ -225,4 +226,194 @@ test('adapter reserves capture even when disabled; it never falls back to model 
   assert.equal(response.result, undefined);
   assert.ok(!fs.existsSync(spool));
   assert.equal(bot.normalizeDeviceRpcOperation(PUBLICATION_CAPTURE), undefined);
+});
+
+async function repairRequest(): Promise<any> {
+  const req = request();
+  const receipt = await handler().execute(req);
+  return { ...req, request_id: 'pubrepairsource_abcdefghijklmnopqrstuvwx', tool_name: PUBLICATION_REPAIR_SOURCE,
+    payload: { ...req.payload, expected_capture: receipt } };
+}
+const repairHandler = (options = {}) => handler({ publicationRepairSourceEnabled: true, ...options });
+
+test('repair source capability needs all three gates and remains outside ordinary tools/grants', async () => {
+  const names = ['XIAOBA_SKILLHUB_PUBLICATION_PROBE_ENABLED', 'XIAOBA_SKILLHUB_PUBLICATION_CAPTURE_ENABLED',
+    'XIAOBA_SKILLHUB_PUBLICATION_REPAIR_SOURCE_ENABLED'];
+  const previous = names.map(n => process.env[n]);
+  try {
+    for (const [probe, capture, repair, enabled] of [
+      ['', '', '', false], ['true', 'true', '', false], ['', 'true', 'true', false],
+      ['true', '', 'true', false], ['true', 'true', 'yes', false], ['1', 'TRUE', 'true', true],
+    ] as const) {
+      [probe, capture, repair].forEach((v, i) => { process.env[names[i]] = v; });
+      assert.equal(publicationRepairSourceEnabled(), enabled);
+      assert.equal(new SkillHubThinRpcHandler({ runtimeRoot: root }).supports(PUBLICATION_REPAIR_SOURCE), enabled);
+      for (const role of ['server', 'desktop'] as const) {
+        assert.equal(capabilitiesForCatsCompanyRuntimeRole(role).includes(PUBLICATION_REPAIR_SOURCE), enabled);
+      }
+    }
+    const req = await repairRequest();
+    for (const options of [{ enabled: false }, { publicationProbeEnabled: false },
+      { publicationCaptureEnabled: false }, { publicationRepairSourceEnabled: false }]) {
+      const h = repairHandler(options);
+      assert.equal(h.supports(PUBLICATION_REPAIR_SOURCE), false);
+      await assert.rejects(h.execute(req), code('publication.runtime_unsupported'));
+    }
+    assert.ok(!Object.values(SKILLHUB_THIN_RPC_TOOLS).includes(PUBLICATION_REPAIR_SOURCE as any));
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    assert.equal(bot.normalizeDeviceRpcOperation(PUBLICATION_REPAIR_SOURCE), undefined);
+  } finally {
+    names.forEach((n, i) => { if (previous[i] === undefined) delete process.env[n]; else process.env[n] = previous[i]; });
+  }
+});
+
+test('repair verification returns bounded scalar evidence without private bytes and rechecks on replay', async () => {
+  const req = await repairRequest(), h = repairHandler();
+  const retainedPath = path.join(spool, `${entry}.json`);
+  const before = fs.readFileSync(retainedPath), original = fs.readFileSync(path.join(source, 'SKILL.md'));
+  const expected = { ...req.payload.expected_capture, sourceVerified: true };
+  assert.deepEqual(await h.execute(req), expected);
+  assert.deepEqual(await repairHandler().execute(req), expected);
+  assert.equal(Object.keys(expected).length, 7);
+  assert.ok(Object.values(expected).every(v => ['string', 'number', 'boolean'].includes(typeof v)));
+  for (const secret of [root, 'private-source-text', 'private-bot-key', 'private-owner-token', 'contentBase64']) {
+    assert.ok(!JSON.stringify(expected).includes(secret));
+  }
+  assert.deepEqual(fs.readFileSync(retainedPath), before);
+  assert.deepEqual(fs.readFileSync(path.join(source, 'SKILL.md')), original);
+  fs.appendFileSync(path.join(source, 'SKILL.md'), '\nchanged');
+  await assert.rejects(h.execute(req), code('publication.source_changed'));
+  // The ordinary capture RPC retains its original retry semantics.
+  assert.deepEqual(await h.execute({ ...req, tool_name: PUBLICATION_CAPTURE,
+    request_id: 'pubcapture_abcdefghijklmnopqrstuvwx',
+    payload: { entry_id: entry, bot_uid: '42', local_skill_id: req.payload.local_skill_id,
+      workspace_generation: req.payload.workspace_generation } }), req.payload.expected_capture);
+  assert.deepEqual(fs.readFileSync(retainedPath), before);
+});
+
+test('repair verification never captures a missing record or recaptures a removed source', async () => {
+  const req = await repairRequest(), h = repairHandler();
+  const file = path.join(spool, `${entry}.json`), saved = fs.readFileSync(file);
+  fs.unlinkSync(file);
+  await assert.rejects(h.execute(req), code('publication.repair_capture_missing'));
+  assert.deepEqual(fs.readdirSync(spool), []);
+  fs.writeFileSync(file, saved, { mode: 0o600 });
+  fs.rmSync(source, { recursive: true });
+  await assert.rejects(h.execute(req), (e: any) => {
+    assert.match(e.code, /^publication\./); assert.notEqual(e.code, 'publication.repair_capture_missing'); return true;
+  });
+  assert.deepEqual(fs.readFileSync(file), saved);
+});
+
+test('repair verification enforces its own envelope, actor/device scope, and exact original receipt', async () => {
+  const req = await repairRequest(), h = repairHandler();
+  for (const [patch, expected] of [
+    [{ type: 'result' }, 'INVALID_REQUEST'], [{ result: {} }, 'INVALID_REQUEST'],
+    [{ error: { code: 'x' } }, 'INVALID_REQUEST'], [{ request_id: 'pubcapture_abcdefghijklmnopqrstuvwx' }, 'INVALID_REQUEST'],
+    [{ expires_at: Date.now() - 1 }, 'REQUEST_EXPIRED'], [{ expires_at: Date.now() + 90_000 }, 'INVALID_REQUEST'],
+    [{ expires_at: String(Date.now() + 25_000) }, 'INVALID_REQUEST'],
+    [{ target_owner_user_id: 'usr8' }, 'OWNER_MISMATCH'], [{ target_owner_user_id: undefined }, 'OWNER_MISMATCH'],
+    [{ target_device_id: 'other' }, 'DEVICE_MISMATCH'], [{ device_id: undefined }, 'DEVICE_MISMATCH'],
+    [{ payload: { ...req.payload, bot_uid: '43' } }, 'BOT_NOT_ACTIVE'],
+    [{ payload: { ...req.payload, path: source } }, 'INVALID_REQUEST'],
+    [{ payload: { ...req.payload, expected_capture: undefined } }, 'publication.repair_invalid'],
+    [{ payload: { ...req.payload, expected_capture: { ...req.payload.expected_capture, path: source } } }, 'publication.repair_invalid'],
+    [{ payload: { ...req.payload, expected_capture: { ...req.payload.expected_capture, candidateRevision: 2 } } }, 'publication.repair_invalid'],
+    [{ payload: { ...req.payload, expected_capture: { ...req.payload.expected_capture, requestHash: 'b'.repeat(64) } } }, 'publication.repair_capture_mismatch'],
+    [{ payload: { ...req.payload, expected_capture: { ...req.payload.expected_capture, sourceSnapshotHash: 'b'.repeat(64) } } }, 'publication.repair_capture_mismatch'],
+    [{ payload: { ...req.payload, expected_capture: { ...req.payload.expected_capture, requestBytes: 0 } } }, 'publication.repair_invalid'],
+  ] as const) {
+    await assert.rejects(h.execute({ ...req, ...patch }), code(expected));
+  }
+  assert.equal((await h.execute(req)).sourceVerified, true);
+  assert.deepEqual(fs.readdirSync(spool), [`${entry}.json`]);
+});
+
+test('repair verification snapshots receipt before lock waits and shares the bounded capture slots', async () => {
+  const req = await repairRequest(), h = repairHandler();
+  let entered!: () => void, release!: () => void;
+  const ready = new Promise<void>(r => { entered = r; });
+  const lock = withBotSkillWorkspaceLock(root, async () => { entered(); await new Promise<void>(r => { release = r; }); });
+  await ready;
+  const expected = { ...req.payload.expected_capture, sourceVerified: true };
+  const one = h.execute(req), two = h.execute(req);
+  try {
+    req.payload.expected_capture.requestHash = 'b'.repeat(64);
+    req.payload.workspace_generation = 'b'.repeat(64);
+    await assert.rejects(h.execute(request()), code('publication.runtime_unavailable'));
+  } finally { release(); await lock; }
+  assert.deepEqual(await one, expected);
+  assert.deepEqual(await two, expected);
+  assert.equal((await h.execute(await repairRequest())).sourceVerified, true);
+});
+
+test('repair verification rejects owner changes and shutdown during lock waits', async () => {
+  const req = await repairRequest(), config = createCatsCoLocalConfigService({ runtimeRoot: root });
+  const original = config.load();
+  for (const change of ['owner', 'shutdown'] as const) {
+    let entered!: () => void, release!: () => void, shutdown = false;
+    const ready = new Promise<void>(r => { entered = r; });
+    const lock = withBotSkillWorkspaceLock(root, async () => { entered(); await new Promise<void>(r => { release = r; }); });
+    await ready;
+    const operation = assert.rejects(repairHandler({ isShuttingDown: () => shutdown }).execute(req), code('publication.runtime_unavailable'));
+    try {
+      if (change === 'owner') config.save({ ...original, currentBot: { ...original.currentBot!, boundByUserUid: '8' } });
+      else shutdown = true;
+    } finally { release(); await lock; }
+    await operation;
+    config.save(original);
+  }
+  assert.equal((await repairHandler().execute(req)).sourceVerified, true);
+});
+
+test('repair verification rejects deadline expiry while queued', async t => {
+  const req = await repairRequest();
+  let entered!: () => void, release!: () => void;
+  const ready = new Promise<void>(r => { entered = r; });
+  const lock = withBotSkillWorkspaceLock(root, async () => { entered(); await new Promise<void>(r => { release = r; }); });
+  await ready;
+  const now = Date.now();
+  const operation = assert.rejects(repairHandler().execute({ ...req, expires_at: now + 1_000 }), code('publication.runtime_unavailable'));
+  const clock = t.mock.method(Date, 'now', () => now + 2_000);
+  try { release(); await lock; await operation; } finally { clock.mock.restore(); }
+});
+
+test('repair verification rechecks active Bot, owner, body, installation and workspace', async () => {
+  const req = await repairRequest(), h = repairHandler();
+  const config = createCatsCoLocalConfigService({ runtimeRoot: root }), original = config.load();
+  for (const patch of [
+    { currentBot: { ...original.currentBot!, uid: '43' } },
+    { currentBot: { ...original.currentBot!, boundByUserUid: '8' } },
+    { currentBot: { ...original.currentBot!, boundByUserUid: undefined } },
+    { device: { ...original.device!, bodyId: 'other-body' } },
+    { device: { ...original.device!, installationId: 'other-install' } },
+    { device: { ...original.device!, connectorToken: 'private-connector-token' } },
+  ]) {
+    config.save({ ...original, ...patch });
+    await assert.rejects(h.execute(req), (e: any) => {
+      assert.ok(e instanceof Error); assert.notEqual(e.code, undefined);
+      assert.ok(!e.message.includes(root)); return true;
+    });
+  }
+  config.save({ ...original, account: undefined });
+  assert.equal((await h.execute(req)).sourceVerified, true);
+  config.save(original);
+  const activePath = path.join(root, 'data', 'bot-skills', 'active.json'), active = fs.readFileSync(activePath);
+  fs.writeFileSync(activePath, JSON.stringify({ ...JSON.parse(active.toString()), activeBotId: '43' }));
+  await assert.rejects(h.execute(req), code('publication.runtime_unavailable'));
+  fs.writeFileSync(activePath, active);
+  assert.equal((await h.execute(req)).sourceVerified, true);
+});
+
+test('adapter reserves repair verification even when disabled and never invokes model tools', async () => {
+  const req = await repairRequest();
+  const bot = Object.create(CatsCompanyBot.prototype) as any;
+  bot.shuttingDown = false;
+  bot.skillHubThinRpc = repairHandler({ publicationRepairSourceEnabled: false });
+  bot.executeLocalThinToolRpcTool = () => { throw new Error('generic tool fallback must not run'); };
+  let response: any;
+  bot.bot = { sendThinToolRpcResult: async (r: any) => { response = r; } };
+  await bot.handleThinToolRpcRequest(req);
+  assert.equal(response.error.code, 'publication.runtime_unsupported');
+  assert.equal(response.result, undefined);
 });

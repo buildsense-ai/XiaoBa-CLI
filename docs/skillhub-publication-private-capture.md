@@ -169,3 +169,9 @@ and replay after source removal, source changes, disabled runtime, owner/workspa
 mismatch, and CatsCo authority changes before a late receipt. It uses actual
 CatsCo transport and XiaoBa handlers/storage, but an in-memory CatsCo store and
 synthetic socket bridge. It does not replace real deployed end-to-end acceptance.
+
+## Related repair-source verification
+
+Capture replay is not proof of a live source. The separate default-off
+[repair-source RPC](skillhub-publication-repair-source.md) specifies the stricter
+read-only check for the future CatsCo publication repair adapter.
