@@ -22,9 +22,26 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 	if root == "" || node == "" {
 		t.Fatal("paired paths required; refusing to skip")
 	}
+	// Exercise the real hi decoder/handler. Old server main ignores the new
+	// additive field, so the paired fixture works before and after negotiation
+	// is deployed without granting capabilities through reflection or helpers.
+	declareCapabilities := func(hub *Hub, bot *Client) {
+		t.Helper()
+		var hi MsgClientHi
+		if err := json.Unmarshal([]byte(`{"id":"paired-hi","runtime_capabilities":["device-targets.v1"]}`), &hi); err != nil {
+			t.Fatal(err)
+		}
+		hub.handleHi(bot, "paired-bot", &hi)
+		var ack ServerMessage
+		decodeQueuedServerMessage(t, bot.send, &ack)
+		if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+			t.Fatalf("paired hi failed: %#v", ack)
+		}
+	}
 	hub, handler := deviceSelectionFixture(t)
 	bot := &Client{uid: 42, accountType: types.AccountBot, bodyID: "cloud-body", send: make(chan []byte, 32)}
 	hub.addClient(bot)
+	declareCapabilities(hub, bot)
 	metadata := func() map[string]interface{} {
 		return map[string]interface{}{
 			"catsco_identity": hub.buildCatscoIdentityMetadata(7, 42, "p2p_7_42", 1, "读取我的文件"),
@@ -272,6 +289,7 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 		for _, uid := range []int64{42, 43} {
 			bots[uid] = &Client{uid: uid, accountType: types.AccountBot, bodyID: fmt.Sprintf("cloud-%d", uid), send: make(chan []byte, 32)}
 			hub.addClient(bots[uid])
+			declareCapabilities(hub, bots[uid])
 		}
 		choose := func(actor, agent int64, device string) {
 			t.Helper()
