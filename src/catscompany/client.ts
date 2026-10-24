@@ -212,6 +212,9 @@ export type CatsSendErrorKind = 'transport' | 'ack' | 'timeout';
 // Cats 服务端握手协议版本，不是 CatsCo 客户端发布版本。
 const CATSCOMPANY_PROTOCOL_VERSION = '0.1.0';
 const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
+// This is an additive handshake capability, not a server protocol version. A
+// server that does not recognize it simply ignores the field.
+const CATSCOMPANY_RUNTIME_CAPABILITIES = ['device-targets.v1'];
 const DEFAULT_WS_CONNECT_TIMEOUT_MS = 20_000;
 const DEFAULT_WS_READY_TIMEOUT_MS = 20_000;
 const DEFAULT_RECONNECT_BASE_DELAY_MS = 1_000;
@@ -397,6 +400,7 @@ export class CatsClient extends EventEmitter {
           id: '1',
           ver: CATSCOMPANY_PROTOCOL_VERSION,
           ua: CATSCOMPANY_CLIENT_UA,
+          runtime_capabilities: CATSCOMPANY_RUNTIME_CAPABILITIES,
           device: this.config.deviceRegistration,
         },
       });
