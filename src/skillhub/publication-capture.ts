@@ -7,9 +7,15 @@ import { capturePublicationSource, describePublicationSource, findPublicationSou
   type PublicationSourceBinding, type PublicationSourceDescriptor } from './publication-source';
 
 export const PUBLICATION_CAPTURE = 'skillhub.publication.capture.v1';
+export const PUBLICATION_REPAIR_SOURCE = 'skillhub.publication.verifyRepairSource.v1';
 export function publicationCaptureEnabled(): boolean {
   const value = (process.env.XIAOBA_SKILLHUB_PUBLICATION_CAPTURE_ENABLED || '').trim().toLowerCase();
   return publicationSourceProbeEnabled() && (value === '1' || value === 'true');
+}
+
+export function publicationRepairSourceEnabled(): boolean {
+  const value = (process.env.XIAOBA_SKILLHUB_PUBLICATION_REPAIR_SOURCE_ENABLED || '').trim().toLowerCase();
+  return publicationCaptureEnabled() && (value === '1' || value === 'true');
 }
 
 export interface PublicationCaptureInput {

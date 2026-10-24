@@ -115,7 +115,7 @@ import {
   SKILLHUB_WORKSPACE_PAGINATION_CAPABILITY,
 } from './skillhub-rpc';
 import { PUBLICATION_SOURCE_PROBE, publicationSourceProbeEnabled } from '../skillhub/publication-source';
-import { PUBLICATION_CAPTURE, publicationCaptureEnabled } from '../skillhub/publication-capture';
+import { PUBLICATION_CAPTURE, PUBLICATION_REPAIR_SOURCE, publicationCaptureEnabled, publicationRepairSourceEnabled } from '../skillhub/publication-capture';
 import { PUBLICATION_UPLOAD, publicationUploadEnabled } from '../skillhub/publication-upload';
 
 interface PendingAttachment {
@@ -334,6 +334,7 @@ export function capabilitiesForCatsCompanyRuntimeRole(
     : [...CATSCOMPANY_SERVER_RUNTIME_DEVICE_CAPABILITIES];
   if (publicationSourceProbeEnabled()) capabilities.push(PUBLICATION_SOURCE_PROBE);
   if (publicationCaptureEnabled()) capabilities.push(PUBLICATION_CAPTURE);
+  if (publicationRepairSourceEnabled()) capabilities.push(PUBLICATION_REPAIR_SOURCE);
   if (publicationUploadEnabled()) capabilities.push(PUBLICATION_UPLOAD);
   return capabilities;
 }
@@ -1194,6 +1195,7 @@ export class CatsCompanyBot {
     if (rpcTelemetry) Logger.info(rpcTelemetry.received());
 
     if (request.tool_name === PUBLICATION_SOURCE_PROBE || request.tool_name === PUBLICATION_CAPTURE ||
+      request.tool_name === PUBLICATION_REPAIR_SOURCE ||
       this.skillHubThinRpc.supports(String(request.tool_name || ''))) {
       await this.handleSkillHubThinToolRpcRequest(request);
       return;

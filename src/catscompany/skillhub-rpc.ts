@@ -39,7 +39,8 @@ import {
   describePublicationSource, discoverPublicationSources, findPublicationSource, type PublicationSourceBinding,
 } from '../skillhub/publication-source';
 import {
-  PUBLICATION_CAPTURE, PublicationCaptureStore, publicationCaptureEnabled,
+  PUBLICATION_CAPTURE, PUBLICATION_REPAIR_SOURCE, PublicationCaptureStore, publicationCaptureEnabled,
+  publicationRepairSourceEnabled, type PublicationCaptureReceipt,
 } from '../skillhub/publication-capture';
 import {
   PUBLICATION_UPLOAD, PublicationCandidateUploader, PublicationUploadError,
@@ -141,6 +142,7 @@ export interface SkillHubThinRpcHandlerOptions {
   allowBotSwitch?: boolean;
   publicationProbeEnabled?: boolean;
   publicationCaptureEnabled?: boolean;
+  publicationRepairSourceEnabled?: boolean;
   publicationUploadEnabled?: boolean;
   /** Internal dependency injection only, never a serialized option. */
   publicationUploader?: Pick<PublicationCandidateUploader, 'upload'>;
@@ -166,6 +168,7 @@ export class SkillHubThinRpcHandler {
   private publicationProbes = 0;
   private readonly publicationCaptureStore: PublicationCaptureStore;
   private readonly publicationCaptureEnabled: boolean;
+  private readonly publicationRepairSourceEnabled: boolean;
   private publicationCaptures = 0;
   private readonly publicationUploadEnabled: boolean;
   private readonly publicationUploader: Pick<PublicationCandidateUploader, 'upload'>;
@@ -206,6 +209,8 @@ export class SkillHubThinRpcHandler {
     this.publicationCaptureStore = new PublicationCaptureStore({
       runtimeRoot: this.runtimeRoot, enabled: this.enabled && this.publicationCaptureEnabled,
     });
+    this.publicationRepairSourceEnabled = this.publicationCaptureEnabled &&
+      (options.publicationRepairSourceEnabled ?? publicationRepairSourceEnabled());
     this.publicationUploadEnabled = this.publicationCaptureEnabled &&
       (options.publicationUploadEnabled ?? publicationUploadEnabled());
     this.publicationUploader = options.publicationUploader ?? new PublicationCandidateUploader({
@@ -217,6 +222,7 @@ export class SkillHubThinRpcHandler {
   supports(toolName: string): boolean {
     if (toolName === PUBLICATION_SOURCE_PROBE) return this.enabled && this.publicationProbeEnabled;
     if (toolName === PUBLICATION_CAPTURE) return this.enabled && this.publicationCaptureEnabled;
+    if (toolName === PUBLICATION_REPAIR_SOURCE) return this.enabled && this.publicationRepairSourceEnabled;
     if (toolName === PUBLICATION_UPLOAD) return this.enabled && this.publicationUploadEnabled;
     return this.enabled
       && Object.values(SKILLHUB_THIN_RPC_TOOLS).includes(toolName as any)
@@ -229,6 +235,9 @@ export class SkillHubThinRpcHandler {
     // Retained candidates have their own durable identity. Never cache a receipt
     // by request ID or skip current scope/deadline checks on replay.
     if (request.tool_name === PUBLICATION_CAPTURE) return this.capturePublicationSource(request);
+    // A retained receipt is not proof of the current on-disk source. This
+    // reserved, read-only operation always rechecks it, including on replay.
+    if (request.tool_name === PUBLICATION_REPAIR_SOURCE) return this.capturePublicationSource(request, true);
     // Never retain bearer grants in the generic request-id cache.
     if (request.tool_name === PUBLICATION_UPLOAD) return this.uploadPublicationCandidate(request);
     this.assertOperational(request);
@@ -405,9 +414,10 @@ export class SkillHubThinRpcHandler {
     } finally { this.publicationProbes--; }
   }
 
-  private async capturePublicationSource(request: CatsThinToolRpcMessage): Promise<Record<string, unknown>> {
-    if (!this.enabled || !this.publicationCaptureEnabled) {
-      throw new SkillHubThinRpcError('publication.runtime_unsupported', 'Publication capture is disabled.');
+  private async capturePublicationSource(request: CatsThinToolRpcMessage, verifyRepairSource = false): Promise<Record<string, unknown>> {
+    if (!this.enabled || !this.publicationCaptureEnabled || (verifyRepairSource && !this.publicationRepairSourceEnabled)) {
+      throw new SkillHubThinRpcError('publication.runtime_unsupported', verifyRepairSource
+        ? 'Publication repair source verification is disabled.' : 'Publication capture is disabled.');
     }
     if (this.publicationCaptures >= 2) {
       throw new SkillHubThinRpcError('publication.runtime_unavailable', 'Publication capture is busy.');
@@ -416,10 +426,13 @@ export class SkillHubThinRpcHandler {
     try {
       this.assertOperational(request);
       const payload = request.payload;
+      const requestIdPattern = verifyRepairSource ? /^pubrepairsource_[A-Za-z0-9_-]{16,64}$/ : /^pubcapture_[A-Za-z0-9_-]{16,64}$/;
+      const payloadKeys = verifyRepairSource ? 'bot_uid,entry_id,expected_capture,local_skill_id,workspace_generation'
+        : 'bot_uid,entry_id,local_skill_id,workspace_generation';
       if (request.type !== 'request' || request.result !== undefined || request.error !== undefined ||
-        typeof request.request_id !== 'string' || !/^pubcapture_[A-Za-z0-9_-]{16,64}$/.test(request.request_id) ||
+        typeof request.request_id !== 'string' || !requestIdPattern.test(request.request_id) ||
         !Number.isSafeInteger(request.expires_at) || Number(request.expires_at) > Date.now() + 31_000 ||
-        !payload || Array.isArray(payload) || Object.keys(payload).sort().join(',') !== 'bot_uid,entry_id,local_skill_id,workspace_generation' ||
+        !payload || Array.isArray(payload) || Object.keys(payload).sort().join(',') !== payloadKeys ||
         typeof payload.entry_id !== 'string' || !/^pubentry_[a-f0-9]{32}$/.test(payload.entry_id) ||
         typeof payload.bot_uid !== 'string' || !/^[1-9][0-9]{0,18}$/.test(payload.bot_uid) ||
         // CatsCo carries opaque selectors; this runtime only owns descriptors
@@ -428,7 +441,11 @@ export class SkillHubThinRpcHandler {
         typeof payload.workspace_generation !== 'string' || !/^[a-f0-9]{64}$/.test(payload.workspace_generation)) {
         throw new SkillHubThinRpcError('INVALID_REQUEST', 'Invalid publication capture request.');
       }
-      request = { ...request, payload: { ...payload } };
+      // Snapshot the expected receipt before a possible workspace-lock wait.
+      // The store performs the exact receipt schema/value and binding checks.
+      const expected = (verifyRepairSource && payload.expected_capture && typeof payload.expected_capture === 'object'
+        ? { ...payload.expected_capture } : payload.expected_capture) as PublicationCaptureReceipt;
+      request = { ...request, payload: { ...payload, ...(verifyRepairSource ? { expected_capture: expected } : {}) } };
       const botUid = payload.bot_uid;
       this.assertRequestScope(request, botUid, true);
       const binding = this.publicationBinding(botUid);
@@ -448,20 +465,25 @@ export class SkillHubThinRpcHandler {
         }
       };
       check();
-      const receipt = await this.publicationCaptureStore.capture({
+      const input = {
         entryId: payload.entry_id, binding,
         source: { local_skill_id: payload.local_skill_id, workspace_generation: payload.workspace_generation },
-      }, check);
+      };
+      const receipt = verifyRepairSource
+        ? (await this.publicationCaptureStore.readRepairCandidate(input, expected, check)).receipt
+        : await this.publicationCaptureStore.capture(input, check);
       check();
-      // Only six scalar receipt fields cross the socket. No source bytes,
-      // local paths, account tokens or upload authority.
-      return { ...receipt };
+      // Only six scalar receipt fields (plus the explicit verification marker
+      // in repair mode) cross the socket. No bytes, paths, tokens or grants.
+      return { ...receipt, ...(verifyRepairSource ? { sourceVerified: true } : {}) };
     } catch (error) {
       const requestCodes = new Set(['INVALID_REQUEST', 'OWNER_MISMATCH', 'DEVICE_MISMATCH', 'REQUEST_EXPIRED', 'BOT_NOT_ACTIVE']);
       const code = error instanceof PublicationSourceError ? error.code
         : error instanceof SkillHubThinRpcError && requestCodes.has(error.code) ? error.code
         : 'publication.runtime_unavailable';
-      throw new SkillHubThinRpcError(code, 'The publication candidate could not be captured. No upload was started.');
+      throw new SkillHubThinRpcError(code, verifyRepairSource
+        ? 'The publication repair source could not be verified. No files were changed.'
+        : 'The publication candidate could not be captured. No upload was started.');
     } finally { this.publicationCaptures--; }
   }
 
