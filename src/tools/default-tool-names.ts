@@ -19,6 +19,13 @@ export const DEFAULT_TOOL_NAMES = [
   'share_skillhub_skill',
   'skillhub',
   'skill',
+  // Native read-only recall over the Agent-private CatsLog daily knowledge
+  // corpus. Default-enabled by name; actual exposure is capability-gated: the
+  // ToolManager registers it only when a device-bound provider was supplied,
+  // and every call re-checks live login/state (typed unavailable otherwise —
+  // never a fake-empty result). Explicit profile allowlists that omit the
+  // name keep it off.
+  'catslog_knowledge_recall',
 ] as const;
 
 export type DefaultToolName = typeof DEFAULT_TOOL_NAMES[number];

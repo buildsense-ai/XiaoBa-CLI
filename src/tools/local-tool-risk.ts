@@ -1,6 +1,7 @@
 import type { DeviceGrantOperation } from '../types/session-identity';
 import type { ToolExecutionContext, ToolExecutionResult, ToolRiskLevel } from '../types/tool';
 import { isCatsCoAgentLocalBodyContext, isCatsCoLocalOwnerSelfContext, resolveToolGatewayAccess } from './tool-gateway';
+import { CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from './catslog-knowledge-recall-tool';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -22,8 +23,10 @@ const LOW_RISK_TOOLS = new Set([
   'ask_parent',
   'send_text',
   'skill',
-  // Branch-local memory tools. Remote reads remain device-capability scoped
-  // and bounded by the session; no new write or operator capability.
+  // Read-only daily recall and branch-local reads share scoped capabilities.
+  CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME,
+  'memory_knowledge_search',
+  'memory_knowledge_graph',
   'memory_search',
   'memory_read_turn',
   'memory_neighbors',
