@@ -49,9 +49,8 @@ test('bounded fork cuts after the last complete turn and drops stale summaries',
   // Two complete turns keep everything up to the third user message.
   assert.deepEqual(truncateAtTurn(source, 2).map(message => message.content),
     ['turn one', 'answer one', 'turn two', 'answer two']);
-  // Zero and negative mean "unbounded", which is the pre-existing behaviour.
-  assert.equal(truncateAtTurn(source, 0).length, 6);
-  assert.equal(truncateAtTurn(source, -1).length, 6);
+  // Absent means the server sent no bound, so the whole conversation is copied.
+  assert.equal(truncateAtTurn(source, undefined).length, 6);
 
   const withSummary: any[] = [
     { role: 'user', content: 'summary of the future', __checkpointSummary: true },
@@ -86,4 +85,35 @@ test('bounded fork fails closed instead of cutting somewhere unexpected', () => 
   // A trailing turn with no answer is not complete, so the server would not have
   // counted it; accepting it here would keep a turn the server never copied.
   assert.throws(() => truncateAtTurn([{ role: 'user', content: 'asked' }], 1), /session_fork_source_turn_mismatch/);
+});
+
+// The regression this guards: an explicit 0 used to be read as "unbounded", so a
+// server that could not establish a bound make the runtime copy the whole
+// transcript while the cloud copied only a prefix — the exact mismatch the guard
+// exists to prevent. Only absence means "no bound".
+test('an explicit zero bound fails closed instead of copying everything', () => {
+  const source: any[] = [
+    { role: 'user', content: 'asked' },
+    { role: 'assistant', content: 'answered' },
+  ];
+  assert.equal(truncateAtTurn(source, undefined).length, 2);
+  assert.throws(() => truncateAtTurn(source, 0), /session_fork_source_turn_mismatch/);
+  assert.throws(() => truncateAtTurn(source, -1), /session_fork_source_turn_mismatch/);
+});
+
+// Both sides must fold this the same way. The server treats u1,u2,a1 as one
+// turn; building a per-message turn-start list here cut between u1 and u2, hit an
+// interval with no assistant, and failed the fork outright. A user sending twice
+// before an answer is common, so that made the feature unusable on those threads.
+test('consecutive user messages fold into one turn, matching the server', () => {
+  const source: any[] = [
+    { role: 'user', content: 'first ask' },
+    { role: 'user', content: 'second ask' },
+    { role: 'assistant', content: 'one answer' },
+    { role: 'user', content: 'next ask' },
+    { role: 'assistant', content: 'next answer' },
+  ];
+  assert.deepEqual(truncateAtTurn(source, 1).map(message => message.content),
+    ['first ask', 'second ask', 'one answer']);
+  assert.equal(truncateAtTurn(source, 2).length, 5);
 });

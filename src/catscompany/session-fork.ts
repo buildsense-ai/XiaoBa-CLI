@@ -13,12 +13,12 @@ export interface CatsSessionForkControl {
   agent_uid: string;
   source_last_seq: number;
   /**
-   * Complete turns in the copied range, or 0/absent for a whole-conversation copy.
+   * Complete turns in the copied range.
    *
-   * A live session records cloud message IDs only on the restore path, so the
-   * transcript carries almost none of them: an observed session had them on 1 of
-   * 202 messages. The server therefore tells the runtime how far the copy reaches
-   * as a turn count, not as a message ID.
+   * Absent means the server copied the whole conversation, so the runtime must
+   * not cut at all. The field is only present on a bounded copy, so an explicit
+   * `0` is a disagreement between the two sides rather than "unbounded" — see
+   * truncateAtTurn, which fails closed on it instead of copying everything.
    */
   source_turn_count?: number;
   message_id_map: Record<string, number>;
@@ -75,7 +75,10 @@ export function normalizeSessionForkControl(value: unknown): CatsSessionForkCont
   }
   return { request_id: v.request_id, source_topic_id: v.source_topic_id, target_topic_id: v.target_topic_id,
     actor_user_id: actor, agent_uid: agent, source_last_seq: Number(v.source_last_seq),
-    source_turn_count: Number(v.source_turn_count || 0), message_id_map: map };
+    // Preserve absence: it is the only signal for "no bound". Collapsing an
+    // explicit 0 into it would turn a mismatch into a silent full copy.
+    source_turn_count: v.source_turn_count === undefined ? undefined : Number(v.source_turn_count),
+    message_id_map: map };
 }
 
 export function forkSessionRoute(topic: string, actor: string, agent: string): SessionRoute {
@@ -160,7 +163,8 @@ export class CatsSessionForkController {
         // Both paths must cut identically: the live session and the durable
         // transcript are two views of the same conversation, and the copy must
         // not end in a different place depending on which one answered.
-        const turnCount = control.source_turn_count || 0;
+        // Pass absence through untouched: it is the only signal for "no bound".
+        const turnCount = control.source_turn_count;
         const context = session ? session.exportForkContext(control.message_id_map, turnCount) : {
           messages: prepareForkMessages(truncateAtTurn(durable, turnCount), control.message_id_map),
           currentDirectory: state.currentDirectory,

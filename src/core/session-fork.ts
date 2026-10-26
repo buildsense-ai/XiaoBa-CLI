@@ -15,52 +15,85 @@ export interface SessionForkSnapshot extends SessionForkIdentity {
 }
 
 /**
- * A user-role message that did not come from the user.
+ * Markers that make a `user`-role message something other than the user speaking.
  *
- * Compaction summaries, runtime observations and injected context all use the
- * user role, so counting turns by role alone would overstate the transcript.
- * The server only stores real chat messages, so it counts every `user` row;
- * the runtime has to exclude these to reach the same number.
+ * Compaction summaries, runtime observations and injected context all carry the
+ * user role, so counting turns by role alone overstates the transcript. This is
+ * one exported list on purpose: adding a new synthetic message type without
+ * touching it would silently shift every later turn, and the resulting cut has no
+ * error to catch it.
  */
+export const SYNTHETIC_USER_MESSAGE_FLAGS = [
+  '__injected',
+  '__runtimeFeedback',
+  '__runtimeObservation',
+  '__syntheticObservation',
+  '__internalErrorArtifact',
+  '__checkpointSummary',
+] as const;
+
 export function isSyntheticUserMessage(message: Message): boolean {
-  return message.role === 'user' && Boolean(message.__injected || message.__runtimeFeedback
-    || message.__runtimeObservation || message.__syntheticObservation
-    || message.__internalErrorArtifact || message.__checkpointSummary);
+  if (message.role !== 'user') return false;
+  const flags = message as unknown as Record<string, unknown>;
+  return SYNTHETIC_USER_MESSAGE_FLAGS.some(flag => Boolean(flags[flag]));
+}
+
+/** A message that opens a real user turn in the transcript. */
+export function isUserTurnStart(message: Message | undefined): boolean {
+  return Boolean(message) && message!.role === 'user' && !isSyntheticUserMessage(message!);
 }
 
 /**
  * Cuts the transcript after the last message of the Nth complete turn.
  *
- * `turnCount` comes from the server, which counts a turn only once it has an
- * assistant reply and does not count a trailing unanswered user turn. The same
- * rule applies here, and a disagreement fails closed: cutting somewhere else
- * would produce a copy whose history and model context disagree.
+ * The rule is the server's, applied here step for step: a turn opens on a user
+ * message and closes once an assistant reply arrives, consecutive user messages
+ * fold into the turn already open, and a trailing unanswered turn does not count.
+ * Anything else would let the two sides cut in different places, which produces a
+ * copy whose visible history and model context disagree.
  *
- * `turnCount <= 0` means "unbounded" and returns the transcript untouched.
+ * `undefined` means the server sent no bound, so the copy is the whole
+ * conversation. An explicit `0` is a disagreement, not "unbounded": the server
+ * includes the field only for a bounded copy, so a zero reaching here means one
+ * side believes there is a bound and the other cannot establish it. Copying
+ * everything at that point is exactly the failure this guard exists to prevent.
  */
-export function truncateAtTurn(messages: Message[], turnCount: number): Message[] {
-  if (!Number.isSafeInteger(turnCount) || turnCount <= 0) return messages;
-  const starts: number[] = [];
-  for (let index = 0; index < messages.length; index++) {
-    if (messages[index]?.role === 'user' && !isSyntheticUserMessage(messages[index])) starts.push(index);
-  }
-  if (starts.length < turnCount) {
+export function truncateAtTurn(messages: Message[], turnCount: number | undefined): Message[] {
+  if (turnCount === undefined) return messages;
+  if (!Number.isSafeInteger(turnCount) || turnCount <= 0) {
     throw new Error('session_fork_source_turn_mismatch');
   }
-  const start = starts[turnCount - 1];
-  const end = turnCount < starts.length ? starts[turnCount] : messages.length;
+  let open = false;
   let answered = false;
-  for (let index = start + 1; index < end; index++) {
-    if (messages[index]?.role === 'assistant') answered = true;
+  let turns = 0;
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (isUserTurnStart(message)) {
+      if (open && answered) {
+        turns++;
+        if (turns === turnCount) return boundedForkMessages(messages.slice(0, index));
+      }
+      open = true;
+      answered = false;
+    } else if (message?.role === 'assistant' && open) {
+      answered = true;
+    }
   }
-  if (!answered) {
-    throw new Error('session_fork_source_turn_mismatch');
+  if (open && answered) {
+    turns++;
+    if (turns === turnCount) return boundedForkMessages(messages);
   }
-  // A bounded copy keeps the turns before the cut, but a compaction summary in
-  // that range may already describe turns beyond it. Dropping summaries loses
-  // some older detail; keeping them would leak the future into the branch, which
-  // is the worse of the two.
-  return messages.slice(0, end).filter(message => !message.__checkpointSummary);
+  throw new Error('session_fork_source_turn_mismatch');
+}
+
+/**
+ * A bounded copy keeps the turns before the cut, but a compaction summary in that
+ * range may already describe turns beyond it. Dropping summaries loses some older
+ * detail; keeping them would leak the future into the branch, which is the worse
+ * of the two.
+ */
+function boundedForkMessages(messages: Message[]): Message[] {
+  return messages.filter(message => !message.__checkpointSummary);
 }
 
 /** Copy durable context, never an execution queue or provider continuation handle. */

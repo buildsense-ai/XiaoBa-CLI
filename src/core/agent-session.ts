@@ -1334,7 +1334,7 @@ export class AgentSession {
   }
 
   /** Snapshot only: no init, compaction, tool execution, or source mutation. */
-  exportForkContext(idMap: Record<string, number>, turnCount = 0): { messages: Message[]; currentDirectory: string } {
+  exportForkContext(idMap: Record<string, number>, turnCount?: number): { messages: Message[]; currentDirectory: string } {
     if (this.busy || this.resumeInFlight || SubAgentManager.getInstance().hasActiveForParent(this.key)) {
       throw new Error('Source session is busy');
     }
