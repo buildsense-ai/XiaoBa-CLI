@@ -37,7 +37,7 @@ test('fork supports parallel completed tools, rejects malformed durable messages
   assert.throws(() => prepareForkMessages([{ role: 'user', content: { invalid: true } } as any], {}), /invalid/i);
 });
 
-test('bounded fork cuts after the last complete turn and drops stale summaries', () => {
+test('bounded fork cuts after the last complete turn', () => {
   const source: any[] = [
     { role: 'user', content: 'turn one' },
     { role: 'assistant', content: 'answer one' },
@@ -51,15 +51,6 @@ test('bounded fork cuts after the last complete turn and drops stale summaries',
     ['turn one', 'answer one', 'turn two', 'answer two']);
   // Absent means the server sent no bound, so the whole conversation is copied.
   assert.equal(truncateAtTurn(source, undefined).length, 6);
-
-  const withSummary: any[] = [
-    { role: 'user', content: 'summary of the future', __checkpointSummary: true },
-    { role: 'user', content: 'turn one' },
-    { role: 'assistant', content: 'answer one' },
-    { role: 'user', content: 'turn two' },
-  ];
-  // The summary may already describe turns beyond the cut, so it must not travel.
-  assert.deepEqual(truncateAtTurn(withSummary, 1).map(message => message.content), ['turn one', 'answer one']);
 });
 
 test('bounded fork ignores synthetic user messages when counting turns', () => {
@@ -116,4 +107,56 @@ test('consecutive user messages fold into one turn, matching the server', () => 
   assert.deepEqual(truncateAtTurn(source, 1).map(message => message.content),
     ['first ask', 'second ask', 'one answer']);
   assert.equal(truncateAtTurn(source, 2).length, 5);
+});
+
+// A compacted conversation must stay branchable: the summarized prefix travels
+// with the copy and only the retained window can be cut. `totalTurns` is the
+// server's count for the whole conversation, so the difference from what the
+// runtime retains is exactly the turns compaction removed.
+test('a compacted transcript branches inside its retained window', () => {
+  // Two turns were summarized; three remain verbatim.
+  const compacted: any[] = [
+    { role: 'user', content: 'summary of turns one and two', __checkpointSummary: true },
+    { role: 'user', content: 'turn three' },
+    { role: 'assistant', content: 'answer three' },
+    { role: 'user', content: 'turn four' },
+    { role: 'assistant', content: 'answer four' },
+    { role: 'user', content: 'turn five' },
+    { role: 'assistant', content: 'answer five' },
+  ];
+  const total = 5;
+
+  // Cutting after turn 3 locally = cutting after turn 5 of the conversation.
+  assert.deepEqual(truncateAtTurn(compacted, 3, total).map(message => message.content),
+    ['summary of turns one and two', 'turn three', 'answer three']);
+
+  // A boundary inside the compressed prefix keeps the whole retained window: that
+  // history exists only as a summary, so there is nothing earlier to branch from.
+  assert.equal(truncateAtTurn(compacted, 1, total).length, compacted.length);
+  assert.equal(truncateAtTurn(compacted, 2, total).length, compacted.length);
+
+  // A boundary at the end of the conversation keeps everything.
+  assert.equal(truncateAtTurn(compacted, 5, total).length, compacted.length);
+});
+
+test('a compacted transcript without a trustworthy total keeps the retained window', () => {
+  const compacted: any[] = [
+    { role: 'user', content: 'summary', __checkpointSummary: true },
+    { role: 'user', content: 'turn one' },
+    { role: 'assistant', content: 'answer one' },
+  ];
+  // No total: the boundary cannot be placed, and the retained window is the only
+  // reading consistent with branching the compacted part.
+  assert.equal(truncateAtTurn(compacted, 3, undefined).length, compacted.length);
+  // A total smaller than the boundary is inconsistent; still no invented cut.
+  assert.equal(truncateAtTurn(compacted, 3, 2).length, compacted.length);
+});
+
+test('an uncompacted transcript still fails closed on a boundary past its turns', () => {
+  const plain: any[] = [
+    { role: 'user', content: 'turn one' },
+    { role: 'assistant', content: 'answer one' },
+  ];
+  // No summary means the missing turns are a real disagreement, not compaction.
+  assert.throws(() => truncateAtTurn(plain, 3, 5), /session_fork_source_turn_mismatch/);
 });
