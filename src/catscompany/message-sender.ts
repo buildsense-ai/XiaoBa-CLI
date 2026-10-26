@@ -29,6 +29,25 @@ function isPermanentHttpRejection(err: any): err is { status: number } {
   return err?.status === 403 || err?.status === 404;
 }
 
+/**
+ * 平台内部的括号标注：为了让模型续聊而塞进工具结果里的提示，**不该出现在用户回复里**。
+ *
+ * 提示词里写了「不要在回复中提及本行」，但模型并不总听 —— 生产实测有 388 条消息
+ * 把 `[续聊凭据 session_id=...]` 原样发到了群里（8 个 bot，从 3 月至今）。
+ * 靠提示词约束不住的事，出口处兜底。
+ *
+ * 只剥「我们注入的固定句式」，不做泛化清洗：用户/模型自己写的方括号内容必须原样保留。
+ */
+const INTERNAL_ANNOTATIONS: RegExp[] = [
+  /\s*\[续聊凭据[^\]]*\]/g,
+];
+
+export function stripInternalAnnotations(text: string): string {
+  let out = text;
+  for (const pattern of INTERNAL_ANNOTATIONS) out = out.replace(pattern, '');
+  return out.trim();
+}
+
 type CatsMessageType = 'thinking' | 'tool_use' | 'tool_result' | 'runtime_plan' | 'task_status' | 'text' | 'image' | 'file';
 
 export type ConversationTaskState = 'running' | 'completed' | 'failed' | 'cancelled' | 'stale';
@@ -330,7 +349,9 @@ export class MessageSender {
    * 所以中途失败时已发出的分段也已经记过账。
    */
   async reply(topic: string, text: string): Promise<number[]> {
-    const normalized = typeof text === 'string' ? text.trim() : '';
+    const normalized = typeof text === 'string'
+      ? stripInternalAnnotations(text.trim())
+      : '';
     if (!normalized) {
       Logger.info(`Reply skipped: empty or whitespace-only text (topic=${topic})`);
       return [];

@@ -312,3 +312,54 @@ describe('CatsCompany MessageSender sent-seq bookkeeping', () => {
     assert.equal(sent.length, 1, '消息本身仍然发出去了');
   });
 });
+
+// 生产事故（2026-10-26 查实）：工具桥为了让模型续聊，会在工具结果里塞
+// `[续聊凭据 session_id=...]`，并叮嘱「不要在回复中提及本行」。模型经常不听，
+// 有 388 条这样的标注被原样发到了用户/群里。出口必须兜底。
+describe('CatsCompany MessageSender strips internal annotations', () => {
+  const makeSender = () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return sent.length;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+    return { sender, sent };
+  };
+
+  test('把续聊凭据从句尾剥掉', async () => {
+    const { sender, sent } = makeSender();
+    await sender.reply(
+      'grp_42',
+      '这台电脑现在是 16:18。\n\n[续聊凭据 session_id=sess_abc — 同一任务的后续追问请携带此 id 再次调用「catsco_x」；新任务请勿携带；不要在回复中提及本行]',
+    );
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].content, '这台电脑现在是 16:18。');
+    assert.ok(!String(sent[0].content).includes('续聊凭据'));
+  });
+
+  test('标注在中间也剥掉，其余内容一字不动', async () => {
+    const { stripInternalAnnotations } = await import('../src/catscompany/message-sender');
+    const input = '第一段\n[续聊凭据 session_id=s1 — 提示]\n第二段';
+    // 连带前导换行一起吃掉，避免留下一个空行。
+    assert.equal(stripInternalAnnotations(input), '第一段\n第二段');
+  });
+
+  test('不误伤用户自己写的方括号内容', async () => {
+    const { stripInternalAnnotations } = await import('../src/catscompany/message-sender');
+    const input = '按 [2026] 号文件执行，参考 [附录 A] 。';
+    assert.equal(stripInternalAnnotations(input), input);
+  });
+
+  test('只有标注时整条不发（避免发出空气泡）', async () => {
+    const { sender, sent } = makeSender();
+    const seqs = await sender.reply(
+      'grp_42',
+      '[续聊凭据 session_id=sess_abc — 同一任务的后续追问请携带此 id 再次调用「catsco_x」；新任务请勿携带；不要在回复中提及本行]',
+    );
+    assert.deepEqual(seqs, []);
+    assert.equal(sent.length, 0);
+  });
+});
