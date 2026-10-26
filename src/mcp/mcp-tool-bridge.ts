@@ -139,6 +139,7 @@ export class CatsCoMcpToolBridge {
   private bootstrapSettled = false;
   private failureStreak = 0;
   private disabledReason: string | null = null;
+  private autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: McpToolBridgeOptions) {
     this.toolManager = options.toolManager;
@@ -167,6 +168,33 @@ export class CatsCoMcpToolBridge {
   }
 
   /**
+   * 开启定时后台刷新：远端新增/下架的工具无需重启客户端就能同步到本地工具面。
+   *
+   * 为什么必须有：刷新原先只在「本地 Agent 回合开始」与「调用 unknown tool」时触发。
+   * 但设备连接器模式（云端 Bot + 本机设备）里根本没有本地回合，于是发布新应用后
+   * 工具面永远停在启动那一刻的快照——用户只能重启客户端才能看到新工具。
+   *
+   * 定时器 unref()：不因为它让进程无法退出。
+   */
+  startAutoRefresh(intervalMs = this.refreshIntervalMs): void {
+    if (this.autoRefreshTimer) return;
+    // 定时器是「时间到了就该刷」的确定性节拍，所以要绕过 refresh() 里的回合节流
+    // （否则两个 30s 撞在一起时会被吞掉一次，实际间隔变成 60s）。
+    const tick = Math.max(1, Math.floor(intervalMs));
+    this.autoRefreshTimer = setInterval(() => {
+      void this.refresh(true).catch(() => {});
+    }, tick);
+    this.autoRefreshTimer.unref?.();
+  }
+
+  /** 停止定时刷新（进程收尾/测试用）。 */
+  stopAutoRefresh(): void {
+    if (!this.autoRefreshTimer) return;
+    clearInterval(this.autoRefreshTimer);
+    this.autoRefreshTimer = null;
+  }
+
+  /**
    * 首轮有界就绪：工具清单在每次对话 run 开始时只快照一次，而首次同步是异步的
    * （prewarm 在途）——首发消息若不等待，整轮对话都会看不到远端工具。
    * 仅在「从未结算过一次同步尝试」时等待在途/新发起的刷新（上限 timeoutMs，
@@ -191,12 +219,12 @@ export class CatsCoMcpToolBridge {
 
   /**
    * 同步远端工具清单：新增注册、下线注销、定义变化时替换。
-   * 端点为 null（未登录）或处于最小间隔内时直接跳过。
+   * 端点为 null（未登录）时直接跳过；force=false 时还受最小刷新间隔节流。
    */
-  async refresh(): Promise<BridgeRefreshResult | null> {
+  async refresh(force = false): Promise<BridgeRefreshResult | null> {
     if (this.refreshInFlight) return this.refreshInFlight;
     const nowMs = this.now();
-    if (this.lastRefreshAt !== 0 && nowMs - this.lastRefreshAt < this.refreshIntervalMs) {
+    if (!force && this.lastRefreshAt !== 0 && nowMs - this.lastRefreshAt < this.refreshIntervalMs) {
       return null;
     }
     const endpoint = this.resolveEndpointSafely();
@@ -424,13 +452,18 @@ export class CatsCoMcpToolBridge {
   }
 }
 
-/** 远端工具描述太薄（只有名称/slug/版本），补充用法指引，便于本地模型正确调用。 */
+/**
+ * 远端工具描述：作者的描述原样保留，再补一段「当子 Agent 用」的用法指引。
+ *
+ * 不要写"公司服务端托管"之类的部署承诺——同一个工具可能跑在作者自己的电脑上，
+ * 对方离线时就是不可用的。调用方只需要知道它是**另一个 Agent**，以及该怎么传参。
+ */
 export function buildBridgeDescription(name: string, raw: string | undefined, runStatusToolName: string): string {
   const base = (raw ?? '').trim() || `CatsCo 远端 Agent 工具（${name}）`;
   if (name === runStatusToolName) {
     return `${base}。用法：run_id 传 catsco_<slug> 返回的 run_id，返回该 run 的状态与结果。`;
   }
-  return `${base}。这是公司在服务端托管的专门 Agent：当用户的请求属于它的专门领域（名称/描述所述的任务类型）时，应优先调用本工具完成并以返回结果为准——不要用本地通用能力另做一份同类成品。日常问答、闲聊或简单计算不要调用。用法：input 传发给该 Agent 的输入（对象）；结果文本中的 status 表示本次结果状态（completed=完成，awaiting_input=返问待补充，running=仍在运行）。同一任务的后续追问（含 awaiting_input 的补充、completed 之后的追问），请携带上次结果中的 session_id 再次调用；新任务不要携带 session_id。`;
+  return `${base}。这是另一个 Agent（可能运行在公司服务端，也可能运行在作者自己的电脑上，离线时不可用）：当用户的请求属于它描述的任务类型时，应优先调用本工具完成并以返回结果为准——不要用本地通用能力另做一份同类成品。日常问答、闲聊或简单计算不要调用。用法：input 传发给该 Agent 的输入（对象，形状见 input 的参数说明）；结果文本中的 status 表示本次结果状态（completed=完成，awaiting_input=返问待补充，running=仍在运行）。同一任务的后续追问（含 awaiting_input 的补充、completed 之后的追问），请携带上次结果中的 session_id 再次调用；新任务不要携带 session_id。`;
 }
 
 /** 把远端 inputSchema 收敛为本地 ToolParameter 形状（provider 会把该结构原样发给模型）。 */

@@ -174,6 +174,9 @@ export class RuntimeFactory {
         },
       });
       bridge.refreshInBackground();
+      // 设备连接器模式没有本地回合，上面那次启动同步之后不会再有刷新时机；
+      // 没有定时刷新的话，面板上新发布的 Agent 要重启客户端才会出现在工具面里。
+      bridge.startAutoRefresh();
       return bridge;
     } catch (error: any) {
       // 工具桥是增量能力：初始化异常不得影响主流程。
