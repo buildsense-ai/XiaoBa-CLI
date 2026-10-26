@@ -803,4 +803,52 @@ describe('CatsCo MCP 工具桥', () => {
     await tool.execute({ input: {} }, context);
     assert.deepStrictEqual(executedArgs, [{ input: {} }]);
   });
+
+  // 设备连接器模式下没有本地 Agent 回合，刷新原先只发生在启动那一刻；
+  // 结果是「面板上新发布的 Agent 必须重启客户端才能看到」。这条钉死定时刷新。
+  test('定时刷新：新发布的 Agent 无需重启即可注册进本地工具面', async () => {
+    const state = { tools: [toolInfo('catsco_run_status')] };
+    const { bridge, manager } = createHarness({
+      listTools: () => state.tools,
+      resolveAgentSlugs: () => undefined,
+    });
+
+    await bridge.refresh();
+    assert.equal(manager.getTool('catsco_my_pc_clock'), undefined);
+
+    // 模拟用户在面板发布了新应用（远端多了一个工具）。
+    state.tools = [toolInfo('catsco_run_status'), toolInfo('catsco_my_pc_clock')];
+
+    bridge.startAutoRefresh(1);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 40));
+    } finally {
+      bridge.stopAutoRefresh();
+    }
+
+    assert.equal(
+      manager.getTool('catsco_my_pc_clock') !== undefined,
+      true,
+      '定时刷新应把新工具注册进来（否则用户必须重启客户端）',
+    );
+  });
+
+  test('stopAutoRefresh 之后不再刷新（避免进程退出后被定时器拖住）', async () => {
+    let listCalls = 0;
+    const { bridge } = createHarness({
+      listTools: () => {
+        listCalls += 1;
+        return [toolInfo('catsco_run_status')];
+      },
+    });
+
+    bridge.startAutoRefresh(1);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    bridge.stopAutoRefresh();
+    const settled = listCalls;
+    assert.ok(settled > 0, '开启后应该至少刷新过一次');
+
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(listCalls, settled, 'stopAutoRefresh 之后不应再有刷新');
+  });
 });
