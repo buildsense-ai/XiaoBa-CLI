@@ -105,10 +105,15 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     : undefined;
   const legacyCleanupKey = buildCatsCoSessionKey(resolvedTopicType, topicId, actorUserId);
   const legacyRestoreKey = legacyCleanupKey;
+  // 平台派活的会话 id：只在可信信封下采纳（否则任何人都能用自己的 metadata
+  // 给 bot 凭空开出任意多「新会话」）。
+  const botSessionId = isCanonicalTrusted
+    ? stringField(metadata, 'catsco_bot_session_id')
+    : undefined;
   const route = createSessionRoute({
     source: 'catscompany',
     topicId,
-    sessionTopicId: buildCatsCoSessionTopicId(resolvedTopicType, topicId, actorUserId),
+    sessionTopicId: buildCatsCoSessionTopicId(resolvedTopicType, topicId, actorUserId, botSessionId),
     topicType: resolvedTopicType,
     actorUserId,
     agentId,
@@ -134,6 +139,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     topicId,
     topicType: resolvedTopicType,
     actorUserId,
+    botSessionId,
     agentId,
     agentBodyId,
     channelSeq,

@@ -66,6 +66,8 @@ interface CatsSendBody {
   type: CatsMessageType;
   content: unknown;
   metadata?: any;
+  /** 指向触发本次回复的那条消息（服务端 message id）。 */
+  reply_to?: number;
 }
 
 function describeMessage(body: CatsSendBody): string {
@@ -197,7 +199,8 @@ export class MessageSender {
     topic: string,
     type: CatsMessageType,
     content: unknown,
-    metadata?: any
+    metadata?: any,
+    options?: { replyTo?: number }
   ): Promise<{ seq_id: number }> {
     const body: CatsSendBody = {
       topic_id: topic,
@@ -209,6 +212,9 @@ export class MessageSender {
       ...(metadata || {}),
       client_msg_id: body.client_msg_id,
     };
+    if (options?.replyTo && Number.isSafeInteger(options.replyTo) && options.replyTo > 0) {
+      body.reply_to = options.replyTo;
+    }
 
     try {
       const seq = await this.bot.sendStructuredMessage(body);
@@ -336,8 +342,8 @@ export class MessageSender {
     Logger.info(`Task status 已发送: topic=${topic}, state=${status.state}, run=${status.run_id}`);
   }
 
-  async sendText(topic: string, text: string): Promise<number> {
-    const { seq_id } = await this.send(topic, 'text', text);
+  async sendText(topic: string, text: string, options?: { replyTo?: number }): Promise<number> {
+    const { seq_id } = await this.send(topic, 'text', text, undefined, options);
     Logger.info(`Text 已发送: ${text.slice(0, 50)}...`);
     return seq_id;
   }
@@ -347,8 +353,12 @@ export class MessageSender {
    *
    * 记账不在这里做：每段经 `sendText` → `send`，`send` 成功即按持久类型回调，
    * 所以中途失败时已发出的分段也已经记过账。
+   *
+   * `options.replyTo` 是触发本次回复的那条消息 id：平台派活（另一个 Agent 把活
+   * 交给这个 bot）时，一个 topic 上可能同时有几单在等，靠它才能把每段回复归到
+   * 对应的那一单。每段都带 —— 长回复会被切段，平台靠这个凑回完整答案。
    */
-  async reply(topic: string, text: string): Promise<number[]> {
+  async reply(topic: string, text: string, options?: { replyTo?: number }): Promise<number[]> {
     const normalized = typeof text === 'string'
       ? stripInternalAnnotations(text.trim())
       : '';
@@ -359,7 +369,7 @@ export class MessageSender {
     const segments = this.splitText(normalized, MAX_MSG_LENGTH);
     const seqs: number[] = [];
     for (const seg of segments) {
-      const seq = await this.sendText(topic, seg);
+      const seq = await this.sendText(topic, seg, options);
       if (Number.isFinite(seq) && seq > 0) seqs.push(seq);
     }
     return seqs;
