@@ -22,6 +22,7 @@ import {
   saveCatscoLogAgentState,
 } from './catsco-log-agent-state';
 import { Logger } from './logger';
+import { PathResolver } from './path-resolver';
 
 type UploadReason = 'startup' | 'scheduled' | 'manual';
 
@@ -120,12 +121,12 @@ export class CatscoLogUploadScheduler {
   private started = false;
   private stopped = false;
 
-  constructor(workingDirectory: string = process.cwd()) {
+  constructor(workingDirectory: string = PathResolver.getRuntimeDataRoot()) {
     this.workingDirectory = workingDirectory;
   }
 
   static shouldStartForCurrentRuntime(
-    workingDirectory: string = process.cwd(),
+    workingDirectory: string = PathResolver.getRuntimeDataRoot(),
     env: NodeJS.ProcessEnv = process.env,
   ): boolean {
     const normalizedRole = String(env.XIAOBA_ROLE || '')

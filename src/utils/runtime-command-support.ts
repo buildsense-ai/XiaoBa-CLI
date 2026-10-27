@@ -1,4 +1,5 @@
 import { CatscoLogUploadScheduler } from './catsco-log-upload-scheduler';
+import { PathResolver } from './path-resolver';
 
 interface ActiveRuntimeSupport {
   catscoLogUploadScheduler: CatscoLogUploadScheduler | null;
@@ -15,8 +16,9 @@ export async function startRuntimeCommandSupport(): Promise<ActiveRuntimeSupport
 
   if (!startPromise) {
     startPromise = (async () => {
-      const catscoLogUploadScheduler = CatscoLogUploadScheduler.shouldStartForCurrentRuntime()
-        ? new CatscoLogUploadScheduler(process.cwd())
+      const runtimeDataRoot = PathResolver.getRuntimeDataRoot();
+      const catscoLogUploadScheduler = CatscoLogUploadScheduler.shouldStartForCurrentRuntime(runtimeDataRoot)
+        ? new CatscoLogUploadScheduler(runtimeDataRoot)
         : null;
 
       if (catscoLogUploadScheduler) {
