@@ -86,11 +86,22 @@ export function buildCatsCoSessionTopicId(
   topicType: MessageTopicType,
   topicId: string,
   actorUserId: string,
+  botSessionId?: string,
 ): string {
   const normalizedTopicId = normalizeId(topicId) || 'unknown_topic';
   void topicType;
   void actorUserId;
-  return normalizedTopicId;
+  const normalizedSession = normalizeOptionalId(botSessionId);
+  // 平台派活（另一个 Agent 把活交给这个 bot）时会带 catsco_bot_session_id：
+  // 一次工具调用就是一个会话，带同一个 id 就回到那个会话。
+  //
+  // 不带时保持老行为（按 topic 分会话）—— 真人聊天、老平台、频道来源都走这条路。
+  // 之所以不能一律用 topic：topic 是「两个人之间的私聊」，所有工具调用会挤在
+  // 同一条会话里，上一个任务的判断会漏到下一个任务。
+  //
+  // `#bot:` 前缀不会与真实 topic（`p2p_…` / `grp_…`）撞车；sessionKey 里
+  // 这一部分是 encodeURIComponent 编码的，分隔符也不会污染外层结构。
+  return normalizedSession ? `${normalizedTopicId}#bot:${normalizedSession}` : normalizedTopicId;
 }
 
 export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRoute {
@@ -112,6 +123,7 @@ export function createCatsCoSessionRoute(envelope: MessageEnvelope): SessionRout
       envelope.topicType,
       envelope.topicId,
       envelope.actorUserId,
+      envelope.botSessionId,
     ),
     topicType: envelope.topicType,
     actorUserId: envelope.actorUserId,

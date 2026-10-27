@@ -22,6 +22,11 @@ export interface MessageEnvelope {
   channelSeq?: number;
   rawText: string;
   rawMetadata?: Record<string, unknown>;
+  /**
+   * 平台派活时给的「这次调用属于哪个会话」（`metadata.catsco_bot_session_id`）。
+   * 只在平台可信信封下透传：一次工具调用一个会话，同 id 就是同一场对话。
+   */
+  botSessionId?: string;
   permissionsSource?: string;
   deviceOwnerUserId?: string;
   deviceOwnerSource?: string;

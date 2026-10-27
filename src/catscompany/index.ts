@@ -615,6 +615,14 @@ export class CatsCompanyBot {
   private activeConversationTasks = new Map<string, ActiveConversationTask>();
   /** Bounds one-shot Artifact task receipts so server recovery can safely replay a turn. */
   private artifactTaskReceipts = new Map<string, number>();
+  /**
+   * 平台派活时「这条回复该指回哪条 prompt」，按 sessionKey 存。
+   *
+   * 一次工具调用就是一个会话（sessionKey 由 catsco_bot_session_id 决定），
+   * 所以同一 topic 上的多单是并发的 —— 不能用「topic 上最近一条消息」，
+   * 那会把 A 的回复指到 B 的 prompt 上，正好把要修的串话搬到了对面。
+   */
+  private botCallReplyTargets = new Map<string, number>();
   /** Last cgroup oom_kill count seen, so a fresh kill can be told from an old one. */
   private lastObservedOomKills?: number;
   /** One interrupted-turn scan per process; reconnects fire 'ready' again. */
@@ -1832,6 +1840,12 @@ export class CatsCompanyBot {
     },
   ): SessionCallbacks {
     const suppressToolProgress = shouldSuppressStructuredToolProgress(opts?.channelSource);
+    // 平台派活的回复要指回它那条 prompt（一个 topic 上可能同时有几单在等）。
+    // 按 sessionKey 取而不是「topic 上最近一条」：现在一次调用一个会话，
+    // 同一个 topic 上的多单是真的并发的，「最近一条」会张冠李戴。
+    const replyTo = opts?.sessionKey
+      ? this.botCallReplyTargets?.get(opts.sessionKey)
+      : undefined;
     const callbackGeneration = opts?.sessionKey
       ? opts.clearGeneration ?? this.getSessionClearGeneration(opts.sessionKey)
       : undefined;
@@ -1864,7 +1878,7 @@ export class CatsCompanyBot {
       onAssistantText: async (text: string) => {
         if (isStaleCallback()) return;
         try {
-          await this.sender.reply(topic, text);
+          await this.sender.reply(topic, text, { replyTo });
         } catch (err: any) {
           Logger.warning(`前端通知发送失败 (assistant_text): ${err.message}`);
         }
@@ -1996,12 +2010,41 @@ export class CatsCompanyBot {
     }
 
     const key = msg.envelope.sessionKey;
+    this.noteBotCallReplyTarget(key, msg.envelope);
 
     this.activeMessageHandlers += 1;
     try {
       await this.processParsedMessage(msg, key);
     } finally {
       this.activeMessageHandlers = Math.max(0, this.activeMessageHandlers - 1);
+    }
+  }
+
+  /**
+   * 记下「这个会话的回复要指回哪条消息」。
+   *
+   * 只在平台派活时记（信封带 catsco_bot_session_id）：真人聊天也回填 reply_to
+   * 会变成引用回复，那是另一种观感，不该被顺手改掉。
+   */
+  private noteBotCallReplyTarget(sessionKey: string, envelope?: ParsedCatsMessage['envelope']): void {
+    if (!sessionKey || !envelope) return;
+    const seq = envelope.channelSeq;
+    const usable = Boolean(envelope.botSessionId)
+      && typeof seq === 'number'
+      && Number.isSafeInteger(seq)
+      && seq > 0;
+    // 惰性初始化：有些宿主/测试只拼装部分成员，字段可能还没建。
+    const targets = this.botCallReplyTargets ??= new Map<string, number>();
+    if (!usable) {
+      targets.delete(sessionKey);
+      return;
+    }
+    targets.set(sessionKey, seq as number);
+    // 有界：会话本身会被回收，这个表也不该无限长。
+    while (targets.size > ARTIFACT_TASK_RECEIPT_MAX_ENTRIES) {
+      const oldest = targets.keys().next().value as string | undefined;
+      if (!oldest) break;
+      targets.delete(oldest);
     }
   }
 
