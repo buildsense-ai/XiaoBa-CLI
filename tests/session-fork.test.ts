@@ -160,3 +160,20 @@ test('an uncompacted transcript still fails closed on a boundary past its turns'
   // No summary means the missing turns are a real disagreement, not compaction.
   assert.throws(() => truncateAtTurn(plain, 3, 5), /session_fork_source_turn_mismatch/);
 });
+
+// The server counts any agent-authored row as an answer, because it identifies the
+// agent by sender and some agent rows carry no role. A turn whose last row is a
+// tool result is therefore answered there, and must be answered here too.
+test('a tool result closes a turn the same way the server counts it', () => {
+  const source: any[] = [
+    { role: 'user', content: 'asked' },
+    { role: 'assistant', content: null, tool_calls: [{ id: 't1', type: 'function', function: { name: 'read_file', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 't1', content: 'result' },
+    { role: 'user', content: 'next' },
+    { role: 'assistant', content: 'answer' },
+  ];
+  // One complete turn, so a bound of 1 keeps everything up to the second user
+  // message. Treating the tool row as unanswered would fail with a mismatch.
+  assert.deepEqual(truncateAtTurn(source, 1).map(message => message.role),
+    ['user', 'assistant', 'tool']);
+});

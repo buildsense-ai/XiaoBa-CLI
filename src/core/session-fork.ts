@@ -44,6 +44,19 @@ export function isUserTurnStart(message: Message | undefined): boolean {
 }
 
 /**
+ * A message that closes the open turn.
+ *
+ * `tool` counts as well as `assistant`: the server treats every agent-authored row
+ * as an answer, because it identifies the agent by sender and about 6% of agent
+ * rows carry no role at all. A turn whose last row is a tool result therefore
+ * counts as answered on the server, and counting it differently here would make
+ * the two sides disagree about the same transcript.
+ */
+export function isTurnAnswer(message: Message | undefined): boolean {
+  return message?.role === 'assistant' || message?.role === 'tool';
+}
+
+/**
  * Cuts the transcript after the last message of the Nth complete turn.
  *
  * The turn rule is the server's, applied step for step: a turn opens on a user
@@ -89,7 +102,7 @@ export function truncateAtTurn(
       if (open && answered) turnEnds.push(index);
       open = true;
       answered = false;
-    } else if (message?.role === 'assistant' && open) {
+    } else if (open && isTurnAnswer(message)) {
       answered = true;
     }
   }
