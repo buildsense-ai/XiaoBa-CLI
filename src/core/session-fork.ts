@@ -101,16 +101,17 @@ export function truncateAtTurn(
   if (hasCompactionSummary(messages)) {
     const total = Number.isSafeInteger(totalTurns) ? (totalTurns as number) : undefined;
     if (total === undefined || total < turnCount) {
-      // Without a trustworthy total the boundary cannot be placed. Keeping the
-      // whole retained window is the only reading that cannot include history
-      // after the intended cut.
-      return messages;
+      // Without a trustworthy total the boundary cannot be placed at all.
+      throw new Error('session_fork_source_turn_mismatch');
     }
     const removedByCompaction = total - turnEnds.length;
     const localTurn = turnCount - removedByCompaction;
-    // The boundary sits inside the summarized prefix: that history exists only as
-    // a summary, so there is nothing earlier to branch from.
-    if (localTurn <= 0 || localTurn >= turnEnds.length) return messages;
+    // The chosen point itself was summarized away: that turn exists only as part of
+    // the summary, so there is no message to end the copy on. Refuse explicitly and
+    // let the user pick a newer point — silently copying the retained window would
+    // hand back a different range than the one they asked for.
+    if (localTurn <= 0) throw new Error('session_fork_anchor_compacted');
+    if (localTurn > turnEnds.length) throw new Error('session_fork_source_turn_mismatch');
     return messages.slice(0, turnEnds[localTurn - 1]);
   }
 
