@@ -2048,6 +2048,19 @@ export class CatsCompanyBot {
     }
   }
 
+  /**
+   * 本轮回复要指回的那条消息（平台派活时才有）。
+   *
+   * 交付最终答复的路径有好几条（直接回合、中断恢复、队列出队、子智能体回执），
+   * 每一条都是「这个会话的答案」，所以都要带上 —— 漏掉任一条，那条路径上的
+   * 回复就归不到具体的调用上。
+   */
+  private replyOptionsFor(sessionKey?: string): { replyTo?: number } | undefined {
+    if (!sessionKey) return undefined;
+    const replyTo = this.botCallReplyTargets?.get(sessionKey);
+    return replyTo ? { replyTo } : undefined;
+  }
+
   private acceptArtifactTaskReceipt(taskRef?: string, now = Date.now()): boolean {
     if (!taskRef) return true;
     const receipts = this.artifactTaskReceipts ??= new Map<string, number>();
@@ -2390,7 +2403,7 @@ export class CatsCompanyBot {
           let replyDelivered = true;
           if (result.visibleToUser && result.text) {
             try {
-              await this.sender.reply(msg.topic, result.text);
+              await this.sender.reply(msg.topic, result.text, this.replyOptionsFor(key));
             } catch (err: any) {
               replyDelivered = false;
               Logger.warning(`前端通知发送失败 (text): ${err.message}`);
@@ -2877,7 +2890,7 @@ export class CatsCompanyBot {
         return;
       }
       if (result.visibleToUser && result.text) {
-        await this.sender.reply(topic, result.text).catch((error: any) => {
+        await this.sender.reply(topic, result.text, this.replyOptionsFor(sessionKey)).catch((error: any) => {
           Logger.warning(`[${sessionKey}] 中断恢复回复发送失败: ${error?.message || error}`);
         });
       }
@@ -3030,6 +3043,25 @@ export class CatsCompanyBot {
     if (sessionRoute.topicType !== 'p2p' && sessionRoute.topicType !== 'group') {
       return {
         status: 'skipped',
+        restoredMessages: 0,
+        fetchedMessages: 0,
+        compressed: false,
+      };
+    }
+    // 平台派活的会话不拉云端历史：
+    //
+    //  1. **隔离**：一次调用一个会话，就该从干净上下文开始。云端历史是按 topic
+    //     取的，而 tool 调用的 topic 就是主人和这个 bot 的私聊 —— 拉进来等于把
+    //     上一个任务的判断（甚至主人和 bot 的私人聊天）灌进这次调用的上下文。
+    //  2. **自足**：平台已经把这次要干的活放进消息里了，不需要历史兜底。
+    //  3. **可续**：同一个 session_id 的追问走本地会话（上面 local_present 那条），
+    //     不依赖云端。
+    //
+    // 注意不能用 `skipped`：调用方把 skipped 当「恢复失败」会回一句失败提示，
+    // 而这里是有意不恢复，应该直接继续往下跑。
+    if (msg.envelope?.botSessionId) {
+      return {
+        status: 'local_present',
         restoredMessages: 0,
         fetchedMessages: 0,
         compressed: false,
@@ -3327,13 +3359,13 @@ export class CatsCompanyBot {
         subAgentManager.markResultObservationHandledForParent(sessionKey, text);
         if (result.text.startsWith('处理消息时出错:')) {
           try {
-            await this.sender.reply(topic, result.text);
+            await this.sender.reply(topic, result.text, this.replyOptionsFor(sessionKey));
           } catch (err: any) {
             Logger.warning(`错误消息发送失败: ${err.message}`);
           }
         } else if (result.visibleToUser && result.text) {
           try {
-            await this.sender.reply(topic, result.text);
+            await this.sender.reply(topic, result.text, this.replyOptionsFor(sessionKey));
           } catch (err: any) {
             Logger.warning(`子智能体结果回复发送失败: ${err.message}`);
           }
@@ -3579,9 +3611,9 @@ export class CatsCompanyBot {
         }
 
         if (result.text.startsWith('处理消息时出错:')) {
-          await this.sender.reply(batch.topic, result.text);
+          await this.sender.reply(batch.topic, result.text, this.replyOptionsFor(sessionKey));
         } else if (result.visibleToUser && result.text) {
-          await this.sender.reply(batch.topic, result.text);
+          await this.sender.reply(batch.topic, result.text, this.replyOptionsFor(sessionKey));
         }
       }
     } catch (err: any) {
@@ -4240,14 +4272,14 @@ export class CatsCompanyBot {
           let replyDelivered = true;
           if (result.text.startsWith('处理消息时出错:')) {
             try {
-              await this.sender.reply(msg.topic, result.text);
+              await this.sender.reply(msg.topic, result.text, this.replyOptionsFor(sessionKey));
             } catch (err: any) {
               replyDelivered = false;
               Logger.warning(`错误消息发送失败: ${err.message}`);
             }
           } else if (result.visibleToUser && result.text) {
             try {
-              await this.sender.reply(msg.topic, result.text);
+              await this.sender.reply(msg.topic, result.text, this.replyOptionsFor(sessionKey));
             } catch (err: any) {
               replyDelivered = false;
               Logger.warning(`队列消息回复发送失败: ${err.message}`);
