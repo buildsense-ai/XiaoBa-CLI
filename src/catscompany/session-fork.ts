@@ -1,7 +1,7 @@
 import type { Message } from '../types';
 import type { SessionRoute } from '../types/session-identity';
 import type { SessionRuntimeState } from '../utils/session-store';
-import { prepareForkMessages, type SessionForkIdentity, type SessionForkSnapshot } from '../core/session-fork';
+import { prepareForkMessages, truncateAtTurn, type SessionForkIdentity, type SessionForkSnapshot } from '../core/session-fork';
 import { createCatsCoSessionRoute } from '../core/session-router';
 import { createCatsCoMessageEnvelope } from './message-envelope';
 
@@ -12,6 +12,24 @@ export interface CatsSessionForkControl {
   actor_user_id: string;
   agent_uid: string;
   source_last_seq: number;
+  /**
+   * Complete turns in the copied range.
+   *
+   * Absent means the server copied the whole conversation, so the runtime must
+   * not cut at all. The field is only present on a bounded copy, so an explicit
+   * `0` is a disagreement between the two sides rather than "unbounded" — see
+   * truncateAtTurn, which fails closed on it instead of copying everything.
+   */
+  source_turn_count?: number;
+  /**
+   * Complete turns in the whole conversation.
+   *
+   * A runtime that compacted its transcript holds only a summarized prefix plus
+   * a retained tail. The total lets it subtract the compacted turns and place a
+   * range boundary inside the part it still holds, so a compacted conversation
+   * stays branchable.
+   */
+  source_total_turns?: number;
   message_id_map: Record<string, number>;
 }
 
@@ -49,6 +67,10 @@ export function normalizeSessionForkControl(value: unknown): CatsSessionForkCont
     || typeof v.target_topic_id !== 'string' || !/^grp_[1-9]\d*$/.test(v.target_topic_id)
     || v.source_topic_id === v.target_topic_id
     || !Number.isSafeInteger(v.source_last_seq) || Number(v.source_last_seq) < 0
+    || (v.source_turn_count !== undefined
+      && (!Number.isSafeInteger(v.source_turn_count) || Number(v.source_turn_count) < 0))
+    || (v.source_total_turns !== undefined
+      && (!Number.isSafeInteger(v.source_total_turns) || Number(v.source_total_turns) < 0))
     || !v.message_id_map || typeof v.message_id_map !== 'object' || Array.isArray(v.message_id_map)) return undefined;
   if (v.source_topic_id.startsWith('p2p_')) {
     const members = v.source_topic_id.slice(4).split('_').map(normalizeForkUid);
@@ -63,7 +85,12 @@ export function normalizeSessionForkControl(value: unknown): CatsSessionForkCont
     targets.add(mapped);
   }
   return { request_id: v.request_id, source_topic_id: v.source_topic_id, target_topic_id: v.target_topic_id,
-    actor_user_id: actor, agent_uid: agent, source_last_seq: Number(v.source_last_seq), message_id_map: map };
+    actor_user_id: actor, agent_uid: agent, source_last_seq: Number(v.source_last_seq),
+    // Preserve absence: it is the only signal for "no bound". Collapsing an
+    // explicit 0 into it would turn a mismatch into a silent full copy.
+    source_turn_count: v.source_turn_count === undefined ? undefined : Number(v.source_turn_count),
+    source_total_turns: v.source_total_turns === undefined ? undefined : Number(v.source_total_turns),
+    message_id_map: map };
 }
 
 export function forkSessionRoute(topic: string, actor: string, agent: string): SessionRoute {
@@ -73,7 +100,7 @@ export function forkSessionRoute(topic: string, actor: string, agent: string): S
 }
 
 interface ForkSession {
-  exportForkContext(idMap: Record<string, number>): { messages: Message[]; currentDirectory?: string };
+  exportForkContext(idMap: Record<string, number>, turnCount?: number, totalTurns?: number): { messages: Message[]; currentDirectory?: string };
 }
 
 export interface CatsSessionForkDependencies {
@@ -145,14 +172,22 @@ export class CatsSessionForkController {
         // This strict read also rejects missing/corrupt sources when a live object exists.
         const durable = store.readContextForFork(source.sessionKey);
         const session = this.deps.getSession(source);
-        const context = session ? session.exportForkContext(control.message_id_map) : {
-          messages: prepareForkMessages(durable, control.message_id_map), currentDirectory: state.currentDirectory,
+        // Both paths must cut identically: the live session and the durable
+        // transcript are two views of the same conversation, and the copy must
+        // not end in a different place depending on which one answered.
+        // Pass absence through untouched: it is the only signal for "no bound".
+        const turnCount = control.source_turn_count;
+        const totalTurns = control.source_total_turns;
+        const context = session ? session.exportForkContext(control.message_id_map, turnCount, totalTurns) : {
+          messages: prepareForkMessages(truncateAtTurn(durable, turnCount, totalTurns), control.message_id_map),
+          currentDirectory: state.currentDirectory,
         };
         store.installFork({ version: 1, ...identity, ...context });
       }
     } catch (error) {
       const publicErrors = new Set(['session_fork_agent_mismatch', 'session_fork_request_conflict',
-        'session_fork_source_busy', 'session_fork_target_exists', 'session_fork_source_interrupted']);
+        'session_fork_source_busy', 'session_fork_target_exists', 'session_fork_source_interrupted',
+        'session_fork_source_turn_mismatch']);
       const code = error instanceof Error && publicErrors.has(error.message) ? error.message : 'session_fork_initialization_failed';
       await this.reportFailure(control, code);
       return;

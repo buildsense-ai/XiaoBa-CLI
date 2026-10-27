@@ -14,6 +14,119 @@ export interface SessionForkSnapshot extends SessionForkIdentity {
   materialized?: boolean;
 }
 
+/**
+ * Markers that make a `user`-role message something other than the user speaking.
+ *
+ * Compaction summaries, runtime observations and injected context all carry the
+ * user role, so counting turns by role alone overstates the transcript. This is
+ * one exported list on purpose: adding a new synthetic message type without
+ * touching it would silently shift every later turn, and the resulting cut has no
+ * error to catch it.
+ */
+export const SYNTHETIC_USER_MESSAGE_FLAGS = [
+  '__injected',
+  '__runtimeFeedback',
+  '__runtimeObservation',
+  '__syntheticObservation',
+  '__internalErrorArtifact',
+  '__checkpointSummary',
+] as const;
+
+export function isSyntheticUserMessage(message: Message): boolean {
+  if (message.role !== 'user') return false;
+  const flags = message as unknown as Record<string, unknown>;
+  return SYNTHETIC_USER_MESSAGE_FLAGS.some(flag => Boolean(flags[flag]));
+}
+
+/** A message that opens a real user turn in the transcript. */
+export function isUserTurnStart(message: Message | undefined): boolean {
+  return Boolean(message) && message!.role === 'user' && !isSyntheticUserMessage(message!);
+}
+
+/**
+ * Cuts the transcript after the last message of the Nth complete turn.
+ *
+ * The turn rule is the server's, applied step for step: a turn opens on a user
+ * message and closes once an assistant reply arrives, consecutive user messages
+ * fold into the turn already open, and a trailing unanswered turn does not count.
+ * Anything else would let the two sides cut in different places, which produces a
+ * copy whose visible history and model context disagree.
+ *
+ * `undefined` means the server sent no bound, so the copy is the whole
+ * conversation. An explicit `0` is a disagreement, not "unbounded": the server
+ * includes the field only for a bounded copy, so a zero reaching here means one
+ * side believes there is a bound and the other cannot establish it. Copying
+ * everything at that point is exactly the failure this guard exists to prevent.
+ *
+ * Compaction: the summarized prefix travels with the copy and is not re-expanded,
+ * so only the retained window is branchable. `totalTurns` — the server's count for
+ * the whole conversation — tells this side how many turns compaction removed, so
+ * a range boundary can be translated into a position inside the retained window:
+ * the compacted turns are exactly `totalTurns - retainedTurns`. A boundary that
+ * falls inside the compressed prefix keeps the whole retained window, because that
+ * history is not available to branch from.
+ *
+ * Keeping the summary is safe: it always covers turns before the retained window,
+ * and a cut is never taken inside that prefix, so the summary cannot describe
+ * anything after the cut.
+ */
+export function truncateAtTurn(
+  messages: Message[],
+  turnCount: number | undefined,
+  totalTurns?: number,
+): Message[] {
+  if (turnCount === undefined) return messages;
+  if (!Number.isSafeInteger(turnCount) || turnCount <= 0) {
+    throw new Error('session_fork_source_turn_mismatch');
+  }
+  // Exclusive end index of each complete turn, in transcript order.
+  const turnEnds: number[] = [];
+  let open = false;
+  let answered = false;
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (isUserTurnStart(message)) {
+      if (open && answered) turnEnds.push(index);
+      open = true;
+      answered = false;
+    } else if (message?.role === 'assistant' && open) {
+      answered = true;
+    }
+  }
+  if (open && answered) turnEnds.push(messages.length);
+
+  // On a compacted transcript `turnCount` indexes the whole conversation, but this
+  // transcript holds only the retained suffix, so the count has to be translated
+  // before it can index anything here.
+  if (hasCompactionSummary(messages)) {
+    const total = Number.isSafeInteger(totalTurns) ? (totalTurns as number) : undefined;
+    if (total === undefined || total < turnCount) {
+      // Without a trustworthy total the boundary cannot be placed. Keeping the
+      // whole retained window is the only reading that cannot include history
+      // after the intended cut.
+      return messages;
+    }
+    const removedByCompaction = total - turnEnds.length;
+    const localTurn = turnCount - removedByCompaction;
+    // The boundary sits inside the summarized prefix: that history exists only as
+    // a summary, so there is nothing earlier to branch from.
+    if (localTurn <= 0 || localTurn >= turnEnds.length) return messages;
+    return messages.slice(0, turnEnds[localTurn - 1]);
+  }
+
+  if (turnCount <= turnEnds.length) return messages.slice(0, turnEnds[turnCount - 1]);
+  throw new Error('session_fork_source_turn_mismatch');
+}
+
+/**
+ * A compacted transcript can carry several summaries layered on each other. The
+ * copy keeps them: they describe history before the retained window, and the cut
+ * never lands inside that prefix.
+ */
+export function hasCompactionSummary(messages: Message[]): boolean {
+  return messages.some(message => message.__checkpointSummary);
+}
+
 /** Copy durable context, never an execution queue or provider continuation handle. */
 export function prepareForkMessages(messages: Message[], idMap: Record<string, number>): Message[] {
   const pending = new Set<string>();
