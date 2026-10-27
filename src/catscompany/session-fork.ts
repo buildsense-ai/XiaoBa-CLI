@@ -187,7 +187,7 @@ export class CatsSessionForkController {
     } catch (error) {
       const publicErrors = new Set(['session_fork_agent_mismatch', 'session_fork_request_conflict',
         'session_fork_source_busy', 'session_fork_target_exists', 'session_fork_source_interrupted',
-        'session_fork_source_turn_mismatch']);
+        'session_fork_source_turn_mismatch', 'session_fork_anchor_compacted']);
       const code = error instanceof Error && publicErrors.has(error.message) ? error.message : 'session_fork_initialization_failed';
       await this.reportFailure(control, code);
       return;

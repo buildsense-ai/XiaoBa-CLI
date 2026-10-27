@@ -130,26 +130,26 @@ test('a compacted transcript branches inside its retained window', () => {
   assert.deepEqual(truncateAtTurn(compacted, 3, total).map(message => message.content),
     ['summary of turns one and two', 'turn three', 'answer three']);
 
-  // A boundary inside the compressed prefix keeps the whole retained window: that
-  // history exists only as a summary, so there is nothing earlier to branch from.
-  assert.equal(truncateAtTurn(compacted, 1, total).length, compacted.length);
-  assert.equal(truncateAtTurn(compacted, 2, total).length, compacted.length);
+  // A boundary inside the compressed prefix is refused, not silently widened: the
+  // chosen point no longer exists as a message, so the user has to pick a newer one.
+  assert.throws(() => truncateAtTurn(compacted, 1, total), /session_fork_anchor_compacted/);
+  assert.throws(() => truncateAtTurn(compacted, 2, total), /session_fork_anchor_compacted/);
 
   // A boundary at the end of the conversation keeps everything.
   assert.equal(truncateAtTurn(compacted, 5, total).length, compacted.length);
 });
 
-test('a compacted transcript without a trustworthy total keeps the retained window', () => {
+test('a compacted transcript without a trustworthy total fails closed', () => {
   const compacted: any[] = [
     { role: 'user', content: 'summary', __checkpointSummary: true },
     { role: 'user', content: 'turn one' },
     { role: 'assistant', content: 'answer one' },
   ];
-  // No total: the boundary cannot be placed, and the retained window is the only
-  // reading consistent with branching the compacted part.
-  assert.equal(truncateAtTurn(compacted, 3, undefined).length, compacted.length);
-  // A total smaller than the boundary is inconsistent; still no invented cut.
-  assert.equal(truncateAtTurn(compacted, 3, 2).length, compacted.length);
+  // No total: the boundary cannot be placed, so neither "branch here" nor "copy
+  // everything" can be justified — refuse rather than guess.
+  assert.throws(() => truncateAtTurn(compacted, 1, undefined), /session_fork_source_turn_mismatch/);
+  // A total smaller than the boundary is inconsistent for the same reason.
+  assert.throws(() => truncateAtTurn(compacted, 3, 2), /session_fork_source_turn_mismatch/);
 });
 
 test('an uncompacted transcript still fails closed on a boundary past its turns', () => {
