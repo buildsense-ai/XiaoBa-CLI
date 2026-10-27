@@ -2033,16 +2033,18 @@ export class CatsCompanyBot {
       && typeof seq === 'number'
       && Number.isSafeInteger(seq)
       && seq > 0;
+    // 惰性初始化：有些宿主/测试只拼装部分成员，字段可能还没建。
+    const targets = this.botCallReplyTargets ??= new Map<string, number>();
     if (!usable) {
-      this.botCallReplyTargets.delete(sessionKey);
+      targets.delete(sessionKey);
       return;
     }
-    this.botCallReplyTargets.set(sessionKey, seq as number);
+    targets.set(sessionKey, seq as number);
     // 有界：会话本身会被回收，这个表也不该无限长。
-    while (this.botCallReplyTargets.size > ARTIFACT_TASK_RECEIPT_MAX_ENTRIES) {
-      const oldest = this.botCallReplyTargets.keys().next().value as string | undefined;
+    while (targets.size > ARTIFACT_TASK_RECEIPT_MAX_ENTRIES) {
+      const oldest = targets.keys().next().value as string | undefined;
       if (!oldest) break;
-      this.botCallReplyTargets.delete(oldest);
+      targets.delete(oldest);
     }
   }
 
