@@ -663,3 +663,51 @@ describe('CatsCompany Device RPC file tools', () => {
     assert.equal(captured.result, undefined, 'late SkillHub RPC result must not be sent after shutdown started');
   });
 });
+
+// 模型主动外发的文本（send_text 工具走 channel.reply）必须自报「还没说完」。
+//
+// 生产实测（bot 1614）：模型用 send_text 说「收到。本机写 probe-notes.txt…」，
+// 那条消息没有 reply_to 也没有任何回合标记，平台按「唯一一单 + 静默 5 秒」收尾，
+// 把承诺当成了最终答案；真正的文件 7 秒后才生成，调用方什么都没拿到。
+//
+// 平台派活的会话里，最终答案由框架自己发（带 session_id 的「说完了」），所以
+// 中途 push 出来的任何文本按定义都是过程话。
+describe('CatsCompany channel reply 的回合表态', () => {
+  function makeBot() {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    const sent: Array<{ topic: string; text: string; options: any }> = [];
+    bot.sender = {
+      reply: async (topic: string, text: string, options?: any) => {
+        sent.push({ topic, text, options });
+        return [1];
+      },
+    };
+    bot.botCallReplyTargets = new Map();
+    bot.botCallSessionIds = new Map();
+    return { bot, sent };
+  }
+
+  test('平台派活的会话：send_text 带着「还没说完」和 reply_to', async () => {
+    const { bot, sent } = makeBot();
+    bot.botCallReplyTargets.set('session:test', 4321);
+    bot.botCallSessionIds.set('session:test', 'sess_abc');
+
+    const channel = bot.buildChannel('p2p_7_43', { sessionKey: 'session:test' });
+    await channel.reply('p2p_7_43', '收到，我先去做');
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].options?.replyTo, 4321, '平台靠 reply_to 认领');
+    assert.equal(sent[0].options?.turnProgress, true, '必须自报还没说完');
+    // 中间叙述绝不能被签成「说完了」——那是把过程话当最终答案的另一种死法。
+    assert.equal(sent[0].options?.turnDone, undefined);
+  });
+
+  test('普通聊天：不附加任何回合标记', async () => {
+    const { bot, sent } = makeBot();
+    const channel = bot.buildChannel('p2p_7_43', { sessionKey: 'session:human' });
+    await channel.reply('p2p_7_43', '在的');
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].options, undefined, '没有调用方在等结果，不该多背字段');
+  });
+});
