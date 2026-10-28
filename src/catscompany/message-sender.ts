@@ -342,8 +342,8 @@ export class MessageSender {
     Logger.info(`Task status 已发送: topic=${topic}, state=${status.state}, run=${status.run_id}`);
   }
 
-  async sendText(topic: string, text: string, options?: { replyTo?: number }): Promise<number> {
-    const { seq_id } = await this.send(topic, 'text', text, undefined, options);
+  async sendText(topic: string, text: string, options?: { replyTo?: number; metadata?: Record<string, unknown> }): Promise<number> {
+    const { seq_id } = await this.send(topic, 'text', text, options?.metadata, options?.replyTo ? { replyTo: options.replyTo } : undefined);
     Logger.info(`Text 已发送: ${text.slice(0, 50)}...`);
     return seq_id;
   }
@@ -357,8 +357,20 @@ export class MessageSender {
    * `options.replyTo` 是触发本次回复的那条消息 id：平台派活（另一个 Agent 把活
    * 交给这个 bot）时，一个 topic 上可能同时有几单在等，靠它才能把每段回复归到
    * 对应的那一单。每段都带 —— 长回复会被切段，平台靠这个凑回完整答案。
+   *
+   * `options.turnDone` 是本轮所属的平台会话 id：带上它就意味着「这一轮我说完了」。
+   * 平台侧据此立刻收尾交付，不再靠「静默多久算说完」去猜 —— bot 干活是
+   * 「先说要做啥 → 真去做 → 再报结果」，中间那步实测能超过 14 秒，靠静默窗口猜
+   * 就会把「收到，我先让工具出方案…」这种前言当成最终答案交出去。
+   *
+   * 只挂在**最后一段**：平台看的是「这段话之后还有没有下文」，中间段落挂上等于
+   * 提前宣布结束。
    */
-  async reply(topic: string, text: string, options?: { replyTo?: number }): Promise<number[]> {
+  async reply(
+    topic: string,
+    text: string,
+    options?: { replyTo?: number; turnDone?: string }
+  ): Promise<number[]> {
     const normalized = typeof text === 'string'
       ? stripInternalAnnotations(text.trim())
       : '';
@@ -367,9 +379,18 @@ export class MessageSender {
       return [];
     }
     const segments = this.splitText(normalized, MAX_MSG_LENGTH);
+    // 纯空白的 turnDone 当没给：发一个空标记出去只会让平台多一次无意义判断。
+    const turnDone = typeof options?.turnDone === 'string' ? options.turnDone.trim() : '';
     const seqs: number[] = [];
-    for (const seg of segments) {
-      const seq = await this.sendText(topic, seg, options);
+    for (const [index, seg] of segments.entries()) {
+      const isLast = index === segments.length - 1;
+      const metadata = isLast && turnDone
+        ? { catsco_turn_done: turnDone }
+        : undefined;
+      const seq = await this.sendText(topic, seg, {
+        ...(options?.replyTo ? { replyTo: options.replyTo } : {}),
+        ...(metadata ? { metadata } : {}),
+      });
       if (Number.isFinite(seq) && seq > 0) seqs.push(seq);
     }
     return seqs;

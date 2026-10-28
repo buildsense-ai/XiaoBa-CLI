@@ -623,6 +623,15 @@ export class CatsCompanyBot {
    * 那会把 A 的回复指到 B 的 prompt 上，正好把要修的串话搬到了对面。
    */
   private botCallReplyTargets = new Map<string, number>();
+  /**
+   * 同一批平台派活的会话 id（`catsco_bot_session_id`），按 sessionKey 存。
+   *
+   * 和 `botCallReplyTargets` 一起在收到消息时记下，回复时回传成
+   * `metadata.catsco_turn_done`。平台据此知道「这一轮真的说完了」，立刻交付，
+   * 不必再靠「静默多久算说完」去猜 —— 而猜错的代价是把「我先去做」这种前言
+   * 当成最终答案交给调用方。
+   */
+  private botCallSessionIds = new Map<string, string>();
   /** Last cgroup oom_kill count seen, so a fresh kill can be told from an old one. */
   private lastObservedOomKills?: number;
   /** One interrupted-turn scan per process; reconnects fire 'ready' again. */
@@ -2035,16 +2044,20 @@ export class CatsCompanyBot {
       && seq > 0;
     // 惰性初始化：有些宿主/测试只拼装部分成员，字段可能还没建。
     const targets = this.botCallReplyTargets ??= new Map<string, number>();
+    const sessionIds = this.botCallSessionIds ??= new Map<string, string>();
     if (!usable) {
       targets.delete(sessionKey);
+      sessionIds.delete(sessionKey);
       return;
     }
     targets.set(sessionKey, seq as number);
+    sessionIds.set(sessionKey, envelope.botSessionId as string);
     // 有界：会话本身会被回收，这个表也不该无限长。
     while (targets.size > ARTIFACT_TASK_RECEIPT_MAX_ENTRIES) {
       const oldest = targets.keys().next().value as string | undefined;
       if (!oldest) break;
       targets.delete(oldest);
+      sessionIds.delete(oldest);
     }
   }
 
@@ -2055,10 +2068,17 @@ export class CatsCompanyBot {
    * 每一条都是「这个会话的答案」，所以都要带上 —— 漏掉任一条，那条路径上的
    * 回复就归不到具体的调用上。
    */
-  private replyOptionsFor(sessionKey?: string): { replyTo?: number } | undefined {
+  private replyOptionsFor(sessionKey?: string): { replyTo?: number; turnDone?: string } | undefined {
     if (!sessionKey) return undefined;
     const replyTo = this.botCallReplyTargets?.get(sessionKey);
-    return replyTo ? { replyTo } : undefined;
+    // 平台派活的会话才带「回合结束」标记：普通聊天没有调用方在等结果，
+    // 平台也不需要按它收尾。
+    const turnDone = replyTo ? this.botCallSessionIds?.get(sessionKey) : undefined;
+    if (!replyTo && !turnDone) return undefined;
+    return {
+      ...(replyTo ? { replyTo } : {}),
+      ...(turnDone ? { turnDone } : {}),
+    };
   }
 
   private acceptArtifactTaskReceipt(taskRef?: string, now = Date.now()): boolean {
