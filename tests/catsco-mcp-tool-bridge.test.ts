@@ -137,6 +137,9 @@ describe('CatsCo MCP 工具桥', () => {
     const content = (result as { content: string }).content;
     assert.match(content, /你好，我是 hello agent/);
     assert.match(content, /https:\/\/app\.catsco\.cc\/f\/1/);
+    // 产物文件要让模型知道怎么处理：链接必须原样转给用户。
+    assert.match(content, /产物文件/);
+    assert.match(content, /原样转给用户/);
     // 续聊凭据：completed 也给出 session_id、区分后续追问与新任务。
     assert.match(content, /续聊凭据 session_id=s1/);
     assert.match(content, /同一任务的后续追问请携带此 id 再次调用「catsco_hello」/);
@@ -850,5 +853,40 @@ describe('CatsCo MCP 工具桥', () => {
 
     await new Promise(resolve => setTimeout(resolve, 60));
     assert.equal(listCalls, settled, 'stopAutoRefresh 之后不应再有刷新');
+  });
+
+  test('产物文件：正文里已经写了的地址不再重复列一遍', async () => {
+    // 平台新版把「📎 附件：名字，N 字节，位置 <地址>」直接写进了 output.text。
+    // 再原样列一遍会让模型把同一个链接说两次 —— 用户看到两条一模一样的话。
+    const attachmentURL = 'https://app.catsco.cc/uploads/files/abc.txt';
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => ({
+        isError: false,
+        contentText: 'run=r1 session=s1 status=completed',
+        structured: {
+          contract_version: 'catsco.service-run-result.v1',
+          status: 'completed',
+          run_id: 'r1',
+          session_id: 's1',
+          output: { text: `清单存好了。\n📎 附件：abc.txt，430 字节，位置 ${attachmentURL}` },
+          files: [attachmentURL],
+          attachments: [{ name: 'abc.txt', url: attachmentURL, size: 430, kind: 'file' }],
+        },
+      }),
+    });
+    await bridge.refresh();
+
+    const tool = manager.getTool('catsco_hello');
+    assert.ok(tool);
+    const result = await tool.execute({ input: { text: 'hi' } }, context);
+    const content = (result as { content: string }).content;
+
+    assert.equal(
+      content.split(attachmentURL).length - 1,
+      1,
+      `同一个地址只能出现一次：${content}`,
+    );
+    assert.doesNotMatch(content, /产物文件/);
   });
 });
