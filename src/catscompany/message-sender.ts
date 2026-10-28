@@ -447,7 +447,20 @@ export class MessageSender {
     return segments;
   }
 
-  async sendFile(topic: string, filePath: string, fileName: string): Promise<void> {
+  /**
+   * 发送附件。
+   *
+   * `options.replyTo` 和文字回复一样重要：附件是**单独一条消息**，不带 reply_to 时
+   * 平台分不出它属于哪一次调用。实测的后果很具体：正文带着回合标记先到，平台拿到了
+   * 「明确归属」的答案，紧接着到达的 file/image 就因为「没有任何归属标记」被当成
+   * 过程记录丢掉 —— bot 明明发了文件，调用方什么都收不到。
+   */
+  async sendFile(
+    topic: string,
+    filePath: string,
+    fileName: string,
+    options?: { replyTo?: number },
+  ): Promise<void> {
     try {
       if (!fs.existsSync(filePath)) {
         Logger.error(`文件不存在: ${filePath}`);
@@ -471,7 +484,7 @@ export class MessageSender {
           name: uploadResult.name,
           size: uploadResult.size,
         },
-      });
+      }, undefined, options?.replyTo ? { replyTo: options.replyTo } : undefined);
 
       Logger.info(`CatsCo 文件已发送: ${fileName}`);
     } catch (err: any) {

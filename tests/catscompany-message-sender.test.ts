@@ -262,6 +262,45 @@ describe('CatsCompany MessageSender sent-seq bookkeeping', () => {
     assert.deepEqual(recorded, [{ topic: 'grp_42', seqs: [1234] }]);
   });
 
+  test('附件也要带 reply_to，否则平台当成过程记录丢掉', async () => {
+    // 实测的故障形态：正文带着回合标记先到，平台据此认为「这单已经有明确归属的
+    // 答案了」；紧接着到达的 file/image 不带任何归属标记，于是被判成过程记录跳过。
+    // bot 明明发了文件，调用方什么都收不到，而且两边都看不出发生过什么。
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      uploadFile: async () => ({ url: '/uploads/images/a.png', name: 'a.png', size: 3 }),
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return 1;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+
+    const filePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cats-sender-')), 'a.png');
+    fs.writeFileSync(filePath, 'abc');
+    await sender.sendFile('p2p_38_982', filePath, 'a.png', { replyTo: 4321 });
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].type, 'image');
+    assert.equal(sent[0].reply_to, 4321);
+  });
+
+  test('不带 replyTo 时不出现 reply_to（真人聊天里发文件不该变成引用回复）', async () => {
+    const sent: any[] = [];
+    const sender = new MessageSender({
+      uploadFile: async () => ({ url: '/uploads/files/a.txt', name: 'a.txt', size: 3 }),
+      sendStructuredMessage: async (payload: any) => {
+        sent.push(payload);
+        return 1;
+      },
+    } as any, 'https://app.example.test', 'cc_test');
+
+    const filePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cats-sender-')), 'a.txt');
+    fs.writeFileSync(filePath, 'abc');
+    await sender.sendFile('grp_42', filePath, 'a.txt');
+
+    assert.equal('reply_to' in sent[0], false);
+  });
+
   test('does not report transient kinds that never reach history', async () => {
     // thinking / tool_use / task_status 不在服务端的持久白名单里，不会进回填，
     // 记它们只会让运行态无谓增长。

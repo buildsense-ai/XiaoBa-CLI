@@ -1804,7 +1804,11 @@ export class CatsCompanyBot {
       },
       sendFile: async (_targetTopic: string, filePath: string, fileName: string) => {
         try {
-          await this.sender.sendFile(topic, filePath, fileName);
+          // 附件也要指回触发本次回复的那条 prompt：它是独立的一条消息，
+          // 不带 reply_to 的话平台分不出归属，会当成过程记录丢掉。
+          // 只取 replyTo —— 回合结束/还在干是**文字**的表态，附件不该替这一轮表态。
+          const replyTo = this.replyOptionsFor(opts?.sessionKey)?.replyTo;
+          await this.sender.sendFile(topic, filePath, fileName, replyTo ? { replyTo } : undefined);
           _hasOutbound = true;
         } catch (err: any) {
           Logger.warning(`文件发送失败 (sendFile): ${err.message}`);
