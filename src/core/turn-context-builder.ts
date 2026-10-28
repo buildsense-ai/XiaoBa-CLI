@@ -28,6 +28,7 @@ import {
 import { stripAssistantArtifactsFromMessages } from '../utils/transcript-artifacts';
 import { resolveTurnContextTransientPolicy } from './transient-injection-policy';
 import { TRANSIENT_PENDING_USER_INPUT_PREFIX } from './pending-user-input-boundary';
+import { TRANSIENT_BOT_CALL_HINT_PREFIX, buildBotCallHintMessage } from './bot-call-hint';
 
 const TRANSIENT_PLAN_STATUS_PREFIX = '[transient_plan_status]';
 const TRANSIENT_RUNNER_HINT_PREFIX = '[transient_runner_hint]';
@@ -48,6 +49,11 @@ export interface BuildTurnContextParams {
   runtimeFeedback: string[];
   skillRuntime: SessionSkillRuntime;
   planRuntime?: PlanRuntime;
+  /**
+   * 本轮是「另一个 Agent 把这个 bot 当工具调」发起的（平台可信信封里的
+   * catsco_bot_call）。只影响本轮注入的一句说明，不进历史。
+   */
+  dispatchedAsTool?: boolean;
 }
 
 export interface BuildTurnContextResult {
@@ -67,6 +73,7 @@ export class TurnContextBuilder {
       stripAssistantArtifactsFromMessages(params.durableMessages),
     );
     this.injectRuntimeContext(contextMessages, params);
+    this.injectBotCallHint(contextMessages, params);
     this.injectRuntimeObservationRules(contextMessages);
     this.injectRuntimeFeedback(contextMessages, params.runtimeFeedback);
     this.injectPlanStatus(contextMessages, params.planRuntime);
@@ -101,8 +108,20 @@ export class TurnContextBuilder {
       if (msg.content.startsWith(TRANSIENT_RUNTIME_OBSERVATION_RULES_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_SKILLS_LIST_PREFIX)) return false;
       if (msg.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)) return false;
+      if (msg.content.startsWith(TRANSIENT_BOT_CALL_HINT_PREFIX)) return false;
       return true;
     });
+  }
+
+  /**
+   * 平台把本 bot 当工具调用时，告诉模型「对方看不到你这台机器」。
+   *
+   * 跟群成员名单一样是**会变的状态**（同一会话里人能直接聊、Agent 也能调），
+   * 所以每轮重建、不写历史；下一轮如果是对人说话，这句话会自动消失。
+   */
+  private injectBotCallHint(messages: Message[], params: BuildTurnContextParams): void {
+    if (!params.dispatchedAsTool) return;
+    this.insertBeforeLastUser(messages, { ...buildBotCallHintMessage(), __cacheScope: 'dynamic' });
   }
 
   private injectRuntimeContext(messages: Message[], params: BuildTurnContextParams): void {

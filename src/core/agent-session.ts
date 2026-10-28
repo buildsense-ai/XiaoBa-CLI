@@ -184,6 +184,11 @@ export interface HandleMessageOptions {
   artifactContextRef?: string;
   /** 当前 turn 的短期 Artifact task ref；不进入模型消息或持久历史。 */
   artifactTaskRef?: string;
+  /**
+   * 本轮是「另一个 Agent 把这个 bot 当工具调」发起的（平台可信信封里的
+   * catsco_bot_call）。只影响本轮注入的一句说明，不进模型历史。
+   */
+  dispatchedAsTool?: boolean;
   /** Current turn connector capabilities; private runtime state only. */
   skillConnectorGrants?: SkillConnectorGrant[];
   /** 当前本机运行体授权，例如 CatsCo body/device 绑定。 */
@@ -731,6 +736,7 @@ export class AgentSession {
       let thinToolRpc: ThinToolRpcTransport | undefined;
       let targetRoutes: TargetRoutes | undefined;
       let groupRoster: GroupRosterEntry[] | undefined;
+      let dispatchedAsTool: boolean | undefined;
       let localFileGrants: ScopedLocalFileGrant[] | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
@@ -770,6 +776,7 @@ export class AgentSession {
           thinToolRpc = opts.thinToolRpc;
           targetRoutes = opts.targetRoutes;
           groupRoster = opts.groupRoster;
+          dispatchedAsTool = opts.dispatchedAsTool;
           localFileGrants = opts.localFileGrants;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
           pendingUserInputProvider = opts.pendingUserInputProvider;
@@ -897,6 +904,7 @@ export class AgentSession {
           thinToolRpc,
           targetRoutes,
           groupRoster,
+          dispatchedAsTool,
           localFileGrants,
           pendingUserInputProvider,
           abortSignal: this.activeAbortController.signal,

@@ -110,6 +110,11 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
   const botSessionId = isCanonicalTrusted
     ? stringField(metadata, 'catsco_bot_session_id')
     : undefined;
+  // 「另一个 Agent 把这个 bot 当工具调」：同样只在可信信封下采纳。
+  // 伪造这个标记的后果不是提升权限，而是让 bot 以为对话对象是 Agent 而不是人
+  // —— 它会改变回答的语气和交付方式，同样不该由客户端自报。
+  const dispatchedAsTool = isCanonicalTrusted
+    && (metadata?.catsco_bot_call === true || metadata?.catsco_bot_call === 'true');
   const route = createSessionRoute({
     source: 'catscompany',
     topicId,
@@ -140,6 +145,7 @@ export function createCatsCoMessageEnvelope(input: CatsCoEnvelopeInput): Message
     topicType: resolvedTopicType,
     actorUserId,
     botSessionId,
+    dispatchedAsTool,
     agentId,
     agentBodyId,
     channelSeq,
