@@ -363,13 +363,20 @@ export class MessageSender {
    * 「先说要做啥 → 真去做 → 再报结果」，中间那步实测能超过 14 秒，靠静默窗口猜
    * 就会把「收到，我先让工具出方案…」这种前言当成最终答案交出去。
    *
+   * `options.turnProgress` 是反过来的一半：这一轮**还没**说完，别拿静默窗口收尾。
+   * bot 干活是「先说要做啥 → 真去做 → 再报结果」，中间那步的叙述必须自报「还在干」，
+   * 否则平台只看到「有内容 + 之后沉默了」就交付，用户拿到的是一句前言。
+   *
+   * 两者互斥，且 `turnDone` 优先：一条消息不可能既「说完了」又「还没说完」。
+   * 中间叙述不带宽限（45 秒）就完蛋 —— 那是平台侧的兜底，不在这里管。
+   *
    * 只挂在**最后一段**：平台看的是「这段话之后还有没有下文」，中间段落挂上等于
    * 提前宣布结束。
    */
   async reply(
     topic: string,
     text: string,
-    options?: { replyTo?: number; turnDone?: string }
+    options?: { replyTo?: number; turnDone?: string; turnProgress?: boolean }
   ): Promise<number[]> {
     const normalized = typeof text === 'string'
       ? stripInternalAnnotations(text.trim())
@@ -381,11 +388,15 @@ export class MessageSender {
     const segments = this.splitText(normalized, MAX_MSG_LENGTH);
     // 纯空白的 turnDone 当没给：发一个空标记出去只会让平台多一次无意义判断。
     const turnDone = typeof options?.turnDone === 'string' ? options.turnDone.trim() : '';
+    // turnDone 优先：给了「说完了」就不该再说「还没说完」。
+    const turnMarker: string | false | undefined = turnDone
+      ? turnDone
+      : (options?.turnProgress === true ? false : undefined);
     const seqs: number[] = [];
     for (const [index, seg] of segments.entries()) {
       const isLast = index === segments.length - 1;
-      const metadata = isLast && turnDone
-        ? { catsco_turn_done: turnDone }
+      const metadata = isLast && turnMarker !== undefined
+        ? { catsco_turn_done: turnMarker }
         : undefined;
       const seq = await this.sendText(topic, seg, {
         ...(options?.replyTo ? { replyTo: options.replyTo } : {}),
