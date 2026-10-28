@@ -56,4 +56,119 @@ describe('CatsCompany MessageSender reply correlation', () => {
       assert.equal('reply_to' in sent[0], false, `replyTo=${bad} 不该被发出去`);
     }
   });
+
+  /**
+   * 「回合结束」标记。
+   *
+   * 平台拿它判断这一轮真的说完了，不再靠「静默多久算说完」去猜 —— bot 干活是
+   * 「先说要做啥 → 真去做 → 再报结果」，中间那步实测能超过 14 秒。靠静默窗口猜
+   * 就会把「收到，我先让工具出方案…」这种前言当成最终答案交出去，而调用方从
+   * 结果上看不出被截断。
+   */
+  test('turnDone 只挂在最后一段（中间段挂上等于提前宣布结束）', async () => {
+    const sent: any[] = [];
+    await makeSender(sent).reply('p2p_38_982', 'x'.repeat(9000), {
+      replyTo: 777,
+      turnDone: 'sess_abc',
+    });
+
+    assert.ok(sent.length > 1, '应该被切成多段');
+    for (const [index, payload] of sent.entries()) {
+      const isLast = index === sent.length - 1;
+      if (isLast) {
+        assert.equal(payload.metadata?.catsco_turn_done, 'sess_abc', '最后一段必须带标记');
+      } else {
+        assert.equal(
+          payload.metadata?.catsco_turn_done,
+          undefined,
+          `第 ${index + 1} 段不该带标记`
+        );
+      }
+      // 标记不能顶掉 reply_to：平台两条信息都要用。
+      assert.equal(payload.reply_to, 777);
+    }
+  });
+
+  test('单段回复时标记就在这一段上', async () => {
+    const sent: any[] = [];
+    await makeSender(sent).reply('p2p_38_982', '查好了', { replyTo: 12345, turnDone: 'sess_x' });
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].metadata?.catsco_turn_done, 'sess_x');
+  });
+
+  test('不带 turnDone 时不出现标记（真人聊天无需平台收尾）', async () => {
+    const sent: any[] = [];
+    await makeSender(sent).reply('p2p_38_982', '在的', { replyTo: 12345 });
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].metadata?.catsco_turn_done, undefined);
+  });
+
+  test('空白 turnDone 不产生标记', async () => {
+    for (const blank of ['', '   ']) {
+      const sent: any[] = [];
+      await makeSender(sent).reply('p2p_38_982', '在的', { replyTo: 1, turnDone: blank });
+      assert.equal(sent[0].metadata?.catsco_turn_done, undefined, `turnDone="${blank}" 不该发`);
+    }
+  });
+
+  /**
+   * 「还没说完」标记。
+   *
+   * 只发「说完了」是不够的：平台侧收尾条件是「手里有内容 + 静默到点」，跟有没有
+   * 说完标记无关。所以中间叙述必须自己声明「这段是过程话」，否则工具阶段一沉默，
+   * 平台就把前言交付了。这一半是真正止血的那一半。
+   */
+  test('turnProgress 发 false，只挂最后一段', async () => {
+    const sent: any[] = [];
+    await makeSender(sent).reply('p2p_38_982', 'x'.repeat(9000), {
+      replyTo: 777,
+      turnProgress: true,
+    });
+
+    assert.ok(sent.length > 1, '应该被切成多段');
+    for (const [index, payload] of sent.entries()) {
+      const isLast = index === sent.length - 1;
+      if (isLast) {
+        assert.equal(payload.metadata?.catsco_turn_done, false, '最后一段必须声明还没说完');
+      } else {
+        assert.equal(
+          payload.metadata?.catsco_turn_done,
+          undefined,
+          `第 ${index + 1} 段不该带标记`
+        );
+      }
+      // 过程话也要能归到对应那一单。
+      assert.equal(payload.reply_to, 777);
+    }
+  });
+
+  test('turnProgress 与 turnDone 同时给时 turnDone 优先', async () => {
+    const sent: any[] = [];
+    await makeSender(sent).reply('p2p_38_982', '查好了', {
+      replyTo: 1,
+      turnDone: 'sess_x',
+      turnProgress: true,
+    });
+
+    // 一条消息不可能既「说完了」又「还没说完」：出错时要往「说完了」倒，
+    // 否则平台会一直等到兜底超时才交付真正的答案。
+    assert.equal(sent[0].metadata?.catsco_turn_done, 'sess_x');
+  });
+
+  test('turnProgress: false 不产生标记', async () => {
+    const sent: any[] = [];
+    await makeSender(sent).reply('p2p_38_982', '在的', { replyTo: 1, turnProgress: false });
+
+    assert.equal(sent[0].metadata?.catsco_turn_done, undefined);
+  });
+
+  test('不带 turnProgress 时不出现「还在干」标记（老行为一个字不变）', async () => {
+    const sent: any[] = [];
+    await makeSender(sent).reply('p2p_38_982', '在的', { replyTo: 1 });
+
+    // metadata 本身一直有（带 client_msg_id），这里只断言没有回合标记。
+    assert.equal(sent[0].metadata?.catsco_turn_done, undefined);
+  });
 });

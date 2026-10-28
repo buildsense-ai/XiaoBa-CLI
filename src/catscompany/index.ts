@@ -623,6 +623,15 @@ export class CatsCompanyBot {
    * 那会把 A 的回复指到 B 的 prompt 上，正好把要修的串话搬到了对面。
    */
   private botCallReplyTargets = new Map<string, number>();
+  /**
+   * 同一批平台派活的会话 id（`catsco_bot_session_id`），按 sessionKey 存。
+   *
+   * 和 `botCallReplyTargets` 一起在收到消息时记下，回复时回传成
+   * `metadata.catsco_turn_done`。平台据此知道「这一轮真的说完了」，立刻交付，
+   * 不必再靠「静默多久算说完」去猜 —— 而猜错的代价是把「我先去做」这种前言
+   * 当成最终答案交给调用方。
+   */
+  private botCallSessionIds = new Map<string, string>();
   /** Last cgroup oom_kill count seen, so a fresh kill can be told from an old one. */
   private lastObservedOomKills?: number;
   /** One interrupted-turn scan per process; reconnects fire 'ready' again. */
@@ -1843,9 +1852,7 @@ export class CatsCompanyBot {
     // 平台派活的回复要指回它那条 prompt（一个 topic 上可能同时有几单在等）。
     // 按 sessionKey 取而不是「topic 上最近一条」：现在一次调用一个会话，
     // 同一个 topic 上的多单是真的并发的，「最近一条」会张冠李戴。
-    const replyTo = opts?.sessionKey
-      ? this.botCallReplyTargets?.get(opts.sessionKey)
-      : undefined;
+    // 取这一步统一在 replyOptionsFor 里做，这里不再另存一份，免得两处口径漂移。
     const callbackGeneration = opts?.sessionKey
       ? opts.clearGeneration ?? this.getSessionClearGeneration(opts.sessionKey)
       : undefined;
@@ -1878,7 +1885,9 @@ export class CatsCompanyBot {
       onAssistantText: async (text: string) => {
         if (isStaleCallback()) return;
         try {
-          await this.sender.reply(topic, text, { replyTo });
+          // 中间叙述：明说「这一轮还没完」。平台收到这个标记就不会再按静默窗口
+          // 把它当最终答案交出去 —— 实测工具阶段能静默 14 秒，靠猜必错。
+          await this.sender.reply(topic, text, this.replyOptionsFor(opts?.sessionKey, { progress: true }));
         } catch (err: any) {
           Logger.warning(`前端通知发送失败 (assistant_text): ${err.message}`);
         }
@@ -2035,16 +2044,20 @@ export class CatsCompanyBot {
       && seq > 0;
     // 惰性初始化：有些宿主/测试只拼装部分成员，字段可能还没建。
     const targets = this.botCallReplyTargets ??= new Map<string, number>();
+    const sessionIds = this.botCallSessionIds ??= new Map<string, string>();
     if (!usable) {
       targets.delete(sessionKey);
+      sessionIds.delete(sessionKey);
       return;
     }
     targets.set(sessionKey, seq as number);
+    sessionIds.set(sessionKey, envelope.botSessionId as string);
     // 有界：会话本身会被回收，这个表也不该无限长。
     while (targets.size > ARTIFACT_TASK_RECEIPT_MAX_ENTRIES) {
       const oldest = targets.keys().next().value as string | undefined;
       if (!oldest) break;
       targets.delete(oldest);
+      sessionIds.delete(oldest);
     }
   }
 
@@ -2055,10 +2068,28 @@ export class CatsCompanyBot {
    * 每一条都是「这个会话的答案」，所以都要带上 —— 漏掉任一条，那条路径上的
    * 回复就归不到具体的调用上。
    */
-  private replyOptionsFor(sessionKey?: string): { replyTo?: number } | undefined {
-    if (!sessionKey) return undefined;
+  private replyOptionsFor(
+    sessionKey?: string,
+    opts?: { progress?: boolean },
+  ): { replyTo?: number; turnDone?: string; turnProgress?: boolean } | undefined {
+    if (!sessionKey) return opts?.progress ? { turnProgress: true } : undefined;
     const replyTo = this.botCallReplyTargets?.get(sessionKey);
-    return replyTo ? { replyTo } : undefined;
+    if (opts?.progress) {
+      // 中间叙述只带「还没说完」，绝不带「说完了」。两个标记都连着同一个
+      // sessionKey，让调用方随手 spread 就会把过程话签成终态。
+      return {
+        ...(replyTo ? { replyTo } : {}),
+        turnProgress: true,
+      };
+    }
+    // 平台派活的会话才带「回合结束」标记：普通聊天没有调用方在等结果，
+    // 平台也不需要按它收尾。
+    const turnDone = replyTo ? this.botCallSessionIds?.get(sessionKey) : undefined;
+    if (!replyTo && !turnDone) return undefined;
+    return {
+      ...(replyTo ? { replyTo } : {}),
+      ...(turnDone ? { turnDone } : {}),
+    };
   }
 
   private acceptArtifactTaskReceipt(taskRef?: string, now = Date.now()): boolean {
