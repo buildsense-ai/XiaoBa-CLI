@@ -591,8 +591,12 @@ export function formatEnvelopeResult(
 
 function withFiles(text: string, files: string[] | undefined): string {
   if (!files || files.length === 0) return text;
-  const lines = files.map(file => `- ${file}`).join('\n');
-  return `${text}\n\n产物文件：\n${lines}`;
+  // 平台新版已经把「📎 附件：名字，N 字节，位置 <地址>」写进正文了。再原样列一遍
+  // 只会让模型把同一个链接说两次，所以只补正文里没提到的那几个。
+  const missing = files.filter(file => file && !text.includes(file));
+  if (missing.length === 0) return text;
+  const lines = missing.map(file => `- ${file}`).join('\n');
+  return `${text}\n\n产物文件（把链接原样转给用户，不要改写也别省略）：\n${lines}`;
 }
 
 export function splitToolErrorText(text: string): { code: string; detail: string } {
