@@ -1796,7 +1796,16 @@ export class CatsCompanyBot {
       reply: async (_targetTopic: string, text: string) => {
         _hasOutbound = true;
         try {
-          await this.sender.reply(topic, text);
+          // 这条是模型主动外发（send_text 工具走的就是它），不是本轮的最终答案。
+          //
+          // 平台派活的会话里，最终答案由框架自己发（带着 session_id 的「说完了」）。
+          // 所以模型在本轮中途 push 出来的任何文本，按定义都是**过程话** —— 必须
+          // 自报「还没干完」，否则平台按静默窗口收尾，把「收到，我先写脚本」当结果
+          // 交付，而真正的产物还在半路上。
+          //
+          // 生产实例：bot 用 send_text 说「收到。本机写 probe-notes.txt…」，然后真去
+          // 执行 7 秒，平台 5 秒后收尾，调用方只拿到那句承诺。
+          await this.sender.reply(topic, text, this.replyOptionsFor(opts?.sessionKey, { progress: true }));
         } catch (err: any) {
           Logger.warning(`消息发送失败 (reply): ${err.message}`);
           throw err;
@@ -2076,22 +2085,21 @@ export class CatsCompanyBot {
     sessionKey?: string,
     opts?: { progress?: boolean },
   ): { replyTo?: number; turnDone?: string; turnProgress?: boolean } | undefined {
-    if (!sessionKey) return opts?.progress ? { turnProgress: true } : undefined;
+    if (!sessionKey) return undefined;
     const replyTo = this.botCallReplyTargets?.get(sessionKey);
+    // 平台派活的会话才需要这两种表态：普通聊天没有调用方在等结果，
+    // 既不用指回某条 prompt，也不用告诉谁「说完了/还没说完」。
+    // 没有 replyTo 就等于不是平台派活，一律不加标记（否则每条消息都多背一个
+    // 对平台毫无意义的字段）。
+    if (!replyTo) return undefined;
     if (opts?.progress) {
       // 中间叙述只带「还没说完」，绝不带「说完了」。两个标记都连着同一个
       // sessionKey，让调用方随手 spread 就会把过程话签成终态。
-      return {
-        ...(replyTo ? { replyTo } : {}),
-        turnProgress: true,
-      };
+      return { replyTo, turnProgress: true };
     }
-    // 平台派活的会话才带「回合结束」标记：普通聊天没有调用方在等结果，
-    // 平台也不需要按它收尾。
-    const turnDone = replyTo ? this.botCallSessionIds?.get(sessionKey) : undefined;
-    if (!replyTo && !turnDone) return undefined;
+    const turnDone = this.botCallSessionIds?.get(sessionKey);
     return {
-      ...(replyTo ? { replyTo } : {}),
+      replyTo,
       ...(turnDone ? { turnDone } : {}),
     };
   }
