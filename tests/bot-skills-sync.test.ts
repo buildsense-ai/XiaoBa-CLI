@@ -117,6 +117,71 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     assert.equal(workspace.getActiveBotId(), 'bot-other');
   });
 
+  for (const baseState of ['matching', 'empty', 'missing'] as const) {
+    test(`model preparation falls back to strict restore for an empty root link with ${baseState} Base`, async () => {
+      const fixture = createFixture(roots);
+      writeSkill(fixture.skillsRoot, 'managed', 'managed', 'cloud content');
+      await fixture.sync();
+      const skills = [...fixture.cloud.skills];
+      const baseStore = new BotSkillBaseStore(fixture.runtimeRoot);
+      const before = baseStore.read(fixture.botId)!;
+      if (baseState === 'empty') baseStore.write({ ...before, skills: [] });
+      if (baseState === 'missing') {
+        fs.unlinkSync(path.join(fixture.runtimeRoot, 'data', 'bot-skills', 'sync-base', `${fixture.botId}.json`));
+      }
+      new BotSkillWorkspaceService(fixture.runtimeRoot).activate(fixture.botId);
+      fs.rmSync(fixture.skillsRoot, { recursive: true });
+      const external = path.join(fixture.runtimeRoot, 'external-empty');
+      fs.mkdirSync(external);
+      fs.symlinkSync(external, fixture.skillsRoot, process.platform === 'win32' ? 'junction' : 'dir');
+      fixture.cloud.revision += 1;
+
+      const prepared = await prepareBoundBotSkills({
+        runtimeRoot: fixture.runtimeRoot,
+        botId: fixture.botId,
+        auth: { apiKey: 'bot-key', httpBaseUrl: 'https://cats.test', serverUrl: 'wss://cats.test' },
+        definitionService: fixture.definitionService,
+        fetchImpl: fixture.fetchImpl,
+        reuseVerifiedLocal: { skills, definitionRevision: fixture.cloud.revision },
+      });
+
+      assert.equal(prepared.sync?.applyStatus, 'applied');
+      assert.equal(prepared.sync?.appliedRevision, fixture.cloud.revision);
+      assert.deepStrictEqual(prepared.sync?.skills, skills);
+      assert.equal(fs.lstatSync(fixture.skillsRoot).isSymbolicLink(), false);
+      assert.equal(scanBotSkillWorkspace(fixture.skillsRoot).length, 1);
+      assert.deepStrictEqual(fs.readdirSync(external), []);
+      assert.equal(baseStore.read(fixture.botId)?.definitionRevision, fixture.cloud.revision);
+      assert.equal(fixture.patches, 1); // Initial publish only; restore never uploads/patches local content.
+    });
+  }
+
+  test('strict fallback preserves a nonempty root link and refuses to snapshot its target', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'managed', 'managed', 'cloud content');
+    await fixture.sync();
+    new BotSkillWorkspaceService(fixture.runtimeRoot).activate(fixture.botId);
+    const external = path.join(fixture.runtimeRoot, 'external-nonempty');
+    fs.renameSync(fixture.skillsRoot, external);
+    fs.symlinkSync(external, fixture.skillsRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    fixture.cloud.revision += 1;
+
+    await assert.rejects(prepareBoundBotSkills({
+      runtimeRoot: fixture.runtimeRoot,
+      botId: fixture.botId,
+      auth: { apiKey: 'bot-key', httpBaseUrl: 'https://cats.test', serverUrl: 'wss://cats.test' },
+      definitionService: fixture.definitionService,
+      fetchImpl: fixture.fetchImpl,
+      reuseVerifiedLocal: { skills: fixture.cloud.skills, definitionRevision: fixture.cloud.revision },
+    }), /pending snapshot cannot follow a symbolic link at its root/i);
+
+    assert.equal(fs.lstatSync(fixture.skillsRoot).isSymbolicLink(), true);
+    assert.equal(fs.readFileSync(path.join(external, 'managed', 'SKILL.md'), 'utf8').includes('cloud content'), true);
+    assert.equal(new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.definitionRevision, 1);
+    assert.equal(fs.existsSync(path.join(fixture.runtimeRoot, 'data', 'bot-skills', 'local-pending')), false);
+    assert.equal(fixture.patches, 1);
+  });
+
   test('initializes a device workspace without requiring a local Bot marker', async () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-skill-runtime-device-'));
     roots.push(runtimeRoot);
@@ -2952,6 +3017,14 @@ function createFixture(
     botId,
     definitionService,
     packages,
+    // The runtime entry point uses its configured Hub URL, unlike this fixture's
+    // direct service calls with an explicit hub.test override. Route only its
+    // package requests to the same in-memory Hub; no real network is used.
+    fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname.startsWith('/api/bot/skill-packages/')) url.host = 'hub.test';
+      return fetchImpl(url, init);
+    }) as typeof fetch,
     cloud,
     uploads: 0,
     patches: 0,
