@@ -149,6 +149,8 @@ interface QueuedMessage {
   targetRoutes?: TargetRoutes;
   /** 群成员名单；随队列入队，出队时注入每轮临时上下文。 */
   roster?: CatsGroupRosterMember[];
+  /** 这条消息是平台派活来的（另一个 Agent 在等结果）；随队列入队，出队时注入本轮说明。 */
+  dispatchedAsTool?: boolean;
   localFileGrants?: ScopedLocalFileGrant[];
   /** Device metadata for the interrupted-turn marker if this queued work is running at shutdown. */
   deviceContext?: InterruptedTurnDeviceContext;
@@ -2355,6 +2357,7 @@ export class CatsCompanyBot {
         deviceSelection: msg.deviceSelection,
         targetRoutes: msg.targetRoutes,
         roster: msg.roster,
+        dispatchedAsTool: msg.envelope?.dispatchedAsTool === true,
         localFileGrants,
         deviceContext: sanitizeDeviceContext(msg.metadata, msg.executionScope),
         receivedAt: Date.now(),
@@ -2414,6 +2417,9 @@ export class CatsCompanyBot {
           deviceSelection: msg.deviceSelection,
           targetRoutes: msg.targetRoutes,
           groupRoster: toGroupRosterEntries(msg.roster),
+          // 平台把这个 bot 当工具调（另一个 Agent 在另一台机器上等结果）。
+          // 只影响本轮注入的一句说明，不进历史：同一会话里人可以接着聊同样的活。
+          dispatchedAsTool: msg.envelope?.dispatchedAsTool === true,
           deviceRpc: this.buildDeviceRpcTransport(),
           thinToolRpc: this.maybeBuildThinToolRpcTransport(),
           localFileGrants,
@@ -4279,6 +4285,7 @@ export class CatsCompanyBot {
             deviceSelection: msg.deviceSelection,
             targetRoutes: msg.targetRoutes,
             groupRoster: toGroupRosterEntries(msg.roster),
+            dispatchedAsTool: msg.dispatchedAsTool === true,
             deviceRpc: this.buildDeviceRpcTransport(),
             thinToolRpc: this.maybeBuildThinToolRpcTransport(),
             runtimeFeedback: msg.runtimeFeedback,

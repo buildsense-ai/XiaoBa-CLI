@@ -27,6 +27,13 @@ export interface MessageEnvelope {
    * 只在平台可信信封下透传：一次工具调用一个会话，同 id 就是同一场对话。
    */
   botSessionId?: string;
+  /**
+   * 这条消息是「另一个 Agent 把这个 bot 当工具调」发过来的（`metadata.catsco_bot_call`）。
+   *
+   * 只在平台可信信封下采纳：任何人都不该能靠伪造 metadata 让 bot 以为自己在被调用。
+   * 它决定这一轮要不要告诉模型「对方看不到你这台机器」—— 见 bot-call-hint.ts。
+   */
+  dispatchedAsTool?: boolean;
   permissionsSource?: string;
   deviceOwnerUserId?: string;
   deviceOwnerSource?: string;

@@ -211,6 +211,11 @@ export interface RunAgentTurnParams {
   targetRoutes?: TargetRoutes;
   /** 群成员名单；仅多 bot 群有。状态而非历史，每轮重建、不落盘。 */
   groupRoster?: GroupRosterEntry[];
+  /**
+   * 本轮由「另一个 Agent 把这个 bot 当工具调」发起（平台可信信封）。
+   * 只影响本轮注入的一句说明：对方看不到这台机器，文件要用 send_file 交出去。
+   */
+  dispatchedAsTool?: boolean;
   localFileGrants?: ScopedLocalFileGrant[];
   pendingUserInputProvider?: PendingUserInputProvider;
   abortSignal?: AbortSignal;
@@ -337,6 +342,7 @@ export class AgentTurnController {
         runtimeFeedback: params.runtimeFeedback,
         skillRuntime: turnSkills.skillRuntime,
         planRuntime: this.options.planRuntime,
+        dispatchedAsTool: params.dispatchedAsTool,
       });
 
       const currentMemoryRuntime = this.startEpisodeMemoryRuntime({
