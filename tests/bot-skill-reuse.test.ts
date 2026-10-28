@@ -49,11 +49,7 @@ for (const location of ['package', 'namespace', 'root'] as const) {
     linkDirectory(outside, source);
     const read = t.mock.method(fs, 'readFileSync');
 
-    if (location === 'root') {
-      assert.throws(fixture.reuse, /workspace root is a symbolic link.*Use a regular Skill workspace directory/);
-    } else {
-      assert.equal(fixture.reuse(), undefined);
-    }
+    assert.equal(fixture.reuse(), undefined);
     assert.equal(fixture.base.read('bot-a')?.definitionRevision, 1);
     assert.equal(fs.lstatSync(source).isSymbolicLink(), true);
     // The Base is readable; package bytes through any alias must remain unread.
@@ -79,14 +75,14 @@ test('noncanonical Base paths cannot bypass namespace link checks on Windows', t
   assert.equal(fixture.base.read('bot-a')?.definitionRevision, 1);
 });
 
-test('a dangling workspace root link is rejected with an actionable error', t => {
+test('a dangling workspace root link declines reuse without blocking strict activation', t => {
   const fixture = createFixture(t);
   const outside = path.join(fixture.root, 'external');
   fs.renameSync(fixture.skillsRoot, outside);
   linkDirectory(outside, fixture.skillsRoot);
   fs.rmSync(outside, { recursive: true });
 
-  assert.throws(fixture.reuse, /workspace root is a symbolic link.*Use a regular Skill workspace directory/);
+  assert.equal(fixture.reuse(), undefined);
   assert.equal(fixture.base.read('bot-a')?.definitionRevision, 1);
 });
 

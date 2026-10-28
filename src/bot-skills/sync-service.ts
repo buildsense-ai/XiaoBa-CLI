@@ -602,13 +602,6 @@ export class BotSkillSyncService {
     const workspace = new BotSkillWorkspaceService(this.runtimeRoot, this.skillsRoot);
     workspace.recoverInterruptedSwitch();
     if (workspace.getActiveBotId() !== this.botId) return undefined;
-    if (fs.lstatSync(this.skillsRoot, { throwIfNoEntry: false })?.isSymbolicLink()) {
-      throw new BotSkillCloudRestoreError(
-        'Bot Skill workspace root is a symbolic link; model/Skill preparation was stopped. '
-        + 'Use a regular Skill workspace directory or explicitly configure its real path '
-        + 'after verifying ownership. The link target was not scanned.',
-      );
-    }
     const base = this.baseStore.read(this.botId);
     if (!this.workspaceExisted || !base || !fs.existsSync(this.skillsRoot)) return undefined;
 
@@ -619,6 +612,8 @@ export class BotSkillSyncService {
       // Their normal synchronization remains responsible for validating them.
       local = this.readManagedManifest(base);
     } catch {
+      // Refusing reuse is not an activation failure. Strict restore can replace
+      // an empty root link safely; nonempty roots retain snapshot protections.
       return undefined;
     }
     const canonicalSkills = canonicalizeBotSkillRefs(expectedSkills);
@@ -921,6 +916,8 @@ export class BotSkillSyncService {
       throw new Error('Bot Skill workspace is not a safe directory.');
     }
     return base.skills.map(entry => {
+      // The portable-path validator normalizes backslashes, but the ancestor
+      // walk below splits canonical '/' paths. Reject aliases before that walk.
       if (!isPortablePackagePath(entry.installName) || entry.installName.includes('\\')) {
         throw new Error('Managed Bot Skill install path is invalid.');
       }
