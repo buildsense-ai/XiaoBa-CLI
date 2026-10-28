@@ -583,7 +583,7 @@ export class BotSkillSyncService {
   /**
    * Reuses an unchanged Skill dimension without reading packages from Cloud.
    * Equality in BotDefinition alone is insufficient: this also proves that the
-   * selected Bot owns the active workspace and that every local package still
+   * selected Bot owns the active workspace and that every managed package still
    * matches its verified Base entry. Returning undefined deliberately falls
    * through to the strict Cloud-only activation path.
    */
@@ -602,12 +602,22 @@ export class BotSkillSyncService {
     const workspace = new BotSkillWorkspaceService(this.runtimeRoot, this.skillsRoot);
     workspace.recoverInterruptedSwitch();
     if (workspace.getActiveBotId() !== this.botId) return undefined;
+    if (fs.lstatSync(this.skillsRoot, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      throw new BotSkillCloudRestoreError(
+        'Bot Skill workspace root is a symbolic link; model/Skill preparation was stopped. '
+        + 'Use a regular Skill workspace directory or explicitly configure its real path '
+        + 'after verifying ownership. The link target was not scanned.',
+      );
+    }
     const base = this.baseStore.read(this.botId);
     if (!this.workspaceExisted || !base || !fs.existsSync(this.skillsRoot)) return undefined;
 
     let local: LocalBotSkillManifestEntry[];
     try {
-      local = this.readLocalManifest({ writeMarkers: false });
+      // Only the unchanged Cloud-owned dimension is being reused. Local-only
+      // additions must not force a Cloud restore or be scanned/published here.
+      // Their normal synchronization remains responsible for validating them.
+      local = this.readManagedManifest(base);
     } catch {
       return undefined;
     }
@@ -902,6 +912,34 @@ export class BotSkillSyncService {
       return [];
     }
     return scanBotSkillWorkspace(this.skillsRoot, options);
+  }
+
+  private readManagedManifest(base: BotSkillSyncBase): LocalBotSkillManifestEntry[] {
+    const root = path.resolve(this.skillsRoot);
+    const rootStats = fs.lstatSync(root);
+    if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+      throw new Error('Bot Skill workspace is not a safe directory.');
+    }
+    return base.skills.map(entry => {
+      if (!isPortablePackagePath(entry.installName) || entry.installName.includes('\\')) {
+        throw new Error('Managed Bot Skill install path is invalid.');
+      }
+      const skillRoot = path.resolve(root, entry.installName);
+      if (!isContainedPath(root, skillRoot)) {
+        throw new Error('Managed Bot Skill install path leaves the workspace.');
+      }
+      // lstat every ancestor: checking only the final directory would follow a
+      // symlinked namespace and let package verification read outside root.
+      let directory = root;
+      for (const segment of entry.installName.split('/')) {
+        directory = path.join(directory, segment);
+        const stats = fs.lstatSync(directory);
+        if (stats.isSymbolicLink() || !stats.isDirectory()) {
+          throw new Error(`Managed Bot Skill path is not a safe directory: ${entry.installName}`);
+        }
+      }
+      return scanLocalBotSkill(skillRoot, root, { writeMarker: false });
+    });
   }
 
   private readLocalManifestForPublicFinalize(

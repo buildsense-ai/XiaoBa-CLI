@@ -162,6 +162,20 @@ test('post-start model-only updates restore B after B -> A -> B and reuse its ve
   ].join('\n'));
   writeVerifiedSkillBase(runtimeRoot, '43', 6, TEST_SKILL_REFERENCE);
   const before = fs.readFileSync(localSkillFile, 'utf8');
+  // Local additions are not part of the unchanged Cloud Skill dimension. In
+  // production they forced a full restore whose pending snapshot rejected an
+  // unrelated game-assets link, preventing the model from being applied.
+  const unmanagedRoot = path.join(runtimeRoot, 'skills', 'operator-extra');
+  fs.mkdirSync(unmanagedRoot);
+  fs.writeFileSync(path.join(unmanagedRoot, 'SKILL.md'), [
+    '---', 'name: operator-extra', 'description: Local addition.', '---', '', 'Keep me.',
+  ].join('\n'));
+  const linkedRoot = path.join(runtimeRoot, '.agents', 'skills', 'game-assets');
+  fs.mkdirSync(linkedRoot, { recursive: true });
+  fs.writeFileSync(path.join(linkedRoot, 'SKILL.md'), 'Do not scan or publish this target.');
+  const localLink = path.join(runtimeRoot, 'skills', 'game-assets');
+  fs.symlinkSync(linkedRoot, localLink, process.platform === 'win32' ? 'junction' : 'dir');
+  const linkTarget = fs.readlinkSync(localLink);
   const workspace = new BotSkillWorkspaceService(runtimeRoot);
   workspace.activate('43');
   workspace.activate('other-bot');
@@ -230,6 +244,9 @@ test('post-start model-only updates restore B after B -> A -> B and reuse its ve
   assert.equal(requests.some(request => request.includes('/api/bot/definition/skills')), false);
   assert.equal(requests.some(request => request.includes('private-skill-packages')), false);
   assert.equal(fs.readFileSync(localSkillFile, 'utf8'), before);
+  assert.equal(fs.readlinkSync(localLink), linkTarget);
+  assert.equal(fs.existsSync(path.join(unmanagedRoot, '.xiaoba-bot-skill.json')), false);
+  assert.equal(fs.existsSync(path.join(linkedRoot, '.xiaoba-bot-skill.json')), false);
   assert.equal(workspace.getActiveBotId(), '43');
   assert.equal(fs.existsSync(path.join(runtimeRoot, 'skills', 'other-local')), false);
   assert.deepEqual(definitions.read('43')?.model, desired.model);
