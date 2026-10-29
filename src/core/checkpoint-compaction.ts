@@ -33,6 +33,14 @@ export const MIN_PHYSICAL_WINDOW_CHECKPOINT_TOKENS = 256_000;
 const MIN_RETAINED_USER_TOKEN_BUDGET = 8_000;
 const MAX_RETAINED_USER_TOKEN_BUDGET = 32_000;
 const RETAINED_USER_CONTEXT_RATIO = 0.15;
+/**
+ * Provider accounting above the assumed window is normal on long agent
+ * sessions: tool results are appended faster than the local tokenizer can
+ * account for them, and the whole point of the anchor is to notice that drift.
+ * Only values that no request we could have sent can explain (this many times
+ * the window) are treated as garbage.
+ */
+export const MAX_PLAUSIBLE_PROVIDER_USAGE_WINDOW_RATIO = 2;
 const MAX_CONTEXT_RETRY_ATTEMPTS = 6;
 const CHECKPOINT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const MAX_SUMMARY_TOOL_RESULT_CHARS = 24_000;
@@ -205,6 +213,14 @@ export class CheckpointCompactionCoordinator {
    *
    * The durable prefix hash prevents a calibration from surviving compaction,
    * restore, trimming, or any other non-append transcript mutation.
+   *
+   * A provider count above the assumed window is saturated to the window
+   * instead of being discarded. Discarding it was self-defeating: the local
+   * estimator underestimates dense transcripts (tool JSON, CJK text), so the
+   * only sessions that ever reach the window were the ones whose calibration
+   * got thrown away, which let them keep growing without ever compacting.
+   * Saturation keeps the anchor authoritative and makes the next checkpoint
+   * run immediately.
    */
   observeProviderPromptUsage(
     promptTokens: number | undefined,
@@ -213,20 +229,30 @@ export class CheckpointCompactionCoordinator {
     toolTokens = 0,
   ): void {
     if (!Number.isFinite(promptTokens) || Number(promptTokens) <= 0) return;
-    if (Number(promptTokens) > this.maxContextTokens) {
+    const observedTokens = Math.floor(Number(promptTokens));
+    const implausibleTokens = this.maxContextTokens * MAX_PLAUSIBLE_PROVIDER_USAGE_WINDOW_RATIO;
+    if (observedTokens > implausibleTokens) {
       this.providerUsageAnchor = undefined;
       Logger.warning(
-        `[checkpoint] ignored impossible provider prompt usage: ${Math.floor(Number(promptTokens))}`
-        + ` > context window ${this.maxContextTokens}`,
+        `[checkpoint] ignored impossible provider prompt usage: ${observedTokens}`
+        + ` > ${implausibleTokens} (${MAX_PLAUSIBLE_PROVIDER_USAGE_WINDOW_RATIO}x`
+        + ` context window ${this.maxContextTokens})`,
       );
       return;
     }
+    if (observedTokens > this.maxContextTokens) {
+      Logger.warning(
+        `[checkpoint] provider prompt usage ${observedTokens} exceeds context window`
+        + ` ${this.maxContextTokens}; saturating so the next checkpoint compacts`,
+      );
+    }
+    const anchoredProviderTokens = Math.min(observedTokens, this.maxContextTokens);
     const durable = splitDurableAndTransient(messagesAtRequest).durable;
     const localProviderTokens = estimateMessagesTokens(providerMessagesAtRequest)
       + Math.max(0, Math.floor(toolTokens));
     const positiveCorrectionTokens = Math.max(
       0,
-      Math.floor(Number(promptTokens)) - localProviderTokens,
+      anchoredProviderTokens - localProviderTokens,
     );
     this.providerUsageAnchor = {
       positiveCorrectionTokens,

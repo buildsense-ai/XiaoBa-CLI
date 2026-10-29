@@ -192,11 +192,30 @@ test('impossible provider usage clears the previous calibration', () => {
   coordinator.observeProviderPromptUsage(800, messages, messages);
   assert.equal(coordinator.getUsageInfo(messages).usedTokens, 800);
 
-  coordinator.observeProviderPromptUsage(1_001, messages, messages);
+  // Beyond MAX_PLAUSIBLE_PROVIDER_USAGE_WINDOW_RATIO x the window nothing we
+  // could have sent explains the number, so the calibration is discarded.
+  coordinator.observeProviderPromptUsage(2_001, messages, messages);
   assert.equal(
     coordinator.getUsageInfo(messages).usedTokens,
     estimateMessagesTokens(messages),
   );
+});
+
+test('provider usage above the window saturates and forces the next compaction', () => {
+  const { service } = createService(() => 'unused summary');
+  const coordinator = new CheckpointCompactionCoordinator(service, {
+    maxContextTokens: 1_000,
+  });
+  // A dense transcript the local estimator cannot see: 200 characters of JSON
+  // are estimated well under the real provider count.
+  const messages: Message[] = [{ role: 'user', content: 'x'.repeat(200) }];
+  assert.ok(estimateMessagesTokens(messages) < 100);
+
+  coordinator.observeProviderPromptUsage(1_400, messages, messages);
+
+  // Saturated to the window instead of falling back to the local estimate.
+  assert.equal(coordinator.getUsageInfo(messages).usedTokens, 1_000);
+  assert.equal(coordinator.needsCompaction(messages), true);
 });
 
 test('valid provider usage remains authoritative when local estimation is much lower', () => {
