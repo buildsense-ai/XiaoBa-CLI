@@ -49,6 +49,13 @@ const CLOUD_MODEL_HEALTHCHECK_MS = 30_000;
 const CLOUD_MODEL_POLL_STALE_MS = 45_000;
 const CLOUD_MODEL_PENDING_STALE_MS = 120_000;
 const CLOUD_MODEL_HEALTH_WARNING_REPEAT_MS = 300_000;
+// A switch that keeps being deferred used to be silent: the platform showed the
+// new model as saved while the bot kept running the old one. Report the stall so
+// the owner can see it, then cross the idle fence if it still has not landed.
+// The fence protects a live turn, but a model that answers with errors keeps
+// sessions busy, so waiting for idle can never converge in that state.
+const CLOUD_MODEL_DEFERRED_STALL_MS = 5 * 60_000;
+const CLOUD_MODEL_FORCE_APPLY_MS = 30 * 60_000;
 
 export interface CatsCoCommandConfigResolution {
   config?: CatsCompanyConfig;
@@ -315,7 +322,26 @@ export async function catscompanyCommand(): Promise<void> {
         return selection;
       },
       isIdle: () => !shuttingDown && bot.isIdleForRuntimeReload(),
-      applySelection: async selection => applyCloudModelRuntimeSelection({
+      deferredStallMs: CLOUD_MODEL_DEFERRED_STALL_MS,
+      forceApplyAfterMs: CLOUD_MODEL_FORCE_APPLY_MS,
+      onDeferredStalled: (selection, info) => {
+        const waited = Math.round(info.deferredMs / 1000);
+        const message = info.idle
+          ? `模型切换已等待 ${waited} 秒仍未完成（已重试 ${info.attempts} 次）`
+          : `模型切换已等待 ${waited} 秒：运行时持续繁忙，无法安全重启（已重试 ${info.attempts} 次）`;
+        Logger.warning(`CatsCo ${message}，revision=${selection.revision}`);
+        // The platform records this as last_error for the revision without
+        // marking it applied, so the switch stays pending and visible.
+        void acknowledgeCloudBotModelSelection({ botId: modelBotId, auth }, selection, message)
+          .catch(error => Logger.warning(`CatsCo 模型切换停滞状态回报失败: ${errorMessage(error)}`));
+      },
+      onForcedApply: (selection, info) => {
+        Logger.warning(
+          `CatsCo 模型 revision=${selection.revision} 已等待 ${Math.round(info.deferredMs / 1000)} 秒，`
+            + '超过强制切换上限，将中断当前对话以应用新模型。',
+        );
+      },
+      applySelection: async (selection, applyOptions) => applyCloudModelRuntimeSelection({
         runtimeRoot,
         // The connector cannot be absent here: startup exits before the watcher is created.
         connectorConfig: connectorConfig!,
@@ -331,6 +357,7 @@ export async function catscompanyCommand(): Promise<void> {
         },
         selection,
         auth,
+        ...(applyOptions?.force ? { force: true } : {}),
       }),
       onError: (error, selection) => {
         const now = Date.now();
@@ -423,6 +450,17 @@ interface ApplyCloudModelRuntimeSelectionOptions {
   clearAckRetry(selection: CloudBotModelSelection): void;
   selection: CloudBotModelSelection;
   auth: CatsCoAuthSnapshot;
+  /**
+   * Set when the reload controller decided the pending revision has waited long
+   * enough to cross the idle fence. A model that answers with errors keeps
+   * sessions busy, and a busy runtime blocks the switch that would replace it,
+   * so waiting for idle can never converge in that state.
+   */
+  force?: boolean;
+}
+
+function runtimeReloadIdle(options: ApplyCloudModelRuntimeSelectionOptions, bot: CatsCompanyBot): boolean {
+  return Boolean(options.force) || bot.isIdleForRuntimeReload();
 }
 
 function skillActivationAckWarning(code: BotSkillActivationAckWarningCode): string {
@@ -506,7 +544,7 @@ export async function applyCloudModelRuntimeSelection(
   }
 
   const previousBot = options.currentBot();
-  if (!options.canApply() || !previousBot.isIdleForRuntimeReload()) {
+  if (!options.canApply() || !runtimeReloadIdle(options, previousBot)) {
     restorePreviousModelFiles();
     return 'deferred';
   }
@@ -582,7 +620,7 @@ async function applyCloudBotDefinitionSelection(
     || !effectiveIncoming
     || JSON.stringify(previousDefinition.model) !== JSON.stringify(effectiveIncoming.model);
 
-  if (queuedModelChanged && (!options.canApply() || !options.currentBot().isIdleForRuntimeReload())) {
+  if (queuedModelChanged && (!options.canApply() || !runtimeReloadIdle(options, options.currentBot()))) {
     return 'deferred';
   }
 
@@ -672,7 +710,7 @@ async function applyCloudBotDefinitionSelection(
   }
 
   const previousBot = options.currentBot();
-  if (!options.canApply() || !previousBot.isIdleForRuntimeReload()) {
+  if (!options.canApply() || !runtimeReloadIdle(options, previousBot)) {
     restorePreviousRuntime(true);
     return 'deferred';
   }
