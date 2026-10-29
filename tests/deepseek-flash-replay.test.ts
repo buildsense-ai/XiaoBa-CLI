@@ -54,6 +54,78 @@ test('forced tool choice is retained only when native thinking is disabled', () 
   assert.deepEqual(body.reasoning, { effort: 'none' });
 });
 
+test('native Flash renames the summary part the gateway emits inside reasoning content', () => {
+  // Verified against the live gateway 2026-10-29: it returns reasoning items as
+  // content: [{type: 'summary_text'}] with no summary array, then rejects a
+  // replay of that exact shape with
+  // "reasoning parts must use summary_text or reasoning_text in the
+  //  corresponding array" (production 400s on every second-turn request).
+  const provider = new OpenAIProvider(config) as any;
+  const result = provider.parseResponsesResponse({
+    status: 'completed',
+    output: [
+      { type: 'reasoning', id: 'rs_1', status: 'completed', content: [{ type: 'summary_text', text: 'gateway trace' }] },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'answer' }] },
+    ],
+  });
+  const wire = provider.buildResponsesRequestBody([
+    { role: 'assistant', content: result.content, providerContent: result.providerContent, providerState: result.providerState },
+    { role: 'user', content: 'next' },
+  ]);
+  assert.equal(wire.input[0].type, 'reasoning');
+  assert.deepEqual(wire.input[0].content, [{ type: 'reasoning_text', text: 'gateway trace' }]);
+  assert.equal(wire.input[0].summary, undefined);
+});
+
+test('native Flash renames the summary part on the tool replay path too', () => {
+  const provider = new OpenAIProvider(config) as any;
+  const result = provider.parseResponsesResponse({ output: [
+    { type: 'reasoning', content: [{ type: 'summary_text', text: 'tool trace' }] },
+    { type: 'function_call', call_id: 'call1', name: 'lookup', arguments: '{}' },
+  ] });
+  const wire = provider.buildResponsesRequestBody([
+    { role: 'assistant', content: null, tool_calls: result.toolCalls, providerContent: result.providerContent, providerState: result.providerState },
+    { role: 'tool', tool_call_id: 'call1', content: 'result' },
+  ]);
+  assert.deepEqual(wire.input.map((item: any) => item.type), ['reasoning', 'function_call', 'function_call_output']);
+  assert.deepEqual(wire.input[0].content, [{ type: 'reasoning_text', text: 'tool trace' }]);
+});
+
+test('replay policy leaves accepted reasoning part types alone', () => {
+  for (const partType of ['reasoning_text', 'input_text', 'output_text']) {
+    const provider = new OpenAIProvider(config) as any;
+    const result = provider.parseResponsesResponse({
+      status: 'completed',
+      output: [
+        { type: 'reasoning', content: [{ type: partType, text: 'kept as is' }] },
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'answer' }] },
+      ],
+    });
+    const wire = provider.buildResponsesRequestBody([
+      { role: 'assistant', content: result.content, providerContent: result.providerContent, providerState: result.providerState },
+      { role: 'user', content: 'next' },
+    ]);
+    assert.equal(wire.input[0].content[0].type, partType);
+  }
+});
+
+test('replay policy does not touch non-reasoning items or other providers', () => {
+  const provider = new OpenAIProvider(config) as any;
+  const reasoningItem = { type: 'reasoning', content: [{ type: 'summary_text', text: 'x' }] };
+  // The DeepSeek lane only replays reasoning/function_call items, so a message
+  // item is still dropped rather than rewritten.
+  const messageItem = { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'y' }] };
+  assert.equal(provider.responsesReplayItem(reasoningItem).content[0].type, 'reasoning_text');
+  assert.equal(provider.responsesReplayItem(messageItem), undefined);
+  // The stored item is never mutated: the caller may retry on another lane.
+  assert.equal(reasoningItem.content[0].type, 'summary_text');
+
+  // Other providers keep the part type verbatim; only DeepSeek is rewritten.
+  const gpt = new OpenAIProvider({ ...config, model: 'gpt-5.6-terra' }) as any;
+  assert.equal(gpt.responsesReplayItem(reasoningItem).content[0].type, 'summary_text');
+  assert.deepEqual(gpt.responsesReplayItem(messageItem), messageItem);
+});
+
 test('GPT history keeps completed tool evidence without replaying encrypted reasoning', () => {
   const gpt = new OpenAIProvider({ ...config, model: 'gpt-5.6-terra' }) as any;
   const reply = gpt.parseResponsesResponse({ output: [
