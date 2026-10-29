@@ -661,7 +661,11 @@ export class OpenAIProvider implements AIProvider {
           ? message.providerContent || []
           : [])
           .filter(item => this.isResponsesReplayItem(item))
-          .map(item => JSON.parse(JSON.stringify(item)));
+          // Every replayed item goes through the provider's replay policy, so
+          // content that never reached parse-time sanitization (restored
+          // checkpoints, other producers) still matches the wire contract.
+          .map(item => this.responsesReplayItem(item))
+          .filter(Boolean);
         if (replayItems.length > 0) {
           input.push(...replayItems);
           continue;

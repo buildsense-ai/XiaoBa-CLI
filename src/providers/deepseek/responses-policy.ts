@@ -73,12 +73,34 @@ export function isDeepSeekResponsesReplayItem(item: any): boolean {
   ));
 }
 
+// Part types the gateway emits inside `reasoning.content` but refuses to accept
+// back on the next turn. Verified against the live gateway 2026-10-29:
+// it returns reasoning items as `content: [{type: 'summary_text', ...}]` with no
+// `summary` array, then answers a replay of that exact shape with
+// "The parameter `input.reasoning` specified in the request are not valid:
+//  reasoning parts must use summary_text or reasoning_text in the corresponding
+//  array". `content` only ever carries reasoning parts, so a summary part is
+// renamed instead of dropped and the trace survives verbatim.
+const REASONING_CONTENT_PART_REMAP: Record<string, string> = {
+  summary_text: 'reasoning_text',
+};
+
+function normalizeReasoningContentParts(item: any): void {
+  if (!Array.isArray(item.content)) return;
+  for (const block of item.content) {
+    if (!block || typeof block !== 'object') continue;
+    const replacement = REASONING_CONTENT_PART_REMAP[block.type];
+    if (replacement) block.type = replacement;
+  }
+}
+
 export function sanitizeDeepSeekResponsesReplayItem(item: any): any | undefined {
   if (!item || typeof item !== 'object') return undefined;
   const clone = JSON.parse(JSON.stringify(item));
   if (clone.type === 'reasoning') {
     delete clone.encrypted_content;
     delete clone.summary;
+    normalizeReasoningContentParts(clone);
   }
   return isDeepSeekResponsesReplayItem(clone) ? clone : undefined;
 }
