@@ -125,6 +125,14 @@ export async function prepareBoundBotSkills(
   options: PrepareBoundBotSkillsOptions,
 ): Promise<PreparedBoundBotSkills> {
   const runtimeRoot = path.resolve(options.runtimeRoot);
+  // The WebSocket handshake reports the Bot as `usr982`, while the cloud RPC
+  // and every local workspace store (active.json, sync-base, local-pending,
+  // trash) name it `982`. Comparing the raw handshake uid against
+  // `active.json` reports an ownership change on every reconnect and refuses
+  // the write, so the two spellings are collapsed before any comparison or
+  // path is derived. Same rule as the SkillHub RPC layer: strip a `usr`
+  // prefix only when what remains is purely a uid.
+  const botId = String(options.botId ?? '').trim().replace(/^usr(?=\d+$)/i, '');
   return withBotSkillWorkspaceLock(runtimeRoot, async () => {
     let workspace: BotSkillWorkspaceService | undefined;
     let activation: BotSkillWorkspaceActivation | undefined;
@@ -137,15 +145,15 @@ export async function prepareBoundBotSkills(
       if (activeBotId) {
         BotSkillSyncService.recoverInterruptedRestore(runtimeRoot, activeBotId, activeRoot);
       }
-      if (options.requireActiveWorkspace && !options.deviceConnectorMode && activeBotId !== options.botId) {
-        throw new BotSkillWorkspaceChangingError(activeBotId || '(none)', options.botId);
+      if (options.requireActiveWorkspace && !options.deviceConnectorMode && activeBotId !== botId) {
+        throw new BotSkillWorkspaceChangingError(activeBotId || '(none)', botId);
       }
-      activation = workspace.activate(options.botId);
+      activation = workspace.activate(botId);
       if (options.preserveLocalOnlyWorkspace) {
         const revision = options.preserveLocalOnlyWorkspace.definitionRevision;
         return {
           sync: {
-            botId: options.botId,
+            botId,
             direction: 'none',
             cloudRevision: revision,
             observedRevision: revision,
@@ -160,7 +168,7 @@ export async function prepareBoundBotSkills(
       }
       const syncService = new BotSkillSyncService({
         runtimeRoot,
-        botId: options.botId,
+        botId,
         auth: options.auth,
         skillsRoot: activation.path,
         workspaceExisted: activation.existed,
