@@ -224,6 +224,10 @@ describe('CloudBotModelRuntimeReloadController', () => {
       pendingRevision: 34,
       pendingSince: 100,
       pendingAgeMs: 120_000,
+      // The wait itself is now tracked, so a switch that never lands is visible
+      // in the watchdog snapshot instead of looking like an idle controller.
+      deferredMs: 120_000,
+      deferredAttempts: 1,
       pollAgeMs: 120_000,
     });
 
@@ -237,5 +241,91 @@ describe('CloudBotModelRuntimeReloadController', () => {
       handledRevision: 34,
       pollAgeMs: 0,
     });
+  });
+
+  test('reports a switch that stays deferred instead of leaving it silent', async () => {
+    let now = 0;
+    const stalls: Array<{ revision: number; deferredMs: number; attempts: number; idle: boolean }> = [];
+    const controller = new CloudBotModelRuntimeReloadController({
+      now: () => now,
+      random: () => 0,
+      deferredStallMs: 60_000,
+      pullSelection: async () => ({ modelId: 'deepseek-flash', revision: 9 }),
+      // The runtime is busy because the current model keeps failing, which is
+      // exactly the state that used to make the switch silent forever.
+      isIdle: () => false,
+      applySelection: async () => 'deferred',
+      onDeferredStalled: (selection, info) => {
+        stalls.push({ revision: selection.revision, ...info });
+      },
+    });
+
+    for (now = 0; now <= 300_000; now += 5_000) await controller.pollOnce();
+
+    assert.equal(stalls.length, 1, 'a stalled switch is escalated once, not on every poll');
+    assert.equal(stalls[0].revision, 9);
+    assert.equal(stalls[0].idle, false);
+    assert.ok(stalls[0].deferredMs >= 60_000);
+  });
+
+  test('crosses the idle fence when a deferred switch cannot wait any longer', async () => {
+    let now = 0;
+    const applied: Array<{ revision: number; forced: boolean }> = [];
+    const controller = new CloudBotModelRuntimeReloadController({
+      now: () => now,
+      random: () => 0,
+      forceApplyAfterMs: 120_000,
+      pullSelection: async () => ({ modelId: 'deepseek-flash', revision: 11 }),
+      isIdle: () => false,
+      applySelection: async (selection, options) => {
+        applied.push({ revision: selection.revision, forced: options?.force === true });
+        return options?.force ? 'applied' : 'deferred';
+      },
+    });
+
+    for (now = 0; now <= 300_000; now += 5_000) await controller.pollOnce();
+
+    assert.equal(applied.length, 1, 'the fence is crossed once, then the revision is applied');
+    assert.deepEqual(applied[0], { revision: 11, forced: true });
+    assert.equal(controller.getHealth().handledRevision, 11);
+  });
+
+  test('a busy runtime without a force budget keeps waiting instead of interrupting', async () => {
+    let now = 0;
+    let applies = 0;
+    const controller = new CloudBotModelRuntimeReloadController({
+      now: () => now,
+      pullSelection: async () => ({ modelId: 'deepseek-flash', revision: 12 }),
+      isIdle: () => false,
+      applySelection: async () => { applies += 1; return 'deferred'; },
+    });
+
+    for (now = 0; now <= 600_000; now += 5_000) await controller.pollOnce();
+
+    assert.equal(applies, 0, 'without forceApplyAfterMs the idle fence is never crossed');
+    assert.equal(controller.getHealth().pendingRevision, 12);
+  });
+
+  test('a failed revision stays retryable instead of being retired by one throw', async () => {
+    let now = 0;
+    let attempts = 0;
+    const controller = new CloudBotModelRuntimeReloadController({
+      now: () => now,
+      random: () => 0,
+      pullSelection: async () => ({ modelId: 'deepseek-flash', revision: 13 }),
+      isIdle: () => true,
+      applySelection: async () => { attempts += 1; throw new Error('prepare exploded'); },
+    });
+
+    await controller.pollOnce();
+    assert.equal(attempts, 1);
+    // Backoff still throttles the retry, but the revision must not be retired.
+    now = 1_000;
+    await controller.pollOnce();
+    assert.equal(attempts, 1, 'backoff holds the retry');
+    now = 10_000;
+    await controller.pollOnce();
+    assert.equal(attempts, 2, 'the same revision is retried after the backoff');
+    assert.equal(controller.getHealth().handledRevision, -1);
   });
 });
