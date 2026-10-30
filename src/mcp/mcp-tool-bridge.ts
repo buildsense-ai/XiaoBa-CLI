@@ -103,6 +103,14 @@ const DEFAULT_TOOL_PREFIX = 'catsco_';
 const DEFAULT_REFRESH_INTERVAL_MS = 30_000;
 const DEFAULT_RUN_STATUS_TOOL = 'catsco_run_status';
 export const DEFAULT_RUN_POLL_TIMEOUT_MS = 90_000;
+
+/**
+ * 连续轮询失败多少次才判定「状态查询通道坏了」。
+ *
+ * 取 3：单次抖动（TLS 重连、服务端一瞬间 502）不该影响结论，但连续三次都失败就说明
+ * 拿不到真相了 —— 这时候还装作「仍在运行」是骗模型。
+ */
+const MAX_RUN_POLL_FAILURES = 3;
 const DEFAULT_RUN_POLL_INTERVAL_MS = 5_000;
 
 const TOOL_ERROR_MESSAGES: Record<string, string> = {
@@ -381,8 +389,12 @@ export class CatsCoMcpToolBridge {
         return { ok: false, errorCode: code, message: mapToolErrorMessage(code, detail) };
       }
       let envelope = parseServiceRunEnvelope(first.structured);
+      // degraded：轮询通道坏了导致「仍在运行」这个结论不可信时，把原因带给结果文本。
+      let pollDegraded: string | null = null;
       if (toolName !== this.runStatusToolName && this.runPollTimeoutMs > 0) {
-        envelope = await this.pollRunUntilTerminal(client, envelope);
+        const polled = await this.pollRunUntilTerminal(client, envelope);
+        envelope = polled.envelope;
+        pollDegraded = polled.degraded;
       }
       // 仍处于 running（含轮询超时）：登记待补 run——平台在 run 终态时推回执，
       // 届时可唤醒宿主注入下一回合（设计 §19）。拉取永远是真相通道。
@@ -401,7 +413,7 @@ export class CatsCoMcpToolBridge {
           Logger.warning(`CatsCo 工具桥待补登记失败: ${error?.message ?? error}`);
         }
       }
-      return formatEnvelopeResult(envelope, first.contentText, toolName);
+      return formatEnvelopeResult(envelope, first.contentText, toolName, pollDegraded);
     } catch (error: any) {
       // 协议级 unknown tool（-32602）：平台在会话期间被撤订阅/工具下线的典型表现
       // （服务端每请求重建工具面，旧工具面里的工具名会直接被拒）。这不是网络问题，
@@ -426,29 +438,59 @@ export class CatsCoMcpToolBridge {
     }
   }
 
-  /** running 句柄交付后的自动轮询：终态或超时即返回当前 envelope。 */
+  /**
+   * running 句柄交付后的自动轮询：终态或超时即返回当前 envelope。
+   *
+   * 轮询出错不再**静默**当成「还在跑」返回：网络抖断和「bot 真的还在干」在调用方看来
+   * 长得一模一样，而前者会让模型以为任务仍在推进、一路干等到用户来问。现在连续失败到
+   * 上限就带 degraded 原因返回，由结果文本提示模型去 catsco_run_status 复核。
+   */
   private async pollRunUntilTerminal(
     client: McpBridgeClient,
     envelope: ServiceRunEnvelopeView | null,
-  ): Promise<ServiceRunEnvelopeView | null> {
-    if (!envelope || envelope.status !== 'running' || !envelope.run_id) return envelope;
+  ): Promise<{ envelope: ServiceRunEnvelopeView | null; degraded: string | null }> {
+    if (!envelope || envelope.status !== 'running' || !envelope.run_id) {
+      return { envelope, degraded: null };
+    }
     const deadline = this.now() + this.runPollTimeoutMs;
     let current = envelope;
+    let failures = 0;
+    const broke = (reason: string) => ({
+      envelope: current,
+      degraded: `连续 ${failures} 次查询失败：${reason}`,
+    });
     while (current.status === 'running' && current.run_id && this.now() < deadline) {
       await this.sleep(this.runPollIntervalMs);
       if (this.now() >= deadline) break;
       let poll: McpBridgeCallResult;
       try {
         poll = await client.callTool(this.runStatusToolName, { run_id: current.run_id });
-      } catch {
-        return current;
+      } catch (error: any) {
+        failures += 1;
+        if (failures >= MAX_RUN_POLL_FAILURES) {
+          return broke(String(error?.message ?? error ?? '调用失败'));
+        }
+        continue;
       }
-      if (poll.isError) return current;
+      if (poll.isError) {
+        failures += 1;
+        if (failures >= MAX_RUN_POLL_FAILURES) {
+          return broke(poll.contentText?.trim() || 'run 状态查询返回错误');
+        }
+        continue;
+      }
       const next = parseServiceRunEnvelope(poll.structured);
-      if (!next || !next.status) return current;
+      if (!next || !next.status) {
+        failures += 1;
+        if (failures >= MAX_RUN_POLL_FAILURES) {
+          return broke('run 状态响应缺少结构化结果');
+        }
+        continue;
+      }
+      failures = 0;
       current = next;
     }
-    return current;
+    return { envelope: current, degraded: null };
   }
 }
 
@@ -549,10 +591,21 @@ export function formatEnvelopeResult(
   envelope: ServiceRunEnvelopeView | null,
   fallbackText: string,
   toolName: string,
+  degraded?: string | null,
 ): ToolExecutionResult {
   const fallback = fallbackText.trim();
   if (!envelope || !envelope.status) {
-    return { ok: true, content: fallback || '(空结果)' };
+    // 没有结构化结果时正文就是全部内容。正文也空的话绝不能报 ok:true ——
+    // 模型会把「成功但没有内容」当成真的做完了，自己编一段或干脆说没结果。
+    if (!fallback) {
+      return {
+        ok: false,
+        errorCode: 'catsco_empty_result',
+        message:
+          '远端没有返回结构化结果，正文也是空的：这次调用没有任何可交付内容。请用 catsco_run_status 复核，或用同样的输入重试；不要对用户说任务已完成。',
+      };
+    }
+    return { ok: true, content: fallback };
   }
   const status = envelope.status;
   if (status === 'completed') {
@@ -578,6 +631,15 @@ export function formatEnvelopeResult(
       envelope.session_id ? `session_id=${envelope.session_id}` : '',
       `可稍后用 catsco_run_status（run_id）查询结果。`,
     ].filter(Boolean);
+    if (degraded) {
+      // 轮询通道坏了 ≠ 任务还在推进。必须把这两件事分开说，否则模型会假定它会自己
+      // 完成，然后把「还在跑」当成最终答复。
+      parts.push(
+        `注意：自动轮询已中断（${degraded}）。上面这个「仍在运行」只是最后一次拿到的状态，` +
+          '不代表任务正在推进；请先用 catsco_run_status 复核，再决定是继续等、重试还是换方案，' +
+          '不要把「还在跑」当作最终结果转给用户。',
+      );
+    }
     return { ok: true, content: parts.join(' ') };
   }
   // failed / cancelled / 未知状态：以失败形式交给模型，message 里带远端信息。
