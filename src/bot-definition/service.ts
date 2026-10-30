@@ -288,7 +288,7 @@ export function catalogRuntimeFromLocalProfile(
 }
 
 export function catalogRuntimeMatchesModelId(
-  runtime: Pick<BotCatalogModelRuntime, 'modelId' | 'model'>,
+  runtime: Pick<BotCatalogModelRuntime, 'modelId' | 'model'> & Partial<Pick<BotCatalogModelRuntime, 'provider'>>,
   modelId: string,
   descriptor?: RelayModelRuntimeDescriptor,
 ): boolean {
@@ -299,7 +299,17 @@ export function catalogRuntimeMatchesModelId(
   // has no local profile. Compare against that authoritative name rather than
   // the catalog id, otherwise dynamic models are needlessly re-materialized.
   const expectedModel = descriptor?.model ?? profile?.model ?? profile?.id;
-  return !expectedModel || relayModelIdsMatch(runtime.model, expectedModel);
+  if (expectedModel && !relayModelIdsMatch(runtime.model, expectedModel)) return false;
+  // The relay protocol is also a cloud decision. CatsCompany serves one model
+  // over two lanes and can move a bot between them without changing the model
+  // id, so comparing ids alone keeps a runtime materialized on a retired lane
+  // alive forever: it still "matches", the activation path takes the
+  // reconcile-less branch, and the bot keeps calling the old endpoint.
+  // A descriptor always carries the authoritative provider; local definitions
+  // pass none and keep the previous behavior.
+  const expectedProvider = descriptor ? profile?.preferredProvider : undefined;
+  if (expectedProvider && runtime.provider !== expectedProvider) return false;
+  return true;
 }
 
 function normalizeBotModelDefinition(model: BotModelDefinition): BotModelDefinition {
