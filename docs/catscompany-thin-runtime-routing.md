@@ -2,6 +2,45 @@
 
 This document records the lightweight remote execution design for CatsCompany-backed XiaoBa sessions.
 
+## Active-task grant renewal (2026-10-30)
+
+This is an additive capability, separate from enabling multi-device v2. A cloud
+runtime sends `device_grant_renewal` only after the current WebSocket handshake
+advertises `device_grant_renewal.v1`. It sends an opaque original grant ID and a
+request ID, never model-selected identity, device, operations or session fields.
+The renewed grant must have exactly the same authority and original creation
+time; only its grant ID and expiry change. No renewal capability is exposed as a
+model tool or added to Skill workflows.
+
+While a conversation runner is active, a 30-second heartbeat and a pre-tool
+check renew grants with six minutes or less remaining. Requests coalesce and
+failures back off. Completion/cancellation stops renewal, and a late response
+cannot update replaced context, a changed selection revision or a stopped task.
+The server rechecks the Bot lease, conversation access, same-account ownership,
+target incarnation, live route, capabilities and logout/revocation watermark.
+Each extension is at most ten minutes, bounded by 24 hours from the ORIGINAL
+grant creation. The old grant remains valid only until its existing expiry so
+in-flight requests do not lose their authority merely because of renewal.
+Expired, revoked and switched-device grants are never revived. A connection
+loss longer than the remaining authorization can still require a new human turn;
+background-job polling alone does not confer a fresh authorization.
+
+`remote_shell_timeout.v1` separately negotiates synchronous shell timing: at
+most five minutes of execution plus ten seconds to return the result, all within
+the valid grant. Longer synchronous requests fail BEFORE dispatch rather than
+being silently shortened. Submit longer work through existing background-job
+workflows and inspect progress on the same device. A mutation with a transport
+timeout/disconnection has an UNKNOWN outcome; the runtime marks it non-retryable
+and asks the model to inspect that device's state before replaying it. This is
+not a new user-confirmation requirement.
+
+Either repository can merge first. New CLI + old server sends no renewal and
+retains the old timeout wire behavior (including the old ten-minute limitation).
+Old CLI + new server keeps the existing protocol and does not gain renewal
+automatically. Both updated sides are needed to fix long-task expiry. Desktop
+receiver envelopes and the Connector updater are unchanged. A merge/build is
+not a production deployment or proof of a real-device long-task acceptance run.
+
 ## Current default and explicit target protocol (2026-10-21)
 
 The earlier grant-free routing notes below describe the historical path. Ordinary

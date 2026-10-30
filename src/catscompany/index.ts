@@ -1133,7 +1133,11 @@ export class CatsCompanyBot {
   }
 
   private buildThinToolRpcTransport(): ThinToolRpcTransport {
+    const client = this.bot;
     return {
+      // Re-read capabilities after reconnect/downgrade, not just at turn start.
+      get renewGrant() { return client?.supportsDeviceGrantRenewal ? (grant: ScopedDeviceGrant) => client.renewDeviceGrant(grant) : undefined; },
+      get supportsRemoteShellTimeout() { return client?.supportsRemoteShellTimeout === true; },
       executeTool: async ({
         targetOwnerUserId,
         targetDeviceId,

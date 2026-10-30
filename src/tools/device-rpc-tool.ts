@@ -9,6 +9,17 @@ const REMOTE_TOOL_MIN_TIMEOUT_MS = 5_000;
 const REMOTE_TOOL_MAX_TIMEOUT_MS = 300_000;
 export const MAX_DEVICE_RPC_TOOL_CONTENT_CHARS = 48_000;
 
+export function unknownRemoteMutationResult(toolName: string, error: unknown): ToolExecutionResult | undefined {
+  if (!['execute_shell', 'write_file', 'edit_file', 'send_file', 'import_file'].includes(toolName)) return undefined;
+  const record = error as any;
+  // Definite authorization/argument rejection is not an uncertain execution.
+  if (['PERMISSION_DENIED', 'INVALID_TOOL_ARGUMENTS', 'FILE_NOT_FOUND', 'TOOL_NOT_FOUND'].includes(record?.errorCode)) return undefined;
+  const text = [record?.errorCode, record?.code, record?.kind, record?.message, typeof error === 'string' ? error : ''].join(' ');
+  if (!/timeout|timed out|disconnect|connection.*closed|transport/i.test(text)) return undefined;
+  return { ok: false, errorCode: /timeout|timed out/i.test(text) ? 'EXECUTION_TIMEOUT' : 'TOOL_EXECUTION_ERROR', retryable: false,
+    message: '远程操作未收到最终结果，无法确认是否已执行或完成。请先核对同一设备上的任务状态或产物，不要原样重跑写入、删除或提交命令，也不能改在另一台电脑执行。' };
+}
+
 type RemoteDeviceRpcToolName = 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'send_file' | 'import_file' | 'execute_shell';
 
 interface DeviceRpcNormalizeOptions {
@@ -61,7 +72,7 @@ export async function executeRemoteDeviceRpcTool(
     return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效；请刷新授权后再试。', retryable: false };
   }
   try {
-    return await context.deviceRpc.executeTool({
+    const result = await context.deviceRpc.executeTool({
       toolName,
       operation,
       args: stripTransportOnlyArgs(args),
@@ -73,7 +84,10 @@ export async function executeRemoteDeviceRpcTool(
       targetDeviceInstallationId: gateway.targetDeviceInstallationId,
       timeoutMs: resolveRemoteToolTimeoutMs(gateway.grant?.expiresAt, requestedToolTimeoutMs(toolName, args), dispatchNow),
     });
+    return !result.ok ? unknownRemoteMutationResult(toolName, result) || result : result;
   } catch (error: any) {
+    const uncertain = unknownRemoteMutationResult(toolName, error);
+    if (uncertain) return uncertain;
     if (toolName === 'grep' && error instanceof RangeError) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: false };
     }

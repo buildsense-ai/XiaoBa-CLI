@@ -1,7 +1,7 @@
 import type { DeviceGrantOperation, ScopedDeviceGrant } from '../types/session-identity';
 import type { TargetRoute, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { normalizeTargetText } from '../catscompany/runtime-context';
-import { executeRemoteDeviceRpcTool, resolveRemoteToolTimeoutMs } from './device-rpc-tool';
+import { executeRemoteDeviceRpcTool, resolveRemoteToolTimeoutMs, unknownRemoteMutationResult } from './device-rpc-tool';
 import { resolveGrepRpcTimeoutMs } from './grep-search-policy';
 import { TOOL_TARGET_CONTEXT_PREFIX, TOOL_TARGET_CONTEXT_SUFFIX } from './tool-target-context';
 import {
@@ -11,6 +11,7 @@ import {
   type TrustedBotSkillScriptInvocation,
 } from '../bot-skills/trusted-script-execution';
 import { Logger } from '../utils/logger';
+import { remoteShellTiming } from './remote-shell-policy';
 import { getDeviceAuthorizationSessionKey, resolveDeviceGrant } from '../core/device-grants';
 
 export type ExecutionTargetId = 'agent_self' | string;
@@ -340,6 +341,19 @@ export async function executeRouteIfRemote(
   route = authorized;
   if (context.thinToolRpc && route.targetOwnerUserId) {
     let timeoutMs: number | undefined = toolName === 'send_file' || toolName === 'import_file' ? 300_000 : undefined;
+    if (toolName === 'execute_shell' && context.thinToolRpc.supportsRemoteShellTimeout) {
+      try {
+        const timing = remoteShellTiming(args.timeout);
+        if (!route.grant || route.grant.expiresAt - Date.now() < timing.rpcMs) {
+          return { ok: false, errorCode: 'PERMISSION_DENIED', retryable: false,
+            message: '设备授权剩余时间不足以等待这条命令，续期未成功；命令尚未派发，也未改用其他电脑。' };
+        }
+        timeoutMs = timing.rpcMs;
+        args = { ...args, timeout: timing.executionMs };
+      } catch (error: any) {
+        return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: false };
+      }
+    }
     if (toolName === 'grep') {
       const dispatchNow = Date.now();
       if (route.grant?.expiresAt !== undefined
@@ -364,6 +378,8 @@ export async function executeRouteIfRemote(
         timeoutMs,
       });
     } catch (error: any) {
+      const uncertain = unknownRemoteMutationResult(toolName, error);
+      if (uncertain) return attachRouteTargetContext(uncertain, route, { toolName, operation, cwd: routeTargetCwd(toolName, args, context.workingDirectory) });
       // Preserve the existing exception path for all other tools. Grep's
       // transport deadline is an incomplete search, never a no-match fact.
       if (toolName !== 'grep' || !/timeout|timed out|deadline/i.test(String(error?.code || error?.kind || error?.message || ''))) throw error;
@@ -373,7 +389,7 @@ export async function executeRouteIfRemote(
       };
     }
     return attachRouteTargetContext(
-      stripRemoteToolTargetContext(result),
+      stripRemoteToolTargetContext(!result.ok ? unknownRemoteMutationResult(toolName, result) || result : result),
       route,
       {
         toolName,
