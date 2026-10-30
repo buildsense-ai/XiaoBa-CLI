@@ -18,12 +18,26 @@ export const DEEPSEEK_FLASH_MODEL_IDS = new Set([
   'deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp',
 ]);
 
+// Users copy whatever id the provider console shows, so an installed profile
+// can address the same model by a versioned or upstream build id
+// (`deepseek-v4.1-flash`, `deepseek-v4.1-flash-1017`, or a
+// `provider/model` path). An exact-name check silently skipped every DeepSeek
+// rule for those profiles, and the gateway answered
+// "reasoning parts must use summary_text or reasoning_text" on the next turn
+// (production 2026-10-29). Match the family instead of one literal id.
+const DEEPSEEK_FLASH_FAMILY_PATTERN = /^deepseek(?:-v4(?:\.\d+)*)?-flash(?:-[a-z0-9]+)*$/;
+
+function deepSeekModelKey(model: unknown): string {
+  return String(model || '').trim().toLowerCase().split('/').pop() || '';
+}
+
 export function isDeepSeekResponses(
   apiMode: ChatConfig['openaiApiMode'],
   model: unknown,
 ): boolean {
-  return apiMode === DEEPSEEK_RESPONSES_PROFILE.apiMode
-    && DEEPSEEK_FLASH_MODEL_IDS.has(String(model || '').trim().toLowerCase());
+  if (apiMode !== DEEPSEEK_RESPONSES_PROFILE.apiMode) return false;
+  const key = deepSeekModelKey(model);
+  return DEEPSEEK_FLASH_MODEL_IDS.has(key) || DEEPSEEK_FLASH_FAMILY_PATTERN.test(key);
 }
 
 export function normalizeDeepSeekReasoningEffort(

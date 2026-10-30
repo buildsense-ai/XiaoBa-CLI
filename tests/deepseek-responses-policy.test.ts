@@ -20,6 +20,26 @@ describe('DeepSeek Responses policy', () => {
     assert.equal(DEEPSEEK_RELAY_MODEL_PROFILE.openaiApiMode, 'responses');
   });
 
+  test('recognizes profiles that use a versioned or upstream model id', () => {
+    // A saved profile can carry the id the provider console shows. Skipping the
+    // DeepSeek rules for those ids made the gateway reject the next turn with
+    // "reasoning parts must use summary_text or reasoning_text".
+    for (const model of [
+      'deepseek-v4.1-flash',
+      'deepseek-v4.1-flash-1017',
+      'deepseek-flash-ctyun/deepseek-v4.1-flash-1017',
+      'deepseek-flash-openai',
+      'DEEPSEEK-V4-FLASH',
+    ]) {
+      assert.equal(isDeepSeekResponses('responses', model), true, model);
+    }
+    for (const model of ['deepseek-chat', 'gpt-5.6-terra', 'deepseek-v5-flash', '']) {
+      assert.equal(isDeepSeekResponses('responses', model), false, model);
+    }
+    // Mode still decides the protocol lane.
+    assert.equal(isDeepSeekResponses('chat_completions', 'deepseek-v4.1-flash-1017'), false);
+  });
+
   test('owns DeepSeek reasoning values', () => {
     assert.equal(normalizeDeepSeekReasoningEffort('disabled'), 'none');
     assert.equal(normalizeDeepSeekReasoningEffort('low'), 'low');
