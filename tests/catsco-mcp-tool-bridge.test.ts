@@ -889,4 +889,79 @@ describe('CatsCo MCP 工具桥', () => {
     );
     assert.doesNotMatch(content, /产物文件/);
   });
+
+  test('轮询连续失败：不把「仍在运行」当结论，明确告知轮询已中断', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello'), toolInfo('catsco_run_status')],
+      callTool: name => {
+        if (name === 'catsco_hello') {
+          return {
+            isError: false,
+            contentText: 'run=r9 session=s9 status=running',
+            structured: { status: 'running', run_id: 'r9', session_id: 's9' },
+          };
+        }
+        throw new Error('socket hang up');
+      },
+      runPollTimeoutMs: 5_000,
+      runPollIntervalMs: 1,
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    const content = (result as { content: string }).content;
+
+    // 轮询通道坏了 ≠ 任务还在推进：结果文本必须把原因说出来，并指向 catsco_run_status。
+    assert.equal(result.ok, true);
+    assert.match(content, /自动轮询已中断/);
+    assert.match(content, /socket hang up/);
+    assert.match(content, /catsco_run_status/);
+  });
+
+  test('单次抖动不算通道坏：重试后仍能拿到终态', async () => {
+    let polls = 0;
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello'), toolInfo('catsco_run_status')],
+      callTool: name => {
+        if (name === 'catsco_hello') {
+          return {
+            isError: false,
+            contentText: 'run=r10 session=s10 status=running',
+            structured: { status: 'running', run_id: 'r10', session_id: 's10' },
+          };
+        }
+        polls += 1;
+        if (polls === 1) throw new Error('transient 502');
+        return {
+          isError: false,
+          contentText: 'run=r10 status=completed',
+          structured: { status: 'completed', run_id: 'r10', session_id: 's10', output: { text: '最终答复' } },
+        };
+      },
+      runPollTimeoutMs: 5_000,
+      runPollIntervalMs: 1,
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    const content = (result as { content: string }).content;
+
+    assert.equal(result.ok, true);
+    assert.match(content, /最终答复/);
+    assert.doesNotMatch(content, /自动轮询已中断/);
+    assert.equal(polls, 2);
+  });
+
+  test('无结构化结果且正文为空：报失败，不当成「成功但没内容」', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => ({ isError: false, contentText: '   ' }),
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+
+    assert.equal(result.ok, false);
+    assert.equal((result as { errorCode: string }).errorCode, 'catsco_empty_result');
+  });
 });
