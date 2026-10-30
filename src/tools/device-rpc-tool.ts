@@ -3,11 +3,30 @@ import type { ToolErrorCode, ToolExecutionContext, ToolExecutionResult, Uploaded
 import { isRateLimitErrorCode } from '../utils/rate-limit-error';
 import { resolveGrepRpcTimeoutMs } from './grep-search-policy';
 import type { ToolGatewayDecision } from './tool-gateway';
+import { CatsSendError } from '../catscompany/send-error';
 
 const REMOTE_TOOL_DEFAULT_TIMEOUT_MS = 60_000;
 const REMOTE_TOOL_MIN_TIMEOUT_MS = 5_000;
 const REMOTE_TOOL_MAX_TIMEOUT_MS = 300_000;
 export const MAX_DEVICE_RPC_TOOL_CONTENT_CHARS = 48_000;
+
+export function unknownRemoteMutationResult(toolName: string, error: unknown): ToolExecutionResult | undefined {
+  if (!['execute_shell', 'write_file', 'edit_file', 'send_file', 'import_file'].includes(toolName)) return undefined;
+  if (!(error instanceof CatsSendError) || (error.kind !== 'timeout' && error.kind !== 'transport')) return undefined;
+  return { ok: false, errorCode: error.kind === 'timeout' ? 'EXECUTION_TIMEOUT' : 'TOOL_EXECUTION_ERROR', retryable: false,
+    message: '远程操作未收到最终结果，无法确认是否已执行或完成。请先核对同一设备上的任务状态或产物，不要原样重跑写入、删除或提交命令，也不能改在另一台电脑执行。' };
+}
+
+/** Only codes on the authenticated RPC error ENVELOPE, never device result
+ * messages. Unavailable may mean a route disappeared after dispatch; the
+ * envelope cannot prove non-execution, so mutations must not be replayed. */
+export function remoteRpcOutcomeError(code: unknown): CatsSendError | undefined {
+  if (code === 'thin_tool_rpc_timeout' || code === 'device_rpc_timeout') {
+    return new CatsSendError('timeout', 'RPC result deadline elapsed');
+  }
+  if (code === 'target_device_unavailable') return new CatsSendError('transport', 'RPC target route unavailable');
+  return undefined;
+}
 
 type RemoteDeviceRpcToolName = 'read_file' | 'resolve_common_directory' | 'glob' | 'grep' | 'write_file' | 'edit_file' | 'send_file' | 'import_file' | 'execute_shell';
 
@@ -58,7 +77,7 @@ export async function executeRemoteDeviceRpcTool(
   const dispatchNow = Date.now();
   if (toolName === 'grep' && gateway.grant?.expiresAt !== undefined
     && (!Number.isFinite(gateway.grant.expiresAt) || gateway.grant.expiresAt <= dispatchNow)) {
-    return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效；请刷新授权后再试。', retryable: false };
+    return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效，操作未派发。不要反复重试或换机执行；请等待新的用户请求获取本轮授权。', retryable: false };
   }
   try {
     return await context.deviceRpc.executeTool({
@@ -74,6 +93,8 @@ export async function executeRemoteDeviceRpcTool(
       timeoutMs: resolveRemoteToolTimeoutMs(gateway.grant?.expiresAt, requestedToolTimeoutMs(toolName, args), dispatchNow),
     });
   } catch (error: any) {
+    const uncertain = unknownRemoteMutationResult(toolName, error);
+    if (uncertain) return uncertain;
     if (toolName === 'grep' && error instanceof RangeError) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: false };
     }

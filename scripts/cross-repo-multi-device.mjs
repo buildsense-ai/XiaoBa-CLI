@@ -34,7 +34,7 @@ process.stderr.write(result.stderr || '');
 if (result.error || result.status !== 0 || result.signal) throw new Error(`Paired contract failed: ${result.error?.message || result.signal || result.status}`);
 const events = result.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
 const suite = 'TestXiaoBaMultiDevicePairedContract';
-const names = ['', '/multiple_devices_require_selection', '/selected_a', '/selected_b',
+const names = ['', '/renewal_capability_is_additive', '/multiple_devices_require_selection', '/selected_a', '/selected_b',
   '/no_default_explicit_B', '/selected_a/explicit_B_while_default_A', '/selected_a/both_targets_keep_default_A',
   '/selected_a/explicit_B_while_default_A/scope_cannot_be_omitted',
   '/selected_a/legacy_grant_list_stays_default_only', '/v1_rollout_keeps_selected_only_authority',

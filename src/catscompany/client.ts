@@ -1,5 +1,9 @@
 // CatsCo 服务器 WebSocket 客户端
 import WebSocket from 'ws';
+import type { ScopedDeviceGrant } from '../types/session-identity';
+import { DeviceGrantRenewalError, isDeviceGrantRenewal } from '../core/device-grant-lease';
+import { CatsSendError } from './send-error';
+export { CatsSendError, type CatsSendErrorKind } from './send-error';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { Logger } from '../utils/logger';
@@ -207,8 +211,6 @@ interface PendingAck {
   clientMsgID?: string;
 }
 
-export type CatsSendErrorKind = 'transport' | 'ack' | 'timeout';
-
 // Cats 服务端握手协议版本，不是 CatsCo 客户端发布版本。
 const CATSCOMPANY_PROTOCOL_VERSION = '0.1.0';
 const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
@@ -256,23 +258,6 @@ function isBusinessRejectionCause(cause: string): boolean {
   return /^upgrade_http_4\d\d$/.test(cause);
 }
 
-export class CatsSendError extends Error {
-  public readonly clientMsgID?: string;
-  public readonly retryableWithHttp: boolean;
-
-  constructor(
-    public readonly kind: CatsSendErrorKind,
-    message: string,
-    public readonly code?: number,
-    options: { clientMsgID?: string; retryableWithHttp?: boolean } = {}
-  ) {
-    super(message);
-    this.name = 'CatsSendError';
-    this.clientMsgID = options.clientMsgID;
-    this.retryableWithHttp = options.retryableWithHttp ?? false;
-  }
-}
-
 function describeReadyState(ws: WebSocket | null): string {
   switch (ws?.readyState) {
     case WebSocket.CONNECTING:
@@ -295,6 +280,10 @@ export class CatsClient extends EventEmitter {
   private pendingAcks = new Map<string, PendingAck>();
   private pendingDeviceRpc = new Map<string, PendingDeviceRpc>();
   private pendingThinToolRpc = new Map<string, PendingThinToolRpc>();
+  private pendingDeviceGrantRenewals = new Map<string, {
+    grant: ScopedDeviceGrant; resolve: (grant: ScopedDeviceGrant) => void;
+    reject: (err: Error) => void; timer: NodeJS.Timeout;
+  }>();
   private pendingSkillMutationGrants = new Map<string, PendingSkillMutationGrant>();
   private pingTimer: NodeJS.Timeout | null = null;
   private pongTimer: NodeJS.Timeout | null = null;
@@ -318,6 +307,8 @@ export class CatsClient extends EventEmitter {
   private subscribedTopics = new Set<string>();
   private supportsClientMessageDedupe = false;
   public supportsThinToolRpc = false;
+  public supportsDeviceGrantRenewal = false;
+  public supportsRemoteShellTimeout = false;
   private awaitingReady = false;
 
   public uid = '';
@@ -374,6 +365,8 @@ export class CatsClient extends EventEmitter {
     }
     this.supportsClientMessageDedupe = false;
     this.supportsThinToolRpc = false;
+    this.supportsDeviceGrantRenewal = false;
+    this.supportsRemoteShellTimeout = false;
     this.connectionOpenedAt = 0;
     this.readyAt = 0;
     this.lastActivityAt = 0;
@@ -529,6 +522,10 @@ export class CatsClient extends EventEmitter {
         }
         this.supportsThinToolRpc = Array.isArray(msg.ctrl.params?.features)
           && msg.ctrl.params.features.includes('thin_tool_rpc');
+        this.supportsDeviceGrantRenewal = Array.isArray(msg.ctrl.params?.features)
+          && msg.ctrl.params.features.includes('device_grant_renewal.v1');
+        this.supportsRemoteShellTimeout = Array.isArray(msg.ctrl.params?.features)
+          && msg.ctrl.params.features.includes('remote_shell_timeout.v1');
         if (this.supportsThinToolRpc) {
           Logger.info('[CatsCompany] 服务端支持 thin_tool_rpc 轻量工具传输');
         }
@@ -565,6 +562,16 @@ export class CatsClient extends EventEmitter {
       this.emit('service_run_receipt', msg.service_run_receipt);
     } else if (msg.thin_tool_rpc) {
       this.handleThinToolRpcMessage(msg.thin_tool_rpc);
+    } else if (msg.device_grant_renewal) {
+      const result = msg.device_grant_renewal;
+      const pending = this.pendingDeviceGrantRenewals.get(result.request_id);
+      if (!pending || result.type !== 'result') return;
+      clearTimeout(pending.timer);
+      this.pendingDeviceGrantRenewals.delete(result.request_id);
+      if (result.error || result.grant_id !== pending.grant.grantId
+        || !isDeviceGrantRenewal(pending.grant, result.grant)) {
+        pending.reject(new DeviceGrantRenewalError(result.error ? 'denied' : 'invalid_response'));
+      } else { pending.resolve(result.grant); }
     } else if (msg.skill_mutation_grant) {
       this.handleSkillMutationGrantMessage(msg.skill_mutation_grant);
     } else if (msg.data) {
@@ -1043,6 +1050,25 @@ export class CatsClient extends EventEmitter {
     Logger.info(`[CatsCompany][thin_tool_rpc] result acked by server: request=${requestID}, msg=${msgId}`);
   }
 
+  async renewDeviceGrant(grant: ScopedDeviceGrant, timeoutMs = 15_000): Promise<ScopedDeviceGrant> {
+    if (!this.supportsDeviceGrantRenewal) throw new Error('Server does not support device grant renewal');
+    const requestID = `grant_renewal_${crypto.randomUUID()}`;
+    return new Promise<ScopedDeviceGrant>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingDeviceGrantRenewals.delete(requestID);
+        reject(new CatsSendError('timeout', 'Device grant renewal timed out'));
+      }, timeoutMs);
+      this.pendingDeviceGrantRenewals.set(requestID, { grant, resolve, reject, timer });
+      try {
+        this.sendOrThrow({ device_grant_renewal: { id: `${++this.msgId}`, type: 'request', request_id: requestID, grant_id: grant.grantId } });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pendingDeviceGrantRenewals.delete(requestID);
+        reject(error);
+      }
+    });
+  }
+
   async requestSkillMutationGrant(
     request: CatsSkillMutationGrantRequest,
     timeoutMs = 15_000,
@@ -1285,6 +1311,11 @@ export class CatsClient extends EventEmitter {
   }
 
   private rejectPendingThinToolRpc(err: Error): void {
+    for (const [id, pending] of this.pendingDeviceGrantRenewals) {
+      clearTimeout(pending.timer);
+      this.pendingDeviceGrantRenewals.delete(id);
+      pending.reject(err);
+    }
     for (const [requestID, pending] of this.pendingThinToolRpc.entries()) {
       clearTimeout(pending.timer);
       this.pendingThinToolRpc.delete(requestID);

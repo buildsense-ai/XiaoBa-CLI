@@ -2,6 +2,60 @@
 
 This document records the lightweight remote execution design for CatsCompany-backed XiaoBa sessions.
 
+## Active-task grant renewal (2026-10-30)
+
+This is an additive capability, separate from enabling multi-device v2. A cloud
+runtime sends `device_grant_renewal` only after the current WebSocket handshake
+advertises `device_grant_renewal.v1`. It sends an opaque original grant ID and a
+request ID, never model-selected identity, device, operations or session fields.
+The renewed grant must have exactly the same authority and original creation
+time; only its grant ID and expiry change. No renewal capability is exposed as a
+model tool or added to Skill workflows.
+
+Renewal responses are bounded using the previous server-issued expiry (at most
+ten additional minutes) and original creation (at most 24 hours), not a five-second
+local-clock tolerance. Local expiry checks remain fail-closed; this does not make
+arbitrary host clock errors safe. Renewal outcomes have per-run counters and
+one-minute, per-reason throttled logs using fixed enums only, never bearer IDs,
+raw errors or user paths. Unsupported, denied, timed-out and invalid responses
+are distinguishable. Only same-account grants renew; delegated/channel-linked
+grants retain their original expiry and are not silently converted to own-account
+authority.
+
+While a conversation runner is active, a 30-second heartbeat and a pre-tool
+check renew grants with six minutes or less remaining. Requests coalesce and
+failures back off. Completion/cancellation stops renewal, and a late response
+cannot update replaced context, a changed selection revision or a stopped task.
+The server rechecks the Bot lease, conversation access, same-account ownership,
+target incarnation, live route, capabilities and logout/revocation watermark.
+Each extension is at most ten minutes, bounded by 24 hours from the ORIGINAL
+grant creation. The old grant remains valid only until its existing expiry so
+in-flight requests do not lose their authority merely because of renewal.
+Expired, revoked and switched-device grants are never revived. A connection
+loss longer than the remaining authorization can still require a new human turn;
+background-job polling alone does not confer a fresh authorization.
+
+`remote_shell_timeout.v1` separately negotiates synchronous shell timing: at
+most five minutes of execution plus ten seconds to return the result, all within
+the valid grant. Longer synchronous requests fail BEFORE dispatch rather than
+being silently shortened. Split work into short commands, or start an independent
+background process on the target device and immediately return, then use short
+commands to inspect progress there. Delegating to a subagent does not lift the
+per-command limit. A mutation with a transport
+timeout/disconnection has an UNKNOWN outcome; the runtime marks it non-retryable
+and asks the model to inspect that device's state before replaying it. This is
+not a new user-confirmation requirement. Unknown outcomes are identified from
+typed transport failures or exact RPC-envelope error codes, not from tool-result
+text. A complete device error (including shell-killed-at-timeout and partial
+stdout) is preserved even if its text/path contains `timeout` or `transport`.
+
+Either repository can merge first. New CLI + old server sends no renewal and
+retains the old timeout wire behavior (including the old ten-minute limitation).
+Old CLI + new server keeps the existing protocol and does not gain renewal
+automatically. Both updated sides are needed to fix long-task expiry. Desktop
+receiver envelopes and the Connector updater are unchanged. A merge/build is
+not a production deployment or proof of a real-device long-task acceptance run.
+
 ## Current default and explicit target protocol (2026-10-21)
 
 The earlier grant-free routing notes below describe the historical path. Ordinary
