@@ -358,7 +358,7 @@ export async function executeRouteIfRemote(
       const dispatchNow = Date.now();
       if (route.grant?.expiresAt !== undefined
         && (!Number.isFinite(route.grant.expiresAt) || route.grant.expiresAt <= dispatchNow)) {
-        return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效；请刷新授权后再试。', retryable: false };
+        return { ok: false, errorCode: 'PERMISSION_DENIED', message: 'grep 设备授权已过期或无效，操作未派发。不要反复重试或换机执行；请等待新的用户请求获取本轮授权。', retryable: false };
       }
       try {
         timeoutMs = resolveRemoteToolTimeoutMs(route.grant?.expiresAt, resolveGrepRpcTimeoutMs(args.timeout_ms), dispatchNow);
@@ -389,7 +389,7 @@ export async function executeRouteIfRemote(
       };
     }
     return attachRouteTargetContext(
-      stripRemoteToolTargetContext(!result.ok ? unknownRemoteMutationResult(toolName, result) || result : result),
+      stripRemoteToolTargetContext(result),
       route,
       {
         toolName,

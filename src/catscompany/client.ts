@@ -1,7 +1,9 @@
 // CatsCo 服务器 WebSocket 客户端
 import WebSocket from 'ws';
 import type { ScopedDeviceGrant } from '../types/session-identity';
-import { isDeviceGrantRenewal } from '../core/device-grant-lease';
+import { DeviceGrantRenewalError, isDeviceGrantRenewal } from '../core/device-grant-lease';
+import { CatsSendError } from './send-error';
+export { CatsSendError, type CatsSendErrorKind } from './send-error';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { Logger } from '../utils/logger';
@@ -209,8 +211,6 @@ interface PendingAck {
   clientMsgID?: string;
 }
 
-export type CatsSendErrorKind = 'transport' | 'ack' | 'timeout';
-
 // Cats 服务端握手协议版本，不是 CatsCo 客户端发布版本。
 const CATSCOMPANY_PROTOCOL_VERSION = '0.1.0';
 const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
@@ -256,23 +256,6 @@ function isBusinessRejectionCause(cause: string): boolean {
   // HTTP 升级阶段的 4xx 属于服务端业务层拒绝（401/403 鉴权、409 Body 绑定冲突等）：
   // 兄弟域名指向同一后端，切换只会重复被拒，还会持续污染日志（生产实测 2 天 5611 次空翻）。
   return /^upgrade_http_4\d\d$/.test(cause);
-}
-
-export class CatsSendError extends Error {
-  public readonly clientMsgID?: string;
-  public readonly retryableWithHttp: boolean;
-
-  constructor(
-    public readonly kind: CatsSendErrorKind,
-    message: string,
-    public readonly code?: number,
-    options: { clientMsgID?: string; retryableWithHttp?: boolean } = {}
-  ) {
-    super(message);
-    this.name = 'CatsSendError';
-    this.clientMsgID = options.clientMsgID;
-    this.retryableWithHttp = options.retryableWithHttp ?? false;
-  }
 }
 
 function describeReadyState(ws: WebSocket | null): string {
@@ -587,7 +570,7 @@ export class CatsClient extends EventEmitter {
       this.pendingDeviceGrantRenewals.delete(result.request_id);
       if (result.error || result.grant_id !== pending.grant.grantId
         || !isDeviceGrantRenewal(pending.grant, result.grant)) {
-        pending.reject(new Error('设备授权续期失败；未改变目标设备或重放操作。'));
+        pending.reject(new DeviceGrantRenewalError(result.error ? 'denied' : 'invalid_response'));
       } else { pending.resolve(result.grant); }
     } else if (msg.skill_mutation_grant) {
       this.handleSkillMutationGrantMessage(msg.skill_mutation_grant);
@@ -1073,11 +1056,11 @@ export class CatsClient extends EventEmitter {
     return new Promise<ScopedDeviceGrant>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingDeviceGrantRenewals.delete(requestID);
-        reject(new Error('Device grant renewal timed out'));
+        reject(new CatsSendError('timeout', 'Device grant renewal timed out'));
       }, timeoutMs);
       this.pendingDeviceGrantRenewals.set(requestID, { grant, resolve, reject, timer });
       try {
-        this.sendOrThrow({ device_grant_renewal: { type: 'request', request_id: requestID, grant_id: grant.grantId } });
+        this.sendOrThrow({ device_grant_renewal: { id: `${++this.msgId}`, type: 'request', request_id: requestID, grant_id: grant.grantId } });
       } catch (error) {
         clearTimeout(timer);
         this.pendingDeviceGrantRenewals.delete(requestID);

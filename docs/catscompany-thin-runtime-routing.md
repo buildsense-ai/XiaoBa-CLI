@@ -12,6 +12,16 @@ The renewed grant must have exactly the same authority and original creation
 time; only its grant ID and expiry change. No renewal capability is exposed as a
 model tool or added to Skill workflows.
 
+Renewal responses are bounded using the previous server-issued expiry (at most
+ten additional minutes) and original creation (at most 24 hours), not a five-second
+local-clock tolerance. Local expiry checks remain fail-closed; this does not make
+arbitrary host clock errors safe. Renewal outcomes have per-run counters and
+one-minute, per-reason throttled logs using fixed enums only, never bearer IDs,
+raw errors or user paths. Unsupported, denied, timed-out and invalid responses
+are distinguishable. Only same-account grants renew; delegated/channel-linked
+grants retain their original expiry and are not silently converted to own-account
+authority.
+
 While a conversation runner is active, a 30-second heartbeat and a pre-tool
 check renew grants with six minutes or less remaining. Requests coalesce and
 failures back off. Completion/cancellation stops renewal, and a late response
@@ -28,11 +38,16 @@ background-job polling alone does not confer a fresh authorization.
 `remote_shell_timeout.v1` separately negotiates synchronous shell timing: at
 most five minutes of execution plus ten seconds to return the result, all within
 the valid grant. Longer synchronous requests fail BEFORE dispatch rather than
-being silently shortened. Submit longer work through existing background-job
-workflows and inspect progress on the same device. A mutation with a transport
+being silently shortened. Split work into short commands, or start an independent
+background process on the target device and immediately return, then use short
+commands to inspect progress there. Delegating to a subagent does not lift the
+per-command limit. A mutation with a transport
 timeout/disconnection has an UNKNOWN outcome; the runtime marks it non-retryable
 and asks the model to inspect that device's state before replaying it. This is
-not a new user-confirmation requirement.
+not a new user-confirmation requirement. Unknown outcomes are identified from
+typed transport failures or exact RPC-envelope error codes, not from tool-result
+text. A complete device error (including shell-killed-at-timeout and partial
+stdout) is preserved even if its text/path contains `timeout` or `transport`.
 
 Either repository can merge first. New CLI + old server sends no renewal and
 retains the old timeout wire behavior (including the old ten-minute limitation).

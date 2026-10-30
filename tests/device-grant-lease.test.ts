@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DeviceGrantLease, isDeviceGrantRenewal } from '../src/core/device-grant-lease';
+import { DeviceGrantLease, DeviceGrantRenewalError, isDeviceGrantRenewal } from '../src/core/device-grant-lease';
 import { scopedDeviceContext } from './helpers/scoped-device-context';
 import type { ScopedDeviceGrant } from '../src/types/session-identity';
 import type { ToolExecutionContext } from '../src/types/tool';
-import { CatsClient } from '../src/catscompany/client';
+import { CatsClient, CatsSendError } from '../src/catscompany/client';
+import { Logger } from '../src/utils/logger';
 import { CatsCompanyBot } from '../src/catscompany/index';
 import { resolveExecutionRoute, executeRouteIfRemote } from '../src/tools/execution-router';
 import { buildTargetRoutes } from '../src/catscompany/runtime-context';
@@ -67,7 +68,7 @@ for (const variant of ['device', 'actor', 'session', 'scope', 'revision', 'opera
       case 'revision': next.selectionRevision = 'other'; break;
       case 'operations': next.operations = [...old.operations, 'write_file']; break;
       case 'duplicate operations': next.operations = old.operations.map(() => old.operations[0]); break;
-      case 'expiry': next.expiresAt += 600_000; break;
+      case 'expiry': next.expiresAt = old.expiresAt + 600_001; break;
       case 'body': next.deviceBodyId = 'other'; break;
       case 'creation': next.createdAt++; break;
     }
@@ -131,7 +132,8 @@ test('client renewal negotiates support and sends only an opaque original grant 
   (client as any).sendOrThrow = (message: any) => { sent = message; };
   const pending = client.renewDeviceGrant(grant);
   const request = sent.device_grant_renewal;
-  assert.deepEqual(Object.keys(request).sort(), ['grant_id', 'request_id', 'type']);
+  assert.deepEqual(Object.keys(request).sort(), ['grant_id', 'id', 'request_id', 'type']);
+  assert.equal(typeof request.id, 'string');
   (client as any).handleMessage({ device_grant_renewal: { ...request, type: 'result',
     grant: { ...grant, grantId: 'new-grant', expiresAt: Date.now() + 600_000 } } });
   assert.equal((await pending).grantId, 'new-grant');
@@ -227,8 +229,7 @@ test('runner heartbeat renews while the model is thinking, then stops after comp
 
 test('uncertain mutations are never replayable, while definite grant denial and read errors are preserved', () => {
   for (const tool of ['execute_shell', 'write_file', 'edit_file', 'send_file', 'import_file']) {
-    for (const error of [new Error('connection closed'), { kind: 'timeout' },
-      { errorCode: 'EXECUTION_TIMEOUT', message: 'target did not return before request expired' }]) {
+    for (const error of [new CatsSendError('transport', 'connection closed'), new CatsSendError('timeout', 'RPC result deadline')]) {
       const result = unknownRemoteMutationResult(tool, error);
       assert.equal(result?.ok, false);
       if (result && !result.ok) {
@@ -238,17 +239,23 @@ test('uncertain mutations are never replayable, while definite grant denial and 
     }
     assert.equal(unknownRemoteMutationResult(tool, { errorCode: 'PERMISSION_DENIED', message: 'grant expired' }), undefined);
     assert.equal(unknownRemoteMutationResult(tool, new Error('device grant expired')), undefined);
+    for (const error of [new Error('connection closed'), { kind: 'timeout' },
+      { errorCode: 'EXECUTION_TIMEOUT', message: 'started; command was killed at deadline' },
+      { errorCode: 'TOOL_EXECUTION_ERROR', message: 'EACCES /srv/transport/config.json' },
+      { errorCode: 'TOOL_EXECUTION_ERROR', message: 'timeout 5 npm test: exit 254' },
+      { errorCode: 'TOOL_EXECUTION_ERROR', message: 'curl: (28) Connection timed out' }]) {
+      assert.equal(unknownRemoteMutationResult(tool, error), undefined);
+    }
   }
-  assert.equal(unknownRemoteMutationResult('read_file', new Error('timeout')), undefined);
+  assert.equal(unknownRemoteMutationResult('read_file', new CatsSendError('timeout', 'RPC deadline')), undefined);
 });
 
-test('thin mutation timeout and disconnect return unknown result without redispatch or device fallback', async () => {
-  for (const throws of [false, true]) {
+test('thin mutation transport timeout and disconnect return unknown result without redispatch or device fallback', async () => {
+  for (const kind of ['transport', 'timeout'] as const) {
     const f = fixture(); let calls = 0;
     f.context.thinToolRpc!.executeTool = async request => {
       calls++; assert.equal(request.targetDeviceId, 'a');
-      if (throws) throw new Error('WebSocket connection closed');
-      return { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: 'no result before request expired', retryable: true };
+      throw new CatsSendError(kind, 'no final RPC result');
     };
     const route = resolveExecutionRoute(f.context, { toolName: 'execute_shell', operation: 'execute_shell', target: 'a' });
     const result = await executeRouteIfRemote(f.context, route, 'execute_shell', 'execute_shell', { command: 'echo harmless' });
@@ -259,12 +266,11 @@ test('thin mutation timeout and disconnect return unknown result without redispa
 });
 
 test('legacy device transport also prevents blind mutation replay after timeout', async () => {
-  for (const throws of [false, true]) {
+  for (const kind of ['transport', 'timeout'] as const) {
     const f = fixture(); let calls = 0;
     f.context.deviceRpc = { executeTool: async () => {
       calls++;
-      if (throws) throw new Error('RPC timeout');
-      return { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: 'RPC timed out', retryable: true };
+      throw new CatsSendError(kind, 'no final RPC result');
     } } as any;
     const result = await executeRemoteDeviceRpcTool(f.context,
       { ok: true, mode: 'remote', grant: f.context.deviceGrants![0], targetDeviceId: 'a' },
@@ -273,4 +279,99 @@ test('legacy device transport also prevents blind mutation replay after timeout'
     if (result && !result.ok) assert.equal(result.retryable, false);
     assert.equal(calls, 1);
   }
+});
+
+test('confirmed tool failures preserve their output on both RPC transports regardless of timeout words', async () => {
+  for (const thin of [true, false]) {
+    for (const failure of [
+      { ok: false as const, errorCode: 'EXECUTION_TIMEOUT', message: 'started\ncommand killed at deadline', retryable: false },
+      { ok: false as const, errorCode: 'TOOL_EXECUTION_ERROR', message: 'curl: (28) Connection timed out\nexit 28', retryable: false },
+      { ok: false as const, errorCode: 'TOOL_EXECUTION_ERROR', message: 'timeout 5 npm test: exit 254', retryable: false },
+      { ok: false as const, errorCode: 'TOOL_EXECUTION_ERROR', message: 'EACCES /srv/transport/config.json', retryable: false },
+    ]) {
+      const f = fixture();
+      let calls = 0;
+      const executeTool = async () => { calls++; return failure; };
+      let result;
+      if (thin) {
+        f.context.thinToolRpc!.executeTool = executeTool;
+        const route = resolveExecutionRoute(f.context, { toolName: 'execute_shell', operation: 'execute_shell', target: 'a' });
+        result = await executeRouteIfRemote(f.context, route, 'execute_shell', 'execute_shell', { command: 'fixture only' });
+      } else {
+        f.context.deviceRpc = { executeTool };
+        result = await executeRemoteDeviceRpcTool(f.context,
+          { ok: true, mode: 'remote', grant: f.context.deviceGrants![0], targetDeviceId: 'a' },
+          'execute_shell', 'execute_shell', { command: 'fixture only' });
+      }
+      assert.equal(result?.ok, false);
+      if (result && !result.ok) {
+        assert.equal(result.errorCode, failure.errorCode);
+        assert.ok(result.message.includes(failure.message));
+        assert.doesNotMatch(result.message, /无法确认是否已执行/);
+      }
+      assert.equal(calls, 1);
+    }
+  }
+});
+
+test('real transport adapters separate RPC envelope timeout from a complete device tool timeout', async () => {
+  const grant = fixture().context.deviceGrants![0];
+  const deviceResult = { ok: false, errorCode: 'EXECUTION_TIMEOUT', message: 'started\ncommand killed', retryable: false };
+  for (const thin of [true, false]) {
+    for (const envelope of [true, false]) {
+      const bot = Object.create(CatsCompanyBot.prototype) as any;
+      const reply = async () => envelope ? { error: { code: thin ? 'thin_tool_rpc_timeout' : 'device_rpc_timeout', message: 'wire deadline' } }
+        : { result: deviceResult };
+      bot.bot = { sendThinToolRpcRequest: reply, sendDeviceRpcRequest: reply };
+      const transport = thin ? bot.buildThinToolRpcTransport() : bot.buildDeviceRpcTransport();
+      const result = await transport.executeTool({ grant, targetOwnerUserId: grant.ownerUserId,
+        targetDeviceId: grant.deviceId, operation: 'execute_shell', toolName: 'execute_shell', args: {} });
+      assert.equal(result.ok, false);
+      assert.equal(result.retryable, false);
+      if (envelope) assert.match(result.message, /无法确认是否已执行/);
+      else assert.equal(result.message, deviceResult.message);
+    }
+  }
+});
+
+test('renewal tolerates fixed server clock skew but rejects excessive extension and a 24h chain breach', async () => {
+  for (const skew of [-120_000, 120_000]) {
+    const localNow = Date.now();
+    let now = localNow;
+    const f = fixture();
+    const grant = f.context.deviceGrants![0];
+    grant.createdAt = localNow + skew;
+    grant.expiresAt = grant.createdAt + 600_000;
+    f.context.thinToolRpc!.renewGrant = async old => ({ ...old, grantId: 'skew-renewed', expiresAt: now + skew + 600_000 });
+    const lease = new DeviceGrantLease(() => f.context, () => true, () => now);
+    now += 240_000 + Math.max(skew, 0);
+    await lease.refresh();
+    assert.equal(grant.grantId, 'skew-renewed', `fixed skew ${skew}`);
+    assert.equal(lease.getDiagnostics().renewed, 1);
+  }
+  const old = fixture().context.deviceGrants![0];
+  assert.equal(isDeviceGrantRenewal(old, { ...old, grantId: 'too-long', expiresAt: old.expiresAt + 600_001 }), false);
+  const nearCap = { ...old, createdAt: Date.now() - 24 * 60 * 60_000 + 30_000, expiresAt: Date.now() + 30_000 };
+  assert.equal(isDeviceGrantRenewal(nearCap, { ...nearCap, grantId: 'past-cap', expiresAt: nearCap.expiresAt + 1 }), false);
+});
+
+test('renewal diagnostics are counted, throttled and never log raw errors or bearer IDs', async t => {
+  const logs: string[] = [];
+  t.mock.method(Logger, 'warning', (line: string) => { logs.push(line); });
+  for (const reason of ['denied', 'invalid_response', 'timeout', 'transport', 'unsupported'] as const) {
+    const f = fixture(); f.advance(300_000);
+    if (reason === 'unsupported') delete f.context.thinToolRpc!.renewGrant;
+    else f.context.thinToolRpc!.renewGrant = async () => {
+      if (reason === 'timeout' || reason === 'transport') throw new CatsSendError(reason, 'SECRET-BEARER /private/file');
+      throw new DeviceGrantRenewalError(reason);
+    };
+    const before = logs.length;
+    await f.lease.refresh(); await f.lease.refresh();
+    f.advance(30_001); await f.lease.refresh();
+    assert.equal(logs.length - before, 1, reason);
+    assert.match(logs[before], new RegExp(`outcome=${reason}`));
+    assert.ok((f.lease.getDiagnostics()[reason] || 0) >= 2);
+    assert.equal(f.context.deviceGrants![0].grantId, 'fake-scoped-grant');
+  }
+  assert.doesNotMatch(logs.join('\n'), /SECRET|BEARER|fake-scoped-grant|private/);
 });

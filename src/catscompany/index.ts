@@ -71,6 +71,8 @@ import {
   isRemoteDeviceRpcTool,
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
+  remoteRpcOutcomeError,
+  unknownRemoteMutationResult,
 } from '../tools/device-rpc-tool';
 import {
   annotateToolExecutionResultWithTargetContext,
@@ -1120,6 +1122,8 @@ export class CatsCompanyBot {
         }, timeoutMs);
 
         if (response.error) {
+          const uncertain = unknownRemoteMutationResult(toolName, remoteRpcOutcomeError(response.error.code));
+          if (uncertain) return uncertain;
           return {
             ok: false,
             errorCode: this.mapDeviceRpcToolErrorCode(response.error.code),
@@ -1178,6 +1182,8 @@ export class CatsCompanyBot {
         Logger.info(`[CatsCompany][thin_tool_rpc] executeTool response: request=${requestID}, tool=${toolName}, hasError=${Boolean(response.error)}, hasResult=${Boolean(response.result)}`);
 
         if (response.error) {
+          const uncertain = unknownRemoteMutationResult(toolName, remoteRpcOutcomeError(response.error.code));
+          if (uncertain) return uncertain;
           return {
             ok: false,
             errorCode: this.mapDeviceRpcToolErrorCode(response.error.code),
