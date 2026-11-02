@@ -521,7 +521,7 @@ export class BotSkillSyncService {
         && workspaceHasEvidence
         && (!base || localChanged)
       ) {
-        const snapshot = snapshotPendingBotSkillWorkspace({
+        const snapshot = await snapshotPendingBotSkillWorkspace({
           runtimeRoot: this.runtimeRoot,
           botId: this.botId,
           sourcePath: this.skillsRoot,
@@ -1468,9 +1468,6 @@ export class BotSkillSyncService {
 
       if (fs.existsSync(this.skillsRoot)) {
         await options.validateScope?.();
-        this.writeRestoreJournal({ stage, backup, phase: 'backup_pending' });
-        renameBotSkillWorkspaceSync(this.skillsRoot, backup);
-        backedUp = true;
         const pendingSnapshot = options.pendingSnapshot ?? (
           degradedSkills.length > 0
             ? {
@@ -1479,11 +1476,13 @@ export class BotSkillSyncService {
               }
             : undefined
         );
-        if (pendingSnapshot && hasWorkspaceEntries(backup)) {
-          const snapshot = snapshotPendingBotSkillWorkspace({
+        // Keep the active path available while snapshot I/O yields. The caller
+        // holds the workspace lock; scope is checked again before promotion.
+        if (pendingSnapshot && hasWorkspaceEntries(this.skillsRoot)) {
+          const snapshot = await snapshotPendingBotSkillWorkspace({
             runtimeRoot: this.runtimeRoot,
             botId: this.botId,
-            sourcePath: backup,
+            sourcePath: this.skillsRoot,
             recordedSourcePath: this.skillsRoot,
             ...pendingSnapshot,
             cloudRevision: cloud.revision,
@@ -1494,6 +1493,10 @@ export class BotSkillSyncService {
             fileCount: snapshot.fileCount,
           };
         }
+        await options.validateScope?.();
+        this.writeRestoreJournal({ stage, backup, phase: 'backup_pending' });
+        renameBotSkillWorkspaceSync(this.skillsRoot, backup);
+        backedUp = true;
       }
       this.writeRestoreJournal({ stage, backup, phase: 'backed_up' });
       this.writeRestoreJournal({ stage, backup, phase: 'activation_pending' });
