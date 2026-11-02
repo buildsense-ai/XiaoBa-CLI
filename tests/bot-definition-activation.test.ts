@@ -1,5 +1,6 @@
 import { afterEach, describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -16,6 +17,7 @@ import {
 import { resolveActiveBotLLMConfig } from '../src/bot-definition/llm-config-resolver';
 import { BOT_DEFINITION_SCHEMA } from '../src/bot-definition/types';
 import { BotSkillBaseStore } from '../src/bot-skills/base-store';
+import { computeBotSkillPackageHash } from '../src/bot-skills/local-manifest';
 
 describe('BotDefinition activation', () => {
   const roots: string[] = [];
@@ -554,6 +556,9 @@ describe('BotDefinition activation', () => {
         ackBody = JSON.parse(String(init?.body));
         return Response.json({ status: 'applied' });
       }
+      if (url.pathname === '/api/bot/definition/default-prompt' && method === 'PUT') {
+        return Response.json({ status: 'stored' });
+      }
       return Response.json({ error: `unexpected ${method} ${url.pathname}` }, { status: 500 });
     }) as typeof fetch;
 
@@ -573,6 +578,103 @@ describe('BotDefinition activation', () => {
     assert.deepStrictEqual(prepared?.definition.skills, []);
     assert.deepStrictEqual(ackBody, { revision: 7 });
     assert.equal(fs.existsSync(path.join(runtimeRoot, 'skills', 'image-asset-generator')), false);
+  });
+
+  test('applies an unchanged model revision while isolating an unrepresentable Skill package', async () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-invalid-runtime-'));
+    const simulatedCloudRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-definition-skill-invalid-cloud-'));
+    roots.push(runtimeRoot, simulatedCloudRoot);
+    const env = {} as NodeJS.ProcessEnv;
+    createCatsCoLocalConfigService({ runtimeRoot, env }).save({
+      version: 1,
+      endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+      account: { token: 'owner-token', uid: '7', displayName: 'Alice' },
+      currentBot: { uid: '43', apiKey: 'bot-api-key', boundByUserUid: '7', bindingSource: 'test' },
+    });
+    const scratch = Buffer.from('runtime-generated temporary data\n');
+    const files = [
+      {
+        path: 'SKILL.md',
+        size: Buffer.byteLength('---\nname: legacy-skill\ndescription: legacy package\n---\n\nUse verified content.\n'),
+        sha256: '',
+        contentBase64: Buffer.from('---\nname: legacy-skill\ndescription: legacy package\n---\n\nUse verified content.\n').toString('base64'),
+      },
+      {
+        path: 'tmp/subagents/turn-1/scratch.txt',
+        size: scratch.length,
+        sha256: '',
+        contentBase64: scratch.toString('base64'),
+      },
+    ];
+    for (const file of files) {
+      file.sha256 = crypto.createHash('sha256').update(Buffer.from(file.contentBase64, 'base64')).digest('hex');
+    }
+    const reference = {
+      source: 'skillhub' as const,
+      skillId: 'private/legacy-skill',
+      version: 'sha256-legacy',
+      contentHash: computeBotSkillPackageHash(files),
+    };
+    const cloudDefinition = {
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: '43',
+      model: {
+        kind: 'custom' as const,
+        protocol: 'openai-responses' as const,
+        apiBase: 'https://models.example.test/v1',
+        apiKey: 'sk-cloud-model',
+        model: 'cloud-model',
+        contextWindowTokens: 256_000,
+      },
+      prompt: { selected: 'custom' as const, customSystemPrompt: 'Cloud prompt.' },
+      skills: [reference],
+    };
+    let ackBody: any;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method || 'GET';
+      if (url.pathname === '/api/bot/definition' && method === 'GET') {
+        return Response.json({ configured: true, revision: 7, definition: cloudDefinition });
+      }
+      if (url.pathname === '/api/bot/skill-packages/private/legacy-skill/versions/sha256-legacy') {
+        return Response.json({
+          schema: 'catsco.private-skill-package.v1',
+          reference: { skillId: reference.skillId, version: reference.version },
+          localSkillId: 'legacy-skill-id',
+          name: 'legacy-skill',
+          contentHash: reference.contentHash,
+          files,
+        });
+      }
+      if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
+        ackBody = JSON.parse(String(init?.body));
+        return Response.json({ status: 'applied' });
+      }
+      if (url.pathname === '/api/bot/definition/default-prompt' && method === 'PUT') {
+        return Response.json({ status: 'stored' });
+      }
+      return Response.json({ error: `unexpected ${method} ${url.pathname}` }, { status: 500 });
+    }) as typeof fetch;
+
+    const prepared = await prepareBoundBotDefinition({
+      runtimeRoot,
+      simulatedCloudRoot,
+      env,
+      fetchImpl,
+      reuseAppliedSkills: true,
+      degradeInvalidSkills: true,
+    });
+
+    assert.equal(prepared?.cloudRevision, 7);
+    assert.equal(prepared?.cloudApplyError, undefined);
+    assert.equal(prepared?.definition.model.kind, 'custom');
+    assert.equal(prepared?.skillSync?.sync?.applyStatus, 'degraded');
+    assert.deepStrictEqual(prepared?.skillSync?.sync?.degradedSkills, [
+      { reference, reason: 'package_invalid' },
+    ]);
+    assert.deepStrictEqual(prepared?.definition.skills, []);
+    assert.deepStrictEqual(ackBody, { revision: 7 });
+    assert.equal(fs.existsSync(path.join(runtimeRoot, 'skills', 'legacy-skill')), false);
   });
 
   test('does not success-ack when the activation Skill recheck loses Cloud after a verified local Base', async () => {

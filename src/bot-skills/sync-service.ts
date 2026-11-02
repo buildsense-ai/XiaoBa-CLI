@@ -61,7 +61,7 @@ export type BotSkillApplyStatus =
 
 export interface BotSkillDegradedEntry {
   reference: BotSkillRef;
-  reason: 'package_unavailable';
+  reason: 'package_unavailable' | 'package_invalid';
 }
 
 export interface BotSkillSyncResult {
@@ -94,6 +94,8 @@ export interface BotSkillSyncServiceOptions {
   definitionService?: BotDefinitionSyncService;
   baseStore?: BotSkillBaseStore;
   privateClient?: BotPrivateSkillClient;
+  /** Isolate malformed/unrepresentable packages during a model-only revision. */
+  degradeInvalidPackages?: boolean;
 }
 
 export interface FinalizePublicBotSkillInput {
@@ -166,6 +168,7 @@ export class BotSkillSyncService {
   private readonly definitionService: BotDefinitionSyncService;
   private readonly baseStore: BotSkillBaseStore;
   private readonly privateClient: BotPrivateSkillClient;
+  private readonly degradeInvalidPackages: boolean;
 
   constructor(options: BotSkillSyncServiceOptions) {
     this.runtimeRoot = path.resolve(options.runtimeRoot);
@@ -187,6 +190,7 @@ export class BotSkillSyncService {
       baseUrl: options.skillHubBaseUrl,
       fetchImpl: options.fetchImpl,
     });
+    this.degradeInvalidPackages = options.degradeInvalidPackages === true;
   }
 
   static recoverInterruptedRestore(runtimeRoot: string, botId: string, skillsRoot: string): void {
@@ -564,6 +568,7 @@ export class BotSkillSyncService {
       return this.restoreCloud(cloud, {
         preserveLocalOnlyWorkspace: true,
         allowUnavailablePackages: true,
+        degradeInvalidPackages: this.degradeInvalidPackages,
         pendingSnapshot: {
           reason: localChanged
             ? base ? 'activation_local_changed' : 'activation_without_base'
@@ -1239,6 +1244,7 @@ export class BotSkillSyncService {
        * recorded unavailable reference; other 404s remain fail-closed.
        */
       allowUnavailablePackages?: boolean;
+      degradeInvalidPackages?: boolean;
       /** Known permanent package misses are skipped without retrying every routine sync. */
       skipUnavailablePackages?: readonly BotSkillRef[];
       validateScope?: () => Promise<void> | void;
@@ -1268,6 +1274,7 @@ export class BotSkillSyncService {
       preserveLocalOnlyWorkspace?: boolean;
       preserveUnmanaged?: boolean;
       allowUnavailablePackages?: boolean;
+      degradeInvalidPackages?: boolean;
       /** Known permanent package misses are skipped without retrying every routine sync. */
       skipUnavailablePackages?: readonly BotSkillRef[];
       validateScope?: () => Promise<void> | void;
@@ -1372,11 +1379,39 @@ export class BotSkillSyncService {
             + '该 Skill 的脚本入口将不被信任执行。',
           );
         }
-        await this.privateClient.materialize(
+        const materializedPath = await this.privateClient.materialize(
           packageValue,
           stage,
           previousInstallNames.get(referenceKey(reference)),
         );
+        if (options.degradeInvalidPackages) {
+          let materializedEntry: LocalBotSkillManifestEntry | undefined;
+          try {
+            materializedEntry = scanLocalBotSkill(materializedPath, stage);
+          } catch {
+            // The cloud package hash has already been verified by the client.
+            // If this runtime cannot safely represent its contents as a Skill,
+            // isolate it instead of letting it block an unrelated model update.
+          }
+          if (!materializedEntry || materializedEntry.contentHash !== packageValue.contentHash) {
+            fs.rmSync(materializedPath, { recursive: true, force: true });
+            degradedSkills.push({ reference, reason: 'package_invalid' });
+            const previous = previousLocalEntries.find(entry => (
+              entry.reference && botSkillRefEqual(entry.reference, reference)
+            ));
+            const previousBaseEntry = previousBase?.skills.find(entry => (
+              botSkillRefEqual(entry.reference, reference)
+            ));
+            const previousRoot = previous?.path
+              ?? (previousBaseEntry ? path.join(this.skillsRoot, previousBaseEntry.installName) : undefined);
+            if (previousRoot) degradedLocalRoots.push(path.resolve(previousRoot));
+            Logger.warning(
+              `Bot Skill ${reference.skillId}@${reference.version} passed cloud package integrity checks `
+              + 'but cannot be represented by the current Skill runtime; it has been isolated.',
+            );
+            continue;
+          }
+        }
         packages.push(packageValue);
       }
       effectiveCloud = degradedSkills.length === 0

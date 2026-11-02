@@ -42,6 +42,8 @@ export interface PrepareBoundBotSkillsOptions {
     skills: readonly BotSkillRef[];
     definitionRevision: number;
   };
+  /** Keep malformed cloud packages isolated during an otherwise unrelated model/prompt apply. */
+  degradeInvalidPackages?: boolean;
   /**
    * The caller proved that the previous and desired BotDefinitions both list no
    * synchronized Skill references. Activate this Bot's workspace so the
@@ -174,6 +176,7 @@ export async function prepareBoundBotSkills(
         workspaceExisted: activation.existed,
         fetchImpl: options.fetchImpl,
         definitionService: options.definitionService,
+        degradeInvalidPackages: options.degradeInvalidPackages,
       });
       const reused = options.reuseVerifiedLocal
         ? syncService.reuseVerifiedActivation(

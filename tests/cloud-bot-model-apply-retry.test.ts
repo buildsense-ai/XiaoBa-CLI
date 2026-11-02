@@ -252,8 +252,8 @@ test('post-start model-only updates restore B after B -> A -> B and reuse its ve
   assert.deepEqual(definitions.read('43')?.model, desired.model);
 });
 
-test('model-only updates proceed when unchanged Skill refs have a locally drifted workspace', async t => {
-  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-apply-drifted-skill-'));
+test('model-only updates reuse a Skill whose package hash ignores runtime scratch files', async t => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-apply-ephemeral-skill-files-'));
   t.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
   const configService = createCatsCoLocalConfigService({ runtimeRoot });
   configService.save({
@@ -279,13 +279,14 @@ test('model-only updates proceed when unchanged Skill refs have a locally drifte
   const skillFile = path.join(runtimeRoot, 'skills', 'server-local', 'SKILL.md');
   fs.mkdirSync(path.dirname(skillFile), { recursive: true });
   fs.writeFileSync(skillFile, [
-    '---', 'name: server-local', 'description: A package whose local copy has drifted.', '---', '',
-    'Verified original content.', '',
+    '---', 'name: server-local', 'description: A verified Skill with runtime scratch files.', '---', '',
+    'Verified content.', '',
   ].join('\n'));
   new BotSkillWorkspaceService(runtimeRoot).activate('43');
   writeVerifiedSkillBase(runtimeRoot, '43', 6, TEST_SKILL_REFERENCE);
-  // Simulate an untrusted local edit after the last verified activation.
-  fs.appendFileSync(skillFile, 'Unverified local modification.\n');
+  const scratchFile = path.join(path.dirname(skillFile), 'tmp', 'subagents', 'turn-1', 'scratch.txt');
+  fs.mkdirSync(path.dirname(scratchFile), { recursive: true });
+  fs.writeFileSync(scratchFile, 'Ephemeral subagent output is not part of the Skill package.\n');
 
   const requests: string[] = [];
   const acks: unknown[] = [];
@@ -337,7 +338,8 @@ test('model-only updates proceed when unchanged Skill refs have a locally drifte
   assert.deepEqual(acks, [{ revision: 7 }]);
   assert.equal(requests.some(request => request.includes('/api/bot/definition/skills')), false);
   assert.equal(requests.some(request => request.includes('private-skill-packages')), false);
-  assert.match(fs.readFileSync(skillFile, 'utf8'), /Unverified local modification/);
+  assert.equal(fs.readFileSync(skillFile, 'utf8').includes('Unverified'), false);
+  assert.equal(fs.readFileSync(scratchFile, 'utf8').includes('Ephemeral'), true);
   assert.deepEqual(definitions.read('43')?.model, desired.model);
 });
 

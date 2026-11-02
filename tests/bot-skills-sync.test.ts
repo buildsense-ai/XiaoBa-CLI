@@ -9,6 +9,7 @@ import type { BotDefinition, BotSkillRef } from '../src/bot-definition/types';
 import { BotSkillBaseStore } from '../src/bot-skills/base-store';
 import {
   BOT_SKILL_LOCAL_MARKER_FILE,
+  computeBotSkillPackageHash,
   readBotSkillLocalMarker,
   scanBotSkillWorkspace,
   scanLocalBotSkill,
@@ -338,6 +339,42 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
       new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.unavailableSkills,
       [missing],
     );
+  });
+
+  test('isolates a hash-verified package the runtime cannot represent when requested', async () => {
+    const fixture = createFixture(roots);
+    const packageValue = createPackage(roots, 'legacy-skill', 'legacy-skill', 'trusted body');
+    const scratch = Buffer.from('ephemeral subagent data\n');
+    const files = [
+      ...packageValue.files,
+      {
+        path: 'tmp/subagents/turn-1/scratch.txt',
+        size: scratch.length,
+        sha256: crypto.createHash('sha256').update(scratch).digest('hex'),
+        contentBase64: scratch.toString('base64'),
+      },
+    ];
+    packageValue.files = files;
+    packageValue.contentHash = computeBotSkillPackageHash(files);
+    const reference: BotSkillRef = {
+      source: 'skillhub',
+      ...packageValue.reference,
+      contentHash: packageValue.contentHash,
+    };
+    fixture.packages.set(refKey(reference), packageValue);
+    fixture.cloud = { revision: 1, skills: [reference] };
+
+    const restored = await fixture.activate(true, true);
+
+    assert.equal(restored.applyStatus, 'degraded');
+    assert.deepEqual(restored.degradedSkills, [{ reference, reason: 'package_invalid' }]);
+    assert.deepEqual(fixture.cloud.skills, [reference]);
+    assert.deepEqual(fixture.definitionService.read(fixture.botId)?.skills, []);
+    assert.deepEqual(
+      new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)?.unavailableSkills,
+      [reference],
+    );
+    assert.equal(fs.existsSync(path.join(fixture.skillsRoot, 'legacy-skill')), false);
   });
 
   test('does not treat a package endpoint 404 without a structured not-found code as permanent Skill loss', async () => {
@@ -3083,7 +3120,7 @@ function createFixture(
       skillHubBaseUrl: 'https://hub.test',
       definitionService,
     }).pushWorkspaceToCloud(),
-    activate: async (workspaceExisted = true) => new BotSkillSyncService({
+    activate: async (workspaceExisted = true, degradeInvalidPackages = false) => new BotSkillSyncService({
       runtimeRoot,
       skillsRoot,
       botId,
@@ -3096,6 +3133,7 @@ function createFixture(
       fetchImpl,
       skillHubBaseUrl: 'https://hub.test',
       definitionService,
+      degradeInvalidPackages,
     }).reconcileActivationFromCloudOnly(),
     finalize: async (input: {
       localSkillId: string;
