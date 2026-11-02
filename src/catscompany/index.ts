@@ -103,6 +103,7 @@ import {
 } from './cloud-session-restore';
 import { formatSpeakerLabel } from './speaker-label';
 import { mergeQueuedMessageContents } from './queued-message-merge';
+import { BotCallReplyTracker } from './bot-call-reply-tracker';
 import {
   buildServiceRunReceiptPrompt,
   serviceRunReceiptRouter,
@@ -618,22 +619,21 @@ export class CatsCompanyBot {
   /** Bounds one-shot Artifact task receipts so server recovery can safely replay a turn. */
   private artifactTaskReceipts = new Map<string, number>();
   /**
-   * 平台派活时「这条回复该指回哪条 prompt」，按 sessionKey 存。
+   * 平台派活的回复归属（`reply_to` / `turnDone`）。
    *
-   * 一次工具调用就是一个会话（sessionKey 由 catsco_bot_session_id 决定），
-   * 所以同一 topic 上的多单是并发的 —— 不能用「topic 上最近一条消息」，
-   * 那会把 A 的回复指到 B 的 prompt 上，正好把要修的串话搬到了对面。
-   */
-  private botCallReplyTargets = new Map<string, number>();
-  /**
-   * 同一批平台派活的会话 id（`catsco_bot_session_id`），按 sessionKey 存。
+   * 按 (sessionKey, botSessionId) 记、按到达顺序认领。为什么不能只按 sessionKey 存一个槽：
+   * 私聊里 sessionKey 就含 bot 会话 id，一单一个键；**群聊里 sessionKey 是折叠的**
+   * （群 + 发言账号一个键，因为群历史必须连续），多单共用一个键，单槽会被后到的覆盖，
+   * 先跑完的那单就带着别人的 turnDone 回话，平台认领不到只能等超时。
+   * 实现见 bot-call-reply-tracker.ts。
    *
-   * 和 `botCallReplyTargets` 一起在收到消息时记下，回复时回传成
-   * `metadata.catsco_turn_done`。平台据此知道「这一轮真的说完了」，立刻交付，
-   * 不必再靠「静默多久算说完」去猜 —— 而猜错的代价是把「我先去做」这种前言
-   * 当成最终答案交给调用方。
+   * 惰性初始化：有些宿主/测试只拼装部分成员，字段可能还没建（旧实现用 `??=` 兜的正是这个）。
    */
-  private botCallSessionIds = new Map<string, string>();
+  private botCallReplies?: BotCallReplyTracker;
+
+  private replyTracker(): BotCallReplyTracker {
+    return (this.botCallReplies ??= new BotCallReplyTracker());
+  }
   /** Last cgroup oom_kill count seen, so a fresh kill can be told from an old one. */
   private lastObservedOomKills?: number;
   /** One interrupted-turn scan per process; reconnects fire 'ready' again. */
@@ -2057,23 +2057,13 @@ export class CatsCompanyBot {
       && typeof seq === 'number'
       && Number.isSafeInteger(seq)
       && seq > 0;
-    // 惰性初始化：有些宿主/测试只拼装部分成员，字段可能还没建。
-    const targets = this.botCallReplyTargets ??= new Map<string, number>();
-    const sessionIds = this.botCallSessionIds ??= new Map<string, string>();
     if (!usable) {
-      targets.delete(sessionKey);
-      sessionIds.delete(sessionKey);
+      // 真人消息：这批平台派活的「当前回合」结束了，标记作废（否则群里的普通回复
+      // 会被回填成对某条 prompt 的引用，观感完全不同）。
+      this.replyTracker().clear(sessionKey);
       return;
     }
-    targets.set(sessionKey, seq as number);
-    sessionIds.set(sessionKey, envelope.botSessionId as string);
-    // 有界：会话本身会被回收，这个表也不该无限长。
-    while (targets.size > ARTIFACT_TASK_RECEIPT_MAX_ENTRIES) {
-      const oldest = targets.keys().next().value as string | undefined;
-      if (!oldest) break;
-      targets.delete(oldest);
-      sessionIds.delete(oldest);
-    }
+    this.replyTracker().note(sessionKey, envelope.botSessionId as string, seq as number);
   }
 
   /**
@@ -2088,22 +2078,9 @@ export class CatsCompanyBot {
     opts?: { progress?: boolean },
   ): { replyTo?: number; turnDone?: string; turnProgress?: boolean } | undefined {
     if (!sessionKey) return undefined;
-    const replyTo = this.botCallReplyTargets?.get(sessionKey);
-    // 平台派活的会话才需要这两种表态：普通聊天没有调用方在等结果，
-    // 既不用指回某条 prompt，也不用告诉谁「说完了/还没说完」。
-    // 没有 replyTo 就等于不是平台派活，一律不加标记（否则每条消息都多背一个
-    // 对平台毫无意义的字段）。
-    if (!replyTo) return undefined;
-    if (opts?.progress) {
-      // 中间叙述只带「还没说完」，绝不带「说完了」。两个标记都连着同一个
-      // sessionKey，让调用方随手 spread 就会把过程话签成终态。
-      return { replyTo, turnProgress: true };
-    }
-    const turnDone = this.botCallSessionIds?.get(sessionKey);
-    return {
-      replyTo,
-      ...(turnDone ? { turnDone } : {}),
-    };
+    // 没有可信登记就等于不是平台派活，一律不加标记（否则每条消息都多背一个
+    // 对平台毫无意义的字段）。拿不准时不猜：认错会把 A 的结果交付给 B。
+    return this.replyTracker().forReply(sessionKey, opts);
   }
 
   private acceptArtifactTaskReceipt(taskRef?: string, now = Date.now()): boolean {

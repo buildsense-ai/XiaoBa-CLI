@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { CatsCompanyBot } from '../src/catscompany';
 import type { CatsDeviceRpcMessage, CatsThinToolRpcMessage } from '../src/catscompany/client';
+import { BotCallReplyTracker } from '../src/catscompany/bot-call-reply-tracker';
 import type { ScopedDeviceGrant } from '../src/types/session-identity';
 
 function botWithDevice(captured: { result?: any; uploaded?: { path: string; type: string; bytes: Buffer } }): any {
@@ -682,15 +683,13 @@ describe('CatsCompany channel reply 的回合表态', () => {
         return [1];
       },
     };
-    bot.botCallReplyTargets = new Map();
-    bot.botCallSessionIds = new Map();
+    bot.botCallReplies = new BotCallReplyTracker();
     return { bot, sent };
   }
 
   test('平台派活的会话：send_text 带着「还没说完」和 reply_to', async () => {
     const { bot, sent } = makeBot();
-    bot.botCallReplyTargets.set('session:test', 4321);
-    bot.botCallSessionIds.set('session:test', 'sess_abc');
+    bot.botCallReplies.note('session:test', 'sess_abc', 4321);
 
     const channel = bot.buildChannel('p2p_7_43', { sessionKey: 'session:test' });
     await channel.reply('p2p_7_43', '收到，我先去做');

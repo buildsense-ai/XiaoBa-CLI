@@ -9,6 +9,7 @@ import {
   type McpBridgeToolInfo,
 } from '../src/mcp/mcp-tool-bridge';
 import type { ToolExecutionContext } from '../src/types/tool';
+import { BotCallReplyTracker } from '../src/catscompany/bot-call-reply-tracker';
 
 class FakeClient implements McpBridgeClient {
   closed = false;
@@ -58,6 +59,8 @@ interface HarnessOptions {
   refreshIntervalMs?: number;
   runPollTimeoutMs?: number;
   runPollIntervalMs?: number;
+  now?: () => number;
+  resumeTtlMs?: number;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -80,6 +83,8 @@ function createHarness(options: HarnessOptions = {}) {
     refreshIntervalMs: options.refreshIntervalMs ?? 0,
     runPollTimeoutMs: options.runPollTimeoutMs ?? 0,
     runPollIntervalMs: options.runPollIntervalMs ?? 1,
+    now: options.now,
+    resumeTtlMs: options.resumeTtlMs,
     sleep: async () => {},
   });
   return { bridge, manager, clients };
@@ -963,5 +968,147 @@ describe('CatsCo MCP 工具桥', () => {
 
     assert.equal(result.ok, false);
     assert.equal((result as { errorCode: string }).errorCode, 'catsco_empty_result');
+  });
+
+  test('返问续聊：模型没带 session_id 时，桥自动补上一轮的会话（只补一次）', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: (_name, args) => {
+        calls.push(args);
+        if (calls.length === 1) {
+          return {
+            isError: false,
+            contentText: 'status=awaiting_input question=要哪个分支？',
+            structured: { status: 'awaiting_input', run_id: 'r1', session_id: 's1', output: { question: '要哪个分支？' } },
+          };
+        }
+        if (calls.length === 2) {
+          return {
+            isError: false,
+            contentText: 'status=awaiting_input question=要哪个环境？',
+            structured: { status: 'awaiting_input', run_id: 'r2', session_id: 's1', output: { question: '要哪个环境？' } },
+          };
+        }
+        return { isError: false, contentText: 'status=completed', structured: { status: 'completed', run_id: 'r3', session_id: 's1', output: { text: '好了' } } };
+      },
+      runPollTimeoutMs: 0,
+    });
+    await bridge.refresh();
+    const ctx = { sessionId: 'local-session-1' } as ToolExecutionContext;
+    const tool = manager.getTool('catsco_hello')!;
+
+    await tool.execute({ input: { text: '部署' } }, ctx);
+    await tool.execute({ input: { text: 'main' } }, ctx);
+    await tool.execute({ input: { text: '预发' } }, ctx);
+
+    assert.equal(calls[0].session_id, undefined);
+    // 用户回的是那句返问：模型没感知，桥补上。
+    assert.equal(calls[1].session_id, 's1');
+    assert.equal(calls[2].session_id, 's1');
+  });
+
+  test('返问续聊：模型自己带了 session_id 就以它为准；那一单收尾后不再硬塞旧的', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: (_name, args) => {
+        calls.push(args);
+        // 第一次返问；第二次（模型自带 session）直接完成。
+        if (calls.length === 1) {
+          return {
+            isError: false,
+            contentText: 'status=awaiting_input',
+            structured: { status: 'awaiting_input', run_id: 'r1', session_id: 's1', output: { question: '要哪个分支？' } },
+          };
+        }
+        return {
+          isError: false,
+          contentText: 'status=completed',
+          structured: { status: 'completed', run_id: 'r2', session_id: 's-explicit', output: { text: '好了' } },
+        };
+      },
+      runPollTimeoutMs: 0,
+    });
+    await bridge.refresh();
+    const ctx = { sessionId: 'local-session-1' } as ToolExecutionContext;
+    const tool = manager.getTool('catsco_hello')!;
+
+    await tool.execute({ input: { text: '部署' } }, ctx);
+    await tool.execute({ input: { text: '我自己指定的' }, session_id: 's-explicit' } as any, ctx);
+    await tool.execute({ input: { text: '再问一句' } }, ctx);
+
+    assert.equal(calls[1].session_id, 's-explicit', '模型显式指定的会话必须原样透传，不能被桥改写');
+    // 上一单已经 completed，返问线索结束：下一单不能再被接回 s1。
+    assert.equal(calls[2].session_id, undefined);
+  });
+
+  test('返问续聊：超过 TTL 就不再自动补（避免把新任务接到旧会话上）', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    let clock = 0;
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: (_name, args) => {
+        calls.push(args);
+        return {
+          isError: false,
+          contentText: 'status=awaiting_input',
+          structured: { status: 'awaiting_input', run_id: 'r1', session_id: 's1', output: { question: '要哪个分支？' } },
+        };
+      },
+      runPollTimeoutMs: 0,
+      now: () => clock,
+      resumeTtlMs: 1000,
+    });
+    await bridge.refresh();
+    const ctx = { sessionId: 'local-session-1' } as ToolExecutionContext;
+    const tool = manager.getTool('catsco_hello')!;
+
+    await tool.execute({ input: { text: '部署' } }, ctx);
+    clock = 5000;
+    await tool.execute({ input: { text: '过了很久的新任务' } }, ctx);
+
+    assert.equal(calls[1].session_id, undefined);
+  });
+});
+
+describe('CatsCo 回复归属（群会话）', () => {
+  test('同一群会话共用一个 sessionKey：多单共存，按到达顺序认领，互不覆盖', () => {
+    const tracker = new BotCallReplyTracker(() => 0, 60_000);
+    const groupKey = 'catscompany:group:6393:actor:38';
+
+    tracker.note(groupKey, 'bot-session-A', 11);
+    tracker.note(groupKey, 'bot-session-B', 22);
+    assert.equal(tracker.size(groupKey), 2, '两单必须都在，后到的不能把先到的顶掉');
+
+    // 中间叙述只读队首，不消费。
+    assert.deepStrictEqual(tracker.forReply(groupKey, { progress: true }), { replyTo: 11, turnProgress: true });
+    assert.equal(tracker.size(groupKey), 2);
+
+    // A 的最终回复：带走自己的 turnDone，并消费掉自己那条。
+    assert.deepStrictEqual(tracker.forReply(groupKey), { replyTo: 11, turnDone: 'bot-session-A' });
+    // B 还在，拿到的是自己的。
+    assert.deepStrictEqual(tracker.forReply(groupKey), { replyTo: 22, turnDone: 'bot-session-B' });
+    assert.equal(tracker.forReply(groupKey), undefined);
+  });
+
+  test('真人消息清空登记；过期登记不猜', () => {
+    let clock = 0;
+    const tracker = new BotCallReplyTracker(() => clock, 1000);
+
+    tracker.note('k', 'bot-session-A', 11);
+    tracker.clear('k');
+    assert.equal(tracker.forReply('k'), undefined, '真人回合不该带上平台派活的标记');
+
+    tracker.note('k', 'bot-session-A', 12);
+    clock = 2000;
+    assert.equal(tracker.forReply('k'), undefined, '过期就宁可什么都不带');
+  });
+
+  test('同一 bot 会话重复登记不产生重复条目', () => {
+    const tracker = new BotCallReplyTracker(() => 0, 60_000);
+    tracker.note('k', 'bot-session-A', 11);
+    tracker.note('k', 'bot-session-A', 11);
+    assert.equal(tracker.size('k'), 1);
   });
 });
