@@ -626,8 +626,14 @@ export class CatsCompanyBot {
    * （群 + 发言账号一个键，因为群历史必须连续），多单共用一个键，单槽会被后到的覆盖，
    * 先跑完的那单就带着别人的 turnDone 回话，平台认领不到只能等超时。
    * 实现见 bot-call-reply-tracker.ts。
+   *
+   * 惰性初始化：有些宿主/测试只拼装部分成员，字段可能还没建（旧实现用 `??=` 兜的正是这个）。
    */
-  private botCallReplies = new BotCallReplyTracker();
+  private botCallReplies?: BotCallReplyTracker;
+
+  private replyTracker(): BotCallReplyTracker {
+    return (this.botCallReplies ??= new BotCallReplyTracker());
+  }
   /** Last cgroup oom_kill count seen, so a fresh kill can be told from an old one. */
   private lastObservedOomKills?: number;
   /** One interrupted-turn scan per process; reconnects fire 'ready' again. */
@@ -2054,10 +2060,10 @@ export class CatsCompanyBot {
     if (!usable) {
       // 真人消息：这批平台派活的「当前回合」结束了，标记作废（否则群里的普通回复
       // 会被回填成对某条 prompt 的引用，观感完全不同）。
-      this.botCallReplies.clear(sessionKey);
+      this.replyTracker().clear(sessionKey);
       return;
     }
-    this.botCallReplies.note(sessionKey, envelope.botSessionId as string, seq as number);
+    this.replyTracker().note(sessionKey, envelope.botSessionId as string, seq as number);
   }
 
   /**
@@ -2074,7 +2080,7 @@ export class CatsCompanyBot {
     if (!sessionKey) return undefined;
     // 没有可信登记就等于不是平台派活，一律不加标记（否则每条消息都多背一个
     // 对平台毫无意义的字段）。拿不准时不猜：认错会把 A 的结果交付给 B。
-    return this.botCallReplies.forReply(sessionKey, opts);
+    return this.replyTracker().forReply(sessionKey, opts);
   }
 
   private acceptArtifactTaskReceipt(taskRef?: string, now = Date.now()): boolean {
