@@ -41,6 +41,7 @@ import {
   preserveOperatorManagedSkills,
 } from '../bot-skills/preservation';
 import { botSkillRefsEqual } from '../bot-skills/canonical';
+import { BotSkillWorkspaceService } from '../bot-skills/workspace';
 import { startSkillTrashGarbageCollector, type SkillTrashGarbageCollectorHandle } from '../bot-skills/deleted-skill-trash';
 
 const CONNECTOR_OWNER_POLL_MS = 2000;
@@ -609,6 +610,14 @@ async function applyCloudBotDefinitionSelection(
     && effectiveIncoming.skills !== undefined
     && botSkillRefsEqual(previousDefinition.skills, effectiveIncoming.skills)
   );
+  // A model/prompt-only revision must not be blocked by drift in an unchanged
+  // Skill workspace. Preserve that workspace only when it is already bound to
+  // this Bot; a different active owner still follows the strict activation
+  // path below. Skill execution continues to verify each managed package.
+  const preserveUnchangedSkills = Boolean(
+    reuseAppliedSkills
+    && new BotSkillWorkspaceService(options.runtimeRoot).getActiveBotId() === options.botId
+  );
   const preserveLocalOnlySkills = Boolean(
     previousDefinition
     && previousDefinition.skills !== undefined
@@ -660,7 +669,7 @@ async function applyCloudBotDefinitionSelection(
       botId: options.botId,
       auth: options.auth,
       acknowledgeCloudSelection: false,
-      preserveSkills,
+      preserveSkills: preserveSkills || preserveUnchangedSkills,
       reuseAppliedSkills,
       preserveLocalOnlySkills,
       requireCloud: true,
