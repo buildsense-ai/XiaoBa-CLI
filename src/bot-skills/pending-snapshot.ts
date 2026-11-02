@@ -47,14 +47,14 @@ interface PendingSnapshotManifest {
  * activation replaces it. Regenerable runtime directories are excluded. The
  * snapshot is evidence only and is never loaded as an active Skill workspace.
  */
-export function snapshotPendingBotSkillWorkspace(
+export async function snapshotPendingBotSkillWorkspace(
   options: BotSkillPendingSnapshotOptions,
-): BotSkillPendingSnapshotResult {
+): Promise<BotSkillPendingSnapshotResult> {
   const runtimeRoot = path.resolve(options.runtimeRoot);
   const sourcePath = path.resolve(options.sourcePath);
   const recordedSourcePath = path.resolve(options.recordedSourcePath ?? sourcePath);
   const botId = normalizeBotId(options.botId);
-  const files = listWorkspaceFiles(sourcePath);
+  const files = await listWorkspaceFiles(sourcePath);
   const fingerprint = pendingFingerprint({
     botId,
     sourcePath: recordedSourcePath,
@@ -64,8 +64,11 @@ export function snapshotPendingBotSkillWorkspace(
     files,
   });
   const root = path.join(runtimeRoot, 'data', 'bot-skills', 'local-pending', botId);
-  const existing = findExistingSnapshot(root, fingerprint);
-  if (existing) return { path: existing, fingerprint, fileCount: files.length, deduplicated: true };
+  const existing = await findExistingSnapshot(root, fingerprint);
+  if (existing) {
+    await verifySourceUnchanged(sourcePath, files);
+    return { path: existing, fingerprint, fileCount: files.length, deduplicated: true };
+  }
 
   const detectedAt = (options.now ?? (() => new Date()))().toISOString();
   const directoryName = `${detectedAt.replace(/[:.]/g, '-')}-${fingerprint}`;
@@ -84,77 +87,108 @@ export function snapshotPendingBotSkillWorkspace(
     files,
   };
 
-  fs.mkdirSync(packageRoot, { recursive: true });
   try {
+    await fs.promises.mkdir(packageRoot, { recursive: true });
     for (const file of files) {
       const source = path.join(sourcePath, ...file.path.split('/'));
       const target = path.join(packageRoot, ...file.path.split('/'));
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
-      const copied = fileRecord(packageRoot, file.path);
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      await fs.promises.copyFile(source, target, fs.constants.COPYFILE_EXCL);
+      const copied = await fileRecord(packageRoot, file.path);
       if (copied.size !== file.size || copied.sha256 !== file.sha256) {
         throw new Error(`Bot Skill pending snapshot verification failed: ${file.path}`);
       }
     }
-    fs.writeFileSync(
+    await verifySourceUnchanged(sourcePath, files);
+    await fs.promises.writeFile(
       path.join(temporary, 'manifest.json'),
       `${JSON.stringify(manifest, null, 2)}\n`,
       { encoding: 'utf8', flag: 'wx' },
     );
-    fs.mkdirSync(root, { recursive: true });
-    fs.renameSync(temporary, finalPath);
+    await fs.promises.mkdir(root, { recursive: true });
+    await fs.promises.rename(temporary, finalPath);
     return { path: finalPath, fingerprint, fileCount: files.length, deduplicated: false };
   } catch (error) {
-    if (fs.existsSync(temporary)) fs.rmSync(temporary, { recursive: true, force: true });
+    await fs.promises.rm(temporary, { recursive: true, force: true });
     throw error;
   }
 }
 
-function listWorkspaceFiles(root: string): PendingSnapshotFile[] {
-  if (!fs.existsSync(root)) return [];
-  const rootStats = fs.lstatSync(root);
+async function verifySourceUnchanged(root: string, files: PendingSnapshotFile[]): Promise<void> {
+  // Async I/O allows other handlers/editors to run. Do not replace Local using
+  // evidence that missed an edit/new file made while copying or deduplicating.
+  if (!snapshotFilesEqual(files, await listWorkspaceFiles(root))) {
+    throw new Error('Bot Skill workspace changed during pending snapshot; retry while idle.');
+  }
+}
+
+async function listWorkspaceFiles(root: string): Promise<PendingSnapshotFile[]> {
+  let rootStats: fs.Stats;
+  try {
+    rootStats = await fs.promises.lstat(root);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
   if (rootStats.isSymbolicLink()) {
     throw new Error('Bot Skill pending snapshot cannot follow a symbolic link at its root.');
   }
   if (!rootStats.isDirectory()) throw new Error('Bot Skill workspace is not a directory.');
 
   const files: PendingSnapshotFile[] = [];
-  const visit = (directory: string): void => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
       // Only skip real runtime directories. A symlink with an ephemeral name
       // still reaches lstat below and is rejected fail-closed.
       if (entry.isDirectory() && isEphemeralSkillDirectory(entry.name)) continue;
       const absolute = path.join(directory, entry.name);
       const relative = path.relative(root, absolute).split(path.sep).join('/');
-      const stats = fs.lstatSync(absolute);
+      const stats = await fs.promises.lstat(absolute);
       if (stats.isSymbolicLink()) {
         throw new Error(`Bot Skill pending snapshot cannot follow a symbolic link: ${relative}`);
       }
-      if (stats.isDirectory()) visit(absolute);
-      else if (stats.isFile()) files.push(fileRecord(root, relative));
+      if (stats.isDirectory()) await visit(absolute);
+      else if (stats.isFile()) files.push(await fileRecord(root, relative));
       else throw new Error(`Bot Skill pending snapshot found an unsupported file: ${relative}`);
     }
   };
-  visit(root);
+  await visit(root);
   return files.sort((left, right) => compareText(left.path, right.path));
 }
 
-function fileRecord(root: string, relative: string): PendingSnapshotFile {
+async function fileRecord(root: string, relative: string): Promise<PendingSnapshotFile> {
   const absolute = path.join(root, ...relative.split('/'));
-  const bytes = fs.readFileSync(absolute);
-  return { path: relative, size: bytes.length, sha256: sha256(bytes) };
+  // Bound memory and yield to WebSocket heartbeat/message handlers even for
+  // large evidence files. The fingerprint format remains byte-for-byte stable.
+  const hash = crypto.createHash('sha256');
+  let size = 0;
+  for await (const chunk of fs.createReadStream(absolute, { highWaterMark: 256 * 1024 })) {
+    size += chunk.length;
+    hash.update(chunk);
+  }
+  return { path: relative, size, sha256: hash.digest('hex') };
 }
 
-function findExistingSnapshot(root: string, fingerprint: string): string | undefined {
-  if (!fs.existsSync(root)) return undefined;
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+async function findExistingSnapshot(root: string, fingerprint: string): Promise<string | undefined> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(root, { withFileTypes: true });
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return undefined;
+    throw error;
+  }
+  for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith('.tmp-')) continue;
     const candidate = path.join(root, entry.name);
     try {
       const manifest = JSON.parse(
-        fs.readFileSync(path.join(candidate, 'manifest.json'), 'utf8'),
+        await fs.promises.readFile(path.join(candidate, 'manifest.json'), 'utf8'),
       ) as Partial<PendingSnapshotManifest>;
-      const packageFiles = listWorkspaceFiles(path.join(candidate, 'package'));
+      // Most historic snapshots cannot match. Never reread their package bytes
+      // just to discover this; matching manifests still require full verification.
+      if (manifest.schema !== 'xiaoba.bot-skill-local-pending.v1'
+        || manifest.fingerprint !== fingerprint || !Array.isArray(manifest.files)) continue;
+      const packageFiles = await listWorkspaceFiles(path.join(candidate, 'package'));
       if (
         manifest.schema === 'xiaoba.bot-skill-local-pending.v1'
         && manifest.fingerprint === fingerprint

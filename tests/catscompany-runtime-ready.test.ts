@@ -5,6 +5,42 @@ import { CatsCompanyBot } from '../src/catscompany';
 import { recoverCloudModelFallbackConnector } from '../src/commands/catscompany';
 
 describe('CatsCompanyBot runtime readiness', () => {
+  test('coalesces reconnect reconciliation and permits a later retry', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.botUid = '43';
+    let calls = 0;
+    let release!: () => void;
+    let task: Promise<void>;
+    bot.runTrackedConversationWork = (work: () => Promise<void>) => (task = work());
+    bot.waitForSkillHubRuntimeIdle = () => new Promise<boolean>(resolve => {
+      calls += 1;
+      release = () => resolve(false);
+    });
+    bot.reconcileSkillDefinitionAfterReconnect('43');
+    bot.reconcileSkillDefinitionAfterReconnect('43');
+    assert.equal(calls, 1);
+    release();
+    await task!;
+    await new Promise(resolve => setImmediate(resolve));
+    bot.reconcileSkillDefinitionAfterReconnect('43');
+    assert.equal(calls, 2);
+    release();
+    await task!;
+  });
+
+  test('does not apply a stale Bot after waiting for idle', async () => {
+    const bot = Object.create(CatsCompanyBot.prototype) as any;
+    bot.botUid = '43';
+    let task: Promise<void>;
+    let applied = 0;
+    bot.runTrackedConversationWork = (work: () => Promise<void>) => (task = work());
+    bot.waitForSkillHubRuntimeIdle = async () => { bot.botUid = '44'; return true; };
+    bot.applySkillHubBotDefinition = async () => { applied += 1; return {}; };
+    bot.reconcileSkillDefinitionAfterReconnect('43');
+    await task!;
+    assert.equal(applied, 0);
+  });
+
   test('waits for the connector handshake before resolving', async () => {
     const events = new EventEmitter();
     const bot = Object.create(CatsCompanyBot.prototype) as any;

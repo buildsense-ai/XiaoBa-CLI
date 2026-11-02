@@ -660,6 +660,7 @@ export class CatsCompanyBot {
   private botUid: string | null = null;
   private connectorReady = false;
   private shuttingDown = false;
+  private skillReconnectReconcileInFlight = false;
   // 同类连接错误的连续计数：业务层拒绝（如 409 Body 绑定冲突）会以固定节奏
   // 长期重试，只保留首条与每 30 条抽样，避免云 worker 日志刷屏。
   private repeatedConnectorError = '';
@@ -922,16 +923,17 @@ export class CatsCompanyBot {
    */
   private reconcileSkillDefinitionAfterReconnect(botUid: string): void {
     const targetBotUid = String(botUid || '').trim();
-    if (!targetBotUid || this.shuttingDown) return;
+    if (!targetBotUid || this.shuttingDown || this.skillReconnectReconcileInFlight) return;
+    this.skillReconnectReconcileInFlight = true;
     void this.runTrackedConversationWork(async () => {
-      const idle = await this.waitForSkillHubRuntimeIdle(30_000, () => {
-        if (this.shuttingDown) throw new Error('CatsCo Runtime is shutting down.');
-      });
-      if (!idle || this.shuttingDown) {
-        Logger.info('CatsCo 重连后的 Skill Definition 同步延后；Runtime 暂不空闲。');
-        return;
-      }
       try {
+        const idle = await this.waitForSkillHubRuntimeIdle(30_000, () => {
+          if (this.shuttingDown) throw new Error('CatsCo Runtime is shutting down.');
+        });
+        if (!idle || this.shuttingDown || String(this.botUid || '').trim() !== targetBotUid) {
+          Logger.info('CatsCo 重连后的 Skill Definition 同步延后；Runtime 暂不空闲或 Bot 已切换。');
+          return;
+        }
         const pendingRevocations = readPendingBotSkillRevocations(targetBotUid);
         if (pendingRevocations?.length) {
           // An owner-confirmed local deletion is an explicit intent, unlike an
@@ -943,6 +945,7 @@ export class CatsCompanyBot {
             throw new Error('Owner Skill revocation is still pending; Cloud apply was skipped to avoid restoring it.');
           }
         }
+        if (this.shuttingDown || String(this.botUid || '').trim() !== targetBotUid) return;
         const result = await this.applySkillHubBotDefinition(targetBotUid);
         const applied = result.apply_status === 'applied'
           || result.apply_status === 'already_applied'
@@ -958,6 +961,10 @@ export class CatsCompanyBot {
         // BotDefinition, while the next reconnect/manual apply can retry sync.
         Logger.warning(`CatsCo 重连后的 Skill Definition 同步失败，保留现有运行状态: ${error?.message || error}`);
       }
+    }).catch((error: any) => {
+      Logger.warning(`CatsCo 重连后的 Skill Definition 同步任务失败: ${error?.message || error}`);
+    }).finally(() => {
+      this.skillReconnectReconcileInFlight = false;
     });
   }
 

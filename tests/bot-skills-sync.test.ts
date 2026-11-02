@@ -2926,6 +2926,32 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     );
   });
 
+  test('activation keeps the active workspace available during evidence I/O and preserves it on failure', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'local-a', 'local-a', 'approved local');
+    await fixture.sync();
+    fs.writeFileSync(path.join(fixture.skillsRoot, 'notes.md'), 'local evidence');
+    const cloudPackage = createPackage(roots, 'cloud-b', 'cloud-b', 'canonical cloud');
+    fixture.packages.set(refKey(cloudPackage.reference), cloudPackage);
+    fixture.cloud = { revision: 2, skills: [definitionRef(cloudPackage)] };
+    const original = fs.promises.copyFile;
+    let copied = false;
+    try {
+      fs.promises.copyFile = async () => {
+        copied = true;
+        assert.equal(fs.existsSync(path.join(fixture.skillsRoot, 'local-a', 'SKILL.md')), true);
+        throw new Error('injected pending evidence failure');
+      };
+      await assert.rejects(fixture.activate(), /injected pending evidence failure/);
+      assert.equal(copied, true);
+      assert.equal(fs.readFileSync(path.join(fixture.skillsRoot, 'notes.md'), 'utf8'), 'local evidence');
+      assert.match(fs.readFileSync(path.join(fixture.skillsRoot, 'local-a', 'SKILL.md'), 'utf8'), /approved local/);
+      assert.equal(fs.existsSync(path.join(fixture.skillsRoot, 'cloud-b')), false);
+    } finally {
+      fs.promises.copyFile = original;
+    }
+  });
+
   test('activation fails closed for malformed Local while Cloud is unavailable', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'broken', 'broken', 'will become malformed');
@@ -2942,10 +2968,10 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     );
   });
 
-  test('pending evidence dedupe rejects a snapshot whose package was corrupted', () => {
+  test('pending evidence dedupe rejects a snapshot whose package was corrupted', async () => {
     const fixture = createFixture(roots);
     fs.writeFileSync(path.join(fixture.skillsRoot, 'README.md'), 'original evidence');
-    const first = snapshotPendingBotSkillWorkspace({
+    const first = await snapshotPendingBotSkillWorkspace({
       runtimeRoot: fixture.runtimeRoot,
       botId: fixture.botId,
       sourcePath: fixture.skillsRoot,
@@ -2955,7 +2981,7 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     });
     fs.writeFileSync(path.join(first.path, 'package', 'README.md'), 'corrupted evidence');
 
-    const second = snapshotPendingBotSkillWorkspace({
+    const second = await snapshotPendingBotSkillWorkspace({
       runtimeRoot: fixture.runtimeRoot,
       botId: fixture.botId,
       sourcePath: fixture.skillsRoot,
@@ -2972,7 +2998,7 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     );
   });
 
-  test('pending evidence excludes regenerable runtime environments', () => {
+  test('pending evidence excludes regenerable runtime environments', async () => {
     const fixture = createFixture(roots);
     fs.writeFileSync(path.join(fixture.skillsRoot, 'README.md'), 'durable evidence');
     const runtimeFile = path.join(
@@ -2987,7 +3013,7 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     fs.mkdirSync(path.dirname(runtimeFile), { recursive: true });
     fs.writeFileSync(runtimeFile, Buffer.alloc(2 * 1024 * 1024 + 1));
 
-    const snapshot = snapshotPendingBotSkillWorkspace({
+    const snapshot = await snapshotPendingBotSkillWorkspace({
       runtimeRoot: fixture.runtimeRoot,
       botId: fixture.botId,
       sourcePath: fixture.skillsRoot,
@@ -3004,7 +3030,7 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     assert.equal(fs.existsSync(runtimeFile), true);
   });
 
-  test('pending evidence refuses a workspace root symbolic link', () => {
+  test('pending evidence refuses a workspace root symbolic link', async () => {
     const fixture = createFixture(roots);
     const external = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-bot-skills-external-'));
     roots.push(external);
@@ -3012,7 +3038,7 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     fs.rmSync(fixture.skillsRoot, { recursive: true, force: true });
     fs.symlinkSync(external, fixture.skillsRoot, process.platform === 'win32' ? 'junction' : 'dir');
 
-    assert.throws(
+    await assert.rejects(
       () => snapshotPendingBotSkillWorkspace({
         runtimeRoot: fixture.runtimeRoot,
         botId: fixture.botId,
