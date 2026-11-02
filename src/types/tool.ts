@@ -138,6 +138,9 @@ export interface ThinToolRpcRequest {
 
 export interface ThinToolRpcTransport {
   executeTool(request: ThinToolRpcRequest): Promise<ToolExecutionResult>;
+  /** Present only after server capability negotiation. Never exposed as a model tool. */
+  renewGrant?(grant: ScopedDeviceGrant): Promise<ScopedDeviceGrant>;
+  supportsRemoteShellTimeout?: boolean;
 }
 
 export type TargetRouteOS = 'windows' | 'macos' | 'linux' | 'unknown';

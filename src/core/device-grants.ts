@@ -204,7 +204,7 @@ export function validateDeviceGrant(
 
   const now = normalizeTime(options.now) ?? Date.now();
   if (grant.expiresAt <= now) {
-    return denied('设备授权已过期，请让用户重新授权当前设备。');
+    return denied('设备授权已过期，当前任务不能继续操作这台设备。不要反复重试或换机执行；请等待新的用户请求获取本轮授权。');
   }
 
   const mismatches = [

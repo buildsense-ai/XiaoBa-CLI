@@ -7,6 +7,7 @@ import {
 } from '../src/catscompany';
 import { createCatsCoMessageEnvelope, createExecutionScope } from '../src/catscompany/message-envelope';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
+import { AgentSession } from '../src/core/agent-session';
 
 function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr43', bodyId = 'body-main') {
   return {
@@ -232,6 +233,44 @@ function createHarness(options: {
 }
 
 describe('CatsCompany execution scope flow', () => {
+  test('canonical Bot turn forwards renewable grants through real AgentSession and controller into Runner', async () => {
+    const harness = createHarness();
+    const now = Date.now();
+    const grant = deviceGrant({ createdAt: now - 300_000, expiresAt: now + 300_000 });
+    let renewals = 0;
+    Object.assign(harness.bot.bot, {
+      supportsThinToolRpc: true,
+      supportsDeviceGrantRenewal: true,
+      renewDeviceGrant: async (original: any) => {
+        renewals++;
+        assert.equal(original.grantId, 'device-grant-1');
+        assert.equal(original.deviceId, 'alice-laptop');
+        return { ...original, grantId: 'integration-renewed', expiresAt: Date.now() + 600_000 };
+      },
+    });
+    let forwarded: any;
+    const realSession = new AgentSession('renewal-integration', {
+      aiService: { async chatStream() { return { content: 'done', toolCalls: [] }; } } as any,
+      toolManager: { getToolDefinitions: () => [], executeTool: () => { throw new Error('not expected'); },
+        getWorkspaceRoot: () => process.cwd() } as any,
+      skillManager: { getSkill: () => undefined, getUserInvocableSkills: () => [], getAutoInvocableSkills: () => [],
+        findAutoInvocableSkillByText: () => undefined, loadSkills: async () => {} } as any,
+    }, 'catscompany');
+    realSession.setSystemPromptProvider(() => 'integration prompt');
+    harness.session.handleMessage = async (message: any, options: any) => {
+      forwarded = options;
+      return realSession.handleMessage(message, options);
+    };
+    await harness.bot.onMessage({
+      topic: 'p2p_7_43', senderId: 'usr7', text: 'long task', content: 'long task', isGroup: false, seq: 12,
+      metadata: metadataWithDeviceGrants('usr7', 'p2p_7_43', [grant]),
+    });
+    assert.equal(renewals, 1, 'renewable grant or transport was dropped before the real Runner');
+    assert.equal(forwarded.deviceGrants[0].grantId, 'integration-renewed');
+    assert.equal(typeof forwarded.thinToolRpc.renewGrant, 'function');
+    assert.equal(realSession.isBusy(), false);
+  });
+
   test('feeds a two-member web task follow-up into the active pending-input provider', async () => {
     const harness = createHarness();
     const topic = 'grp_80';

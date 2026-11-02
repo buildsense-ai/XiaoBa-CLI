@@ -1,4 +1,5 @@
 import { setTimeout as abortableDelay } from 'node:timers/promises';
+import { DeviceGrantLease, DEVICE_GRANT_HEARTBEAT_MS } from './device-grant-lease';
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
 import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
 import type { GroupRosterEntry, TargetRoutes } from '../types/tool';
@@ -348,7 +349,24 @@ export class ConversationRunner {
    * @param callbacks 可选的 UI 回调
    * @returns 最终文本回复和完整消息列表
    */
+  private deviceGrantLease?: DeviceGrantLease;
+
   async run(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
+    const lease = new DeviceGrantLease(() => this.toolExecutionContext, () => this.shouldContinue?.() !== false);
+    this.deviceGrantLease = lease;
+    const timer = setInterval(() => { void lease.refresh(); }, DEVICE_GRANT_HEARTBEAT_MS);
+    timer.unref?.();
+    try {
+      await lease.refresh();
+      return await this.runEpisode(messages, callbacks);
+    } finally {
+      lease.stop();
+      clearInterval(timer);
+      this.deviceGrantLease = undefined;
+    }
+  }
+
+  private async runEpisode(messages: Message[], callbacks?: RunnerCallbacks): Promise<RunResult> {
     if (this.toolExecutionContext) {
       this.toolExecutionContext = {
         ...this.toolExecutionContext,
@@ -2022,6 +2040,7 @@ export class ConversationRunner {
     callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
     Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
     const toolStart = Date.now();
+    await this.deviceGrantLease?.refresh();
     const result = await this.executeToolWithRetry(
       toolCall, messages, this.toolExecutionContext || {}, turns,
     );
@@ -2059,6 +2078,10 @@ export class ConversationRunner {
     turn: number,
   ): Promise<ToolResult> {
     context.abortSignal?.throwIfAborted();
+    if (this.shouldContinue?.() === false) {
+      return { tool_call_id: toolCall.id, role: 'tool', name: toolCall.function.name,
+        ok: false, content: '任务已停止，操作未派发。', errorCode: 'TOOL_EXECUTION_ERROR', retryable: false };
+    }
     let lastResult = await this.toolExecutor.executeTool(toolCall, messages, context);
 
     for (let attempt = 1; attempt <= ConversationRunner.MAX_RETRIES; attempt++) {

@@ -64,6 +64,7 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 			Message   string `json:"message"`
 		} `json:"route"`
 		Wire              *MsgThinToolRPC `json:"wire"`
+		RenewalWire       json.RawMessage `json:"renewalWire"`
 		Devices           []string        `json:"devices"`
 		HistorySessionKey string          `json:"historySessionKey"`
 		Attempts          []struct {
@@ -103,6 +104,85 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 		return result
 	}
 	var oldA *MsgThinToolRPC
+	t.Run("renewal_capability_is_additive", func(t *testing.T) {
+		// No compile-time dependency on the new server structs: this suite must
+		// also work when CLI merges first and the paired server is still old.
+		h, _ := deviceSelectionFixture(t)
+		now := time.Now().Truncate(time.Millisecond)
+		h.userDevices.now = func() time.Time { return now }
+		cloud := &Client{uid: 42, accountType: types.AccountBot, bodyID: "renew-cloud", send: make(chan []byte, 32)}
+		h.addClient(cloud)
+		_, err := h.bodyLeases.acquire(42, cloud.bodyID, cloud.connectionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.handleHi(cloud, "cloud", &MsgClientHi{ID: "renew-hi", RuntimeCapabilities: []string{"device-targets.v1"}})
+		var hi ServerMessage
+		decodeQueuedServerMessage(t, cloud.send, &hi)
+		encoded, _ := json.Marshal(hi)
+		available := bytes.Contains(encoded, []byte(`"device_grant_renewal.v1"`))
+		session := buildCatsCoSessionKey("p2p_7_42", "p2p", "usr42", 7)
+		_, err = h.userDevices.confirmDeviceSelection(7, session, "a", "test", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := map[string]interface{}{"catsco_identity": h.buildCatscoIdentityMetadata(7, 42, "p2p_7_42", 1, "read"), "xiaoba_runtime": h.buildXiaobaRuntimeMetadata(7, 42, "p2p_7_42")}
+		old := call(meta, "a")
+		if old.Wire == nil {
+			t.Fatal("missing initial wire")
+		}
+		now = now.Add(4 * time.Minute)
+		var reply map[string]interface{}
+		if available {
+			payload, _ := json.Marshal(map[string]interface{}{"device_grant_renewal": map[string]interface{}{"type": "request", "request_id": "paired-renewal", "grant_id": old.Wire.GrantID}})
+			var request ClientMessage
+			if err := json.Unmarshal(payload, &request); err != nil {
+				t.Fatal(err)
+			}
+			h.handleMessage(cloud, &request)
+			var response ServerMessage
+			decodeQueuedServerMessage(t, cloud.send, &response)
+			raw, _ := json.Marshal(response)
+			var generic map[string]interface{}
+			_ = json.Unmarshal(raw, &generic)
+			reply, _ = generic["device_grant_renewal"].(map[string]interface{})
+			if reply == nil || reply["error"] != nil {
+				t.Fatal("renewal refused")
+			}
+		}
+		fields := map[string]interface{}{"now": unixMillis(now)}
+		if available {
+			fields["renewalResult"] = reply
+		}
+		got := call(meta, "a", fields)
+		if got.Wire == nil {
+			t.Fatal("CLI lost original authorized device")
+		}
+		if available {
+			if got.Wire.GrantID == old.Wire.GrantID || len(got.RenewalWire) == 0 {
+				t.Fatal("CLI did not consume renewed wire grant")
+			}
+		} else if got.Wire.GrantID != old.Wire.GrantID || len(got.RenewalWire) > 0 {
+			t.Fatal("old server received a new protocol")
+		}
+		now = now.Add(7 * time.Minute)
+		h.userDevices.touch(7, "a")
+		// Fresh transport deadline but the exact same captured authority: after
+		// eleven minutes only the renewed capability may dispatch.
+		got.Wire.ExpiresAt = unixMillis(now.Add(time.Minute))
+		authorization := h.authorizeOrdinaryThinToolRPC(cloud, got.Wire, 7, "a", "read_file")
+		if available && authorization != nil {
+			t.Fatal(authorization)
+		}
+		if !available && authorization == nil {
+			t.Fatal("old server revived expired authority")
+		}
+		selection, _ := h.userDevices.selectionRecord(7, session)
+		_, _ = h.userDevices.confirmDeviceSelection(7, session, "b", "test", selection.Revision)
+		if err := h.authorizeOrdinaryThinToolRPC(cloud, got.Wire, 7, "a", "read_file"); err == nil {
+			t.Fatal("renewed authority survived switch to B")
+		}
+	})
 	t.Run("multiple_devices_require_selection", func(t *testing.T) {
 		got := call(metadata(), "alice")
 		if got.Route.OK || got.Wire != nil || len(got.Devices) != 3 {

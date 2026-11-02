@@ -9,10 +9,12 @@ import { extractCatsCoDeviceGrants } from '../../../src/catscompany/device-grant
 import { extractCatsCoDeviceSelection } from '../../../src/catscompany/device-selection';
 import { resolveExecutionRoute, executeRouteIfRemote } from '../../../src/tools/execution-router';
 import type { ToolExecutionContext } from '../../../src/types/tool';
+import { DeviceGrantLease } from '../../../src/core/device-grant-lease';
 
 async function main() {
   console.log = console.error; // Keep stdout as a single JSON response.
   const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+  if (input.now) Date.now = () => input.now;
   const envelope = createCatsCoMessageEnvelope({ topic: input.topic ?? 'p2p_7_42', senderId: input.senderId ?? 'usr7',
     text: '读取我的文件', seq: 1, botUid: input.botUid ?? '42', metadata: input.metadata });
   const executionScope = createExecutionScope(envelope);
@@ -20,6 +22,15 @@ async function main() {
   const client = Object.create(CatsClient.prototype) as any;
   client.msgId = 0;
   client.pendingThinToolRpc = new Map();
+  client.pendingDeviceGrantRenewals = new Map();
+  client.supportsDeviceGrantRenewal = !!input.renewalResult;
+  let renewalWire: unknown;
+  client.sendOrThrow = (envelope: any) => {
+    renewalWire = envelope.device_grant_renewal;
+    if (!input.renewalResult) throw new Error('Unexpected renewal without negotiation');
+    client.handleMessage({ device_grant_renewal: { ...input.renewalResult,
+      request_id: envelope.device_grant_renewal.request_id, grant_id: envelope.device_grant_renewal.grant_id } });
+  };
   client.sendEnvelopeWithAck = async (_id: string, outgoing: any) => {
     wire = outgoing.thin_tool_rpc;
     const request = outgoing.thin_tool_rpc;
@@ -39,13 +50,14 @@ async function main() {
     thinToolRpc: bot.buildThinToolRpcTransport(),
   };
   const attempts = [];
+  if (input.renewalResult) await new DeviceGrantLease(() => ctx).refresh();
   for (const target of input.targets ?? [input.target]) {
     wire = undefined;
     const route = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file', target });
     const result = await executeRouteIfRemote(ctx, route, 'read_file', 'read_file', { file_path: 'fixture-only', target });
     attempts.push({ route, result, wire });
   }
-  process.stdout.write(JSON.stringify({ ...attempts[attempts.length - 1], attempts, historySessionKey: envelope.sessionKey,
+  process.stdout.write(JSON.stringify({ ...attempts[attempts.length - 1], attempts, renewalWire, historySessionKey: envelope.sessionKey,
     devices: ctx.targetRoutes?.routes.map(item => item.deviceId) }));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
