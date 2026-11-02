@@ -55,6 +55,8 @@ export interface PrepareBoundBotDefinitionOptions extends BotDefinitionSyncServi
    * workspace ownership, Base metadata, and local package hashes.
    */
   reuseAppliedSkills?: boolean;
+  /** Isolate packages the runtime cannot safely materialize during a model/prompt-only revision. */
+  degradeInvalidSkills?: boolean;
   /**
    * A hot-reload caller proved that both the previous and desired Definitions
    * explicitly contain no synchronized Skill references. Preserve any
@@ -271,6 +273,7 @@ export async function prepareBoundBotDefinition(
               auth,
               fetchImpl: options.fetchImpl,
               definitionService,
+              ...(options.degradeInvalidSkills ? { degradeInvalidPackages: true } : {}),
               ...(preserveLocalOnlySkills
                 ? { preserveLocalOnlyWorkspace: { definitionRevision: desiredRevision } }
                 : {}),

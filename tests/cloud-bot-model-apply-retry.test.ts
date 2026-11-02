@@ -252,6 +252,97 @@ test('post-start model-only updates restore B after B -> A -> B and reuse its ve
   assert.deepEqual(definitions.read('43')?.model, desired.model);
 });
 
+test('model-only updates reuse a Skill whose package hash ignores runtime scratch files', async t => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'model-apply-ephemeral-skill-files-'));
+  t.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
+  const configService = createCatsCoLocalConfigService({ runtimeRoot });
+  configService.save({
+    version: 1,
+    endpoints: { httpBaseUrl: 'https://cats.example.test', serverUrl: 'wss://cats.example.test/v0/channels' },
+    account: { token: 'test-owner-token', uid: '7' },
+    currentBot: { uid: '43', apiKey: 'test-bot-key', boundByUserUid: '7', bindingSource: 'test' },
+  });
+  const auth = configService.getAuthState();
+  const definitions = createBotDefinitionSyncService({ runtimeRoot });
+  const previous: BotDefinition = {
+    schema: BOT_DEFINITION_SCHEMA,
+    botId: '43',
+    model: {
+      kind: 'custom', protocol: 'openai-responses', apiBase: 'https://models.example.test/v1',
+      model: 'previous-model', apiKey: 'test-model-key', contextWindowTokens: 128000,
+    },
+    prompt: { selected: 'custom', customSystemPrompt: 'Unchanged prompt.' },
+    skills: [TEST_SKILL_REFERENCE],
+  };
+  const desired: BotDefinition = { ...previous, model: { ...previous.model, model: 'next-model' } };
+  definitions.acceptCanonical(previous);
+  const skillFile = path.join(runtimeRoot, 'skills', 'server-local', 'SKILL.md');
+  fs.mkdirSync(path.dirname(skillFile), { recursive: true });
+  fs.writeFileSync(skillFile, [
+    '---', 'name: server-local', 'description: A verified Skill with runtime scratch files.', '---', '',
+    'Verified content.', '',
+  ].join('\n'));
+  new BotSkillWorkspaceService(runtimeRoot).activate('43');
+  writeVerifiedSkillBase(runtimeRoot, '43', 6, TEST_SKILL_REFERENCE);
+  const scratchFile = path.join(path.dirname(skillFile), 'tmp', 'subagents', 'turn-1', 'scratch.txt');
+  fs.mkdirSync(path.dirname(scratchFile), { recursive: true });
+  fs.writeFileSync(scratchFile, 'Ephemeral subagent output is not part of the Skill package.\n');
+
+  const requests: string[] = [];
+  const acks: unknown[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = init?.method || 'GET';
+    requests.push(`${method} ${url.pathname}`);
+    if (url.pathname === '/api/bot/definition' && method === 'GET') {
+      return Response.json({ configured: true, revision: 7, definition: desired });
+    }
+    if (url.pathname === '/api/bot/definition/ack' && method === 'POST') {
+      acks.push(JSON.parse(String(init?.body)));
+      return Response.json({ status: 'applied' });
+    }
+    if (url.pathname === '/api/bot/definition/default-prompt') {
+      return Response.json({ status: 'stored' });
+    }
+    throw new Error(`Unexpected test request: ${method} ${url.pathname}`);
+  });
+  const oldBot = {
+    isIdleForRuntimeReload: () => true,
+    destroy: async () => {},
+  } as CatsCompanyBot;
+  let bot = oldBot;
+  t.mock.method(CatsCompanyBot.prototype, 'start', async function (this: CatsCompanyBot) {
+    t.after(() => this.destroy());
+  });
+  t.mock.method(CatsCompanyBot.prototype, 'waitUntilReady', async () => {});
+
+  const result = await applyCloudModelRuntimeSelection({
+    runtimeRoot,
+    botId: '43',
+    auth,
+    selection: {
+      kind: 'custom', modelId: 'next-model', customModel: desired.model,
+      revision: 7, definition: desired,
+    },
+    canApply: () => true,
+    connectorConfig: {
+      serverUrl: 'wss://cats.example.test/v0/channels', apiKey: 'test-bot-key', botUid: '43',
+    },
+    currentBot: () => bot,
+    replaceBot: next => { bot = next; },
+    scheduleAckRetry: () => assert.fail('ACK should succeed'),
+    clearAckRetry: () => {},
+  });
+
+  assert.equal(result, 'applied');
+  assert.deepEqual(acks, [{ revision: 7 }]);
+  assert.equal(requests.some(request => request.includes('/api/bot/definition/skills')), false);
+  assert.equal(requests.some(request => request.includes('private-skill-packages')), false);
+  assert.equal(fs.readFileSync(skillFile, 'utf8').includes('Unverified'), false);
+  assert.equal(fs.readFileSync(scratchFile, 'utf8').includes('Ephemeral'), true);
+  assert.deepEqual(definitions.read('43')?.model, desired.model);
+});
+
 test('post-start prompt-only updates reuse unchanged Skills without restarting the connector', async t => {
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'prompt-apply-unchanged-skills-'));
   t.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
