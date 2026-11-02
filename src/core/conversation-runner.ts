@@ -244,6 +244,52 @@ export interface RunnerOptions {
 }
 
 /**
+ * 重新落位 transient runtime context 块。
+ *
+ * 这份文本每轮都会重建（设备授权、群成员名单、本机资源等），但多数时候内容
+ * 完全没变。旧实现是无条件"删掉旧的那份、再追加到末尾"：内容不变也要动一次
+ * 位置，等于每轮重新洗一遍尾部前缀，这一段永远进不了缓存。这里改成内容相同
+ * 就原位保留，只在真变化时才搬动。
+ *
+ * 只做位置决策：不改写内容，也不减少任何给模型的信息。
+ */
+export function refreshTransientRuntimeContext(
+  messages: Message[],
+  next: Message | null,
+): void {
+  // 旧版 artifact observation 与本次刷新无关，始终清掉（保持原行为）。
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (isLegacyArtifactObservationMessage(messages[index])) messages.splice(index, 1);
+  }
+
+  // 只保留最后一份 runtime context，多余的历史副本去掉。
+  let keptIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== 'system' || typeof message.content !== 'string') continue;
+    if (!message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)) continue;
+    if (keptIndex === -1) {
+      keptIndex = index;
+    } else {
+      messages.splice(index, 1);
+      // 删除更靠前的副本会让保留项整体前移，索引要跟着调整
+      if (index < keptIndex) keptIndex -= 1;
+    }
+  }
+
+  const nextContent = next && typeof next.content === 'string' ? next.content : null;
+  if (keptIndex >= 0 && nextContent !== null) {
+    const current = messages[keptIndex];
+    if (typeof current.content === 'string' && current.content === nextContent) {
+      return; // 内容一致：原位保留，避免尾部重排
+    }
+  }
+
+  if (keptIndex >= 0) messages.splice(keptIndex, 1);
+  if (next) messages.push(next);
+}
+
+/**
  * ConversationRunner - 核心对话循环
  *
  * 封装 "发送消息 → 检查工具调用 → 执行工具 → 回传结果 → 继续推理" 的循环。
@@ -1032,19 +1078,6 @@ export class ConversationRunner {
       || this.toolExecutionContext?.executionScope?.sessionKey;
     if (!sessionKey) return;
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (
-        isLegacyArtifactObservationMessage(message)
-        || (
-          message.role === 'system'
-          && typeof message.content === 'string'
-          && message.content.startsWith(TRANSIENT_RUNTIME_CONTEXT_PREFIX)
-        )
-      ) {
-        messages.splice(i, 1);
-      }
-    }
     const runtimeContext = buildRuntimeContextMessage({
       sessionKey,
       sessionType: this.toolExecutionContext?.surface,
@@ -1056,7 +1089,7 @@ export class ConversationRunner {
       groupRoster: this.toolExecutionContext?.groupRoster,
       localFileGrants: this.toolExecutionContext?.localFileGrants,
     });
-    if (runtimeContext) messages.push(runtimeContext);
+    refreshTransientRuntimeContext(messages, runtimeContext);
   }
 
   private removeLegacyArtifactObservations(messages: Message[]): void {
