@@ -82,6 +82,8 @@ export interface McpToolBridgeOptions {
   /** run 句柄轮询总时长（默认 90s）；<=0 关闭自动轮询。 */
   runPollTimeoutMs?: number;
   runPollIntervalMs?: number;
+  /** 「返问待补充」的有效期（默认 30 分钟）。 */
+  resumeTtlMs?: number;
   /**
    * 「放弃轮询后」的待补登记回调（设计 §19）：任务仍 running 时调用，
    * 宿主把 run 记入回执路由器；平台推达终态回执时可唤醒下一回合。
@@ -112,6 +114,13 @@ export const DEFAULT_RUN_POLL_TIMEOUT_MS = 90_000;
  */
 const MAX_RUN_POLL_FAILURES = 3;
 const DEFAULT_RUN_POLL_INTERVAL_MS = 5_000;
+/**
+ * 「返问待补充」的有效期。
+ *
+ * 取 30 分钟：用户看到「Agent 返问」之后可能过一会儿才回，但太长的窗口会把
+ * 「第二天开的新任务」接到昨天那条会话上 —— 那比不带 session_id 更糟。
+ */
+const DEFAULT_RESUME_TTL_MS = 30 * 60 * 1000;
 
 const TOOL_ERROR_MESSAGES: Record<string, string> = {
   unauthorized: 'CatsCo 登录态无效或已过期，请在 CatsCo 面板重新登录后重试。',
@@ -140,6 +149,10 @@ export class CatsCoMcpToolBridge {
   private readonly onRunPending?: McpToolBridgeOptions['onRunPending'];
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
+  /** 「返问待补充」的有效期：超过就当用户已经走开了，别把新任务接到旧会话上。 */
+  private readonly resumeTtlMs: number;
+  /** 待补充的返问会话：resumeKey → { sessionId, at }。 */
+  private readonly pendingResume = new Map<string, { sessionId: string; at: number }>();
 
   private readonly bridged = new Map<string, { definition: ToolDefinition }>();
   private refreshInFlight: Promise<BridgeRefreshResult | null> | null = null;
@@ -163,6 +176,50 @@ export class CatsCoMcpToolBridge {
     this.onRunPending = options.onRunPending;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+    this.resumeTtlMs = options.resumeTtlMs ?? DEFAULT_RESUME_TTL_MS;
+  }
+
+  /**
+   * 返问续聊的键：同一**对话**里的同一**工具**。
+   *
+   * 「这句用户输入是不是在回答上一轮返问」这件事，模型没有感知（它是被主动调用的），
+   * 服务端也看不到（它只收到 input），只有客户端知道「上一轮我们把什么问题抛给了用户」。
+   * 所以把状态放在这里：收到 awaiting_input 就记下会话，下一次同一工具、同一对话、
+   * 模型没带 session_id 时补上（一次性）。
+   */
+  private resumeKey(toolName: string, route?: { conversationSessionKey?: string }): string {
+    return `${route?.conversationSessionKey ?? ''}\u0000${toolName}`;
+  }
+
+  /** 模型没带 session_id 时补上上一轮返问的会话；模型自己带了就以它为准。 */
+  private withResumeSession(
+    toolName: string,
+    args: Record<string, unknown>,
+    resumeKey: string,
+  ): Record<string, unknown> {
+    if (toolName === this.runStatusToolName) return args;
+    if (typeof args.session_id === 'string' && args.session_id) {
+      // 模型自己带了会话：以它为准，顺手丢掉待补登记（说明它没在用我们那条）。
+      this.pendingResume.delete(resumeKey);
+      return args;
+    }
+    const armed = this.pendingResume.get(resumeKey);
+    if (!armed) return args;
+    // 一次性：用过就丢。真继续不下去时，对方的 awaiting_input 会再把它挂回来。
+    this.pendingResume.delete(resumeKey);
+    if (this.now() - armed.at > this.resumeTtlMs) return args;
+    Logger.info(`CatsCo 工具桥：自动续上上一轮返问的会话（${toolName} session_id=${armed.sessionId}）`);
+    return { ...args, session_id: armed.sessionId };
+  }
+
+  /** 记住/清除「待补充」的返问会话。 */
+  private trackResume(resumeKey: string, envelope: ServiceRunEnvelopeView | null, toolName: string): void {
+    if (toolName === this.runStatusToolName) return;
+    if (envelope?.status === 'awaiting_input' && envelope.session_id) {
+      this.pendingResume.set(resumeKey, { sessionId: envelope.session_id, at: this.now() });
+      return;
+    }
+    this.pendingResume.delete(resumeKey);
   }
 
   /** 当前已桥接的远端工具名（诊断/测试用）。 */
@@ -381,7 +438,11 @@ export class CatsCoMcpToolBridge {
     }
     const client = this.createClient(endpoint);
     try {
-      const first = await client.callTool(toolName, this.withBotIdentity(toolName, args));
+      // 返问续聊：上一轮以 awaiting_input 收尾、用户又刚补充了一句时，模型这一轮很可能
+      // 忘了带 session_id —— 由桥补上（模型没有感知也没关系），而不是靠提示词求它记住。
+      const resumeKey = this.resumeKey(toolName, route);
+      const callArgs = this.withResumeSession(toolName, this.withBotIdentity(toolName, args), resumeKey);
+      const first = await client.callTool(toolName, callArgs);
       if (first.isError) {
         // 服务端 isError 文本有两种形态：裸码（如 unauthorized）或「码: 说明」
         // （如 session_busy: …）。拆出裸码做程序化匹配，说明文本兜底展示。
@@ -413,7 +474,11 @@ export class CatsCoMcpToolBridge {
           Logger.warning(`CatsCo 工具桥待补登记失败: ${error?.message ?? error}`);
         }
       }
-      return formatEnvelopeResult(envelope, first.contentText, toolName, pollDegraded);
+      const result = formatEnvelopeResult(envelope, first.contentText, toolName, pollDegraded);
+      // 返问续聊：以 awaiting_input 收尾时把会话记下来，下一轮自动补 session_id；
+      // 其它终态说明这条线索结束了，清掉。
+      this.trackResume(resumeKey, envelope, toolName);
+      return result;
     } catch (error: any) {
       // 协议级 unknown tool（-32602）：平台在会话期间被撤订阅/工具下线的典型表现
       // （服务端每请求重建工具面，旧工具面里的工具名会直接被拒）。这不是网络问题，
