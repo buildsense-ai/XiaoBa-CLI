@@ -76,10 +76,11 @@ export class ShareSkillHubSkillTool implements Tool {
     const pendingRepair = repairKey ? this.getPendingRepair(repairKey) : undefined;
     const suppliedReportId = String(args?.repairReportId || '').trim();
     if (pendingRepair && pendingRepair.retries >= MAX_AUTOMATIC_REPAIR_RETRIES) {
+      this.pendingRepairs.delete(repairKey);
       return {
         ok: false,
         errorCode: 'SKILLHUB_REPAIR_LIMIT_REACHED',
-        message: 'This Skill publication already used the maximum of three automatic repair retries. Stop automatic edits and ask the user to review the remaining validation issues.',
+        message: 'This Skill publication used the maximum of three automatic repair retries. The automatic repair chain was discarded. Ask the user to review the Skill, then start a normal publication without repairReportId.',
       };
     }
     if (pendingRepair && suppliedReportId !== pendingRepair.reportId) {
@@ -107,8 +108,20 @@ export class ShareSkillHubSkillTool implements Tool {
         confirmPublish: args?.confirmPublish === true,
       }, {
         onPackageCaptured: files => {
-          packageSnapshot = createRepairSnapshot(files);
-          if (pendingRepair) assertSafeAutomaticRepair(pendingRepair.snapshot, packageSnapshot);
+          try {
+            packageSnapshot = createRepairSnapshot(files);
+          } catch (error: any) {
+            packageSnapshot = undefined;
+            if (pendingRepair) throw repairDeclined(error?.message || 'The package snapshot could not be verified.');
+            return;
+          }
+          if (pendingRepair) {
+            try {
+              assertSafeAutomaticRepair(pendingRepair.snapshot, packageSnapshot);
+            } catch (error: any) {
+              throw repairDeclined(error?.message || 'The automatic repair exceeded its safe change boundary.');
+            }
+          }
         },
       });
       const submission = result?.submission || {};
@@ -150,6 +163,9 @@ export class ShareSkillHubSkillTool implements Tool {
         ].filter(Boolean).join('\n'),
       };
     } catch (error: any) {
+      if (error?.code === 'SKILLHUB_REPAIR_DECLINED' && repairKey) {
+        this.pendingRepairs.delete(repairKey);
+      }
       const validation = error?.validation;
       if (repairKey && validation?.reportId && Array.isArray(validation.issues)) {
         const blocking = validation.issues.filter((issue: any) => issue?.blocking === true);
@@ -247,7 +263,26 @@ function assertSafeAutomaticRepair(before: RepairSnapshot, after: RepairSnapshot
     || original.data.name === original.data.name.trim()
     || repaired.data.name !== original.data.name.trim()
     || original.content !== repaired.content
-    || !isDeepStrictEqual({ ...original.data, name: original.data.name.trim() }, repaired.data)) {
+    || !isDeepStrictEqual({ ...original.data, name: original.data.name.trim() }, repaired.data)
+    || normalizeNameScalar(before.entryText) !== normalizeNameScalar(after.entryText)) {
     throw new Error('Automatic Skill repair may change only the leading/trailing whitespace in the existing frontmatter name.');
   }
+}
+
+function normalizeNameScalar(text: string): string {
+  const lines = text.split(/(?<=\n)/);
+  let replaced = false;
+  return lines.map(line => {
+    if (replaced) return line;
+    const match = line.match(/^([ \t]*name:[ \t]*)(["'])(.*)\2([ \t]*(?:\r?\n)?)$/);
+    if (!match) return line;
+    replaced = true;
+    return `${match[1]}${match[2]}<name>${match[2]}${match[4]}`;
+  }).join('');
+}
+
+function repairDeclined(message: string): Error {
+  const error = new Error(`${message} The automatic repair chain was discarded. Ask the user to review the Skill, then start a normal publication without repairReportId.`);
+  (error as any).code = 'SKILLHUB_REPAIR_DECLINED';
+  return error;
 }
