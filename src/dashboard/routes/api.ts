@@ -2515,6 +2515,7 @@ export interface DashboardApiRouterOptions {
   modelsDevFetch?: typeof fetch;
   catsConnectorAutoStart?: CatsConnectorAutoStart;
   manageConnector?: boolean;
+  skillHubAiService?: () => AIService | undefined;
 }
 
 export function createApiRouter(
@@ -2526,7 +2527,9 @@ export function createApiRouter(
   const modelsDevFetch = options.modelsDevFetch ?? fetch;
   registerSkillHubRoutes(router, {
     getCatsCoAuth: getCatsCoAuthForSkillHub,
-    createAiService: () => new AIService(),
+    createAiService: options.skillHubAiService ?? (() => new AIService(
+      resolveActiveBotLLMConfig({ runtimeRoot: runtimeDataRoot() })?.config,
+    )),
   });
   registerPetRoutes(router);
   registerTurnErrorRoutes(router);

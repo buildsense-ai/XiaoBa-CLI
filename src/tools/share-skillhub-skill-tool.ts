@@ -29,7 +29,6 @@ interface RepairSnapshot {
 
 export class ShareSkillHubSkillTool implements Tool {
   private readonly pendingRepairs = new Map<string, PendingRepair>();
-  private readonly presentationJobs = new Set<string>();
 
   constructor(private readonly createService: () => Pick<SkillHubService, 'shareLocalSkill'> & Partial<Pick<
     SkillHubService,
@@ -164,7 +163,7 @@ export class ShareSkillHubSkillTool implements Tool {
             'SkillHub already has this exact Skill content.',
             `Skill: ${result?.skill?.name || skillName}`,
             result?.latestVersion ? `Version: ${result.latestVersion}` : '',
-            presentationQueued ? 'Chinese Skill guide generation was queued in the background.' : '',
+            presentationQueued ? 'A background attempt to generate and publish the Chinese Skill guide has started. It may take several minutes; check SkillHub later for the result.' : '',
           ].filter(Boolean).join('\n'),
         };
       }
@@ -185,7 +184,7 @@ export class ShareSkillHubSkillTool implements Tool {
           `Path: ${result?.skill?.path || ''}`,
           `Submission: ${submissionId}`,
           submission.status ? `Status: ${submission.status}` : '',
-          presentationQueued ? 'Chinese Skill guide generation was queued in the background.' : '',
+          presentationQueued ? 'A background attempt to generate and publish the Chinese Skill guide has started. It may take several minutes; check SkillHub later for the result.' : '',
         ].filter(Boolean).join('\n'),
       };
     } catch (error: any) {
@@ -266,10 +265,6 @@ export class ShareSkillHubSkillTool implements Tool {
     if (!id || !publishedVersion || !files?.length || !aiService
       || !service.getPresentation || !service.getPresentationDraft
       || !service.savePresentationDraft || !service.publishPresentation) return false;
-    const key = `${id}@${publishedVersion}`;
-    if (this.presentationJobs.has(key)) return true;
-
-    this.presentationJobs.add(key);
     void startSkillPresentationGeneration({
       aiService,
       service: service as Required<Pick<
@@ -279,7 +274,7 @@ export class ShareSkillHubSkillTool implements Tool {
       skillId: id,
       version: publishedVersion,
       files,
-    }).finally(() => this.presentationJobs.delete(key));
+    });
     return true;
   }
 }

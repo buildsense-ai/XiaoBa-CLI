@@ -28,12 +28,22 @@ function fixture(options: {
   published?: boolean;
   draft?: boolean;
   output?: unknown;
+  unpublishedReads?: number;
 } = {}) {
   const calls: string[] = [];
   const saved = { revision: 1 };
+  let savedInput: any;
+  let unpublishedReads = options.unpublishedReads || 0;
   const service = {
     getPresentation: async () => {
       calls.push('read-published');
+      if (unpublishedReads > 0) {
+        unpublishedReads -= 1;
+        const error: any = new Error('version not published yet');
+        error.status = 404;
+        error.code = 'skillhub.request_failed';
+        throw error;
+      }
       return { presentation: options.published ? { revision: 3 } : null };
     },
     getPresentationDraft: async () => {
@@ -42,6 +52,7 @@ function fixture(options: {
     },
     savePresentationDraft: async (input: any) => {
       calls.push(`save:${input.expectedRevision}`);
+      savedInput = input;
       return { presentation: saved };
     },
     publishPresentation: async (input: any) => {
@@ -57,7 +68,7 @@ function fixture(options: {
       return { content: JSON.stringify(options.output ?? generatedContent()) };
     },
   };
-  return { calls, service, aiService };
+  return { calls, service, aiService, get savedInput() { return savedInput; } };
 }
 
 const files = [{
@@ -76,6 +87,40 @@ test('generates from the exact uploaded package and publishes under the publishe
   });
   assert.equal(result, 'published');
   assert.deepEqual(f.calls, ['read-published', 'read-draft', 'model', 'save:0', 'publish:1']);
+});
+
+test('waits for an asynchronously published package to become readable before generating', async () => {
+  const f = fixture({ unpublishedReads: 2 });
+  const waits: number[] = [];
+  const result = await generateAndPublishSkillPresentation({
+    aiService: f.aiService as any,
+    service: f.service,
+    skillId,
+    version,
+    files,
+    wait: async milliseconds => { waits.push(milliseconds); },
+  });
+  assert.equal(result, 'published');
+  assert.deepEqual(waits, [1000, 2000]);
+  assert.deepEqual(f.calls, [
+    'read-published', 'read-published', 'read-published', 'read-draft', 'model', 'save:0', 'publish:1',
+  ]);
+});
+
+test('stops polling after the bounded version-visibility window', async () => {
+  const f = fixture({ unpublishedReads: 100 });
+  const waits: number[] = [];
+  await assert.rejects(generateAndPublishSkillPresentation({
+    aiService: f.aiService as any,
+    service: f.service,
+    skillId,
+    version,
+    files,
+    wait: async milliseconds => { waits.push(milliseconds); },
+  }), /not published yet/);
+  assert.equal(waits.length, 9);
+  assert.equal(f.calls.filter(call => call === 'read-published').length, 10);
+  assert.equal(f.calls.includes('model'), false);
 });
 
 test('does not call the model or overwrite an existing author presentation', async () => {
@@ -113,6 +158,29 @@ test('rejects untested examples that are not clearly labeled', async () => {
     files,
   }), /labeled as illustrative/);
   assert.deepEqual(f.calls, ['read-published', 'read-draft', 'model']);
+});
+
+test('treats omitted optional lists as empty lists', async () => {
+  const output = generatedContent();
+  delete (output as any).tags;
+  delete (output as any).scenarios;
+  delete (output as any).steps;
+  delete (output as any).requirements;
+  delete (output as any).limitations;
+  const f = fixture({ output });
+  assert.equal(await generateAndPublishSkillPresentation({
+    aiService: f.aiService as any,
+    service: f.service,
+    skillId,
+    version,
+    files,
+  }), 'published');
+  assert.deepEqual(f.savedInput.content.tags, []);
+  assert.deepEqual(f.savedInput.content.scenarios, []);
+  assert.deepEqual(f.savedInput.content.steps, []);
+  assert.deepEqual(f.savedInput.content.requirements, []);
+  assert.deepEqual(f.savedInput.content.limitations, []);
+  assert.deepEqual(f.calls, ['read-published', 'read-draft', 'model', 'save:0', 'publish:1']);
 });
 
 test('requires a root SKILL.md and does not truncate it for the model', async () => {

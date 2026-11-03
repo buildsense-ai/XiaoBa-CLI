@@ -14,7 +14,7 @@ export { assertExpectedLocalSkillShareScope } from '../../skillhub/local-share';
 
 export interface SkillHubRouteOptions {
   getCatsCoAuth?: () => Promise<SkillHubCatsCoAuthPayload> | SkillHubCatsCoAuthPayload;
-  createAiService?: () => AIService;
+  createAiService?: () => AIService | undefined;
 }
 
 export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOptions = {}): void {

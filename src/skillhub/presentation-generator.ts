@@ -11,6 +11,8 @@ const TEXT_EXTENSIONS = new Set([
 const CATEGORIES = new Set([
   'research', 'documents', 'data', 'media', 'web', 'development', 'automation', 'other',
 ]);
+const VERSION_READY_RETRY_MS = [1000, 2000, 4000, 8000, 15000, 15000, 15000, 15000, 15000];
+const activeGenerationJobs = new Map<string, Promise<void>>();
 
 export interface SkillPresentationFile {
   path: string;
@@ -30,6 +32,7 @@ export interface GenerateSkillPresentationInput {
   skillId: string;
   version: string;
   files: SkillPresentationFile[];
+  wait?: (milliseconds: number) => Promise<void>;
 }
 
 export async function generateAndPublishSkillPresentation(
@@ -38,7 +41,7 @@ export async function generateAndPublishSkillPresentation(
   const { aiService, service, skillId, version } = input;
   if (!skillId.trim() || !version.trim()) throw new Error('Skill presentation target is incomplete.');
 
-  const current = await service.getPresentation(skillId, version);
+  const current = await readPublishedPresentationWhenReady(service, skillId, version, input.wait);
   if (current?.presentation) return 'already_published';
 
   const draftResponse = await service.getPresentationDraft(skillId, version);
@@ -89,7 +92,10 @@ export async function generateAndPublishSkillPresentation(
 }
 
 export function startSkillPresentationGeneration(input: GenerateSkillPresentationInput): Promise<void> {
-  return generateAndPublishSkillPresentation(input)
+  const key = `${input.skillId.trim()}@${input.version.trim()}`;
+  const existing = activeGenerationJobs.get(key);
+  if (existing) return existing;
+  const job = generateAndPublishSkillPresentation(input)
     .then((result) => {
       Logger.info(`[SkillHub] presentation generation finished: ${result}`);
     })
@@ -97,6 +103,25 @@ export function startSkillPresentationGeneration(input: GenerateSkillPresentatio
       const code = String(error?.code || error?.status || 'generation_failed');
       Logger.warning(`[SkillHub] Chinese presentation generation failed (${code}); the Skill remains published.`);
     });
+  activeGenerationJobs.set(key, job);
+  void job.finally(() => activeGenerationJobs.delete(key));
+  return job;
+}
+
+async function readPublishedPresentationWhenReady(
+  service: SkillPresentationWriter,
+  skillId: string,
+  version: string,
+  wait: (milliseconds: number) => Promise<void> = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+): Promise<any> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await service.getPresentation(skillId, version);
+    } catch (error: any) {
+      if (Number(error?.status) !== 404 || attempt >= VERSION_READY_RETRY_MS.length) throw error;
+      await wait(VERSION_READY_RETRY_MS[attempt]);
+    }
+  }
 }
 
 function selectTextSources(files: SkillPresentationFile[]): {
@@ -163,14 +188,14 @@ function parsePresentation(raw: string): Record<string, unknown> {
     if (!Array.isArray(candidate) || candidate.length > max) throw new Error(`Model returned invalid ${field}.`);
     return candidate;
   };
-  const tags = list(value.tags, 5, 'tags').map((item) => text(item, 40, 'tag'));
-  const scenarios = list(value.scenarios, 3, 'scenarios').map((item: any) => ({
+  const tags = list(value.tags ?? [], 5, 'tags').map((item) => text(item, 40, 'tag'));
+  const scenarios = list(value.scenarios ?? [], 3, 'scenarios').map((item: any) => ({
     title: text(item?.title, 80, 'scenario title'),
     description: text(item?.description, 400, 'scenario description'),
   }));
-  const steps = list(value.steps, 6, 'steps').map((item) => text(item, 400, 'step'));
-  const requirements = list(value.requirements, 8, 'requirements').map((item) => text(item, 300, 'requirement'));
-  const limitations = list(value.limitations, 8, 'limitations').map((item) => text(item, 300, 'limitation'));
+  const steps = list(value.steps ?? [], 6, 'steps').map((item) => text(item, 400, 'step'));
+  const requirements = list(value.requirements ?? [], 8, 'requirements').map((item) => text(item, 300, 'requirement'));
+  const limitations = list(value.limitations ?? [], 8, 'limitations').map((item) => text(item, 300, 'limitation'));
   const example = value.example as any;
   if (!example || !['document', 'image', 'generic'].includes(example.kind)) {
     throw new Error('Model returned an invalid example.');

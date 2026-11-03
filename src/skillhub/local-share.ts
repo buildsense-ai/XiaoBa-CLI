@@ -62,7 +62,7 @@ export async function shareLocalSkillForCatsCo(
       onPackageCaptured: captured => { files = captured; },
     });
     const queued = queuePresentationGeneration(options.aiService, service, result, files);
-    return { ...result, presentationGenerationQueued: queued };
+    return { ...result, presentationGenerationStarted: queued };
   }
   if (!options.getCatsCoAuth) {
     const error: any = new Error('CatsCo SkillHub login is not configured');
@@ -191,7 +191,7 @@ export async function shareLocalSkillForCatsCo(
       writeSkillHubLocalMetadata(path.join(localSkillPath, 'SKILL.md'), result.skillHub);
     }
     const queued = queuePresentationGeneration(options.aiService, service, result, files);
-    return { ...result, botUid: expectedBotUid, presentationGenerationQueued: queued };
+    return { ...result, botUid: expectedBotUid, presentationGenerationStarted: queued };
   }, { runtimeRoot: options.runtimeRoot });
 }
 

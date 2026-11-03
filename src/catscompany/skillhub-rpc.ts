@@ -941,7 +941,7 @@ export class SkillHubThinRpcHandler {
         uploaded_at: String(result.skillHub.uploadedAt || ''),
       } : {},
       requires_confirmation: Boolean(result?.requiresConfirmation),
-      presentation_generation_queued: Boolean(result?.presentationGenerationQueued),
+      presentation_generation_started: Boolean(result?.presentationGenerationStarted),
     };
   }
 
