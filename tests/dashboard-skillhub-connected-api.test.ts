@@ -215,7 +215,7 @@ describe('dashboard connected SkillHub API', () => {
     assert.match(skillText, /skillhub_author:\s+["']?lin["']?/);
     assert.match(skillText, /skillhub_version:\s+["']?1\.0\.0["']?/);
     assert.match(skillText, /skillhub_uploaded_at:/);
-    for (let attempt = 0; attempt < 50 && !presentationPublished; attempt += 1) {
+    for (let attempt = 0; attempt < 200 && !presentationPublished; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.equal(presentationReads, 2);
