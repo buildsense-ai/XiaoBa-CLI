@@ -39,6 +39,7 @@ export interface SkillHubCatsCoExchangeInput {
 const MAX_JSON_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_PACKAGE_RESPONSE_BYTES = 50 * 1024 * 1024;
 const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
+const MAX_VALIDATION_ISSUES = 50;
 
 export class SkillHubClient {
   readonly config: SkillHubConfig;
@@ -282,6 +283,7 @@ export class SkillHubClient {
       );
       let message = `SkillHub request failed: HTTP ${response.status}`;
       let code = 'skillhub.request_failed';
+      let validation: Record<string, unknown> | undefined;
       if (bytes.length > 0) {
         try {
           const parsed = JSON.parse(bytes.toString('utf8'));
@@ -290,12 +292,16 @@ export class SkillHubClient {
             message,
           );
           code = safeUpstreamCode(parsed?.error?.code || parsed?.code, code);
+          if (code === 'skillhub.publish_validation_failed') {
+            validation = safeUpstreamValidation(parsed?.error?.validation);
+          }
         } catch {
           // Never expose arbitrary upstream text to the Dashboard.
         }
       }
       const error = withStatus(new Error(message), response.status);
       (error as any).code = code;
+      if (validation) (error as any).validation = validation;
       throw error;
     }
 
@@ -382,6 +388,47 @@ function safeUpstreamMessage(value: unknown, fallback: string): string {
 function safeUpstreamCode(value: unknown, fallback: string): string {
   const code = typeof value === 'string' ? value.trim() : '';
   return /^[a-zA-Z0-9._-]{1,100}$/.test(code) ? code : fallback;
+}
+
+function safeUpstreamValidation(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const report = value as Record<string, any>;
+  if (report.schemaVersion !== '1' || report.outcome !== 'rejected'
+    || !['complete', 'partial'].includes(report.coverage)
+    || typeof report.reportId !== 'string' || !/^[a-f0-9-]{36}$/i.test(report.reportId)
+    || !Array.isArray(report.issues) || report.issues.length > MAX_VALIDATION_ISSUES) return undefined;
+  const issues = report.issues.map((item: any) => {
+    if (!item || typeof item !== 'object' || typeof item.code !== 'string'
+      || !/^[a-z0-9._-]{1,100}$/i.test(item.code)
+      || typeof item.message !== 'string' || item.message.length > 500
+      || !['format', 'compatibility', 'package_safety'].includes(item.category)
+      || !['automatic', 'confirmation_required', 'manual', 'none'].includes(item.repairPolicy)
+      || typeof item.blocking !== 'boolean') return null;
+    const location = item.location && typeof item.location === 'object' && !Array.isArray(item.location)
+      ? item.location : {};
+    return {
+      code: item.code,
+      category: item.category,
+      blocking: item.blocking,
+      repairPolicy: item.repairPolicy,
+      message: item.message,
+      location: {
+        ...(Number.isSafeInteger(location.entryIndex) && location.entryIndex >= 0 ? { entryIndex: location.entryIndex } : {}),
+        ...(['SKILL.md', 'skill.json', 'README.md'].includes(location.relativePath) ? { relativePath: location.relativePath } : {}),
+        ...(typeof location.field === 'string' && /^[a-zA-Z0-9._-]{1,80}$/.test(location.field) ? { field: location.field } : {})
+      }
+    };
+  });
+  if (issues.some((item: unknown) => item === null)) return undefined;
+  return {
+    schemaVersion: '1',
+    ruleVersion: typeof report.ruleVersion === 'string' && report.ruleVersion.length <= 80 ? report.ruleVersion : '',
+    reportId: report.reportId,
+    outcome: 'rejected',
+    coverage: report.coverage,
+    nextAction: typeof report.nextAction === 'string' && report.nextAction.length <= 40 ? report.nextAction : 'review_report',
+    issues
+  };
 }
 
 function withStatus(error: Error, status: number): Error {

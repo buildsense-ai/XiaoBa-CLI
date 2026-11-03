@@ -22,12 +22,13 @@ function fixture() {
       renewGrant: async grant => { renewals++; return { ...grant, grantId: `renewed-${renewals}`, expiresAt: now + 600_000 }; } },
   };
   const lease = new DeviceGrantLease(() => context, () => true, () => now);
-  return { context, lease, advance: (ms: number) => { now += ms; }, renewals: () => renewals };
+  return { context, lease, advance: (ms: number) => { now += ms; }, setNow: (value: number) => { now = value; }, renewals: () => renewals };
 }
 
 test('active task survives multiple ten-minute boundaries without widening device authority', async () => {
   const f = fixture();
   const grant = f.context.deviceGrants![0];
+  f.setNow(grant.expiresAt - 6 * 60_000);
   const original = { ...grant };
   for (let i = 0; i < 12; i++) { f.advance(240_000); await f.lease.refresh(); }
   assert.equal(f.renewals(), 12);

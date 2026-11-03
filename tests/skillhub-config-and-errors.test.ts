@@ -136,6 +136,57 @@ describe('SkillHub connection diagnostics', () => {
       await close(server);
     }
   });
+
+  test('captures the SkillHub Cloud publication validation envelope from an HTTP 422 response', async () => {
+    const reportId = '12345678-1234-4234-8234-123456789012';
+    const server = createServer((_req, res) => {
+      res.writeHead(422, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        error: {
+          code: 'skillhub.publish_validation_failed',
+          message: '发布预检未通过，请查看问题报告。',
+          validation: {
+            schemaVersion: '1',
+            ruleVersion: 'skillhub-publish-v1.0.1',
+            profile: 'skillhub-publish-v1',
+            reportId,
+            outcome: 'rejected',
+            coverage: 'complete',
+            candidateHash: 'a'.repeat(64),
+            limitsFingerprint: 'b'.repeat(64),
+            issues: [{
+              code: 'metadata.name_whitespace',
+              category: 'format',
+              blocking: true,
+              location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' },
+              message: '入口 name 不能包含首尾空白。',
+              repairPolicy: 'automatic',
+            }],
+            truncated: false,
+            nextAction: 'review_report',
+          },
+        },
+      }));
+    });
+    await listen(server);
+    try {
+      const client = new SkillHubClient({ baseUrl: serverUrl(server), timeoutMs: 1_000, sessionScope: 'memory' });
+      await assert.rejects(
+        () => client.quickShare({ source: { type: 'files', files: [] } }),
+        (error: any) => {
+          assert.equal(error.code, 'skillhub.publish_validation_failed');
+          assert.equal(error.status, 422);
+          assert.equal(error.validation.reportId, reportId);
+          assert.equal(error.validation.issues[0].repairPolicy, 'automatic');
+          assert.equal(error.validation.candidateHash, undefined);
+          return true;
+        },
+      );
+    } finally {
+      server.closeAllConnections();
+      await close(server);
+    }
+  });
 });
 
 function listen(server: ReturnType<typeof createServer>): Promise<void> {

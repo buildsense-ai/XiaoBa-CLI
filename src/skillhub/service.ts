@@ -247,7 +247,11 @@ export class SkillHubService {
 
   async shareLocalSkill(
     input: any,
-    options: { writeLocalMetadata?: boolean; localSkillPath?: string } = {},
+    options: {
+      writeLocalMetadata?: boolean;
+      localSkillPath?: string;
+      onPackageCaptured?: (files: Array<{ path: string; contentBase64: string }>) => void;
+    } = {},
   ): Promise<any> {
     const skillName = String(input.skillName || input.skill || input.name || '').trim();
     if (!skillName) {
@@ -299,6 +303,7 @@ export class SkillHubService {
       error.code = 'skillhub.local_skill_empty';
       throw error;
     }
+    options.onPackageCaptured?.(files);
     const submission = await this.client.quickShare({
       manifest: {
         id: skill.metadata.name,
@@ -309,7 +314,7 @@ export class SkillHubService {
         keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
         triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
         minAgentVersion: '0.0.0',
-        platforms: [],
+        platforms: ['windows', 'macos', 'linux'],
       },
       notes: String(input.notes || 'Quick shared from local XiaoBa Skills.'),
       confirmVersionPublish: input.confirmVersionPublish === true || input.confirmPublish === true,

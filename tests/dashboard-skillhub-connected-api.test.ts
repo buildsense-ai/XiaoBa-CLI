@@ -187,7 +187,7 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(share.body.submission.request.manifest.name, 'quick-demo');
     assert.equal(share.body.submission.normalizedManifest.id, 'lin/quick-demo');
     assert.equal(share.body.submission.request.manifest.minAgentVersion, '0.0.0');
-    assert.deepEqual(share.body.submission.request.manifest.platforms, []);
+    assert.deepEqual(share.body.submission.request.manifest.platforms, ['windows', 'macos', 'linux']);
     const uploadedPaths = share.body.submission.request.source.files.map((file: any) => file.path);
     assert.equal(uploadedPaths.includes('SKILL.md'), true);
     assert.equal(uploadedPaths.includes('REVIEW.json'), false);
