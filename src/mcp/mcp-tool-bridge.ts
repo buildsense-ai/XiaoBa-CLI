@@ -79,6 +79,7 @@ export interface McpToolBridgeOptions {
   /** 最小刷新间隔（默认 30s），避免密集轮次反复打端点。 */
   refreshIntervalMs?: number;
   runStatusToolName?: string;
+  shareSelfToolName?: string;
   /** run 句柄轮询总时长（默认 90s）；<=0 关闭自动轮询。 */
   runPollTimeoutMs?: number;
   runPollIntervalMs?: number;
@@ -104,6 +105,7 @@ export interface McpToolBridgeOptions {
 const DEFAULT_TOOL_PREFIX = 'catsco_';
 const DEFAULT_REFRESH_INTERVAL_MS = 30_000;
 const DEFAULT_RUN_STATUS_TOOL = 'catsco_run_status';
+const DEFAULT_SHARE_SELF_TOOL = 'catsco_share_self';
 export const DEFAULT_RUN_POLL_TIMEOUT_MS = 90_000;
 
 /**
@@ -144,6 +146,7 @@ export class CatsCoMcpToolBridge {
   private readonly toolNamePrefix: string;
   private readonly refreshIntervalMs: number;
   private readonly runStatusToolName: string;
+  private readonly shareSelfToolName: string;
   private readonly runPollTimeoutMs: number;
   private readonly runPollIntervalMs: number;
   private readonly onRunPending?: McpToolBridgeOptions['onRunPending'];
@@ -171,6 +174,7 @@ export class CatsCoMcpToolBridge {
     this.toolNamePrefix = options.toolNamePrefix ?? DEFAULT_TOOL_PREFIX;
     this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
     this.runStatusToolName = options.runStatusToolName ?? DEFAULT_RUN_STATUS_TOOL;
+    this.shareSelfToolName = options.shareSelfToolName ?? DEFAULT_SHARE_SELF_TOOL;
     this.runPollTimeoutMs = options.runPollTimeoutMs ?? DEFAULT_RUN_POLL_TIMEOUT_MS;
     this.runPollIntervalMs = options.runPollIntervalMs ?? DEFAULT_RUN_POLL_INTERVAL_MS;
     this.onRunPending = options.onRunPending;
@@ -197,7 +201,7 @@ export class CatsCoMcpToolBridge {
     args: Record<string, unknown>,
     resumeKey: string,
   ): Record<string, unknown> {
-    if (toolName === this.runStatusToolName) return args;
+    if (this.isSystemTool(toolName)) return args;
     if (typeof args.session_id === 'string' && args.session_id) {
       // 模型自己带了会话：以它为准，顺手丢掉待补登记（说明它没在用我们那条）。
       this.pendingResume.delete(resumeKey);
@@ -214,12 +218,23 @@ export class CatsCoMcpToolBridge {
 
   /** 记住/清除「待补充」的返问会话。 */
   private trackResume(resumeKey: string, envelope: ServiceRunEnvelopeView | null, toolName: string): void {
-    if (toolName === this.runStatusToolName) return;
+    if (this.isSystemTool(toolName)) return;
     if (envelope?.status === 'awaiting_input' && envelope.session_id) {
       this.pendingResume.set(resumeKey, { sessionId: envelope.session_id, at: this.now() });
       return;
     }
     this.pendingResume.delete(resumeKey);
+  }
+
+  /**
+   * 平台自带工具（不属于任何 agent）。
+   *
+   * 它们和 `catsco_<slug>` 共用一张工具面，但语义完全不同：不接受 `bot_uid`、不产生 run、
+   * 也不是「另一个 Agent」。以前只按 `run_status` 特判，结果 `catsco_share_self` 被塞了一个
+   * 服务端根本不认的 `bot_uid`，描述还被写成「这是另一个 Agent」——误导模型去当 agent 调。
+   */
+  private isSystemTool(toolName: string): boolean {
+    return toolName === this.runStatusToolName || toolName === this.shareSelfToolName;
   }
 
   /** 当前已桥接的远端工具名（诊断/测试用）。 */
@@ -322,7 +337,8 @@ export class CatsCoMcpToolBridge {
       for (const info of infos) {
         if (!info?.name || !info.name.startsWith(this.toolNamePrefix)) continue;
         // 当前 Agent 的工具清单：清单内 + run_status（轮询/查询依赖）；清单外直接跳过（既不注册也不进 diff）。
-        if (allowedNames && info.name !== this.runStatusToolName && !allowedNames.has(info.name)) continue;
+        // 平台自带工具（run_status / share_self）永远注册：它们不是这个 agent 清单里的条目。
+        if (allowedNames && !this.isSystemTool(info.name) && !allowedNames.has(info.name)) continue;
         seen.add(info.name);
         const definition = this.buildDefinition(info);
         const existing = this.bridged.get(info.name);
@@ -378,7 +394,11 @@ export class CatsCoMcpToolBridge {
   private buildDefinition(info: McpBridgeToolInfo): ToolDefinition {
     return {
       name: info.name,
-      description: buildBridgeDescription(info.name, info.description, this.runStatusToolName),
+      // run_status 仍要补那句 run_id 用法（轮询入口）；share_self 是平台系统工具，
+      // 不该套「这是另一个 Agent」的用法指引——那会诱导模型把它当 agent 调。
+      description: info.name === this.shareSelfToolName
+        ? (info.description ?? '')
+        : buildBridgeDescription(info.name, info.description, this.runStatusToolName),
       parameters: toToolParameters(info.inputSchema),
     };
   }
@@ -406,7 +426,7 @@ export class CatsCoMcpToolBridge {
    */
   private withBotIdentity(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
     if (!this.resolveBotUid) return args;
-    if (toolName === this.runStatusToolName) return args;
+    if (this.isSystemTool(toolName)) return args;
     if (!toolName.startsWith(this.toolNamePrefix)) return args;
     if (args.bot_uid !== undefined) return args;
     let botUid: number | undefined;
@@ -452,14 +472,14 @@ export class CatsCoMcpToolBridge {
       let envelope = parseServiceRunEnvelope(first.structured);
       // degraded：轮询通道坏了导致「仍在运行」这个结论不可信时，把原因带给结果文本。
       let pollDegraded: string | null = null;
-      if (toolName !== this.runStatusToolName && this.runPollTimeoutMs > 0) {
+      if (!this.isSystemTool(toolName) && this.runPollTimeoutMs > 0) {
         const polled = await this.pollRunUntilTerminal(client, envelope);
         envelope = polled.envelope;
         pollDegraded = polled.degraded;
       }
       // 仍处于 running（含轮询超时）：登记待补 run——平台在 run 终态时推回执，
       // 届时可唤醒宿主注入下一回合（设计 §19）。拉取永远是真相通道。
-      if (toolName !== this.runStatusToolName && envelope?.status === 'running' && envelope.run_id) {
+      if (!this.isSystemTool(toolName) && envelope?.status === 'running' && envelope.run_id) {
         try {
           this.onRunPending?.({
             runId: envelope.run_id,

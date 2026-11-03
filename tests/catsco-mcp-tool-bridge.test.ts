@@ -1112,3 +1112,47 @@ describe('CatsCo 回复归属（群会话）', () => {
     assert.equal(tracker.size('k'), 1);
   });
 });
+
+  // —— 系统工具（run_status / share_self）不是「另一个 Agent」——
+  test('catsco_share_self：不注入 bot_uid（服务端参数里没有这个字段）', async () => {
+    const executed: Array<Record<string, unknown>> = [];
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_share_self')],
+      resolveBotUid: () => 1619,
+      callTool: (_name, args) => {
+        executed.push(args);
+        return { isError: false, contentText: 'ok', structured: { action: 'publish', slug: 'jack-ops', active: true } };
+      },
+    });
+    await bridge.refresh();
+
+    await manager.getTool('catsco_share_self')!.execute({ action: 'publish', name: 'x' }, context);
+
+    assert.equal(executed[0].bot_uid, undefined, '平台自带工具不该被塞 bot_uid');
+  });
+
+  test('系统工具：显式 agent 清单过滤不掉它们', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello'), toolInfo('catsco_run_status'), toolInfo('catsco_share_self')],
+      resolveAgentSlugs: () => ['hello'],
+    });
+    await bridge.refresh();
+
+    assert.ok(manager.getTool('catsco_hello'), '清单内的 agent 工具要注册');
+    assert.ok(manager.getTool('catsco_run_status'), 'run_status 必须留着（轮询依赖）');
+    assert.ok(
+      manager.getTool('catsco_share_self'),
+      'share_self 不是 agent 清单里的条目，scope 过滤不该把它排除',
+    );
+  });
+
+  test('系统工具的描述不套「这是另一个 Agent」的用法指引', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_share_self', '把自己分享成可被调用的工具')],
+    });
+    await bridge.refresh();
+
+    const description = manager.getTool('catsco_share_self')!.definition.description;
+    assert.equal(description, '把自己分享成可被调用的工具');
+    assert.doesNotMatch(description, /另一个 Agent/);
+  });
