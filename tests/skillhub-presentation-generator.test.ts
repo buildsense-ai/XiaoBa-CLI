@@ -64,8 +64,7 @@ function fixture(options: {
     chat: async (messages: any[]) => {
       calls.push('model');
       assert.match(messages[0].content, /不执行代码/);
-      assert.match(messages[0].content, /scenarios 元素必须同时包含 title\(string\) 和 description\(string\)/);
-      assert.match(messages[0].content, /不要把场景写成字符串/);
+      assert.match(messages[0].content, /schemaVersion\(数字且固定为 1\)/);
       assert.match(messages[1].content, /SKILL\.md/);
       return { content: JSON.stringify(options.output ?? generatedContent()) };
     },
@@ -160,6 +159,24 @@ test('rejects untested examples that are not clearly labeled', async () => {
     files,
   }), /labeled as illustrative/);
   assert.deepEqual(f.calls, ['read-published', 'read-draft', 'model']);
+});
+
+test('rejects model output with an invalid schema version or string scenarios', async () => {
+  for (const output of [
+    { ...generatedContent(), schemaVersion: 2 },
+    { ...generatedContent(), schemaVersion: '1' },
+    { ...generatedContent(), scenarios: ['整理会议记录'] },
+  ]) {
+    const f = fixture({ output });
+    await assert.rejects(generateAndPublishSkillPresentation({
+      aiService: f.aiService as any,
+      service: f.service,
+      skillId,
+      version,
+      files,
+    }));
+    assert.deepEqual(f.calls, ['read-published', 'read-draft', 'model']);
+  }
 });
 
 test('treats omitted optional lists as empty lists', async () => {
