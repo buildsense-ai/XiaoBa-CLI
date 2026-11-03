@@ -1,3 +1,9 @@
+import { MemoryKnowledgeSearchTool, MemoryKnowledgeGraphTool } from '../tools/memory-knowledge-graph-tools';
+import { validateKnowledgeGraph, graphEntryAnchor, type CatsLogKnowledgeGraph } from '../utils/catslog-knowledge-graph';
+import { graphNodeRef } from './catslog-daily-memory-graph';
+import type { CatsLogKnowledgeAnchor } from '../utils/catslog-knowledge-types';
+import { isCatsLogKnowledgeCitationRef } from '../tools/memory-branch-tools';
+import { NativeRecallFeedbackOutbox } from './native-recall-feedback-outbox';
 import { randomUUID } from 'crypto';
 import { ContentBlock, Message } from '../types';
 import { AIService } from '../utils/ai-service';
@@ -41,6 +47,9 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private readonly remoteAbort = new AbortController();
   private readonly candidates = new Map<string, string | undefined>(); // ref -> issuing request_id
   private readonly delivered = new Map<string, Record<string, unknown>>();
+  private readonly knowledgeCandidates = new Map<string, CatsLogKnowledgeAnchor>();
+  private readonly knowledgeGraphs: CatsLogKnowledgeGraph[] = [];
+  private readonly graphFeedbackScopes = new Map<CatsLogKnowledgeGraph, string | undefined>();
   private readCalls = 0;
   private searchCalls = 0;
 
@@ -83,12 +92,16 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const backend = this.availableCatsLogMemory();
     if (backend?.branch) tools.push(new MemoryRemoteSearchTool((keywords, signal) => this.searchInLoop(keywords, signal)));
     if (backend?.readSourceMemoryProjection) tools.push(new MemorySourceReadTool((ref, signal) => this.expandInLoop(ref, signal)));
+    if (backend?.isKnowledgeRecallAvailable?.() !== false && backend?.searchKnowledge && backend?.readKnowledgeGraph) {
+      tools.push(new MemoryKnowledgeSearchTool((query, signal) => this.searchKnowledgeInLoop(query, signal)),
+        new MemoryKnowledgeGraphTool((ref, signal) => this.readKnowledgeInLoop(ref, signal)));
+    }
     tools.push(new FinishMemorySearchTool(payload => {
       if (payload.terminalReason === 'invalid_finalization_exhausted') this.logger.write('invalid_finalization_exhausted', {
         max_attempts: MEMORY_FINISH_MAX_INVALID_ATTEMPTS, action: 'suppress_observation_and_stop',
       });
       this.complete(payload);
-    }, ref => this.delivered.has(ref)));
+    }, ref => this.delivered.has(ref) || this.knowledgeGraphs.some(g => g.nodes.some(n => graphNodeRef(n) === ref))));
     return tools;
   }
 
@@ -131,6 +144,57 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     return this.fetchCandidates(keywords[0].trim(), false, signal);
   }
 
+  private contextBytes(graphs = this.knowledgeGraphs, remote = [...this.delivered].map(([ref, semantic_view]) => ({ ref, semantic_view }))): number {
+    return Buffer.byteLength(JSON.stringify({ memory_graphs: graphs, retained_remote_evidence: remote }), 'utf8');
+  }
+
+  private async searchKnowledgeInLoop(query: unknown, external?: AbortSignal): Promise<Record<string, unknown>> {
+    if (typeof query !== 'string' || !query.trim() || Array.from(query).length > 64 || hasCatsLogControlCodePoint(query)) {
+      return { status: 'rejected', reason: 'one_literal_keyword_required', hits: [] };
+    }
+    const backend = this.availableCatsLogMemory();
+    if (!backend?.searchKnowledge || backend.isKnowledgeRecallAvailable?.() === false) return { status: 'unavailable', hits: [] };
+    if (this.searchCalls >= MAX_SEARCH_CALLS || !this.shouldContinue()) return { status: 'unavailable', reason: 'search_budget_exhausted', hits: [] };
+    this.searchCalls++;
+    const deadline = boundedSignal(PREFETCH_TIMEOUT_MS, this.remoteAbort.signal, this.memoryOptions.signal, external);
+    try {
+      const page = await abortable(backend.searchKnowledge({ query: query.trim(), include_draft: true, limit: 8 }, deadline.signal), deadline.signal);
+      if (deadline.signal.aborted || !this.shouldContinue()) return { status: 'unavailable', reason: 'aborted', hits: [] };
+      const hits = page.hits.slice(0, 8).map(hit => {
+        const anchor = graphEntryAnchor({ kind: 'knowledge_entry', document_id: hit.document_id, id: hit.entry_id, revision: hit.revision });
+        const ref = `catslog:knowledge:${anchor.document_id}:${anchor.revision}:${anchor.id}`;
+        return { ref, anchor, title: hit.title.slice(0, 256), day: hit.day, status: hit.status };
+      });
+      for (const hit of hits) this.knowledgeCandidates.set(hit.ref, hit.anchor);
+      return { status: 'metadata_only', hits, exhausted: page.exhausted === true };
+    } catch (error) { return { status: 'unavailable', reason: classifyExpansionError(error, deadline.signal), hits: [] }; }
+    finally { deadline.dispose(); }
+  }
+
+  private async readKnowledgeInLoop(ref: string, external?: AbortSignal): Promise<Record<string, unknown>> {
+    const unavailable = (reason: string) => ({ ref, status: 'reference_only', reason });
+    const seed = this.knowledgeCandidates.get(ref);
+    if (!seed) return unavailable('not_a_candidate');
+    if (this.knowledgeGraphs.some(g => g.nodes.some(n => graphNodeRef(n) === ref))) return unavailable('already_delivered');
+    const backend = this.availableCatsLogMemory();
+    if (!backend?.readKnowledgeGraph || backend.isKnowledgeRecallAvailable?.() === false) return unavailable('capability_unavailable');
+    if (this.readCalls >= MAX_SOURCE_REFERENCE_EXPANSIONS || !this.shouldContinue()) return unavailable('budget_exhausted');
+    this.readCalls++;
+    const deadline = boundedSignal(SOURCE_READ_TIMEOUT_MS, this.remoteAbort.signal, this.memoryOptions.signal, external);
+    const feedbackScope = new NativeRecallFeedbackOutbox(this.memoryOptions.workingDirectory).captureScope();
+    try {
+      const query = { seeds: [seed], node_budget: 16, edge_budget: 64, byte_budget: MAX_TOTAL_PROJECTION_VIEW_CHARS };
+      const graph = validateKnowledgeGraph(await abortable(backend.readKnowledgeGraph(query, deadline.signal), deadline.signal), query);
+      if (deadline.signal.aborted || !this.shouldContinue() || backend.isKnowledgeRecallAvailable?.() === false) return unavailable('aborted_or_capability_changed');
+      const view = { ...graph, nodes: graph.nodes.map(n => ({ ...n, ref: graphNodeRef(n) })) };
+      if (this.contextBytes([...this.knowledgeGraphs, view]) > MAX_TOTAL_PROJECTION_VIEW_CHARS) return unavailable('graph_closure_over_budget');
+      this.knowledgeGraphs.push(view);
+      this.graphFeedbackScopes.set(view, feedbackScope);
+      return { status: 'expanded', content_trust: 'untrusted_branch_evidence', graph: view };
+    } catch (error) { return unavailable(classifyExpansionError(error, deadline.signal)); }
+    finally { deadline.dispose(); }
+  }
+
   private async expandInLoop(ref: string, external?: AbortSignal): Promise<Record<string, unknown>> {
     const referenceOnly = (reason: string) => ({ ref, status: 'reference_only', expansion_error: reason });
     if (!isCatsLogPoolCitationRef(ref) || !this.candidates.has(ref)) return referenceOnly('not_a_candidate');
@@ -151,7 +215,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       if (result.status !== 'expanded' || !result.semantic_view) return { ...result };
       const retained = [...this.delivered].map(([r, semantic_view]) => ({ ref: r, semantic_view }));
       retained.push({ ref, semantic_view: result.semantic_view });
-      if (retainedEvidenceBytes(retained) > MAX_TOTAL_PROJECTION_VIEW_CHARS) return referenceOnly('semantic_view_over_budget');
+      if (this.contextBytes(this.knowledgeGraphs, retained) > MAX_TOTAL_PROJECTION_VIEW_CHARS) return referenceOnly('semantic_view_over_budget');
       this.delivered.set(ref, result.semantic_view);
       return { ...result, content_trust: 'untrusted_branch_evidence' };
     } catch (error) { return referenceOnly(classifyExpansionError(error, deadline.signal)); }
@@ -164,18 +228,26 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
 
   protected getObservationDisposition(payload: MemorySearchFinishPayload): ObservationBranchDisposition {
     // Defense in depth: the finish parser already enforces explicit delivered membership.
-    const inject = payload.inject && payload.refs.every(ref => !isCatsLogPoolCitationRef(ref) || this.delivered.has(ref));
+    const inject = payload.inject && payload.refs.every(ref => isCatsLogKnowledgeCitationRef(ref)
+      ? this.knowledgeGraphs.some(g => g.nodes.some(n => graphNodeRef(n) === ref))
+      : !isCatsLogPoolCitationRef(ref) || this.delivered.has(ref));
     return { inject, logPayload: { refs: payload.refs, summary: payload.summary } };
   }
 
   protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
+    const memoryGraphs = this.knowledgeGraphs.filter(g => g.nodes.some(n => payload.refs.includes(graphNodeRef(n))));
+    const graphScopes = new Set(memoryGraphs.map(g => this.graphFeedbackScopes.get(g)));
+    const feedbackScope = graphScopes.size === 1 ? [...graphScopes][0] : undefined;
+    const feedbackSources = feedbackScope ? [...new Map(memoryGraphs.flatMap(g => g.nodes)
+      .filter(n => payload.refs.includes(graphNodeRef(n)))
+      .map(n => [graphNodeRef(n), { ref: graphNodeRef(n), anchor: n.anchor, disclosure: 'metadata' }])).values()] : [];
     const retained: Array<{ ref: string; semantic_view: Record<string, unknown> }> = [];
     const dropped: string[] = [];
     if (payload.inject) for (const ref of payload.refs) {
       const view = this.delivered.get(ref);
       if (!view) continue;
       const item = { ref, semantic_view: view };
-      if (retainedEvidenceBytes([...retained, item]) <= MAX_TOTAL_PROJECTION_VIEW_CHARS) retained.push(item);
+      if (this.contextBytes(memoryGraphs, [...retained, item]) <= MAX_TOTAL_PROJECTION_VIEW_CHARS) retained.push(item);
       else dropped.push(ref); // whole item, never cut conditions/omissions
     }
     // Report only refs in the SAME issuing request pool. Other issued refs
@@ -188,12 +260,14 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       source: 'memory', status: 'completed', relevance: payload.refs.length ? 'medium' : 'low', summary: payload.summary,
       metadata: {
         branchId: this.options.id, branchType: this.options.type, refs: payload.refs,
+        ...(feedbackSources.length ? { feedback_sources: feedbackSources, feedback_scope: feedbackScope } : {}),
         ...(retained.length ? { deliveredRemoteRefs: retained.map(item => item.ref) } : {}),
         ...(requestId && citationRefs.length ? { citation: { requestId, refs: citationRefs } } : {}),
         refLanes: collectBranchRefLanes(payload.refs, pool),
       },
       formattedContent: JSON.stringify({
         source: 'memory', summary: payload.summary, refs: payload.refs,
+        ...(memoryGraphs.length ? { content_trust: 'untrusted_branch_evidence', memory_graphs: memoryGraphs } : {}),
         ...(retained.length ? { content_trust: 'untrusted_branch_evidence', retained_remote_evidence: retained } : {}),
         ...(dropped.length ? { retained_remote_dropped: dropped } : {}),
       }),
@@ -271,6 +345,7 @@ function buildMemorySearchSystemPrompt(): string {
     '工具结果约定：memory tools 都返回紧凑 JSON 字符串。你需要解析 JSON 后继续判断。',
     'canonical refs 可以手动调整：如果看到 ...#42，你可以读取 ...#41 或 ...#43 来查看相邻 episode。',
     '最终 summary 应该是给主 agent 使用的任务辅助记忆总结，优先用清晰自然的中文表达。',
+    '日记记忆：用 memory_knowledge_search 选择一个具体关键词，再用 memory_knowledge_graph 读取候选 ref 的完整条件与补充/修正图。只有完整读到的图节点可以写进 finish 的 evidence；选中任一节点就会给主 Agent 交付整个图。draft、旧版本和修正都是有来源的主张，不代表已验证真理；不要丢掉条件或例外。Skill 是可选补充。',
     '当前时间：' + new Date().toISOString(),
   ].join('\n');
 }
