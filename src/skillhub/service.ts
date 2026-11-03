@@ -361,6 +361,22 @@ export class SkillHubService {
     return normalizeRegistryEntryVersion(detail.version || detail.skill, version);
   }
 
+  getPresentation(skillId: string, version: string): Promise<any> {
+    return this.client.getPresentation(skillId, version);
+  }
+
+  getPresentationDraft(skillId: string, version: string): Promise<any> {
+    return this.client.getPresentationDraft(skillId, version);
+  }
+
+  savePresentationDraft(input: Record<string, unknown>): Promise<any> {
+    return this.client.savePresentationDraft(input);
+  }
+
+  publishPresentation(input: Record<string, unknown>): Promise<any> {
+    return this.client.publishPresentation(input);
+  }
+
   private async resolveRegistryEntry(skillId: string, version?: string): Promise<SkillHubRegistryEntry> {
     if (version) {
       const detail = await this.client.getVersion(skillId, version);

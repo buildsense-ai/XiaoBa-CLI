@@ -9,6 +9,11 @@ import { scanBotSkillWorkspace } from '../bot-skills/local-manifest';
 import type { LocalBotSkillManifestEntry } from '../bot-skills/types';
 import { writeSkillHubLocalMetadata } from './local-skill-metadata';
 import { SkillHubService } from './service';
+import type { AIService } from '../utils/ai-service';
+import {
+  startSkillPresentationGeneration,
+  type SkillPresentationFile,
+} from './presentation-generator';
 
 export interface SkillHubCatsCoAuthPayload {
   token: string;
@@ -22,7 +27,11 @@ export interface SkillHubCatsCoAuthPayload {
 
 export interface ShareLocalSkillForCatsCoOptions {
   getCatsCoAuth?: () => Promise<SkillHubCatsCoAuthPayload> | SkillHubCatsCoAuthPayload;
-  createSkillHubService?: () => Pick<SkillHubService, 'loginWithCatsCo' | 'shareLocalSkill'>;
+  createSkillHubService?: () => Pick<SkillHubService, 'loginWithCatsCo' | 'shareLocalSkill'> & Partial<Pick<
+    SkillHubService,
+    'getPresentation' | 'getPresentationDraft' | 'savePresentationDraft' | 'publishPresentation'
+  >>;
+  aiService?: AIService;
   writeLocalMetadata?: boolean;
   runtimeRoot?: string;
   validateScope?: (
@@ -46,9 +55,14 @@ export async function shareLocalSkillForCatsCo(
   }
 
   if (!expectedBotUid) {
-    return new SkillHubService().shareLocalSkill(input, {
+    const service = new SkillHubService();
+    let files: SkillPresentationFile[] | undefined;
+    const result = await service.shareLocalSkill(input, {
       writeLocalMetadata: options.writeLocalMetadata,
+      onPackageCaptured: captured => { files = captured; },
     });
+    const queued = queuePresentationGeneration(options.aiService, service, result, files);
+    return { ...result, presentationGenerationStarted: queued };
   }
   if (!options.getCatsCoAuth) {
     const error: any = new Error('CatsCo SkillHub login is not configured');
@@ -140,8 +154,10 @@ export async function shareLocalSkillForCatsCo(
         'skillhub.share_user_changed',
       );
     }
+    let files: SkillPresentationFile[] | undefined;
     const result = await service.shareLocalSkill(input, {
       writeLocalMetadata: false,
+      onPackageCaptured: captured => { files = captured; },
       ...(selectedSkill ? { localSkillPath: selectedSkill.path } : {}),
     });
     let revalidatedSkill = selectedSkill;
@@ -174,8 +190,33 @@ export async function shareLocalSkillForCatsCo(
       const localSkillPath = revalidatedSkill?.path || String(result?.skill?.path || '').trim();
       writeSkillHubLocalMetadata(path.join(localSkillPath, 'SKILL.md'), result.skillHub);
     }
-    return { ...result, botUid: expectedBotUid };
+    const queued = queuePresentationGeneration(options.aiService, service, result, files);
+    return { ...result, botUid: expectedBotUid, presentationGenerationStarted: queued };
   }, { runtimeRoot: options.runtimeRoot });
+}
+
+function queuePresentationGeneration(
+  aiService: AIService | undefined,
+  service: ReturnType<NonNullable<ShareLocalSkillForCatsCoOptions['createSkillHubService']>> | SkillHubService,
+  result: any,
+  files: SkillPresentationFile[] | undefined,
+): boolean {
+  const skillId = String(result?.skill?.id || '').trim();
+  const version = String(result?.latestVersion || '').trim();
+  if (result?.requiresConfirmation || !skillId || !version || !files?.length || !aiService
+    || !service.getPresentation || !service.getPresentationDraft
+    || !service.savePresentationDraft || !service.publishPresentation) return false;
+  void startSkillPresentationGeneration({
+    aiService,
+    service: service as Required<Pick<
+      SkillHubService,
+      'getPresentation' | 'getPresentationDraft' | 'savePresentationDraft' | 'publishPresentation'
+    >>,
+    skillId,
+    version,
+    files,
+  });
+  return true;
 }
 
 export function validateSkillHubShareMetadata(skillDir: string): Error | undefined {

@@ -25,6 +25,8 @@ describe('dashboard connected SkillHub API', () => {
   let dashboardBaseUrl: string;
   let cloudBaseUrl: string;
   let lastShareCookie = '';
+  let presentationReads = 0;
+  let presentationPublished = false;
 
   beforeEach(async () => {
     originalCwd = process.cwd();
@@ -35,6 +37,8 @@ describe('dashboard connected SkillHub API', () => {
     process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
     fs.mkdirSync(path.join(testRoot, 'skills'), { recursive: true });
     lastShareCookie = '';
+    presentationReads = 0;
+    presentationPublished = false;
   });
 
   afterEach(async () => {
@@ -168,7 +172,18 @@ describe('dashboard connected SkillHub API', () => {
     const fixture = createFixture();
     await startCloud(fixture);
     process.env.CATSCO_SKILLHUB_BASE_URL = cloudBaseUrl;
-    await startDashboard();
+    await startDashboard(() => ({
+      chat: async () => ({ content: JSON.stringify({
+        schemaVersion: 1,
+        summary: '用于演示发布后的 Skill 说明书。',
+        primaryCategory: 'documents',
+        example: {
+          kind: 'generic',
+          input: '示意，非实测：输入内容',
+          output: '示意，非实测：整理结果',
+        },
+      }) }),
+    } as any));
 
     await post('/api/skillhub/auth/login', { email: 'demo@example.com', password: 'passw0rd!!' });
     const share = await post('/api/skillhub/share-local-skill', { skillName: 'quick-demo' });
@@ -177,6 +192,7 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(share.body.skill.id, 'lin/quick-demo');
     assert.equal(share.body.skill.name, 'quick-demo');
     assert.equal(share.body.latestVersion, '1.0.0');
+    assert.equal(share.body.presentationGenerationStarted, true);
     assert.deepEqual(share.body.skillHub, {
       author: 'lin',
       version: '1.0.0',
@@ -199,6 +215,11 @@ describe('dashboard connected SkillHub API', () => {
     assert.match(skillText, /skillhub_author:\s+["']?lin["']?/);
     assert.match(skillText, /skillhub_version:\s+["']?1\.0\.0["']?/);
     assert.match(skillText, /skillhub_uploaded_at:/);
+    for (let attempt = 0; attempt < 200 && !presentationPublished; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(presentationReads, 2);
+    assert.equal(presentationPublished, true);
   });
 
   test('shares a local package containing credential-like files', async () => {
@@ -376,10 +397,12 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(session.baseUrl, cloudBaseUrl);
   });
 
-  async function startDashboard(): Promise<void> {
+  async function startDashboard(skillHubAiService?: () => any): Promise<void> {
     const app = express();
     app.use(express.json({ limit: '25mb' }));
-    app.use('/api', createApiRouter({ getAll: () => [], getService: () => null } as any));
+    app.use('/api', createApiRouter({ getAll: () => [], getService: () => null } as any, undefined, {
+      skillHubAiService: skillHubAiService ?? (() => undefined),
+    }));
     dashboardServer = await listen(app);
     dashboardBaseUrl = serverBaseUrl(dashboardServer);
   }
@@ -387,6 +410,19 @@ describe('dashboard connected SkillHub API', () => {
   async function startCloud(fixture: ReturnType<typeof createFixture>): Promise<void> {
     const app = express();
     app.use(express.json());
+    app.get('/api/skill-presentations', (_req, res) => {
+      presentationReads += 1;
+      if (presentationReads === 1) {
+        return res.status(404).json({ error: { code: 'presentation.not_found', message: 'Version is not published yet.' } });
+      }
+      return res.json({ presentation: null });
+    });
+    app.get('/api/skill-presentations/draft', (_req, res) => res.json({ presentation: { revision: 0, draft: null } }));
+    app.put('/api/skill-presentations/draft', (_req, res) => res.json({ presentation: { revision: 1 } }));
+    app.post('/api/skill-presentations/publish', (_req, res) => {
+      presentationPublished = true;
+      res.json({ presentation: { revision: 1 } });
+    });
     app.post('/api/auth/login', (req, res) => {
       assert.deepEqual(req.body, { email: 'demo@example.com', password: 'passw0rd!!' });
       res.setHeader('Set-Cookie', 'catsco_session=dashboard-session; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800');
