@@ -1178,3 +1178,29 @@ describe('CatsCo 回复归属（群会话）', () => {
     assert.match(content, /不要重复发起/);
     assert.match(content, /catsco_run_status/);
   });
+
+  // 应用被收回后，本地工具面要立刻收敛（不用等 30s 定时刷新，更不该让用户点第二下）。
+  test('调到一个已被收回的应用：立刻后台重拉并移除该工具', async () => {
+    let tools = [toolInfo('catsco_gone')];
+    const { bridge, manager, clients } = createHarness({
+      listTools: () => tools,
+      callTool: () => ({ isError: true, contentText: 'agent_not_found: 该应用已被发布者收回' }),
+      refreshIntervalMs: 0,
+    });
+    await bridge.refresh();
+    const before = clients.length;
+
+    // 服务端那边已经没有了
+    tools = [];
+    const result = await manager.getTool('catsco_gone')!.execute({ input: {} }, context);
+    assert.equal(result.ok, false);
+    assert.equal((result as { errorCode: string }).errorCode, 'agent_not_found');
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(clients.length > before, '收到 agent_not_found 后应当立刻重拉工具面');
+    assert.equal(
+      bridge.getBridgedToolNames().includes('catsco_gone'),
+      false,
+      '被收回的工具应当从本地工具面移除',
+    );
+  });

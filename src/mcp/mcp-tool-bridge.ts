@@ -467,6 +467,11 @@ export class CatsCoMcpToolBridge {
         // 服务端 isError 文本有两种形态：裸码（如 unauthorized）或「码: 说明」
         // （如 session_busy: …）。拆出裸码做程序化匹配，说明文本兜底展示。
         const { code, detail } = splitToolErrorText(first.contentText);
+        // 「工具还在本地清单里，但应用被收回 / 被别人改成私有 / 被移出清单」：
+        // 本地工具面已经过期了，立刻后台重拉一次 —— 否则用户得再点第二下才看到它消失。
+        if (code === 'agent_not_found' || code === 'agent_not_subscribed' || code === 'agent_not_enabled_for_bot') {
+          this.refreshInBackground();
+        }
         return { ok: false, errorCode: code, message: mapToolErrorMessage(code, detail) };
       }
       let envelope = parseServiceRunEnvelope(first.structured);
