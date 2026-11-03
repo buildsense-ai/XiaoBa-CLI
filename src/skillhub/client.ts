@@ -124,6 +124,24 @@ export class SkillHubClient {
     );
   }
 
+  async getPresentation(skillId: string, version: string): Promise<any> {
+    const query = new URLSearchParams({ skillId, version });
+    return this.request('GET', `/api/skill-presentations?${query}`);
+  }
+
+  async getPresentationDraft(skillId: string, version: string): Promise<any> {
+    const query = new URLSearchParams({ skillId, version });
+    return this.request('GET', `/api/skill-presentations/draft?${query}`);
+  }
+
+  async savePresentationDraft(input: Record<string, unknown>): Promise<any> {
+    return this.request('PUT', '/api/skill-presentations/draft', input);
+  }
+
+  async publishPresentation(input: Record<string, unknown>): Promise<any> {
+    return this.request('POST', '/api/skill-presentations/publish', input);
+  }
+
   async getTrust(): Promise<SkillHubTrustResponse> {
     return this.request<SkillHubTrustResponse>('GET', '/api/trust/public-keys');
   }

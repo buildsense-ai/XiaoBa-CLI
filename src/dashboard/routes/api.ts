@@ -2524,7 +2524,10 @@ export function createApiRouter(
 ): Router {
   const router = Router();
   const modelsDevFetch = options.modelsDevFetch ?? fetch;
-  registerSkillHubRoutes(router, { getCatsCoAuth: getCatsCoAuthForSkillHub });
+  registerSkillHubRoutes(router, {
+    getCatsCoAuth: getCatsCoAuthForSkillHub,
+    createAiService: () => new AIService(),
+  });
   registerPetRoutes(router);
   registerTurnErrorRoutes(router);
   registerCacheTraceRoutes(router, {

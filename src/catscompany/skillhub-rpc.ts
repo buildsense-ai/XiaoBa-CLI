@@ -34,6 +34,7 @@ import { PathResolver } from '../utils/path-resolver';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { Logger } from '../utils/logger';
+import type { AIService } from '../utils/ai-service';
 import {
   PUBLICATION_SOURCE_PROBE, PublicationSourceError, publicationSourceProbeEnabled,
   describePublicationSource, discoverPublicationSources, findPublicationSource, type PublicationSourceBinding,
@@ -123,6 +124,7 @@ export class SkillHubThinRpcError extends Error {
 
 export interface SkillHubThinRpcHandlerOptions {
   runtimeRoot?: string;
+  getAiService?: () => AIService | undefined;
   scheduleBotSwitch?: (botUid: string, expectedCurrentBotUid: string) => void;
   /** 运行中客户端当前生效的 HTTP 基地址（跟随 cc/cn 故障切换）。 */
   getHttpBaseUrl?: () => string | undefined;
@@ -153,6 +155,7 @@ export class SkillHubThinRpcHandler {
   private readonly runtimeRoot: string;
   private readonly scheduleBotSwitch: (botUid: string, expectedCurrentBotUid: string) => void;
   private readonly getHttpBaseUrl?: () => string | undefined;
+  private readonly getAiService?: () => AIService | undefined;
   private readonly verifyBotSwitchBinding: typeof verifyCatsCoBotSwitchBinding;
   private readonly finalizeCurrentBotSkill: typeof finalizeCurrentBotPublicSkillNow;
   private readonly pushCurrentBotSkillWorkspace: typeof pushCurrentBotSkillWorkspaceToCloudNow;
@@ -190,6 +193,7 @@ export class SkillHubThinRpcHandler {
         this.isShuttingDown,
       ));
     this.getHttpBaseUrl = options.getHttpBaseUrl;
+    this.getAiService = options.getAiService;
     this.verifyBotSwitchBinding = options.verifyBotSwitchBinding ?? verifyCatsCoBotSwitchBinding;
     this.finalizeCurrentBotSkill = options.finalizeCurrentBotSkill
       ?? finalizeCurrentBotPublicSkillNow;
@@ -903,6 +907,7 @@ export class SkillHubThinRpcHandler {
     }, {
       writeLocalMetadata: false,
       runtimeRoot: this.runtimeRoot,
+      aiService: this.getAiService?.(),
       getCatsCoAuth: () => {
         const auth = configService.getAuthState();
         return {
@@ -936,6 +941,7 @@ export class SkillHubThinRpcHandler {
         uploaded_at: String(result.skillHub.uploadedAt || ''),
       } : {},
       requires_confirmation: Boolean(result?.requiresConfirmation),
+      presentation_generation_queued: Boolean(result?.presentationGenerationQueued),
     };
   }
 

@@ -177,6 +177,7 @@ describe('dashboard connected SkillHub API', () => {
     assert.equal(share.body.skill.id, 'lin/quick-demo');
     assert.equal(share.body.skill.name, 'quick-demo');
     assert.equal(share.body.latestVersion, '1.0.0');
+    assert.equal(share.body.presentationGenerationQueued, true);
     assert.deepEqual(share.body.skillHub, {
       author: 'lin',
       version: '1.0.0',

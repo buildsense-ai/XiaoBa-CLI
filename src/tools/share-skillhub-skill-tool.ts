@@ -3,6 +3,10 @@ import { isDeepStrictEqual } from 'util';
 import matter from 'gray-matter';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SkillHubService } from '../skillhub/service';
+import {
+  startSkillPresentationGeneration,
+  type SkillPresentationFile,
+} from '../skillhub/presentation-generator';
 
 const REPAIR_STATE_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_AUTOMATIC_REPAIR_RETRIES = 3;
@@ -25,8 +29,12 @@ interface RepairSnapshot {
 
 export class ShareSkillHubSkillTool implements Tool {
   private readonly pendingRepairs = new Map<string, PendingRepair>();
+  private readonly presentationJobs = new Set<string>();
 
-  constructor(private readonly createService: () => Pick<SkillHubService, 'shareLocalSkill'> = () => new SkillHubService()) {}
+  constructor(private readonly createService: () => Pick<SkillHubService, 'shareLocalSkill'> & Partial<Pick<
+    SkillHubService,
+    'getPresentation' | 'getPresentationDraft' | 'savePresentationDraft' | 'publishPresentation'
+  >> = () => new SkillHubService()) {}
 
   definition: ToolDefinition = {
     name: 'share_skillhub_skill',
@@ -99,6 +107,7 @@ export class ShareSkillHubSkillTool implements Tool {
     }
     const isRepairRetry = Boolean(pendingRepair);
     let packageSnapshot: RepairSnapshot | undefined;
+    let presentationFiles: SkillPresentationFile[] | undefined;
 
     try {
       const service = this.createService();
@@ -108,6 +117,7 @@ export class ShareSkillHubSkillTool implements Tool {
         confirmPublish: args?.confirmPublish === true,
       }, {
         onPackageCaptured: files => {
+          presentationFiles = files;
           try {
             packageSnapshot = createRepairSnapshot(files);
           } catch (error: any) {
@@ -141,17 +151,32 @@ export class ShareSkillHubSkillTool implements Tool {
       }
       if (result?.existing) {
         if (repairKey) this.pendingRepairs.delete(repairKey);
+        const presentationQueued = this.queuePresentationGeneration(
+          context,
+          service,
+          result?.skill?.id,
+          result?.latestVersion,
+          presentationFiles,
+        );
         return {
           ok: true,
           content: [
             'SkillHub already has this exact Skill content.',
             `Skill: ${result?.skill?.name || skillName}`,
             result?.latestVersion ? `Version: ${result.latestVersion}` : '',
+            presentationQueued ? 'Chinese Skill guide generation was queued in the background.' : '',
           ].filter(Boolean).join('\n'),
         };
       }
       if (repairKey) this.pendingRepairs.delete(repairKey);
       const submissionId = submission.id || submission.submissionId || 'unknown';
+      const presentationQueued = this.queuePresentationGeneration(
+        context,
+        service,
+        result?.skill?.id,
+        result?.latestVersion,
+        presentationFiles,
+      );
       return {
         ok: true,
         content: [
@@ -160,6 +185,7 @@ export class ShareSkillHubSkillTool implements Tool {
           `Path: ${result?.skill?.path || ''}`,
           `Submission: ${submissionId}`,
           submission.status ? `Status: ${submission.status}` : '',
+          presentationQueued ? 'Chinese Skill guide generation was queued in the background.' : '',
         ].filter(Boolean).join('\n'),
       };
     } catch (error: any) {
@@ -225,6 +251,36 @@ export class ShareSkillHubSkillTool implements Tool {
       if (key !== excludingKey) total += state.snapshot.bytes;
     }
     return total;
+  }
+
+  private queuePresentationGeneration(
+    context: ToolExecutionContext,
+    service: ReturnType<ShareSkillHubSkillTool['createService']>,
+    skillId: unknown,
+    version: unknown,
+    files: SkillPresentationFile[] | undefined,
+  ): boolean {
+    const id = String(skillId || '').trim();
+    const publishedVersion = String(version || '').trim();
+    const aiService = context.runtimeServices?.aiService;
+    if (!id || !publishedVersion || !files?.length || !aiService
+      || !service.getPresentation || !service.getPresentationDraft
+      || !service.savePresentationDraft || !service.publishPresentation) return false;
+    const key = `${id}@${publishedVersion}`;
+    if (this.presentationJobs.has(key)) return true;
+
+    this.presentationJobs.add(key);
+    void startSkillPresentationGeneration({
+      aiService,
+      service: service as Required<Pick<
+        SkillHubService,
+        'getPresentation' | 'getPresentationDraft' | 'savePresentationDraft' | 'publishPresentation'
+      >>,
+      skillId: id,
+      version: publishedVersion,
+      files,
+    }).finally(() => this.presentationJobs.delete(key));
+    return true;
   }
 }
 

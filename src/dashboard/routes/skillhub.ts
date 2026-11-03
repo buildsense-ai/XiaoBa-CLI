@@ -1,4 +1,5 @@
 import type { Router } from 'express';
+import type { AIService } from '../../utils/ai-service';
 import { SkillHubService } from '../../skillhub/service';
 import {
   scheduleCurrentBotSkillSync,
@@ -13,6 +14,7 @@ export { assertExpectedLocalSkillShareScope } from '../../skillhub/local-share';
 
 export interface SkillHubRouteOptions {
   getCatsCoAuth?: () => Promise<SkillHubCatsCoAuthPayload> | SkillHubCatsCoAuthPayload;
+  createAiService?: () => AIService;
 }
 
 export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOptions = {}): void {
@@ -174,7 +176,10 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/developer/share-local-skill', async (req, res) => {
     try {
-      res.status(201).json(await shareLocalSkillForCatsCo(req.body || {}, options));
+      res.status(201).json(await shareLocalSkillForCatsCo(req.body || {}, {
+        ...options,
+        aiService: options.createAiService?.(),
+      }));
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
@@ -182,7 +187,10 @@ export function registerSkillHubRoutes(router: Router, options: SkillHubRouteOpt
 
   router.post('/skillhub/share-local-skill', async (req, res) => {
     try {
-      res.status(201).json(await shareLocalSkillForCatsCo(req.body || {}, options));
+      res.status(201).json(await shareLocalSkillForCatsCo(req.body || {}, {
+        ...options,
+        aiService: options.createAiService?.(),
+      }));
     } catch (error: any) {
       sendSkillHubError(res, error);
     }
