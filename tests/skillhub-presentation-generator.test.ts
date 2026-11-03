@@ -64,6 +64,8 @@ function fixture(options: {
     chat: async (messages: any[]) => {
       calls.push('model');
       assert.match(messages[0].content, /不执行代码/);
+      assert.match(messages[0].content, /scenarios 元素必须同时包含 title\(string\) 和 description\(string\)/);
+      assert.match(messages[0].content, /不要把场景写成字符串/);
       assert.match(messages[1].content, /SKILL\.md/);
       return { content: JSON.stringify(options.output ?? generatedContent()) };
     },
