@@ -1156,3 +1156,25 @@ describe('CatsCo 回复归属（群会话）', () => {
     assert.equal(description, '把自己分享成可被调用的工具');
     assert.doesNotMatch(description, /另一个 Agent/);
   });
+
+  // 长任务（渲染/转码）是常态：结果文本必须说清「别重发、别假定完成」。
+  test('running 且轮询超时：明确告诉模型这是长任务，不要重复发起', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => ({
+        isError: false,
+        contentText: 'status=running',
+        structured: { status: 'running', run_id: 'r1', session_id: 's1' },
+      }),
+      runPollTimeoutMs: 1,
+      runPollIntervalMs: 1,
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    const content = (result as { content: string }).content;
+
+    assert.match(content, /长任务/);
+    assert.match(content, /不要重复发起/);
+    assert.match(content, /catsco_run_status/);
+  });

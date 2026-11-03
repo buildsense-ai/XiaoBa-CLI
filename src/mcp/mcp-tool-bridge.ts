@@ -509,7 +509,10 @@ export class CatsCoMcpToolBridge {
         return {
           ok: false,
           errorCode: 'catsco_mcp_tool_unlisted',
-          message: '该 Agent 工具当前不在你的订阅清单中（可能在会话期间被取消订阅、更名或下线）。请到「Agent 工具」面板确认或重新添加后重试；本地工具面也会在后续同步中更新。',
+          message:
+            '这个 Agent 工具当前不可用：可能是被发布者收回、改了可见性（私有应用只有发布者自己能调），'
+            + '或不在你的订阅清单里。若只是你移除了订阅，到「Agent 工具」面板重新添加即可；'
+            + '若是别人分享给你的，需要发布者把可见性调成好友或公开。',
         };
       }
       return {
@@ -714,7 +717,12 @@ export function formatEnvelopeResult(
       'Agent 当前仍在运行，结果尚未就绪。',
       envelope.run_id ? `run_id=${envelope.run_id}` : '',
       envelope.session_id ? `session_id=${envelope.session_id}` : '',
-      `可稍后用 catsco_run_status（run_id）查询结果。`,
+      // 长任务是常态（渲染/转码/跑测试可能几十分钟到几小时）。别让模型把它当成"快好了"，
+      // 也别让它一遍遍重发同一个任务 —— 重发会开新会话，前一份活白跑。
+      `可稍后用 catsco_run_status（run_id）查询，或等平台的完成回执。`,
+      // 长任务是常态（渲染/转码/跑测试可能几十分钟到几小时）。别让模型把它当成"快好了"，
+      // 也别让它一遍遍重发同一个任务 —— 重发会开新会话，前一份活白跑。
+      '长任务（渲染、转码、批量处理）耗时几十分钟到几小时都正常：不要重复发起同一任务，也不要假定它已经完成。',
     ].filter(Boolean);
     if (degraded) {
       // 轮询通道坏了 ≠ 任务还在推进。必须把这两件事分开说，否则模型会假定它会自己
