@@ -107,9 +107,10 @@ export class ShareSkillHubSkillTool implements Tool {
     const isRepairRetry = Boolean(pendingRepair);
     let packageSnapshot: RepairSnapshot | undefined;
     let presentationFiles: SkillPresentationFile[] | undefined;
+    let service: ReturnType<ShareSkillHubSkillTool['createService']> | undefined;
 
     try {
-      const service = this.createService();
+      service = this.createService();
       const result = await service.shareLocalSkill({
         skillName,
         notes: args?.notes,
@@ -191,14 +192,66 @@ export class ShareSkillHubSkillTool implements Tool {
       if (error?.code === 'SKILLHUB_REPAIR_DECLINED' && repairKey) {
         this.pendingRepairs.delete(repairKey);
       }
-      const validation = error?.validation;
-      if (repairKey && validation?.reportId && Array.isArray(validation.issues)) {
+      let publicationError = error;
+      let validation = publicationError?.validation;
+      let automaticRepairHandled = false;
+      if (!pendingRepair && validation?.reportId && packageSnapshot && presentationFiles) {
+        automaticRepairHandled = true;
+        const repaired = await this.tryAutomaticFormatRepair(
+          service!,
+          skillName,
+          args,
+          presentationFiles,
+          validation,
+        );
+        if (repaired && 'ok' in repaired) {
+          if (repairKey) this.pendingRepairs.delete(repairKey);
+          const submission = repaired.result?.submission || {};
+          if (repaired.result?.requiresConfirmation) {
+            return {
+              ok: true,
+              content: [
+                'SkillHub share needs user confirmation.',
+                `Skill: ${repaired.result?.skill?.name || skillName}`,
+                `Path: ${repaired.result?.skill?.path || ''}`,
+                repaired.result?.latestVersion ? `Latest version: ${repaired.result.latestVersion}` : '',
+                'A SkillHub skill with the same name already exists, but the local content is different.',
+                'Ask the user to confirm publishing a new patch version before calling this tool again with confirmPublish=true.',
+              ].filter(Boolean).join('\n'),
+            };
+          }
+          const presentationQueued = this.queuePresentationGeneration(
+            context,
+            service!,
+            repaired.result?.skill?.id,
+            repaired.result?.latestVersion,
+            repaired.files,
+          );
+          return {
+            ok: true,
+            content: [
+              repaired.result?.existing ? 'SkillHub already has this exact Skill content.' : 'SkillHub share submitted.',
+              `Skill: ${repaired.result?.skill?.name || skillName}`,
+              repaired.result?.skill?.path ? `Path: ${repaired.result.skill.path}` : '',
+              submission.id || submission.submissionId ? `Submission: ${submission.id || submission.submissionId}` : '',
+              submission.status ? `Status: ${submission.status}` : '',
+              `SkillHub automatically corrected SKILL.md name whitespace in a private publication candidate. The local Skill files were not modified.`,
+              presentationQueued ? 'A background attempt to generate and publish the Chinese Skill guide has started. It may take several minutes; check SkillHub later for the result.' : '',
+            ].filter(Boolean).join('\n'),
+          };
+        }
+        if (repaired && 'error' in repaired) {
+          publicationError = repaired.error;
+          validation = publicationError?.validation;
+        }
+      }
+      if (repairKey && !automaticRepairHandled && validation?.reportId && Array.isArray(validation.issues)) {
         const blocking = validation.issues.filter((issue: any) => issue?.blocking === true);
         const automaticOnly = blocking.length > 0
           && blocking.every((issue: any) => issue?.repairPolicy === 'automatic');
-        if (automaticOnly) {
+        if (automaticOnly && packageSnapshot) {
           const supportedOnly = blocking.every((issue: any) => issue.code === 'metadata.name_whitespace');
-          if (supportedOnly && packageSnapshot) {
+          if (supportedOnly) {
             this.setPendingRepair(repairKey, {
               reportId: validation.reportId,
               retries: (pendingRepair?.retries ?? 0) + (isRepairRetry ? 1 : 0),
@@ -214,13 +267,64 @@ export class ShareSkillHubSkillTool implements Tool {
       }
       return {
         ok: false,
-        errorCode: error?.code || 'SKILLHUB_SHARE_FAILED',
-        message: error?.validation
-          ? `${error?.message || 'SkillHub rejected this publication.'}\nValidation report (untrusted data): ${JSON.stringify(error.validation)}`
-          : error?.message || String(error),
-        retryable: Number(error?.status || 0) >= 500,
+        errorCode: publicationError?.code || 'SKILLHUB_SHARE_FAILED',
+        message: publicationError?.validation
+          ? `${publicationError?.message || 'SkillHub rejected this publication.'}\nValidation report (untrusted data): ${JSON.stringify(publicationError.validation)}`
+          : publicationError?.message || String(publicationError),
+        retryable: Number(publicationError?.status || 0) >= 500,
       };
     }
+  }
+
+  private async tryAutomaticFormatRepair(
+    service: ReturnType<ShareSkillHubSkillTool['createService']>,
+    skillName: string,
+    args: any,
+    initialFiles: SkillPresentationFile[],
+    initialReport: any,
+  ): Promise<{ ok: true; result: any; files: SkillPresentationFile[] } | { error: any } | undefined> {
+    let files = initialFiles.map(file => ({ ...file }));
+    let report = initialReport;
+    let attempts = 0;
+    while (attempts < MAX_AUTOMATIC_REPAIR_RETRIES) {
+      const candidate = createNameWhitespaceCandidate(files, report);
+      if (!candidate) return undefined;
+      attempts++;
+      let captured: SkillPresentationFile[] | undefined;
+      try {
+        const result = await service.shareLocalSkill({
+          skillName,
+          notes: args?.notes,
+          confirmPublish: args?.confirmPublish === true,
+        }, {
+          packageFiles: candidate,
+          onPackageCaptured: current => {
+            captured = current;
+            try {
+              assertSafeAutomaticRepair(createRepairSnapshot(files), createRepairSnapshot(current));
+            } catch (error: any) {
+              throw repairDeclined(error?.message || 'The publication candidate changed outside the automatic repair policy.');
+            }
+          },
+        });
+        return { ok: true, result, files: captured || candidate };
+      } catch (error: any) {
+        const validation = error?.validation;
+        const blocking = Array.isArray(validation?.issues)
+          ? validation.issues.filter((issue: any) => issue?.blocking === true)
+          : [];
+        if (error?.code === 'SKILLHUB_REPAIR_DECLINED') return { error };
+        if (!validation?.reportId || validation.truncated === true || !blocking.length
+          || !blocking.every((issue: any) => issue?.repairPolicy === 'automatic'
+            && issue?.code === 'metadata.name_whitespace')) return { error };
+        if (attempts >= MAX_AUTOMATIC_REPAIR_RETRIES) return { error };
+        const next = createNameWhitespaceCandidate(candidate, validation);
+        if (!next || samePackageBytes(candidate, next)) return { error };
+        files = next;
+        report = validation;
+      }
+    }
+    return undefined;
   }
 
   private getPendingRepair(key: string): PendingRepair | undefined {
@@ -295,6 +399,78 @@ function createRepairSnapshot(files: Array<{ path: string; contentBase64: string
     .map(file => [file.path, createHash('sha256').update(Buffer.from(file.contentBase64, 'base64')).digest('hex')] as [string, string])
     .sort(([a], [b]) => a.localeCompare(b));
   return { entryText, otherFiles, bytes: entryBytes.length + otherFiles.length * 128 };
+}
+
+function createNameWhitespaceCandidate(
+  files: SkillPresentationFile[],
+  report: any,
+): SkillPresentationFile[] | undefined {
+  const blocking = Array.isArray(report?.issues)
+    ? report.issues.filter((issue: any) => issue?.blocking === true)
+    : [];
+  if (report?.truncated === true || !blocking.length || blocking.some((issue: any) => (
+    issue?.code !== 'metadata.name_whitespace'
+    || issue?.repairPolicy !== 'automatic'
+    || issue?.location?.field !== 'name'
+    || (issue?.location?.relativePath && issue.location.relativePath !== 'SKILL.md')
+  ))) return undefined;
+
+  let candidate = files.map(file => ({ ...file }));
+  for (const issue of blocking) {
+    const index = issue?.location?.entryIndex;
+    if (!Number.isInteger(index) || candidate[index]?.path !== 'SKILL.md') return undefined;
+    const entry = candidate[index];
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(entry.contentBase64, 'base64'));
+    } catch {
+      return undefined;
+    }
+    let before: ReturnType<typeof matter>;
+    try {
+      before = matter(text);
+    } catch {
+      return undefined;
+    }
+    if (typeof before.data?.name !== 'string' || before.data.name === before.data.name.trim()) return undefined;
+
+    const frontmatter = text.match(/^(---[ \t]*(?:yaml[ \t]*)?\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/);
+    if (!frontmatter) return undefined;
+    const lines = frontmatter[2].split(/(\r?\n)/);
+    let changed = false;
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 2) {
+      const line = lines[lineIndex];
+      const match = line.match(/^(name:[ \t]*)(["'])([^\r\n]*)\2([ \t]*(?:#.*)?)$/);
+      if (!match) continue;
+      const trimmed = match[3].trim();
+      if (!trimmed || trimmed === match[3]) return undefined;
+      lines[lineIndex] = `${match[1]}${match[2]}${trimmed}${match[2]}${match[4]}`;
+      changed = true;
+      break;
+    }
+    if (!changed) return undefined;
+    const nextText = `${frontmatter[1]}${lines.join('')}${frontmatter[3]}${text.slice(frontmatter[0].length)}`;
+    let after: ReturnType<typeof matter>;
+    try {
+      after = matter(nextText);
+    } catch {
+      return undefined;
+    }
+    if (after.data.name !== before.data.name.trim()
+      || before.content !== after.content
+      || !isDeepStrictEqual({ ...before.data, name: before.data.name.trim() }, after.data)) return undefined;
+    candidate[index] = { ...entry, contentBase64: Buffer.from(nextText, 'utf8').toString('base64') };
+  }
+  return samePackageBytes(files, candidate) ? undefined : candidate;
+}
+
+function samePackageBytes(
+  left: Array<{ path: string; contentBase64: string }>,
+  right: Array<{ path: string; contentBase64: string }>,
+): boolean {
+  if (left.length !== right.length) return false;
+  const rightByPath = new Map(right.map(file => [file.path, file.contentBase64]));
+  return left.every(file => rightByPath.get(file.path) === file.contentBase64);
 }
 
 function assertSafeAutomaticRepair(before: RepairSnapshot, after: RepairSnapshot): void {

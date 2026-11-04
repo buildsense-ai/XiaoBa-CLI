@@ -7,6 +7,7 @@ import * as path from 'path';
 import express from 'express';
 import type { Server } from 'http';
 import { SkillHubService } from '../src/skillhub/service';
+import { collectBotSkillPackageFiles } from '../src/bot-skills/local-manifest';
 import type { SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from '../src/skillhub/trusted-keys';
 
@@ -77,6 +78,50 @@ describe('SkillHub connected install service', () => {
       ),
     );
     assert.equal(requestCount, 0);
+  });
+
+  test('publication candidates cannot change any package file other than SKILL.md name whitespace', async () => {
+    let requestCount = 0;
+    const app = express();
+    app.use(express.json());
+    app.use((_req, res) => {
+      requestCount++;
+      res.status(500).json({ error: 'unexpected request' });
+    });
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+    const skillRoot = path.join(testRoot, 'skills', 'candidate-test');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+      '---',
+      'name: candidate-test',
+      'description: A local test Skill',
+      '---',
+      '',
+      '# Instructions',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(skillRoot, 'README.md'), 'Original README\n');
+    const candidate = collectBotSkillPackageFiles(skillRoot).map(file => ({
+      path: file.path,
+      contentBase64: file.path === 'README.md'
+        ? Buffer.from('Changed README\n').toString('base64')
+        : file.contentBase64,
+    }));
+
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({ skillName: 'candidate-test' }, {
+        localSkillPath: skillRoot,
+        packageFiles: candidate,
+      }),
+      (error: any) => error?.code === 'skillhub.publication_candidate_invalid'
+        && error?.status === 400,
+    );
+    assert.equal(requestCount, 0);
+    assert.equal(fs.readFileSync(path.join(skillRoot, 'README.md'), 'utf8'), 'Original README\n');
   });
 
   test('logs in, persists session cookie, verifies package, and installs skill files', async () => {

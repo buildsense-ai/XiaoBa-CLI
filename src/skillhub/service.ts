@@ -8,6 +8,7 @@ import {
   isEphemeralSkillDirectory,
 } from '../bot-skills/local-manifest';
 import { SkillParser } from '../skills/skill-parser';
+import matter from 'gray-matter';
 import type { Skill } from '../types/skill';
 import { PathResolver } from '../utils/path-resolver';
 import { SkillHubClient } from './client';
@@ -250,6 +251,7 @@ export class SkillHubService {
     options: {
       writeLocalMetadata?: boolean;
       localSkillPath?: string;
+      packageFiles?: Array<{ path: string; contentBase64: string }>;
       onPackageCaptured?: (files: Array<{ path: string; contentBase64: string }>) => void;
     } = {},
   ): Promise<any> {
@@ -302,6 +304,9 @@ export class SkillHubService {
       error.status = 400;
       error.code = 'skillhub.local_skill_empty';
       throw error;
+    }
+    if (options.packageFiles) {
+      files = applyLocalPublicationCandidate(files, options.packageFiles);
     }
     options.onPackageCaptured?.(files);
     const submission = await this.client.quickShare({
@@ -391,6 +396,70 @@ export class SkillHubService {
     error.status = 404;
     throw error;
   }
+}
+
+function applyLocalPublicationCandidate(
+  original: Array<{ path: string; contentBase64: string }>,
+  candidate: Array<{ path: string; contentBase64: string }>,
+): Array<{ path: string; contentBase64: string }> {
+  const reject = (): never => {
+    const error: any = new Error('The publication candidate does not match the captured local Skill package.');
+    error.status = 400;
+    error.code = 'skillhub.publication_candidate_invalid';
+    throw error;
+  };
+  if (!Array.isArray(candidate) || candidate.length !== original.length) return reject();
+  const originalByPath = new Map(original.map(file => [file.path, file.contentBase64]));
+  const seen = new Set<string>();
+  for (const file of candidate) {
+    if (!file || typeof file.path !== 'string' || typeof file.contentBase64 !== 'string'
+      || seen.has(file.path) || !originalByPath.has(file.path)) return reject();
+    const decoded = Buffer.from(file.contentBase64, 'base64');
+    if (decoded.toString('base64') !== file.contentBase64) return reject();
+    seen.add(file.path);
+    const originalContent = originalByPath.get(file.path)!;
+    if (file.path !== 'SKILL.md' && file.contentBase64 !== originalContent) return reject();
+    if (file.path === 'SKILL.md' && file.contentBase64 !== originalContent
+      && !isNameWhitespaceOnlyCandidate(originalContent, file.contentBase64)) return reject();
+  }
+  if (!seen.has('SKILL.md')) return reject();
+  return candidate.map(file => ({ path: file.path, contentBase64: file.contentBase64 }));
+}
+
+function isNameWhitespaceOnlyCandidate(beforeBase64: string, afterBase64: string): boolean {
+  let beforeText: string;
+  let afterText: string;
+  try {
+    beforeText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(beforeBase64, 'base64'));
+    afterText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(afterBase64, 'base64'));
+  } catch {
+    return false;
+  }
+  try {
+    const before = matter(beforeText);
+    const after = matter(afterText);
+    return typeof before.data?.name === 'string'
+      && typeof after.data?.name === 'string'
+      && before.data.name !== before.data.name.trim()
+      && after.data.name === before.data.name.trim()
+      && before.content === after.content
+      && JSON.stringify({ ...before.data, name: before.data.name.trim() }) === JSON.stringify(after.data)
+      && normalizePublicationNameScalar(beforeText) === normalizePublicationNameScalar(afterText);
+  } catch {
+    return false;
+  }
+}
+
+function normalizePublicationNameScalar(text: string): string {
+  const lines = text.split(/(?<=\n)/);
+  let replaced = false;
+  return lines.map(line => {
+    if (replaced) return line;
+    const match = line.match(/^([ \t]*name:[ \t]*)(["'])(.*)\2([ \t]*(?:\r?\n)?)$/);
+    if (!match) return line;
+    replaced = true;
+    return `${match[1]}${match[2]}<name>${match[2]}${match[4]}`;
+  }).join('');
 }
 
 function localSkillValidationFailed(): Error {

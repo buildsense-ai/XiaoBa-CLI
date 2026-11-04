@@ -8,7 +8,12 @@ function validationError(reportId: string): Error {
     code: 'skillhub.publish_validation_failed',
     validation: {
       reportId,
-      issues: [{ code: 'metadata.name_whitespace', blocking: true, repairPolicy: 'automatic' }],
+      issues: [{
+        code: 'metadata.name_whitespace',
+        blocking: true,
+        repairPolicy: 'automatic',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' },
+      }],
     },
   });
 }
@@ -48,6 +53,59 @@ test('SkillHub publication repair enforces the three-retry ceiling in the tool',
   const normalPublish = await tool.execute({ skillName: 'test-skill' }, context);
   assert.equal(normalPublish.ok, true);
   assert.equal(calls, 2);
+});
+
+test('automatic name formatting repair retries with an isolated candidate without changing the local package', async () => {
+  const originalFiles = [{
+    path: 'SKILL.md',
+    contentBase64: Buffer.from('---\nname: " demo "\ndescription: safe\n---\n# Original instructions\n').toString('base64'),
+  }];
+  const originalContent = originalFiles[0].contentBase64;
+  let calls = 0;
+  let uploadedCandidate = '';
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      calls++;
+      if (calls === 1) {
+        options?.onPackageCaptured?.(originalFiles);
+        throw validationError('report-whitespace');
+      }
+      const packageFiles = (options as any)?.packageFiles;
+      assert.ok(Array.isArray(packageFiles));
+      uploadedCandidate = Buffer.from(packageFiles[0].contentBase64, 'base64').toString('utf8');
+      options?.onPackageCaptured?.(packageFiles);
+      return { submission: { id: 'submission-repaired' }, skill: { name: 'demo', id: 'demo' } };
+    },
+  }));
+
+  const result = await tool.execute({ skillName: 'test-skill' }, { sessionId: 'isolated-format-repair' } as any);
+  assert.equal(result.ok, true);
+  assert.equal(calls, 2);
+  assert.match(uploadedCandidate, /name: "demo"/);
+  assert.match(uploadedCandidate, /# Original instructions/);
+  assert.equal(originalFiles[0].contentBase64, originalContent);
+  assert.match(Buffer.from(originalFiles[0].contentBase64, 'base64').toString('utf8'), /name: " demo "/);
+  assert.match(result.content, /local Skill files were not modified/);
+});
+
+test('automatic format repair stops when the repaired candidate is rejected again without progress', async () => {
+  let calls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      calls++;
+      const files = (options as any)?.packageFiles || [{
+        path: 'SKILL.md',
+        contentBase64: Buffer.from('---\nname: " demo "\ndescription: safe\n---\n# Test\n').toString('base64'),
+      }];
+      options?.onPackageCaptured?.(files);
+      throw validationError(calls === 1 ? 'report-before' : 'report-after');
+    },
+  }));
+
+  const result = await tool.execute({ skillName: 'test-skill' }, { sessionId: 'repair-no-progress' } as any);
+  assert.equal(result.ok, false);
+  assert.equal(calls, 2);
+  assert.match(result.message, /report-after/);
 });
 
 test('manual or confirmation-required publication issues do not open an automatic retry chain', async () => {
