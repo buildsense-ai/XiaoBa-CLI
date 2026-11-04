@@ -159,6 +159,36 @@ describe('SkillHub connected install service', () => {
     const uploadedEntry = uploaded.source.files.find((file: any) => file.path === 'SKILL.md');
     assert.match(Buffer.from(uploadedEntry.contentBase64, 'base64').toString('utf8'), /name: "whitespace-name"/);
     assert.equal(fs.readFileSync(path.join(skillRoot, 'SKILL.md'), 'utf8'), originalText);
+    const success = await new SkillHubService().shareLocalSkill({ skillName: 'whitespace-name' }, {
+      localSkillPath: skillRoot,
+      packageFiles,
+    });
+    assert.equal(success.skill.name, 'whitespace-name');
+  });
+
+  test('rejects a whitespace-only name before sending a publication request', async () => {
+    let requestCount = 0;
+    const app = express();
+    app.use(express.json());
+    app.use((_req, res) => {
+      requestCount++;
+      res.status(500).json({ error: 'unexpected request' });
+    });
+    server = app.listen(0);
+    await new Promise<void>(resolve => server!.once('listening', () => resolve()));
+    const address = server.address();
+    baseUrl = typeof address === 'object' && address ? `http://127.0.0.1:${address.port}` : '';
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+
+    const skillRoot = path.join(testRoot, 'skills', 'empty-name');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), '---\nname: "   "\ndescription: Invalid name\n---\n# Instructions\n');
+
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({ skillName: 'empty-name' }, { localSkillPath: skillRoot }),
+      (error: any) => error?.code === 'skillhub.local_skill_invalid' && error?.status === 400,
+    );
+    assert.equal(requestCount, 0);
   });
 
   test('logs in, persists session cookie, verifies package, and installs skill files', async () => {

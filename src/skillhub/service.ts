@@ -310,6 +310,7 @@ export class SkillHubService {
     }
     options.onPackageCaptured?.(files);
     const manifestSkillName = String(skill.metadata.name).trim();
+    if (!manifestSkillName) throw localSkillValidationFailed();
     const submission = await this.client.quickShare({
       manifest: {
         id: manifestSkillName,
@@ -343,7 +344,7 @@ export class SkillHubService {
           || submission?.packageVersion?.skillId
           || submission?.submission?.normalizedManifest?.id
           || skill.metadata.name,
-        name: skill.metadata.name,
+        name: manifestSkillName,
         description: skill.metadata.description,
         path: localPath,
       },

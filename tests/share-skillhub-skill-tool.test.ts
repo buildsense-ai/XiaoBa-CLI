@@ -74,7 +74,7 @@ test('partial validation reports are never used for automatic repair', async () 
   assert.equal(calls, 1);
 });
 
-test('automatic repair stops when a second rejection makes no candidate progress', async () => {
+test('automatic repair makes at most one candidate upload attempt', async () => {
   let calls = 0;
   const tool = new ShareSkillHubSkillTool(() => ({
     shareLocalSkill: async (_input, options) => {
