@@ -330,7 +330,7 @@ export class SkillHubService {
         name: manifestSkillName,
         displayName: manifestSkillName,
         version: '1.0.0',
-        description: skill.metadata.description,
+        ...(skill.metadata.description.trim() ? { description: skill.metadata.description } : {}),
         keywords: [manifestSkillName, ...splitWords(skill.metadata.description)].slice(0, 8),
         triggerExamples: skill.metadata.argumentHint ? [`/${manifestSkillName} ${skill.metadata.argumentHint}`] : [`/${manifestSkillName}`],
         minAgentVersion: '0.0.0',
@@ -690,7 +690,7 @@ function findLocalShareableSkillAtPath(
   }
   const skillStat = fs.lstatSync(skillFile);
   if (skillStat.isSymbolicLink() || !skillStat.isFile()) return undefined;
-  const skill = SkillParser.parse(skillFile);
+  const skill = SkillParser.parse(skillFile, { allowMissingDescription: true });
   const dirName = path.basename(root);
   return !skillName || skill.metadata.name === skillName || dirName === skillName ? { skill } : undefined;
 }

@@ -11,18 +11,18 @@ export class SkillParser {
    * @param filePath - SKILL.md 文件路径
    * @returns Skill 对象
    */
-  static parse(filePath: string): Skill {
+  static parse(filePath: string, options: { allowMissingDescription?: boolean } = {}): Skill {
     try {
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const { data, content } = matter(fileContent);
 
       // 检测格式类型并解析
       if (this.isClaudeCodeFormat(data)) {
-        return this.parseClaudeCodeFormat(filePath, data, content);
+        return this.parseClaudeCodeFormat(filePath, data, content, options);
       }
 
       // 默认使用 xiaoba 格式
-      return this.parseXiaobaFormat(filePath, data, content);
+      return this.parseXiaobaFormat(filePath, data, content, options);
     } catch (error: any) {
       throw new Error(`Failed to parse skill file ${filePath}: ${error.message}`);
     }
@@ -38,19 +38,24 @@ export class SkillParser {
   /**
    * 解析 Claude Code 格式
    */
-  private static parseClaudeCodeFormat(filePath: string, data: any, content: string): Skill {
-    if (!data.name || !data.description) {
+  private static parseClaudeCodeFormat(
+    filePath: string,
+    data: any,
+    content: string,
+    options: { allowMissingDescription?: boolean },
+  ): Skill {
+    if (!data.name || (!options.allowMissingDescription && !data.description)) {
       throw new Error(`Invalid skill file: ${filePath}. Missing required fields (name or description).`);
     }
 
     const metadata: SkillMetadata = {
       name: data.name,
-      description: data.description,
+      description: typeof data.description === 'string' ? data.description : '',
       argumentHint: data['argument-hint'] || data.argumentHint,
       userInvocable: data.invocable === 'user' || data.invocable === 'both',
     };
 
-    if (!this.validate(metadata)) {
+    if (options.allowMissingDescription ? !metadata.name : !this.validate(metadata)) {
       throw new Error(`Invalid skill metadata in file: ${filePath}`);
     }
 
@@ -64,19 +69,24 @@ export class SkillParser {
   /**
    * 解析 xiaoba 格式
    */
-  private static parseXiaobaFormat(filePath: string, data: any, content: string): Skill {
-    if (!data.name || !data.description) {
+  private static parseXiaobaFormat(
+    filePath: string,
+    data: any,
+    content: string,
+    options: { allowMissingDescription?: boolean },
+  ): Skill {
+    if (!data.name || (!options.allowMissingDescription && !data.description)) {
       throw new Error(`Invalid skill file: ${filePath}. Missing required fields (name or description).`);
     }
 
     const metadata: SkillMetadata = {
       name: data.name,
-      description: data.description,
+      description: typeof data.description === 'string' ? data.description : '',
       argumentHint: data['argument-hint'],
       userInvocable: data['user-invocable'] !== false,
     };
 
-    if (!this.validate(metadata)) {
+    if (options.allowMissingDescription ? !metadata.name : !this.validate(metadata)) {
       throw new Error(`Invalid skill metadata in file: ${filePath}`);
     }
 

@@ -113,6 +113,9 @@ test('manual or confirmation-required issues do not trigger an automatic retry',
   const result = await tool.execute({ skillName: 'test-skill' }, { sessionId: 'manual-publication' } as any);
   assert.equal(result.ok, false);
   assert.equal(calls, 1);
+  assert.match(result.message, /report-manual/);
+  assert.match(result.message, /metadata.description_missing/);
+  assert.match(result.message, /confirmation_required/);
 });
 
 test('an imprecise automatic issue location does not create a candidate', async () => {
