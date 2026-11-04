@@ -54,7 +54,7 @@ export class ShareSkillHubSkillTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     const skillName = String(args?.skillName || args?.skill || args?.name || '').trim();
     const localSkillPath = typeof args?.localSkillPath === 'string' ? args.localSkillPath.trim() : '';
-    if (args?.localSkillPath !== undefined && (!localSkillPath || localSkillPath.length > 4096)) {
+    if (args?.localSkillPath != null && (!localSkillPath || localSkillPath.length > 4096)) {
       return {
         ok: false,
         errorCode: 'INVALID_TOOL_ARGUMENTS',

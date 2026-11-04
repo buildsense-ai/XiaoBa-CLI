@@ -172,6 +172,27 @@ test('an explicitly supplied local Skill directory is published without relocati
   assert.match(result.content, /Files: 1 \(.* KB\)/);
 });
 
+test('a null local path is treated as omitted when a Skill name is provided', async () => {
+  let calls = 0;
+  let receivedPath: unknown = 'not-called';
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      calls++;
+      receivedPath = options?.localSkillPath;
+      options?.onPackageCaptured?.([{
+        path: 'SKILL.md',
+        contentBase64: Buffer.from('---\nname: demo\ndescription: safe\n---\n# Test\n').toString('base64'),
+      }]);
+      return { submission: { id: 'submission-null-path' }, skill: { name: 'demo' } };
+    },
+  }));
+
+  const result = await tool.execute({ skillName: 'demo', localSkillPath: null }, { sessionId: 'null-local-path' } as any);
+  assert.equal(result.ok, true);
+  assert.equal(calls, 1);
+  assert.equal(receivedPath, undefined);
+});
+
 test('explicit local path is preserved for the isolated automatic-repair upload', async () => {
   const localSkillPath = 'C:\\external-skills\\demo';
   let calls = 0;
