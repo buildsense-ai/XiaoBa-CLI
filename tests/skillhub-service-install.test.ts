@@ -246,6 +246,13 @@ describe('SkillHub connected install service', () => {
     assert.equal(uploaded.length, 2);
   });
 
+  test('treats a null local path as omitted', async () => {
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: null as any }),
+      (error: any) => error?.code === 'skillhub.skill_name_required',
+    );
+  });
+
   test('rejects a whitespace-only name before sending a publication request', async () => {
     let requestCount = 0;
     const app = express();

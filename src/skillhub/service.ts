@@ -257,7 +257,7 @@ export class SkillHubService {
   ): Promise<any> {
     const skillName = String(input.skillName || input.skill || input.name || '').trim();
     const requestedPath = options.localSkillPath == null ? '' : String(options.localSkillPath).trim();
-    if (options.localSkillPath !== undefined && !requestedPath) {
+    if (options.localSkillPath != null && !requestedPath) {
       const error: any = new Error('localSkillPath must be a non-empty directory path.');
       error.status = 400;
       error.code = 'skillhub.local_skill_path_invalid';
