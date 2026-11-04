@@ -10,6 +10,7 @@ import { SkillHubService } from '../src/skillhub/service';
 import { collectBotSkillPackageFiles } from '../src/bot-skills/local-manifest';
 import type { SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from '../src/skillhub/trusted-keys';
+import { SkillParser } from '../src/skills/skill-parser';
 
 describe('SkillHub connected install service', () => {
   let testRoot: string;
@@ -195,6 +196,74 @@ describe('SkillHub connected install service', () => {
     assert.equal(uploaded.manifest.name, 'xiaoba-speaking-style');
     assert.equal(uploaded.source.files[0].path, 'SKILL.md');
     assert.equal(fs.readFileSync(sourceFile, 'utf8'), originalText);
+  });
+
+  test('sends an explicit path with a missing description to Cloud validation and returns its confirmation report', async () => {
+    let uploaded: any;
+    const app = express();
+    app.use(express.json());
+    app.post('/api/skills/share', (req, res) => {
+      uploaded = req.body;
+      res.status(422).json({
+        error: {
+          code: 'skillhub.publish_validation_failed',
+          message: '发布预检未通过，请查看问题报告。',
+          validation: {
+            schemaVersion: '1',
+            ruleVersion: 'skillhub-publish-v1.0.1',
+            profile: 'skillhub-publish-v1',
+            reportId: '00000000-0000-4000-8000-000000000001',
+            outcome: 'rejected',
+            coverage: 'complete',
+            candidateHash: 'a'.repeat(64),
+            limitsFingerprint: 'b'.repeat(64),
+            issues: [{
+              code: 'metadata.description_missing',
+              category: 'format',
+              blocking: true,
+              location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+              message: '入口缺少 description；可生成草稿，但确认后才能写入发布副本。',
+              repairPolicy: 'confirmation_required',
+            }],
+            truncated: false,
+            nextAction: 'review_report',
+          },
+        },
+      });
+    });
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+    const skillRoot = path.join(testRoot, 'external', 'description-confirmation');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const originalText = [
+      '---',
+      'name: description-confirmation',
+      '---',
+      '',
+      '# Instructions',
+      'This fixture must not be published without a confirmed description.',
+      '',
+    ].join('\n');
+    const skillFile = path.join(skillRoot, 'SKILL.md');
+    fs.writeFileSync(skillFile, originalText);
+
+    assert.throws(() => SkillParser.parse(skillFile), /Missing required fields/);
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: skillRoot, writeLocalMetadata: false }),
+      (error: any) => error?.code === 'skillhub.publish_validation_failed'
+        && error?.validation?.reportId === '00000000-0000-4000-8000-000000000001'
+        && error?.validation?.issues?.[0]?.code === 'metadata.description_missing'
+        && error?.validation?.issues?.[0]?.repairPolicy === 'confirmation_required',
+    );
+
+    assert.equal(uploaded.manifest.name, 'description-confirmation');
+    assert.equal(Object.hasOwn(uploaded.manifest, 'description'), false);
+    const submittedFile = uploaded.source.files.find((file: any) => file.path === 'SKILL.md');
+    assert.equal(Buffer.from(submittedFile.contentBase64, 'base64').toString('utf8'), originalText);
+    assert.equal(fs.readFileSync(skillFile, 'utf8'), originalText);
   });
 
   test('rejects a whitespace-only explicit Skill path before scanning the current directory', async () => {
