@@ -124,6 +124,43 @@ describe('SkillHub connected install service', () => {
     assert.equal(fs.readFileSync(path.join(skillRoot, 'README.md'), 'utf8'), 'Original README\n');
   });
 
+  test('shares a repaired Skill with a normalized manifest without rewriting the local name', async () => {
+    let uploaded: any;
+    const app = express();
+    app.use(express.json());
+    app.post('/api/skills/share', (req, res) => {
+      uploaded = req.body;
+      res.json({ submission: { id: 'submission-1', status: 'submitted' } });
+    });
+    server = app.listen(0);
+    await new Promise<void>(resolve => server!.once('listening', () => resolve()));
+    const address = server.address();
+    baseUrl = typeof address === 'object' && address ? `http://127.0.0.1:${address.port}` : '';
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+
+    const skillRoot = path.join(testRoot, 'skills', 'whitespace-name');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const originalText = '---\nname: " whitespace-name "\ndescription: A local test Skill\n---\n# Instructions\n';
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), originalText);
+    const packageFiles = collectBotSkillPackageFiles(skillRoot).map(file => ({
+      path: file.path,
+      contentBase64: file.path === 'SKILL.md'
+        ? Buffer.from(originalText.replace('name: " whitespace-name "', 'name: "whitespace-name"'), 'utf8').toString('base64')
+        : file.contentBase64,
+    }));
+
+    await new SkillHubService().shareLocalSkill({ skillName: 'whitespace-name' }, {
+      localSkillPath: skillRoot,
+      packageFiles,
+    });
+
+    assert.equal(uploaded.manifest.name, 'whitespace-name');
+    assert.equal(uploaded.manifest.id, 'whitespace-name');
+    const uploadedEntry = uploaded.source.files.find((file: any) => file.path === 'SKILL.md');
+    assert.match(Buffer.from(uploadedEntry.contentBase64, 'base64').toString('utf8'), /name: "whitespace-name"/);
+    assert.equal(fs.readFileSync(path.join(skillRoot, 'SKILL.md'), 'utf8'), originalText);
+  });
+
   test('logs in, persists session cookie, verifies package, and installs skill files', async () => {
     const fixture = createFixture();
     CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.push(fixture.rootTrust);

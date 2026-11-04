@@ -8,7 +8,6 @@ import {
   isEphemeralSkillDirectory,
 } from '../bot-skills/local-manifest';
 import { SkillParser } from '../skills/skill-parser';
-import matter from 'gray-matter';
 import type { Skill } from '../types/skill';
 import { PathResolver } from '../utils/path-resolver';
 import { SkillHubClient } from './client';
@@ -23,6 +22,7 @@ import {
 import { listInstalledSkillHubSkills } from './install-marker';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
+import { isNameWhitespaceOnlyChange } from './publication-candidate';
 import type {
   SkillHubAuthState,
   SkillHubInstallResult,
@@ -309,15 +309,16 @@ export class SkillHubService {
       files = applyLocalPublicationCandidate(files, options.packageFiles);
     }
     options.onPackageCaptured?.(files);
+    const manifestSkillName = String(skill.metadata.name).trim();
     const submission = await this.client.quickShare({
       manifest: {
-        id: skill.metadata.name,
-        name: skill.metadata.name,
-        displayName: skill.metadata.name,
+        id: manifestSkillName,
+        name: manifestSkillName,
+        displayName: manifestSkillName,
         version: '1.0.0',
         description: skill.metadata.description,
-        keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
-        triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
+        keywords: [manifestSkillName, ...splitWords(skill.metadata.description)].slice(0, 8),
+        triggerExamples: skill.metadata.argumentHint ? [`/${manifestSkillName} ${skill.metadata.argumentHint}`] : [`/${manifestSkillName}`],
         minAgentVersion: '0.0.0',
         platforms: ['windows', 'macos', 'linux'],
       },
@@ -435,31 +436,7 @@ function isNameWhitespaceOnlyCandidate(beforeBase64: string, afterBase64: string
   } catch {
     return false;
   }
-  try {
-    const before = matter(beforeText);
-    const after = matter(afterText);
-    return typeof before.data?.name === 'string'
-      && typeof after.data?.name === 'string'
-      && before.data.name !== before.data.name.trim()
-      && after.data.name === before.data.name.trim()
-      && before.content === after.content
-      && JSON.stringify({ ...before.data, name: before.data.name.trim() }) === JSON.stringify(after.data)
-      && normalizePublicationNameScalar(beforeText) === normalizePublicationNameScalar(afterText);
-  } catch {
-    return false;
-  }
-}
-
-function normalizePublicationNameScalar(text: string): string {
-  const lines = text.split(/(?<=\n)/);
-  let replaced = false;
-  return lines.map(line => {
-    if (replaced) return line;
-    const match = line.match(/^([ \t]*name:[ \t]*)(["'])(.*)\2([ \t]*(?:\r?\n)?)$/);
-    if (!match) return line;
-    replaced = true;
-    return `${match[1]}${match[2]}<name>${match[2]}${match[4]}`;
-  }).join('');
+  return isNameWhitespaceOnlyChange(beforeText, afterText);
 }
 
 function localSkillValidationFailed(): Error {
