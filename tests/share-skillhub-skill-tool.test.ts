@@ -17,6 +17,7 @@ function validationError(
       coverage: options.coverage ?? 'complete',
       issues: [{
         code: options.code ?? 'metadata.name_whitespace',
+        category: 'format',
         blocking: true,
         repairPolicy: options.repairPolicy ?? 'automatic',
         location: options.location ?? { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' },
@@ -116,6 +117,78 @@ test('manual or confirmation-required issues do not trigger an automatic retry',
   assert.match(result.message, /report-manual/);
   assert.match(result.message, /metadata.description_missing/);
   assert.match(result.message, /confirmation_required/);
+});
+
+test('missing description creates a paused draft and only publishes the exact confirmed upload copy', async () => {
+  const originalText = '---\nname: sample-skill\n---\n# Original instructions\n';
+  const originalFiles = [{ path: 'SKILL.md', contentBase64: Buffer.from(originalText).toString('base64') }];
+  let shareCalls = 0;
+  let uploadedCopy = '';
+  let modelCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(originalFiles);
+        throw validationError('description-report', {
+          code: 'metadata.description_missing',
+          repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      const files = (options as any)?.packageFiles;
+      uploadedCopy = Buffer.from(files[0].contentBase64, 'base64').toString('utf8');
+      options?.onPackageCaptured?.(files);
+      return { submission: { id: 'description-submission' }, skill: { name: 'sample-skill', id: 'sample-skill' } };
+    },
+  }));
+  const history: any[] = [{ role: 'user', content: '发布 sample-skill' }];
+  const context = {
+    conversationHistory: history,
+    sessionId: 'description-confirmation-session',
+    runtimeServices: { aiService: { chat: async (_messages: unknown, _tools: unknown, options: any) => {
+      modelCalls++;
+      assert.deepEqual(options.providerRequestBudget, { maxRequests: 1, usedRequests: 0 });
+      return { content: '{"description":"从 SKILL.md 的说明可知，该 Skill 用于样例任务。"}' };
+    } } },
+  } as any;
+
+  const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  assert.equal(draft.ok, true);
+  assert.equal(draft.controlSignal, 'pause_turn');
+  assert.match(String(draft.content), /该 Skill 用于样例任务/);
+  assert.equal(modelCalls, 1);
+  assert.equal(shareCalls, 1);
+  assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
+
+  const reportId = String(draft.content).match(/report ([a-z-]+)/)?.[1] || '';
+  const noApproval = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
+    confirmedDescription: '从 SKILL.md 的说明可知，该 Skill 用于样例任务。' }, context);
+  assert.equal(noApproval.ok, false);
+  assert.equal(noApproval.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
+  assert.equal(shareCalls, 1);
+
+  history.push({ role: 'user', content: '确认使用这个描述并发布。' });
+  const mismatch = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
+    confirmedDescription: 'A different draft.' }, context);
+  assert.equal(mismatch.ok, false);
+  assert.equal(shareCalls, 1);
+
+  const confirmed = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
+    confirmedDescription: '从 SKILL.md 的说明可知，该 Skill 用于样例任务。' }, context);
+  assert.equal(confirmed.ok, true);
+  assert.equal(shareCalls, 2);
+  assert.match(uploadedCopy, /description: "从 SKILL\.md 的说明可知，该 Skill 用于样例任务。"/);
+  assert.match(uploadedCopy, /# Original instructions/);
+  assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
+});
+
+test('description confirmation cannot be replayed or used from another session', async () => {
+  const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async () => { throw new Error('must not publish'); } }));
+  const result = await tool.execute({ confirmDescription: true, descriptionReportId: 'unknown-report',
+    confirmedDescription: 'A description.' }, { sessionId: 'other-session' } as any);
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'DESCRIPTION_CONFIRMATION_EXPIRED');
 });
 
 test('an imprecise automatic issue location does not create a candidate', async () => {

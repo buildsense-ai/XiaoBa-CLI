@@ -249,6 +249,7 @@ export class ToolManager implements ToolExecutor {
         targetContext,
         ok: true,
         controlSignal: output.controlSignal ?? tool.definition.controlMode,
+        newMessages: output.newMessages,
       };
     } catch (error: any) {
       const message = String(error?.message || error || '');

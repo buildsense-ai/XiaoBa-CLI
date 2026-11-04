@@ -522,6 +522,29 @@ describe('ToolManager - ToolExecutionResult 统一处理', () => {
     assert.strictEqual(result.controlSignal, 'pause_turn');
   });
 
+  test('forwards tool-owned conversation messages alongside a pause signal', async () => {
+    const scopedManager = new ToolManager(testRoot, {}, { enabledToolNames: [] });
+    const prompt = { role: 'assistant' as const, content: 'Review the exact draft.' };
+    scopedManager.registerTool({
+      definition: {
+        name: 'draft_pause',
+        description: 'draft pause',
+        parameters: { type: 'object', properties: {} },
+      },
+      async execute() {
+        return { ok: true, content: 'Draft ready.', controlSignal: 'pause_turn', newMessages: [prompt] };
+      },
+    });
+
+    const result = await scopedManager.executeTool(
+      { id: 't19_draft_pause', type: 'function', function: { name: 'draft_pause', arguments: '{}' } },
+      [],
+    );
+
+    assert.strictEqual(result.controlSignal, 'pause_turn');
+    assert.deepStrictEqual(result.newMessages, [prompt]);
+  });
+
   test('Write 别名映射到 write_file 成功', async () => {
     const result = await manager.executeTool(
       { id: 't20', type: 'function', function: { name: 'Write', arguments: JSON.stringify({ file_path: 'alias.txt', content: 'via alias' }) } },

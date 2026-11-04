@@ -107,6 +107,8 @@ export type ToolExecutionResult = (
   targetContext?: string;
   /** Uploaded attachment metadata returned by a remote import_file execution. */
   uploadedFile?: UploadedFileResult;
+  /** Additional conversation messages owned by this tool, such as an explicit confirmation prompt. */
+  newMessages?: import('./index').Message[];
 };
 
 export interface DeviceRpcToolRequest {
