@@ -324,6 +324,7 @@ export class SkillHubService {
     options.onPackageCaptured?.(files);
     const manifestSkillName = String(skill.metadata.name).trim();
     if (!manifestSkillName) throw localSkillValidationFailed();
+    await this.requireAuthenticatedUser();
     const submission = await this.client.quickShare({
       manifest: {
         id: manifestSkillName,
@@ -739,6 +740,6 @@ function skillHubMetadataFromShareResponse(response: any): { author: string; ver
 function skillHubLoginRequired(): Error {
   const error: any = new Error('请先登录 CatsCo 并连接 SkillHub。');
   error.status = 401;
-  error.code = 'skillhub.login_required';
+  error.code = 'skillhub.catsco_login_required';
   return error;
 }
