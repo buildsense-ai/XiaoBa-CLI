@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { test } from 'node:test';
 import { ShareSkillHubSkillTool } from '../src/tools/share-skillhub-skill-tool';
 
@@ -166,6 +169,7 @@ test('an explicitly supplied local Skill directory is published without relocati
   assert.equal(receivedPath, localSkillPath);
   assert.equal(writeLocalMetadata, false);
   assert.match(result.content, /no local tracking metadata was written/);
+  assert.match(result.content, /Files: 1 \(.* KB\)/);
 });
 
 test('explicit local path is preserved for the isolated automatic-repair upload', async () => {
@@ -212,4 +216,47 @@ test('an explicit local path is sufficient to identify a Skill without a separat
   assert.equal(receivedName, '');
   assert.equal(receivedPath, localSkillPath);
   assert.match(result.content, /metadata-name/);
+});
+
+test('metadata writes are limited to real paths inside the configured Skill workspace', async () => {
+  const previousSkillsRoot = process.env.XIAOBA_SKILLS_DIR;
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'skillhub-path-boundary-'));
+  const skillsRoot = path.join(tempRoot, 'skills');
+  const inside = path.join(skillsRoot, 'regular');
+  const dotted = path.join(skillsRoot, '..hidden');
+  const outside = path.join(tempRoot, 'outside');
+  const escaped = path.join(skillsRoot, '..', 'outside');
+  fs.mkdirSync(inside, { recursive: true });
+  fs.mkdirSync(dotted, { recursive: true });
+  fs.mkdirSync(outside, { recursive: true });
+  process.env.XIAOBA_SKILLS_DIR = skillsRoot;
+  const metadataWrites: unknown[] = [];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      metadataWrites.push(options?.writeLocalMetadata);
+      return { submission: { id: 'submission-boundary' }, skill: { name: 'demo' } };
+    },
+  }));
+
+  try {
+    for (const localSkillPath of [inside, dotted, escaped]) {
+      const result = await tool.execute({ skillName: 'demo', localSkillPath }, { sessionId: 'path-boundary' } as any);
+      assert.equal(result.ok, true);
+    }
+    assert.deepEqual(metadataWrites, [true, true, false]);
+
+    const symlinkPath = path.join(skillsRoot, 'linked-outside');
+    try {
+      fs.symlinkSync(outside, symlinkPath, 'junction');
+      const result = await tool.execute({ skillName: 'demo', localSkillPath: symlinkPath }, { sessionId: 'path-symlink-boundary' } as any);
+      assert.equal(result.ok, true);
+      assert.equal(metadataWrites[metadataWrites.length - 1], false);
+    } catch (error: any) {
+      if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(error?.code)) throw error;
+    }
+  } finally {
+    if (previousSkillsRoot === undefined) delete process.env.XIAOBA_SKILLS_DIR;
+    else process.env.XIAOBA_SKILLS_DIR = previousSkillsRoot;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

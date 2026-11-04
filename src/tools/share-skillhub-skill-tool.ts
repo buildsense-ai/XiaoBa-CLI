@@ -114,6 +114,7 @@ export class ShareSkillHubSkillTool implements Tool {
             'SkillHub already has this exact Skill content.',
             `Skill: ${result?.skill?.name || skillName}`,
             result?.latestVersion ? `Version: ${result.latestVersion}` : '',
+            packageSummary(presentationFiles),
             !writeLocalMetadata ? 'The source is outside the configured Skill workspace; no local tracking metadata was written.' : '',
             presentationQueued ? 'A background attempt to generate and publish the Chinese Skill guide has started. It may take several minutes; check SkillHub later for the result.' : '',
           ].filter(Boolean).join('\n'),
@@ -133,6 +134,7 @@ export class ShareSkillHubSkillTool implements Tool {
           'SkillHub share submitted.',
           `Skill: ${result?.skill?.name || skillName}`,
           `Path: ${result?.skill?.path || ''}`,
+          packageSummary(presentationFiles),
           `Submission: ${submissionId}`,
           submission.status ? `Status: ${submission.status}` : '',
           !writeLocalMetadata ? 'The source is outside the configured Skill workspace; no local tracking metadata was written.' : '',
@@ -148,6 +150,7 @@ export class ShareSkillHubSkillTool implements Tool {
           skillName,
           args,
           localSkillPath,
+          writeLocalMetadata,
           presentationFiles,
           validation,
         );
@@ -179,6 +182,7 @@ export class ShareSkillHubSkillTool implements Tool {
               repaired.result?.existing ? 'SkillHub already has this exact Skill content.' : 'SkillHub share submitted.',
               `Skill: ${repaired.result?.skill?.name || skillName}`,
               repaired.result?.skill?.path ? `Path: ${repaired.result.skill.path}` : '',
+              packageSummary(repaired.files),
               submission.id || submission.submissionId ? `Submission: ${submission.id || submission.submissionId}` : '',
               submission.status ? `Status: ${submission.status}` : '',
               'The uploaded candidate had SKILL.md name whitespace corrected. The local SKILL.md name and instructions were not rewritten.',
@@ -207,6 +211,7 @@ export class ShareSkillHubSkillTool implements Tool {
     skillName: string,
     args: any,
     localSkillPath: string,
+    writeLocalMetadata: boolean,
     initialFiles: SkillPresentationFile[],
     initialReport: any,
   ): Promise<{ ok: true; result: any; files: SkillPresentationFile[] } | { error: any } | undefined> {
@@ -224,7 +229,7 @@ export class ShareSkillHubSkillTool implements Tool {
           notes: args?.notes,
           confirmPublish: args?.confirmPublish === true,
         }, {
-          writeLocalMetadata: !localSkillPath || isInsideConfiguredSkillsRoot(localSkillPath),
+          writeLocalMetadata,
           ...(localSkillPath ? { localSkillPath } : {}),
           packageFiles: candidate,
           onPackageCaptured: current => { captured = current; },
@@ -280,8 +285,14 @@ function isInsideConfiguredSkillsRoot(candidate: string): boolean {
     const root = fs.realpathSync(PathResolver.getSkillsPath());
     const resolved = fs.realpathSync(path.resolve(candidate));
     const relative = path.relative(root, resolved);
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
   } catch {
     return false;
   }
+}
+
+function packageSummary(files: SkillPresentationFile[] | undefined): string {
+  if (!files?.length) return '';
+  const bytes = files.reduce((total, file) => total + Buffer.from(file.contentBase64, 'base64').byteLength, 0);
+  return `Files: ${files.length} (${(bytes / 1024).toFixed(1)} KB)`;
 }

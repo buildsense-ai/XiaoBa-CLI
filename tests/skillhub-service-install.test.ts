@@ -197,6 +197,24 @@ describe('SkillHub connected install service', () => {
     assert.equal(fs.readFileSync(sourceFile, 'utf8'), originalText);
   });
 
+  test('rejects a whitespace-only explicit Skill path before scanning the current directory', async () => {
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: '   ' }),
+      (error: any) => error?.code === 'skillhub.local_skill_path_invalid' && error?.status === 400,
+    );
+  });
+
+  test('path-only lookup errors identify the supplied path without listing workspace Skills', async () => {
+    const requestedPath = path.join(testRoot, 'missing-skill');
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: requestedPath }),
+      (error: any) => error?.code === 'skillhub.local_skill_not_found'
+        && error?.status === 404
+        && error.message.includes(requestedPath)
+        && !error.message.includes('Available skills:'),
+    );
+  });
+
   test('rejects a whitespace-only name before sending a publication request', async () => {
     let requestCount = 0;
     const app = express();
