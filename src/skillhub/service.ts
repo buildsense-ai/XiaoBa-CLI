@@ -22,6 +22,7 @@ import {
 import { listInstalledSkillHubSkills } from './install-marker';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
+import { isNameWhitespaceOnlyChange } from './publication-candidate';
 import type {
   SkillHubAuthState,
   SkillHubInstallResult,
@@ -250,6 +251,7 @@ export class SkillHubService {
     options: {
       writeLocalMetadata?: boolean;
       localSkillPath?: string;
+      packageFiles?: Array<{ path: string; contentBase64: string }>;
       onPackageCaptured?: (files: Array<{ path: string; contentBase64: string }>) => void;
     } = {},
   ): Promise<any> {
@@ -303,16 +305,21 @@ export class SkillHubService {
       error.code = 'skillhub.local_skill_empty';
       throw error;
     }
+    if (options.packageFiles) {
+      files = applyLocalPublicationCandidate(files, options.packageFiles);
+    }
     options.onPackageCaptured?.(files);
+    const manifestSkillName = String(skill.metadata.name).trim();
+    if (!manifestSkillName) throw localSkillValidationFailed();
     const submission = await this.client.quickShare({
       manifest: {
-        id: skill.metadata.name,
-        name: skill.metadata.name,
-        displayName: skill.metadata.name,
+        id: manifestSkillName,
+        name: manifestSkillName,
+        displayName: manifestSkillName,
         version: '1.0.0',
         description: skill.metadata.description,
-        keywords: [skill.metadata.name, ...splitWords(skill.metadata.description)].slice(0, 8),
-        triggerExamples: skill.metadata.argumentHint ? [`/${skill.metadata.name} ${skill.metadata.argumentHint}`] : [`/${skill.metadata.name}`],
+        keywords: [manifestSkillName, ...splitWords(skill.metadata.description)].slice(0, 8),
+        triggerExamples: skill.metadata.argumentHint ? [`/${manifestSkillName} ${skill.metadata.argumentHint}`] : [`/${manifestSkillName}`],
         minAgentVersion: '0.0.0',
         platforms: ['windows', 'macos', 'linux'],
       },
@@ -337,7 +344,7 @@ export class SkillHubService {
           || submission?.packageVersion?.skillId
           || submission?.submission?.normalizedManifest?.id
           || skill.metadata.name,
-        name: skill.metadata.name,
+        name: manifestSkillName,
         description: skill.metadata.description,
         path: localPath,
       },
@@ -391,6 +398,46 @@ export class SkillHubService {
     error.status = 404;
     throw error;
   }
+}
+
+function applyLocalPublicationCandidate(
+  original: Array<{ path: string; contentBase64: string }>,
+  candidate: Array<{ path: string; contentBase64: string }>,
+): Array<{ path: string; contentBase64: string }> {
+  const reject = (): never => {
+    const error: any = new Error('The publication candidate does not match the captured local Skill package.');
+    error.status = 400;
+    error.code = 'skillhub.publication_candidate_invalid';
+    throw error;
+  };
+  if (!Array.isArray(candidate) || candidate.length !== original.length) return reject();
+  const originalByPath = new Map(original.map(file => [file.path, file.contentBase64]));
+  const seen = new Set<string>();
+  for (const file of candidate) {
+    if (!file || typeof file.path !== 'string' || typeof file.contentBase64 !== 'string'
+      || seen.has(file.path) || !originalByPath.has(file.path)) return reject();
+    const decoded = Buffer.from(file.contentBase64, 'base64');
+    if (decoded.toString('base64') !== file.contentBase64) return reject();
+    seen.add(file.path);
+    const originalContent = originalByPath.get(file.path)!;
+    if (file.path !== 'SKILL.md' && file.contentBase64 !== originalContent) return reject();
+    if (file.path === 'SKILL.md' && file.contentBase64 !== originalContent
+      && !isNameWhitespaceOnlyCandidate(originalContent, file.contentBase64)) return reject();
+  }
+  if (!seen.has('SKILL.md')) return reject();
+  return candidate.map(file => ({ path: file.path, contentBase64: file.contentBase64 }));
+}
+
+function isNameWhitespaceOnlyCandidate(beforeBase64: string, afterBase64: string): boolean {
+  let beforeText: string;
+  let afterText: string;
+  try {
+    beforeText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(beforeBase64, 'base64'));
+    afterText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(afterBase64, 'base64'));
+  } catch {
+    return false;
+  }
+  return isNameWhitespaceOnlyChange(beforeText, afterText);
 }
 
 function localSkillValidationFailed(): Error {
