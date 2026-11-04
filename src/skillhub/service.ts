@@ -324,6 +324,7 @@ export class SkillHubService {
     options.onPackageCaptured?.(files);
     const manifestSkillName = String(skill.metadata.name).trim();
     if (!manifestSkillName) throw localSkillValidationFailed();
+    await this.requireAuthenticatedUser();
     const submission = await this.client.quickShare({
       manifest: {
         id: manifestSkillName,

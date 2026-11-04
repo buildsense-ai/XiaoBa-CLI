@@ -17,6 +17,8 @@ describe('SkillHub connected install service', () => {
   let originalCwd: string;
   let originalEnv: string | undefined;
   let originalSkillsEnv: string | undefined;
+  let originalRuntimeRootEnv: string | undefined;
+  let originalCatsCoEnv: Record<string, string | undefined>;
   let server: Server | undefined;
   let baseUrl: string;
 
@@ -24,9 +26,19 @@ describe('SkillHub connected install service', () => {
     originalCwd = process.cwd();
     originalEnv = process.env.CATSCO_SKILLHUB_BASE_URL;
     originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
+    originalRuntimeRootEnv = process.env.XIAOBA_USER_DATA_DIR;
+    originalCatsCoEnv = {
+      CATSCO_USER_TOKEN: process.env.CATSCO_USER_TOKEN,
+      CATSCO_USER_UID: process.env.CATSCO_USER_UID,
+      CATSCO_HTTP_BASE_URL: process.env.CATSCO_HTTP_BASE_URL,
+    };
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skillhub-service-'));
     process.chdir(testRoot);
     process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
+    process.env.XIAOBA_USER_DATA_DIR = testRoot;
+    process.env.CATSCO_USER_TOKEN = 'catsco-test-token';
+    process.env.CATSCO_USER_UID = 'usr_test';
+    process.env.CATSCO_HTTP_BASE_URL = 'https://app.catsco.cc';
     fs.mkdirSync(path.join(testRoot, 'skills'), { recursive: true });
   });
 
@@ -40,6 +52,12 @@ describe('SkillHub connected install service', () => {
     else process.env.CATSCO_SKILLHUB_BASE_URL = originalEnv;
     if (originalSkillsEnv === undefined) delete process.env.XIAOBA_SKILLS_DIR;
     else process.env.XIAOBA_SKILLS_DIR = originalSkillsEnv;
+    if (originalRuntimeRootEnv === undefined) delete process.env.XIAOBA_USER_DATA_DIR;
+    else process.env.XIAOBA_USER_DATA_DIR = originalRuntimeRootEnv;
+    for (const [key, value] of Object.entries(originalCatsCoEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.splice(0);
     if (fs.existsSync(testRoot)) fs.rmSync(testRoot, { recursive: true, force: true });
   });
@@ -129,6 +147,7 @@ describe('SkillHub connected install service', () => {
     let uploaded: any;
     const app = express();
     app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app);
     app.post('/api/skills/share', (req, res) => {
       uploaded = req.body;
       res.json({ submission: { id: 'submission-1', status: 'submitted' } });
@@ -171,6 +190,7 @@ describe('SkillHub connected install service', () => {
     let uploaded: any;
     const app = express();
     app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app);
     app.post('/api/skills/share', (req, res) => {
       uploaded = req.body;
       res.json({ submission: { id: 'submission-external' } });
@@ -200,8 +220,10 @@ describe('SkillHub connected install service', () => {
 
   test('sends an explicit path with a missing description to Cloud validation and returns its confirmation report', async () => {
     let uploaded: any;
+    let exchangeCount = 0;
     const app = express();
     app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app, () => { exchangeCount += 1; });
     app.post('/api/skills/share', (req, res) => {
       uploaded = req.body;
       res.status(422).json({
@@ -260,10 +282,48 @@ describe('SkillHub connected install service', () => {
     );
 
     assert.equal(uploaded.manifest.name, 'description-confirmation');
+    assert.equal(exchangeCount, 1);
     assert.equal(Object.hasOwn(uploaded.manifest, 'description'), false);
     const submittedFile = uploaded.source.files.find((file: any) => file.path === 'SKILL.md');
     assert.equal(Buffer.from(submittedFile.contentBase64, 'base64').toString('utf8'), originalText);
     assert.equal(fs.readFileSync(skillFile, 'utf8'), originalText);
+  });
+
+  test('does not submit a Skill when no CatsCo login is available for SkillHub authentication', async () => {
+    let requestCount = 0;
+    const app = express();
+    app.use(express.json());
+    app.get('/api/auth/me', (_req, res) => {
+      res.status(401).json({ error: 'unauthenticated' });
+    });
+    app.post('/api/skills/share', (_req, res) => {
+      requestCount += 1;
+      res.status(500).json({ error: 'unexpected request' });
+    });
+    app.use((_req, res) => res.status(500).json({ error: 'unexpected request' }));
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+    delete process.env.CATSCO_USER_TOKEN;
+
+    const skillRoot = path.join(testRoot, 'skills', 'no-catsco-login');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), [
+      '---',
+      'name: no-catsco-login',
+      'description: Must not be submitted without an account session',
+      '---',
+      '',
+      '# Instructions',
+      '',
+    ].join('\n'));
+
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({ skillName: 'no-catsco-login' }),
+      (error: any) => error?.code === 'skillhub.login_required' && error?.status === 401,
+    );
+    assert.equal(requestCount, 0);
   });
 
   test('rejects a whitespace-only explicit Skill path before scanning the current directory', async () => {
@@ -288,6 +348,7 @@ describe('SkillHub connected install service', () => {
     const uploaded: any[] = [];
     const app = express();
     app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app);
     app.post('/api/skills/share', (req, res) => {
       uploaded.push(req.body);
       res.json({ submission: { id: `submission-cwd-${uploaded.length}` } });
@@ -455,6 +516,7 @@ describe('SkillHub connected install service', () => {
   async function startFixtureServer(fixture: ReturnType<typeof createFixture>): Promise<void> {
     const app = express();
     app.use(express.json());
+    installCatsCoSkillHubExchangeRoute(app);
     app.post('/api/auth/login', (_req, res) => {
       res.setHeader('Set-Cookie', 'catsco_session=test-session; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800');
       res.json({ user: { id: 'usr_1', email: 'demo@example.com', displayName: 'Demo' }, roles: ['user'], permissions: [] });
@@ -490,6 +552,35 @@ describe('SkillHub connected install service', () => {
     baseUrl = `http://127.0.0.1:${address.port}`;
   }
 });
+
+function installCatsCoSkillHubSessionRoutes(app: express.Express, onExchange?: () => void): void {
+  installCatsCoSkillHubExchangeRoute(app, onExchange);
+  app.get('/api/auth/me', (req, res) => {
+    if (!String(req.header('cookie') || '').includes('skillhub_session=test-session')) {
+      return res.status(401).json({ error: 'unauthenticated' });
+    }
+    return res.json({
+      user: { id: 'usr_test', email: 'demo@example.com', displayName: 'Demo' },
+      roles: ['user'],
+      permissions: [],
+    });
+  });
+}
+
+function installCatsCoSkillHubExchangeRoute(app: express.Express, onExchange?: () => void): void {
+  app.post('/api/auth/catsco-exchange', (req, res) => {
+    assert.equal(req.body?.token, 'catsco-test-token');
+    assert.equal(req.body?.user?.uid, 'usr_test');
+    onExchange?.();
+    res.setHeader('Set-Cookie', 'skillhub_session=test-session; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800');
+    res.json({
+      catsCo: { uid: 'usr_test' },
+      user: { id: 'usr_test', email: 'demo@example.com', displayName: 'Demo' },
+      roles: ['user'],
+      permissions: [],
+    });
+  });
+}
 
 function createFixture() {
   const rootKeys = crypto.generateKeyPairSync('ed25519');
