@@ -740,6 +740,6 @@ function skillHubMetadataFromShareResponse(response: any): { author: string; ver
 function skillHubLoginRequired(): Error {
   const error: any = new Error('请先登录 CatsCo 并连接 SkillHub。');
   error.status = 401;
-  error.code = 'skillhub.login_required';
+  error.code = 'skillhub.catsco_login_required';
   return error;
 }

@@ -27,11 +27,18 @@ describe('SkillHub connected install service', () => {
     originalEnv = process.env.CATSCO_SKILLHUB_BASE_URL;
     originalSkillsEnv = process.env.XIAOBA_SKILLS_DIR;
     originalRuntimeRootEnv = process.env.XIAOBA_USER_DATA_DIR;
-    originalCatsCoEnv = {
-      CATSCO_USER_TOKEN: process.env.CATSCO_USER_TOKEN,
-      CATSCO_USER_UID: process.env.CATSCO_USER_UID,
-      CATSCO_HTTP_BASE_URL: process.env.CATSCO_HTTP_BASE_URL,
-    };
+    const catsCoEnvKeys = [
+      'CATSCO_USER_TOKEN',
+      'CATSCO_USER_UID',
+      'CATSCO_HTTP_BASE_URL',
+      'CATSCOMPANY_USER_TOKEN',
+      'CATSCOMPANY_USER_UID',
+      'CATSCOMPANY_HTTP_BASE_URL',
+      'CATSCO_LOCAL_CONFIG_PATH',
+      'CATSCO_CONFIG_PATH',
+    ];
+    originalCatsCoEnv = Object.fromEntries(catsCoEnvKeys.map(key => [key, process.env[key]]));
+    for (const key of catsCoEnvKeys) delete process.env[key];
     testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skillhub-service-'));
     process.chdir(testRoot);
     process.env.XIAOBA_SKILLS_DIR = path.join(testRoot, 'skills');
@@ -321,7 +328,7 @@ describe('SkillHub connected install service', () => {
 
     await assert.rejects(
       new SkillHubService().shareLocalSkill({ skillName: 'no-catsco-login' }),
-      (error: any) => error?.code === 'skillhub.login_required' && error?.status === 401,
+      (error: any) => error?.code === 'skillhub.catsco_login_required' && error?.status === 401,
     );
     assert.equal(requestCount, 0);
   });
