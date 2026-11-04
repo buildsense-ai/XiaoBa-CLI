@@ -256,7 +256,7 @@ export class SkillHubService {
     } = {},
   ): Promise<any> {
     const skillName = String(input.skillName || input.skill || input.name || '').trim();
-    if (!skillName) {
+    if (!skillName && !options.localSkillPath) {
       const error: any = new Error('skillName required');
       error.status = 400;
       error.code = 'skillhub.skill_name_required';
@@ -677,7 +677,7 @@ function findLocalShareableSkillAtPath(
   if (skillStat.isSymbolicLink() || !skillStat.isFile()) return undefined;
   const skill = SkillParser.parse(skillFile);
   const dirName = path.basename(root);
-  return skill.metadata.name === skillName || dirName === skillName ? { skill } : undefined;
+  return !skillName || skill.metadata.name === skillName || dirName === skillName ? { skill } : undefined;
 }
 
 function listLocalSkillNames(): string[] {

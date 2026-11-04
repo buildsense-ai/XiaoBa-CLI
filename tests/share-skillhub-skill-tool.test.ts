@@ -144,3 +144,72 @@ test('a non-UTF-8 entrypoint disables automatic repair without blocking normal p
   assert.equal(result.ok, true);
   assert.equal(captured, true);
 });
+
+test('an explicitly supplied local Skill directory is published without relocating it or writing metadata outside the Skill workspace', async () => {
+  const localSkillPath = 'C:\\external-skills\\demo';
+  let receivedPath = '';
+  let writeLocalMetadata: unknown;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      receivedPath = String(options?.localSkillPath || '');
+      writeLocalMetadata = options?.writeLocalMetadata;
+      options?.onPackageCaptured?.([{
+        path: 'SKILL.md',
+        contentBase64: Buffer.from('---\nname: demo\ndescription: safe\n---\n# Test\n').toString('base64'),
+      }]);
+      return { submission: { id: 'submission-external' }, skill: { name: 'demo', path: localSkillPath } };
+    },
+  }));
+
+  const result = await tool.execute({ skillName: 'demo', localSkillPath }, { sessionId: 'explicit-local-path' } as any);
+  assert.equal(result.ok, true);
+  assert.equal(receivedPath, localSkillPath);
+  assert.equal(writeLocalMetadata, false);
+  assert.match(result.content, /no local tracking metadata was written/);
+});
+
+test('explicit local path is preserved for the isolated automatic-repair upload', async () => {
+  const localSkillPath = 'C:\\external-skills\\demo';
+  let calls = 0;
+  const receivedPaths: string[] = [];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      calls++;
+      receivedPaths.push(String(options?.localSkillPath || ''));
+      const files = (options as any)?.packageFiles || [{
+        path: 'SKILL.md',
+        contentBase64: Buffer.from('---\nname: " demo "\ndescription: safe\n---\n# Test\n').toString('base64'),
+      }];
+      options?.onPackageCaptured?.(files);
+      if (calls === 1) throw validationError('report-explicit-path');
+      assert.equal(options?.writeLocalMetadata, false);
+      assert.match(Buffer.from(files[0].contentBase64, 'base64').toString('utf8'), /name: "demo"/);
+      return { submission: { id: 'submission-explicit-path' }, skill: { name: 'demo', path: localSkillPath } };
+    },
+  }));
+
+  const result = await tool.execute({ skillName: 'demo', localSkillPath }, { sessionId: 'explicit-path-repair' } as any);
+  assert.equal(result.ok, true);
+  assert.equal(calls, 2);
+  assert.deepEqual(receivedPaths, [localSkillPath, localSkillPath]);
+  assert.match(result.content, /no local tracking metadata was written/);
+});
+
+test('an explicit local path is sufficient to identify a Skill without a separate skillName', async () => {
+  const localSkillPath = 'C:\\external-skills\\directory-name';
+  let receivedName: unknown;
+  let receivedPath: unknown;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (input, options) => {
+      receivedName = input.skillName;
+      receivedPath = options?.localSkillPath;
+      return { submission: { id: 'submission-path-only' }, skill: { name: 'metadata-name', path: localSkillPath } };
+    },
+  }));
+
+  const result = await tool.execute({ localSkillPath }, { sessionId: 'path-only-publication' } as any);
+  assert.equal(result.ok, true);
+  assert.equal(receivedName, '');
+  assert.equal(receivedPath, localSkillPath);
+  assert.match(result.content, /metadata-name/);
+});

@@ -166,6 +166,37 @@ describe('SkillHub connected install service', () => {
     assert.equal(success.skill.name, 'whitespace-name');
   });
 
+  test('publishes an explicitly supplied Skill path outside the configured workspace without changing the source', async () => {
+    let uploaded: any;
+    const app = express();
+    app.use(express.json());
+    app.post('/api/skills/share', (req, res) => {
+      uploaded = req.body;
+      res.json({ submission: { id: 'submission-external' } });
+    });
+    server = app.listen(0);
+    await new Promise<void>(resolve => server!.once('listening', () => resolve()));
+    const address = server.address();
+    baseUrl = typeof address === 'object' && address ? `http://127.0.0.1:${address.port}` : '';
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+
+    const skillRoot = path.join(testRoot, 'old-release', 'data', 'skills', 'xiaoba-speaking-style');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const originalText = '---\nname: xiaoba-speaking-style\ndescription: A local test Skill\n---\n# Instructions\n';
+    const sourceFile = path.join(skillRoot, 'SKILL.md');
+    fs.writeFileSync(sourceFile, originalText);
+
+    const result = await new SkillHubService().shareLocalSkill({}, {
+      localSkillPath: skillRoot,
+      writeLocalMetadata: false,
+    });
+
+    assert.equal(result.skill.name, 'xiaoba-speaking-style');
+    assert.equal(uploaded.manifest.name, 'xiaoba-speaking-style');
+    assert.equal(uploaded.source.files[0].path, 'SKILL.md');
+    assert.equal(fs.readFileSync(sourceFile, 'utf8'), originalText);
+  });
+
   test('rejects a whitespace-only name before sending a publication request', async () => {
     let requestCount = 0;
     const app = express();
