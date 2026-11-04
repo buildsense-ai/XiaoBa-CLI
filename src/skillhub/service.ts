@@ -256,7 +256,7 @@ export class SkillHubService {
     } = {},
   ): Promise<any> {
     const skillName = String(input.skillName || input.skill || input.name || '').trim();
-    const requestedPath = options.localSkillPath === undefined ? '' : String(options.localSkillPath).trim();
+    const requestedPath = options.localSkillPath == null ? '' : String(options.localSkillPath).trim();
     if (options.localSkillPath !== undefined && !requestedPath) {
       const error: any = new Error('localSkillPath must be a non-empty directory path.');
       error.status = 400;
@@ -682,7 +682,6 @@ function findLocalShareableSkillAtPath(
   const requested = String(localSkillPath || '').trim();
   if (!requested) return undefined;
   const root = path.resolve(requested);
-  if (!root || root === path.resolve('')) return undefined;
   if (!root || !fs.existsSync(root)) return undefined;
   const rootStat = fs.lstatSync(root);
   const skillFile = path.join(root, 'SKILL.md');
