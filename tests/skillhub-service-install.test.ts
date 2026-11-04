@@ -166,6 +166,93 @@ describe('SkillHub connected install service', () => {
     assert.equal(success.skill.name, 'whitespace-name');
   });
 
+  test('publishes an explicitly supplied Skill path outside the configured workspace without changing the source', async () => {
+    let uploaded: any;
+    const app = express();
+    app.use(express.json());
+    app.post('/api/skills/share', (req, res) => {
+      uploaded = req.body;
+      res.json({ submission: { id: 'submission-external' } });
+    });
+    server = app.listen(0);
+    await new Promise<void>(resolve => server!.once('listening', () => resolve()));
+    const address = server.address();
+    baseUrl = typeof address === 'object' && address ? `http://127.0.0.1:${address.port}` : '';
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+
+    const skillRoot = path.join(testRoot, 'old-release', 'data', 'skills', 'xiaoba-speaking-style');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const originalText = '---\nname: xiaoba-speaking-style\ndescription: A local test Skill\n---\n# Instructions\n';
+    const sourceFile = path.join(skillRoot, 'SKILL.md');
+    fs.writeFileSync(sourceFile, originalText);
+
+    const result = await new SkillHubService().shareLocalSkill({}, {
+      localSkillPath: skillRoot,
+      writeLocalMetadata: false,
+    });
+
+    assert.equal(result.skill.name, 'xiaoba-speaking-style');
+    assert.equal(uploaded.manifest.name, 'xiaoba-speaking-style');
+    assert.equal(uploaded.source.files[0].path, 'SKILL.md');
+    assert.equal(fs.readFileSync(sourceFile, 'utf8'), originalText);
+  });
+
+  test('rejects a whitespace-only explicit Skill path before scanning the current directory', async () => {
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: '   ' }),
+      (error: any) => error?.code === 'skillhub.local_skill_path_invalid' && error?.status === 400,
+    );
+  });
+
+  test('path-only lookup errors identify the supplied path without listing workspace Skills', async () => {
+    const requestedPath = path.join(testRoot, 'missing-skill');
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: requestedPath }),
+      (error: any) => error?.code === 'skillhub.local_skill_not_found'
+        && error?.status === 404
+        && error.message.includes(requestedPath)
+        && !error.message.includes('Available skills:'),
+    );
+  });
+
+  test('publishes a Skill whose explicit directory is the current working directory', async () => {
+    const uploaded: any[] = [];
+    const app = express();
+    app.use(express.json());
+    app.post('/api/skills/share', (req, res) => {
+      uploaded.push(req.body);
+      res.json({ submission: { id: `submission-cwd-${uploaded.length}` } });
+    });
+    server = app.listen(0);
+    await new Promise<void>(resolve => server!.once('listening', () => resolve()));
+    const address = server.address();
+    baseUrl = typeof address === 'object' && address ? `http://127.0.0.1:${address.port}` : '';
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+    fs.writeFileSync(path.join(testRoot, 'SKILL.md'), [
+      '---',
+      'name: cwd-skill',
+      'description: Skill published from the current directory',
+      '---',
+      '',
+      '# Instructions',
+    ].join('\n'));
+
+    const service = new SkillHubService();
+    const absolute = await service.shareLocalSkill({ skillName: 'cwd-skill' }, { localSkillPath: testRoot });
+    const dot = await service.shareLocalSkill({}, { localSkillPath: '.' });
+
+    assert.equal(absolute.skill.name, 'cwd-skill');
+    assert.equal(dot.skill.name, 'cwd-skill');
+    assert.equal(uploaded.length, 2);
+  });
+
+  test('treats a null local path as omitted', async () => {
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: null as any }),
+      (error: any) => error?.code === 'skillhub.skill_name_required',
+    );
+  });
+
   test('rejects a whitespace-only name before sending a publication request', async () => {
     let requestCount = 0;
     const app = express();

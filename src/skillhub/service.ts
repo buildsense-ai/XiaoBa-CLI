@@ -256,7 +256,14 @@ export class SkillHubService {
     } = {},
   ): Promise<any> {
     const skillName = String(input.skillName || input.skill || input.name || '').trim();
-    if (!skillName) {
+    const requestedPath = options.localSkillPath == null ? '' : String(options.localSkillPath).trim();
+    if (options.localSkillPath != null && !requestedPath) {
+      const error: any = new Error('localSkillPath must be a non-empty directory path.');
+      error.status = 400;
+      error.code = 'skillhub.local_skill_path_invalid';
+      throw error;
+    }
+    if (!skillName && !requestedPath) {
       const error: any = new Error('skillName required');
       error.status = 400;
       error.code = 'skillhub.skill_name_required';
@@ -265,8 +272,8 @@ export class SkillHubService {
 
     let localSkill;
     try {
-      localSkill = options.localSkillPath
-        ? findLocalShareableSkillAtPath(options.localSkillPath, skillName)
+      localSkill = requestedPath
+        ? findLocalShareableSkillAtPath(requestedPath, skillName)
         : findLocalShareableSkill(skillName);
     } catch (caught: any) {
       if (caught?.code === 'skillhub.local_skill_ambiguous' && caught?.status === 409) {
@@ -275,6 +282,12 @@ export class SkillHubService {
       throw localSkillValidationFailed();
     }
     if (!localSkill) {
+      if (requestedPath && !skillName) {
+        const error: any = new Error(`No Skill with SKILL.md was found at the given path: ${requestedPath}`);
+        error.status = 404;
+        error.code = 'skillhub.local_skill_not_found';
+        throw error;
+      }
       const available = listLocalSkillNames().join(', ');
       const error: any = new Error(`Local skill not found: ${skillName}${available ? `. Available skills: ${available}` : ''}`);
       error.status = 404;
@@ -666,7 +679,9 @@ function findLocalShareableSkillAtPath(
   localSkillPath: string,
   skillName: string,
 ): { skill: Skill } | undefined {
-  const root = path.resolve(String(localSkillPath || '').trim());
+  const requested = String(localSkillPath || '').trim();
+  if (!requested) return undefined;
+  const root = path.resolve(requested);
   if (!root || !fs.existsSync(root)) return undefined;
   const rootStat = fs.lstatSync(root);
   const skillFile = path.join(root, 'SKILL.md');
@@ -677,7 +692,7 @@ function findLocalShareableSkillAtPath(
   if (skillStat.isSymbolicLink() || !skillStat.isFile()) return undefined;
   const skill = SkillParser.parse(skillFile);
   const dirName = path.basename(root);
-  return skill.metadata.name === skillName || dirName === skillName ? { skill } : undefined;
+  return !skillName || skill.metadata.name === skillName || dirName === skillName ? { skill } : undefined;
 }
 
 function listLocalSkillNames(): string[] {
