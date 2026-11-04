@@ -15,6 +15,7 @@ import { MessageSender, type ConversationTaskStatusInput } from './message-sende
 import { extractContentBlocks } from './content-blocks';
 import { createCatsCoMessageEnvelope, createExecutionScope, buildCatsCoSessionKey } from './message-envelope';
 import { logCatsCoExecutionContextDiagnostics } from './execution-context-diagnostics';
+import { defaultBotCallWindow, isSelfAuthoredBotCallPrompt } from '../mcp/bot-call-window';
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
 import { extractCatsCoDeviceGrants } from './device-grants';
 import { extractCatsCoDeviceSelection } from './device-selection';
@@ -2011,6 +2012,12 @@ export class CatsCompanyBot {
   }
 
   private async onMessage(ctx: MessageContext): Promise<void> {
+    // 平台代调用方写进来的 prompt（`catsco_bot_call` + `catsco_caller_uid` 等于自己是
+    // 「平台在拿我当工具通道」的确凿信号）。这条消息本身按「自己发的」忽略，但会话要
+    // 记下来：之后目标 bot 在这个会话里的进度/答复都不是给我的新任务。
+    // 不记就会互刷 —— 它回一句我回一句，两边上下文一起被刷乱，平台最后拿到的「答案」
+    // 是一句回环碎片（实测 70 秒互刷 18 条）。
+    this.noteBotCallChannel(ctx);
     if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
     const key = createCatsCoMessageEnvelope({ topic: ctx.topic, isGroup: ctx.isGroup,
       senderId: ctx.senderId, seq: ctx.seq, text: ctx.text || '', metadata: ctx.metadata, botUid: this.botUid }).sessionKey;
@@ -2036,6 +2043,12 @@ export class CatsCompanyBot {
 
     // 过滤 bot 自己发出的消息，防止循环。
     if (this.botUid && normalizeCatsUid(ctx.senderId) === normalizeCatsUid(this.botUid)) return;
+    // 平台 bot 调用通道：这里面的进度/答复是执行过程，不是给我的新任务。
+    if (defaultBotCallWindow.isInCall(ctx.topic)) {
+      Logger.info(`[CatsCompany] bot 调用通道内的消息，忽略: topic=${ctx.topic}`);
+      return;
+    }
+
 
     // 群聊激活门控必须发生在 parse 后续的云恢复和 session 创建之前。
     if (!shouldActivateCatsCompanyMessage(ctx, this.botUid)) {
@@ -2060,6 +2073,23 @@ export class CatsCompanyBot {
     } finally {
       this.activeMessageHandlers = Math.max(0, this.activeMessageHandlers - 1);
     }
+  }
+
+  /**
+   * 收到「平台代我写进来的调用 prompt」时，把这个会话记成 bot 调用通道。
+   *
+   * 判据是消息自己的 metadata：`catsco_bot_call` 为真，且 `catsco_caller_uid` 就是我。
+   * 那说明平台在拿我当工具通道往这个 p2p 会话里派活 —— 于是目标 bot 随后在这里说的
+   * 每一句（进度、答复、闲话）都是执行过程，不是给我的新任务。
+   */
+  private noteBotCallChannel(ctx: MessageContext): void {
+    if (!this.botUid) return;
+    // 必须是「我自己发出去的那条」：平台代调用方写 prompt，from_uid 就是调用方本人。
+    // 加这一条是为了别被第三方伪造的 metadata 封住会话（伪造要能冒充我发消息才行）。
+    if (normalizeCatsUid(ctx.senderId) !== normalizeCatsUid(this.botUid)) return;
+    if (!isSelfAuthoredBotCallPrompt(ctx.metadata as Record<string, unknown> | undefined, this.botUid)) return;
+    defaultBotCallWindow.mark(ctx.topic);
+    Logger.info(`[CatsCompany] 记为 bot 调用通道，窗口内不再起新回合: topic=${ctx.topic}`);
   }
 
   /**
@@ -2156,6 +2186,15 @@ export class CatsCompanyBot {
       await this.sender.reply(msg.topic, '正在停止当前请求...').catch((err: any) => {
         Logger.warning(`停止提示发送失败: ${err?.message || err}`);
       });
+      return;
+    }
+    // 我们正在把这个 bot 当工具调用：这个会话里出现的消息是**执行过程**（进度、闲话、
+    // 答案的回声），不是新任务。以前它们会进队列，工具返回后被当成用户指令再跑一轮 ——
+    // 调用方也是 bot 时就成了互刷：A 回 B 的进度、B 再回 A 的回应，双方上下文一起被刷乱，
+    // 平台最后拿到的「答案」是一句回环碎片（实测 70 秒互刷 18 条）。
+    // 放在 /stop 之后：停止是控制输入，任何时候都得能生效。
+    if (defaultBotCallWindow.isInCall(msg.topic)) {
+      Logger.info(`[${key}] 会话处于 bot 工具调用窗口，忽略该消息: ${msg.topic}`);
       return;
     }
     const entryClearGeneration = this.getSessionClearGeneration(key);

@@ -10,6 +10,7 @@
  *
  * 刷新策略：fire-and-forget 后台同步（绝不阻塞对话轮次），按 diff 注册/注销远端工具。
  */
+import { defaultBotCallWindow, type BotCallWindow } from './bot-call-window';
 import { Logger } from '../utils/logger';
 import type { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult, ToolParameter } from '../types/tool';
 
@@ -99,6 +100,11 @@ export interface McpToolBridgeOptions {
     actorUserId?: string;
   }) => void;
   now?: () => number;
+  /**
+   * 调用窗口（可注入，测试用）：调用进行中，那个会话里的消息不算新任务。
+   * 默认用进程内单例。
+   */
+  callWindow?: BotCallWindow;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -152,6 +158,7 @@ export class CatsCoMcpToolBridge {
   private readonly onRunPending?: McpToolBridgeOptions['onRunPending'];
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly callWindow: BotCallWindow;
   /** 「返问待补充」的有效期：超过就当用户已经走开了，别把新任务接到旧会话上。 */
   private readonly resumeTtlMs: number;
   /** 待补充的返问会话：resumeKey → { sessionId, at }。 */
@@ -177,6 +184,7 @@ export class CatsCoMcpToolBridge {
     this.shareSelfToolName = options.shareSelfToolName ?? DEFAULT_SHARE_SELF_TOOL;
     this.runPollTimeoutMs = options.runPollTimeoutMs ?? DEFAULT_RUN_POLL_TIMEOUT_MS;
     this.runPollIntervalMs = options.runPollIntervalMs ?? DEFAULT_RUN_POLL_INTERVAL_MS;
+    this.callWindow = options.callWindow ?? defaultBotCallWindow;
     this.onRunPending = options.onRunPending;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
@@ -439,6 +447,24 @@ export class CatsCoMcpToolBridge {
     return { ...args, bot_uid: botUid };
   }
 
+  /**
+   * 进入「调用窗口」：只有**调用类**远端工具才开（`catsco_run_status` 这类系统工具
+   * 不开 —— 它不产生会话消息，开了只会误伤正常对话）。
+   *
+   * 拿不到会话 topic 时返回 undefined：那种调用没有「同一个会话」可言，
+   * 也就没有需要屏蔽的进度消息。
+   */
+  private openCallWindow(
+    toolName: string,
+    route?: { conversationTopic?: string },
+  ): (() => void) | undefined {
+    const topic = route?.conversationTopic;
+    if (!topic) return undefined;
+    if (this.isSystemTool(toolName)) return undefined;
+    if (!toolName.startsWith(this.toolNamePrefix)) return undefined;
+    return this.callWindow.enter(topic);
+  }
+
   /** 执行远端工具的完整链路：连接 → call →（running 时轮询）→ 映射结果。 */
   async executeRemoteTool(    toolName: string,
     args: Record<string, unknown>,
@@ -457,6 +483,10 @@ export class CatsCoMcpToolBridge {
       };
     }
     const client = this.createClient(endpoint);
+    // 调用窗口：从发出 prompt 到拿到终态（含自动轮询）这段时间，这个会话里出现的
+    // 消息都是执行过程。消息入口据此丢弃它们，避免「目标 bot 的进度被当成新指令」
+    // 把两个 bot 带进互刷（见 bot-call-window.ts 里的实测记录）。
+    const leaveCallWindow = this.openCallWindow(toolName, route);
     try {
       // 返问续聊：上一轮以 awaiting_input 收尾、用户又刚补充了一句时，模型这一轮很可能
       // 忘了带 session_id —— 由桥补上（模型没有感知也没关系），而不是靠提示词求它记住。
@@ -527,6 +557,7 @@ export class CatsCoMcpToolBridge {
         retryable: true,
       };
     } finally {
+      leaveCallWindow?.();
       await client.close().catch(() => {});
     }
   }
