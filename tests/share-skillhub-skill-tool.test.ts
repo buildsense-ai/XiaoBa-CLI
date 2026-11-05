@@ -234,7 +234,7 @@ test('every canonical synthetic user flag is ignored when resolving an explicit 
   }
 });
 
-test('the exact confirmation phrase shown in the user prompt is accepted', async () => {
+test('prompted confirmation and the user natural phrasing are accepted without accepting a rejection', async () => {
   const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
   let shareCalls = 0;
   const tool = new ShareSkillHubSkillTool(() => ({
@@ -263,7 +263,17 @@ test('the exact confirmation phrase shown in the user prompt is accepted', async
   assert.equal(draft.ok, true);
   assert.match(sentMessages[0], /确认使用这条说明并发布/);
 
-  history.push({ role: 'user', content: '确认使用这条说明并发布', __episodeInputKind: 'root' });
+  history.push({ role: 'user', content: '先不要发布', __episodeInputKind: 'root' });
+  const rejected = await tool.execute({
+    confirmDescription: true,
+    descriptionReportId: 'episode-input-report',
+    confirmedDescription: 'A sample Skill.',
+  }, context);
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
+  assert.equal(shareCalls, 1);
+
+  history.push({ role: 'user', content: '我确认用这条说明发布', __episodeInputKind: 'root' });
   history.push({ role: 'user', content: 'internal observation', __runtimeObservation: true });
   const published = await tool.execute({
     confirmDescription: true,

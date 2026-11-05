@@ -555,7 +555,7 @@ function invalidConfirmationArguments(): ToolExecutionResult {
 function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
   const text = latestUserMessageText(context);
   if (!text || text === pending.initialUserMessage) return false;
-  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|采用)?(?:这个|该|这条|这段)?(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
+  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
 }
 
 function hasExplicitVersionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
