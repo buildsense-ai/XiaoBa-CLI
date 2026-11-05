@@ -562,7 +562,14 @@ function hasExplicitVersionApproval(context: ToolExecutionContext, pending: Pend
 function latestUserMessageText(context: ToolExecutionContext): string {
   const message = [...(Array.isArray(context.conversationHistory) ? context.conversationHistory : [])]
     .reverse()
-    .find((item: any) => item?.role === 'user');
+    .find((item: any) => item?.role === 'user'
+      && !item.__injected
+      && !item.__runtimeObservation
+      && !item.__runtimeFeedback
+      && !item.__syntheticObservation
+      && !item.__internalErrorArtifact
+      && !item.__checkpointSummary
+      && !item.__checkpointBoundary);
   const content = typeof message?.content === 'string'
     ? message.content
     : Array.isArray(message?.content)

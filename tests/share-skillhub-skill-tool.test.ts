@@ -175,10 +175,12 @@ test('missing description creates a paused draft and only publishes the exact co
   assert.equal(shareCalls, 1);
 
   history.length = 0;
-  history.push({ role: 'user', content: '确认发布' });
+  history.push({ role: 'user', content: '确认使用这个描述并发布' });
+  history.push({ role: 'user', content: 'A runtime observation arrived after the human approval.', __runtimeObservation: true });
   const mismatch = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: 'A different draft.' }, context);
   assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.errorCode, 'DESCRIPTION_CONFIRMATION_MISMATCH');
   assert.equal(shareCalls, 1);
 
   const confirmed = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
