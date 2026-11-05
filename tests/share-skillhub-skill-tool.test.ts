@@ -157,7 +157,7 @@ test('missing description creates a paused draft and only publishes the exact co
   } as any;
 
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
-  const reportId = sentMessages[0].match(/report ([a-z-]+)/)?.[1] || '';
+  const reportId = 'description-report';
   assert.equal(draft.ok, true);
   assert.equal(draft.controlSignal, 'pause_turn');
   assert.equal(sentMessages.length, 1);
@@ -232,6 +232,43 @@ test('every canonical synthetic user flag is ignored when resolving an explicit 
     assert.equal(published.ok, true, `${flag} must not hide the human approval`);
     assert.equal(shareCalls, 2, `${flag} must allow exactly one confirmed publish attempt`);
   }
+});
+
+test('current human approval takes precedence over later user-role context without a human-input marker', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  let shareCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(files);
+        throw validationError('episode-input-report', {
+          code: 'metadata.description_missing',
+          repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      return { submission: { id: 'episode-input-submitted' }, skill: { id: 'sample-skill', name: 'sample-skill' } };
+    },
+  }));
+  const history: any[] = [{ role: 'user', content: 'publish sample-skill', __episodeInputKind: 'root' }];
+  const context: any = {
+    sessionId: 'description-episode-input',
+    conversationHistory: history,
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  };
+  await tool.execute({ skillName: 'sample-skill' }, context);
+
+  history.push({ role: 'user', content: '我确认使用这个描述并发布', __episodeInputKind: 'root' });
+  history.push({ role: 'user', content: 'internal continuation context' });
+  const published = await tool.execute({
+    confirmDescription: true,
+    descriptionReportId: 'episode-input-report',
+    confirmedDescription: 'A sample Skill.',
+  }, context);
+
+  assert.equal(published.ok, true);
+  assert.equal(shareCalls, 2);
 });
 
 test('description draft remains visible through the normal result path without an outbound chat channel', async () => {
@@ -310,7 +347,7 @@ test('version confirmation is separate and retained after the description is app
     runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
   };
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
-  const reportId = String(draft.content).match(/report ([a-z-]+)/)?.[1] || '';
+  const reportId = 'description-version-report';
   history.push({ role: 'user', content: '确认发布新版本' });
   const versionGate = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: 'A sample Skill.' }, context);
