@@ -46,7 +46,7 @@ import { Logger } from '../utils/logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import type { SubAgentInfo } from '../core/sub-agent-session';
-import { ChannelCallbacks, DeviceRpcTransport, GroupRosterEntry, TargetRoutes, ThinToolRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import { ChannelCallbacks, CurrentUserApprovalInput, DeviceRpcTransport, GroupRosterEntry, TargetRoutes, ThinToolRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { ContentBlock } from '../types';
 import type { PendingUserInput } from '../core/conversation-runner';
 import type { StreamRetryInfo } from '../providers/provider';
@@ -141,6 +141,7 @@ interface NativeFeishuContextHydration {
 
 interface QueuedMessage {
   userMessage: string | ContentBlock[];
+  approvalInput?: CurrentUserApprovalInput;
   topic: string;
   senderId: string;
   seq: number;
@@ -397,6 +398,17 @@ function speakerNameFromMetadata(msg: Pick<ParsedCatsMessage, 'metadata' | 'send
   const identity = asRecord(metadata?.catsco_identity);
   // 带上（人）/（bot）标记：判定判据要区分人在提问还是同伴在汇报，只靠名字分不出来。
   return formatSpeakerLabel({ actor: identity?.actor, fallbackUid: msg.senderId });
+}
+
+function currentUserApprovalInputFromCatsMessage(msg: ParsedCatsMessage): CurrentUserApprovalInput {
+  const identity = asRecord(msg.metadata?.catsco_identity);
+  const actor = asRecord(identity?.actor);
+  // Legacy/untrusted envelopes cannot authorize a publication, even when the rendered speaker label looks human.
+  const isBot = msg.envelope?.identityTrust === 'server_canonical'
+    && typeof actor?.is_bot === 'boolean'
+    ? actor.is_bot
+    : null;
+  return { text: msg.text, isBot };
 }
 
 function prefixCatsUserMessage(name: string, content: string | ContentBlock[]): string | ContentBlock[] {
@@ -2380,6 +2392,7 @@ export class CatsCompanyBot {
       const queue = this.messageQueue.get(key) ?? [];
       queue.push({
         userMessage,
+        approvalInput: currentUserApprovalInputFromCatsMessage(msg),
         topic: msg.topic,
         senderId: msg.senderId,
         seq: msg.seq,
@@ -2443,6 +2456,7 @@ export class CatsCompanyBot {
           channel,
           sessionRoute,
           executionScope: msg.executionScope,
+          currentUserApprovalInputs: [currentUserApprovalInputFromCatsMessage(msg)],
           artifactContextRef: msg.artifactContextRef,
           artifactTaskRef: msg.artifactTaskRef,
           skillConnectorGrants: msg.skillConnectorGrants,
@@ -4311,6 +4325,7 @@ export class CatsCompanyBot {
           : await session.handleMessage(msg.userMessage, {
             channel,
             executionScope: msg.executionScope,
+            currentUserApprovalInputs: msg.approvalInput ? [msg.approvalInput] : null,
             artifactContextRef: msg.artifactContextRef,
             artifactTaskRef: msg.artifactTaskRef,
             skillConnectorGrants: msg.skillConnectorGrants,
@@ -4478,6 +4493,9 @@ export class CatsCompanyBot {
 
     Logger.info(`[${sessionKey}] 合并 ${messages.length} 条处理期间新到的用户消息`);
     const content = this.mergeQueuedMessages(messages);
+    const currentUserApprovalInputs = messages
+      .map(item => item.approvalInput)
+      .filter((item): item is CurrentUserApprovalInput => item !== undefined);
     const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
     const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
     const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
@@ -4490,9 +4508,10 @@ export class CatsCompanyBot {
     const artifactContextMessage = [...messages]
       .reverse()
       .find(item => Object.prototype.hasOwnProperty.call(item, 'artifactContextRef'));
-    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection && !targetRoutes && !artifactContextMessage && !skillConnectorGrants?.length) return content;
+    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection && !targetRoutes && !artifactContextMessage && !skillConnectorGrants?.length && currentUserApprovalInputs.length === 0) return content;
     return {
       content,
+      currentUserApprovalInputs,
       localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
       deviceGrants: deviceGrants.length > 0 ? deviceGrants : undefined,
       deviceSelection,

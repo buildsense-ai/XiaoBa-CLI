@@ -9,6 +9,7 @@ const agentSessionSource = readFileSync(join(process.cwd(), 'src/core/agent-sess
 const agentTurnSource = readFileSync(join(process.cwd(), 'src/core/agent-turn-controller.ts'), 'utf-8');
 const toolTypesSource = readFileSync(join(process.cwd(), 'src/types/tool.ts'), 'utf-8');
 const conversationRunnerSource = readFileSync(join(process.cwd(), 'src/core/conversation-runner.ts'), 'utf-8');
+const catsCompanySource = readFileSync(join(process.cwd(), 'src/catscompany/index.ts'), 'utf-8');
 
 test('AgentSession accepts executionScope in HandleMessageOptions', () => {
   assert.match(agentSessionSource, /executionScope\?:\s*ExecutionScope/);
@@ -49,6 +50,15 @@ test('AgentTurnController forwards the current user input and marks observation 
   assert.match(agentTurnSource, /currentUserInput:\s*options\.currentUserInput/);
   assert.match(conversationRunnerSource, /currentUserInput:\s*content/);
   assert.match(toolTypesSource, /currentUserInput\?:\s*string\s*\|\s*ContentBlock\[\]\s*\|\s*null/);
+  assert.match(agentSessionSource, /currentUserApprovalInputs\s*=\s*opts\.currentUserApprovalInputs/);
+  assert.match(agentTurnSource, /currentUserApprovalInputs:\s*params\.runtimeObservationSource\s*\?\s*null\s*:\s*params\.currentUserApprovalInputs/);
+  assert.match(agentTurnSource, /currentUserApprovalInputs:\s*options\.currentUserApprovalInputs/);
+  assert.match(conversationRunnerSource, /currentUserApprovalInputs:\s*pending\.currentUserApprovalInputs/);
+  assert.match(toolTypesSource, /currentUserApprovalInputs\?:\s*CurrentUserApprovalInput\[\]\s*\|\s*null/);
+  assert.match(catsCompanySource, /currentUserApprovalInputs:\s*\[currentUserApprovalInputFromCatsMessage\(msg\)\]/);
+  assert.match(catsCompanySource, /approvalInput:\s*currentUserApprovalInputFromCatsMessage\(msg\)/);
+  assert.match(catsCompanySource, /currentUserApprovalInputs:\s*msg\.approvalInput\s*\?\s*\[msg\.approvalInput\]\s*:\s*null/);
+  assert.match(catsCompanySource, /msg\.envelope\?\.identityTrust\s*===\s*'server_canonical'[\s\S]*?actor\?\.is_bot/);
 });
 
 test('ToolExecutionContext exposes executionScope for future ToolGateway checks', () => {

@@ -231,6 +231,12 @@ export type ToolExecutionConfirmationResult = boolean | {
   reason?: string;
 };
 
+export interface CurrentUserApprovalInput {
+  text: string;
+  /** Null means the platform did not provide a trustworthy speaker classification. */
+  isBot: boolean | null;
+}
+
 /**
  * 工具执行上下文
  */
@@ -242,6 +248,8 @@ export interface ToolExecutionContext {
   conversationHistory: any[];
   /** Trusted user input that opened the current top-level turn; never sourced from tool arguments. */
   currentUserInput?: string | ContentBlock[] | null;
+  /** Structured platform-authenticated messages eligible to authorize publication actions. */
+  currentUserApprovalInputs?: CurrentUserApprovalInput[] | null;
   sessionId?: string;
   surface?: ToolSurface;
   permissionProfile?: ToolPermissionProfile;
