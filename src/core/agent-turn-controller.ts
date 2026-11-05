@@ -658,7 +658,7 @@ export class AgentTurnController {
       return null;
     }
     const memoryBranchAiService = this.options.services.memoryBranch?.aiService ?? this.options.services.aiService;
-    if (!(memoryBranchAiService instanceof AIService) || !memoryBranchAiService.isToolCallingSupported()) {
+    if (typeof memoryBranchAiService?.isToolCallingSupported !== 'function' || !memoryBranchAiService.isToolCallingSupported()) {
       // Fail closed, visibly: assess_memory_need / finish_memory_search are
       // the branch's only tool surfaces, so a model without tool calling
       // must not start the branch. The warn names the modelSource so the
