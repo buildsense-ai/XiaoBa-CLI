@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
 import { ShareSkillHubSkillTool } from '../src/tools/share-skillhub-skill-tool';
+import { SYNTHETIC_USER_MESSAGE_FLAGS } from '../src/core/session-fork';
 
 function validationError(
   reportId: string,
@@ -175,10 +176,12 @@ test('missing description creates a paused draft and only publishes the exact co
   assert.equal(shareCalls, 1);
 
   history.length = 0;
-  history.push({ role: 'user', content: '确认发布' });
+  history.push({ role: 'user', content: '确认使用这个描述并发布' });
+  history.push({ role: 'user', content: 'A runtime observation arrived after the human approval.', __runtimeObservation: true });
   const mismatch = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: 'A different draft.' }, context);
   assert.equal(mismatch.ok, false);
+  assert.equal(mismatch.errorCode, 'DESCRIPTION_CONFIRMATION_MISMATCH');
   assert.equal(shareCalls, 1);
 
   const confirmed = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
@@ -188,6 +191,47 @@ test('missing description creates a paused draft and only publishes the exact co
   assert.match(uploadedCopy, /description: "从 SKILL\.md 的说明可知，该 Skill 用于样例任务。"/);
   assert.match(uploadedCopy, /# Original instructions/);
   assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
+});
+
+test('every canonical synthetic user flag is ignored when resolving an explicit description approval', async () => {
+  for (const flag of SYNTHETIC_USER_MESSAGE_FLAGS) {
+    const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+    let shareCalls = 0;
+    const tool = new ShareSkillHubSkillTool(() => ({
+      shareLocalSkill: async (_input, options) => {
+        shareCalls++;
+        if (shareCalls === 1) {
+          options?.onPackageCaptured?.(files);
+          throw validationError('11111111-1111-4111-8111-111111111111', {
+            code: 'metadata.description_missing',
+            repairPolicy: 'confirmation_required',
+            location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+          });
+        }
+        return { submission: { id: `submitted-${flag}` }, skill: { id: 'sample-skill', name: 'sample-skill' } };
+      },
+    }));
+    const history: any[] = [{ role: 'user', content: 'publish sample-skill' }];
+    const context: any = {
+      sessionId: `description-approval-${flag}`,
+      conversationHistory: history,
+      runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+    };
+    const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+    const reportId = '11111111-1111-4111-8111-111111111111';
+    assert.match(String(draft.content), new RegExp(reportId), `expected report ID for ${flag}`);
+
+    history.push({ role: 'user', content: '确认使用这个描述并发布' });
+    history.push({ role: 'user', content: 'internal observation', [flag]: true });
+    const published = await tool.execute({
+      confirmDescription: true,
+      descriptionReportId: reportId,
+      confirmedDescription: 'A sample Skill.',
+    }, context);
+
+    assert.equal(published.ok, true, `${flag} must not hide the human approval`);
+    assert.equal(shareCalls, 2, `${flag} must allow exactly one confirmed publish attempt`);
+  }
 });
 
 test('description draft remains visible through the normal result path without an outbound chat channel', async () => {

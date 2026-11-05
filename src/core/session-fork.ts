@@ -30,6 +30,7 @@ export const SYNTHETIC_USER_MESSAGE_FLAGS = [
   '__syntheticObservation',
   '__internalErrorArtifact',
   '__checkpointSummary',
+  '__checkpointBoundary',
 ] as const;
 
 export function isSyntheticUserMessage(message: Message): boolean {

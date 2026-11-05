@@ -5,6 +5,7 @@ import { SkillHubService } from '../skillhub/service';
 import { createDescriptionCandidate, createNameWhitespaceCandidate } from '../skillhub/publication-candidate';
 import { PathResolver } from '../utils/path-resolver';
 import { resolveOutboundTarget } from './outbound-gateway';
+import { isSyntheticUserMessage } from '../core/session-fork';
 import {
   startSkillPresentationGeneration,
   type SkillPresentationFile,
@@ -562,7 +563,7 @@ function hasExplicitVersionApproval(context: ToolExecutionContext, pending: Pend
 function latestUserMessageText(context: ToolExecutionContext): string {
   const message = [...(Array.isArray(context.conversationHistory) ? context.conversationHistory : [])]
     .reverse()
-    .find((item: any) => item?.role === 'user');
+    .find((item: any) => item?.role === 'user' && !isSyntheticUserMessage(item));
   const content = typeof message?.content === 'string'
     ? message.content
     : Array.isArray(message?.content)
