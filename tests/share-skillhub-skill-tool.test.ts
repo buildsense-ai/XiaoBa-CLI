@@ -157,12 +157,12 @@ test('missing description creates a paused draft and only publishes the exact co
   } as any;
 
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
-  const reportId = sentMessages[0].match(/report ([a-z-]+)/)?.[1] || '';
+  const reportId = 'description-report';
   assert.equal(draft.ok, true);
   assert.equal(draft.controlSignal, 'pause_turn');
   assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0], new RegExp(reportId));
   assert.match(sentMessages[0], /该 Skill 用于样例任务/);
-  assert.ok(reportId);
   assert.match(String(draft.content), new RegExp(reportId));
   assert.match(String(draft.content), /该 Skill 用于样例任务/);
   assert.equal(modelCalls, 1);
@@ -232,6 +232,47 @@ test('every canonical synthetic user flag is ignored when resolving an explicit 
     assert.equal(published.ok, true, `${flag} must not hide the human approval`);
     assert.equal(shareCalls, 2, `${flag} must allow exactly one confirmed publish attempt`);
   }
+});
+
+test('the exact confirmation phrase shown in the user prompt is accepted', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  let shareCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(files);
+        throw validationError('episode-input-report', {
+          code: 'metadata.description_missing',
+          repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      return { submission: { id: 'episode-input-submitted' }, skill: { id: 'sample-skill', name: 'sample-skill' } };
+    },
+  }));
+  const history: any[] = [{ role: 'user', content: 'publish sample-skill', __episodeInputKind: 'root' }];
+  const sentMessages: string[] = [];
+  const context: any = {
+    sessionId: 'description-episode-input',
+    conversationHistory: history,
+    channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  };
+  const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  assert.equal(draft.ok, true);
+  assert.match(sentMessages[0], /确认使用这条说明并发布/);
+
+  history.push({ role: 'user', content: '确认使用这条说明并发布', __episodeInputKind: 'root' });
+  history.push({ role: 'user', content: 'internal observation', __runtimeObservation: true });
+  const published = await tool.execute({
+    confirmDescription: true,
+    descriptionReportId: 'episode-input-report',
+    confirmedDescription: 'A sample Skill.',
+  }, context);
+
+  assert.equal(published.ok, true);
+  assert.equal(shareCalls, 2);
 });
 
 test('description draft remains visible through the normal result path without an outbound chat channel', async () => {
@@ -310,7 +351,8 @@ test('version confirmation is separate and retained after the description is app
     runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
   };
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
-  const reportId = String(draft.content).match(/report ([a-z-]+)/)?.[1] || '';
+  const reportId = 'description-version-report';
+  assert.match(String(draft.content), new RegExp(reportId));
   history.push({ role: 'user', content: '确认发布新版本' });
   const versionGate = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: 'A sample Skill.' }, context);
