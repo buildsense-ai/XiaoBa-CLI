@@ -112,7 +112,6 @@ export class ShareSkillHubSkillTool implements Tool {
     let presentationFiles: SkillPresentationFile[] | undefined;
     let service: ReturnType<ShareSkillHubSkillTool['createService']> | undefined;
 
-    let automaticRepairAttempted = false;
     try {
       service = this.createService();
       const result = await service.shareLocalSkill({
@@ -195,7 +194,6 @@ export class ShareSkillHubSkillTool implements Tool {
           validation,
         );
         if (repaired && 'ok' in repaired) {
-          automaticRepairAttempted = true;
           const submission = repaired.result?.submission || {};
           if (repaired.result?.requiresConfirmation) {
             return {
@@ -233,11 +231,11 @@ export class ShareSkillHubSkillTool implements Tool {
           };
         }
         if (repaired && 'error' in repaired) {
-          automaticRepairAttempted = true;
           publicationError = repaired.error;
+          if (repaired.files) presentationFiles = repaired.files;
         }
       }
-      if (!automaticRepairAttempted && publicationError?.validation && presentationFiles && service) {
+      if (publicationError?.validation && presentationFiles && service) {
         const draft = await this.createDescriptionDraft(
           context, skillName, localSkillPath, writeLocalMetadata, args, presentationFiles, publicationError.validation,
         );
@@ -447,7 +445,7 @@ export class ShareSkillHubSkillTool implements Tool {
     writeLocalMetadata: boolean,
     initialFiles: SkillPresentationFile[],
     initialReport: any,
-  ): Promise<{ ok: true; result: any; files: SkillPresentationFile[] } | { error: any } | undefined> {
+  ): Promise<{ ok: true; result: any; files: SkillPresentationFile[] } | { error: any; files?: SkillPresentationFile[] } | undefined> {
     let files = initialFiles.map(file => ({ ...file }));
     let report = initialReport;
     let attempts = 0;
@@ -475,10 +473,10 @@ export class ShareSkillHubSkillTool implements Tool {
           : [];
         if (!validation?.reportId || validation.coverage !== 'complete' || !blocking.length
           || !blocking.every((issue: any) => issue?.repairPolicy === 'automatic'
-            && issue?.code === 'metadata.name_whitespace')) return { error };
-        if (attempts >= MAX_AUTOMATIC_REPAIR_UPLOAD_ATTEMPTS) return { error };
+            && issue?.code === 'metadata.name_whitespace')) return { error, files: captured || candidate };
+        if (attempts >= MAX_AUTOMATIC_REPAIR_UPLOAD_ATTEMPTS) return { error, files: captured || candidate };
         const next = createNameWhitespaceCandidate(candidate, validation);
-        if (!next) return { error };
+        if (!next) return { error, files: captured || candidate };
         files = next;
         report = validation;
       }

@@ -60,6 +60,48 @@ test('automatic name repair retries with a private candidate and preserves comme
   assert.match(result.content, /local SKILL.md name and instructions were not rewritten/);
 });
 
+test('automatic name repair continues into a missing-description draft without changing the local Skill', async () => {
+  const originalText = '---\nname: " demo " # keep\n---\n# Original instructions\n';
+  const originalFiles = [{ path: 'SKILL.md', contentBase64: Buffer.from(originalText).toString('base64') }];
+  const originalContent = originalFiles[0].contentBase64;
+  let shareCalls = 0;
+  let modelCalls = 0;
+  const sentMessages: string[] = [];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      const candidate = (options as any)?.packageFiles || originalFiles;
+      options?.onPackageCaptured?.(candidate);
+      if (shareCalls === 1) throw validationError('report-whitespace');
+      assert.match(Buffer.from(candidate[0].contentBase64, 'base64').toString('utf8'), /name: "demo" # keep/);
+      throw validationError('report-description', {
+        code: 'metadata.description_missing',
+        repairPolicy: 'confirmation_required',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+      });
+    },
+  }));
+  const result = await tool.execute({ skillName: 'test-skill' }, {
+    sessionId: 'format-then-description',
+    conversationHistory: [{ role: 'user', content: '发布 test-skill' }],
+    channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
+    runtimeServices: { aiService: { chat: async () => {
+      modelCalls++;
+      return { content: '{"description":"这是一个用于整理示例文档的 Skill。"}' };
+    } } },
+  } as any);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.controlSignal, 'pause_turn');
+  assert.equal(shareCalls, 2);
+  assert.equal(modelCalls, 1);
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0], /report-description/);
+  assert.match(sentMessages[0], /这是一个用于整理示例文档的 Skill/);
+  assert.equal(originalFiles[0].contentBase64, originalContent);
+  assert.match(Buffer.from(originalFiles[0].contentBase64, 'base64').toString('utf8'), /name: " demo " # keep/);
+});
+
 test('partial validation reports are never used for automatic repair', async () => {
   let calls = 0;
   const tool = new ShareSkillHubSkillTool(() => ({
