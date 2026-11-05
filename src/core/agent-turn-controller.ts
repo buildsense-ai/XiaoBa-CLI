@@ -371,7 +371,7 @@ export class AgentTurnController {
         targetRoutes: params.targetRoutes,
         localFileGrants: params.localFileGrants,
         executionContext: turnContext.executionContext,
-        currentUserInput: params.runtimeObservationSource ? undefined : params.input,
+        currentUserInput: params.runtimeObservationSource ? null : params.input,
         pendingUserInputProvider: params.pendingUserInputProvider,
         confirmToolExecution: params.callbacks?.confirmToolExecution,
         episodeId,
@@ -553,7 +553,7 @@ export class AgentTurnController {
     groupRoster?: GroupRosterEntry[];
     localFileGrants?: ScopedLocalFileGrant[];
     executionContext?: import('./runtime-context-builder').ExecutionContextSnapshot;
-    currentUserInput?: string | ContentBlock[];
+    currentUserInput?: string | ContentBlock[] | null;
     pendingUserInputProvider?: PendingUserInputProvider;
     confirmToolExecution?: AgentTurnCallbacks['confirmToolExecution'];
     episodeId?: string;

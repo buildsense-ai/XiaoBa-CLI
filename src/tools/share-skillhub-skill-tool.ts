@@ -580,5 +580,5 @@ function messageContentText(content: unknown): string {
     : Array.isArray(content)
       ? content.filter((part: any) => part?.type === 'text').map((part: any) => part.text).join('\n')
       : '';
-  return String(text).trim();
+  return String(text).trim().replace(/^\[发言人: [^\]\r\n]+\]\r?\n/, '').trim();
 }

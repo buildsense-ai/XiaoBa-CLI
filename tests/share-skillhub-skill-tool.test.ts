@@ -275,7 +275,7 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   assert.equal(rejected.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
   assert.equal(shareCalls, 1);
 
-  context.currentUserInput = '我确认用这条说明发布';
+  context.currentUserInput = '[发言人: arrowhaken（人）]\n我确认用这条说明发布';
   history.push({ role: 'user', content: '我确认用这条说明发布', __episodeInputKind: 'root' });
   history.push({ role: 'user', content: 'internal observation', __runtimeObservation: true });
   const published = await tool.execute({
@@ -286,6 +286,40 @@ test('prompted confirmation and the user natural phrasing are accepted without a
 
   assert.equal(published.ok, true);
   assert.equal(shareCalls, 2);
+});
+
+test('runtime observation input cannot reuse an approval from conversation history', async () => {
+  let shareCalls = 0;
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(files);
+        throw validationError('observation-report', {
+          code: 'metadata.description_missing', repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      return { submission: { id: 'must-not-publish' }, skill: { id: 'sample-skill', name: 'sample-skill' } };
+    },
+  }));
+  const context: any = {
+    sessionId: 'description-observation-input',
+    currentUserInput: 'publish sample-skill',
+    conversationHistory: [{ role: 'user', content: 'publish sample-skill' }],
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  };
+  const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  assert.equal(draft.ok, true);
+  context.conversationHistory.push({ role: 'user', content: '确认使用这条说明并发布' });
+  context.currentUserInput = null;
+  const result = await tool.execute({ confirmDescription: true,
+    descriptionReportId: 'observation-report', confirmedDescription: 'A sample Skill.' }, context);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
+  assert.equal(shareCalls, 1);
 });
 
 test('description draft remains visible through the normal result path without an outbound chat channel', async () => {

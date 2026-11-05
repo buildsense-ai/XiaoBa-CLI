@@ -8,6 +8,7 @@ import type { Message } from '../src/types';
 const agentSessionSource = readFileSync(join(process.cwd(), 'src/core/agent-session.ts'), 'utf-8');
 const agentTurnSource = readFileSync(join(process.cwd(), 'src/core/agent-turn-controller.ts'), 'utf-8');
 const toolTypesSource = readFileSync(join(process.cwd(), 'src/types/tool.ts'), 'utf-8');
+const conversationRunnerSource = readFileSync(join(process.cwd(), 'src/core/conversation-runner.ts'), 'utf-8');
 
 test('AgentSession accepts executionScope in HandleMessageOptions', () => {
   assert.match(agentSessionSource, /executionScope\?:\s*ExecutionScope/);
@@ -41,6 +42,13 @@ test('AgentTurnController forwards executionScope into ToolExecutionContext', ()
   assert.match(agentTurnSource, /artifactContextRef:\s*options\.artifactContextRef/);
   assert.match(agentTurnSource, /artifactTaskRef:\s*params\.artifactTaskRef/);
   assert.match(agentTurnSource, /artifactTaskRef:\s*options\.artifactTaskRef/);
+});
+
+test('AgentTurnController forwards the current user input and marks observation turns as absent', () => {
+  assert.match(agentTurnSource, /currentUserInput:\s*params\.runtimeObservationSource\s*\?\s*null\s*:\s*params\.input/);
+  assert.match(agentTurnSource, /currentUserInput:\s*options\.currentUserInput/);
+  assert.match(conversationRunnerSource, /currentUserInput:\s*content/);
+  assert.match(toolTypesSource, /currentUserInput\?:\s*string\s*\|\s*ContentBlock\[\]\s*\|\s*null/);
 });
 
 test('ToolExecutionContext exposes executionScope for future ToolGateway checks', () => {

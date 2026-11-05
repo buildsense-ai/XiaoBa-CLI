@@ -241,7 +241,7 @@ export interface ToolExecutionContext {
   workspaceRoot?: string;
   conversationHistory: any[];
   /** Trusted user input that opened the current top-level turn; never sourced from tool arguments. */
-  currentUserInput?: string | import('./index').ContentBlock[];
+  currentUserInput?: string | ContentBlock[] | null;
   sessionId?: string;
   surface?: ToolSurface;
   permissionProfile?: ToolPermissionProfile;
