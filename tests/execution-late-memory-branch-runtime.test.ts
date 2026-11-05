@@ -83,6 +83,9 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
       constructor(config: any, private handler: (messages: Message[], tools?: ToolDefinition[], options?: any) => Promise<ChatResponse>) {
         super(config);
       }
+      override isToolCallingSupported(): boolean {
+        return true;
+      }
       override chatStream(messages: Message[], tools?: ToolDefinition[], _callbacks?: any, options?: any): Promise<ChatResponse> {
         return this.handler(messages, tools, options);
       }
