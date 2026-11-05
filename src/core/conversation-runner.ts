@@ -940,6 +940,10 @@ export class ConversationRunner {
     if (this.toolExecutionContext?.abortSignal?.aborted) return false;
 
     const content = isPendingUserInput(pending) ? pending.content : pending;
+    this.toolExecutionContext = {
+      ...(this.toolExecutionContext || {}),
+      currentUserInput: content,
+    };
     let shouldRefreshRuntimeContext = false;
     if (isPendingUserInput(pending) && Object.prototype.hasOwnProperty.call(pending, 'artifactContextRef')) {
       this.toolExecutionContext = {

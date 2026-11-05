@@ -256,6 +256,7 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   const context: any = {
     sessionId: 'description-episode-input',
     conversationHistory: history,
+    currentUserInput: 'publish sample-skill',
     channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
     runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
   };
@@ -263,7 +264,8 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   assert.equal(draft.ok, true);
   assert.match(sentMessages[0], /确认使用这条说明并发布/);
 
-  history.push({ role: 'user', content: '先不要发布', __episodeInputKind: 'root' });
+  history.push({ role: 'user', content: '确认使用这条说明并发布', __episodeInputKind: 'root' });
+  context.currentUserInput = '先不要发布';
   const rejected = await tool.execute({
     confirmDescription: true,
     descriptionReportId: 'episode-input-report',
@@ -273,6 +275,7 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   assert.equal(rejected.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
   assert.equal(shareCalls, 1);
 
+  context.currentUserInput = '我确认用这条说明发布';
   history.push({ role: 'user', content: '我确认用这条说明发布', __episodeInputKind: 'root' });
   history.push({ role: 'user', content: 'internal observation', __runtimeObservation: true });
   const published = await tool.execute({

@@ -240,6 +240,8 @@ export interface ToolExecutionContext {
   /** Stable default/root directory for tools that must not follow session directory changes. */
   workspaceRoot?: string;
   conversationHistory: any[];
+  /** Trusted user input that opened the current top-level turn; never sourced from tool arguments. */
+  currentUserInput?: string | import('./index').ContentBlock[];
   sessionId?: string;
   surface?: ToolSurface;
   permissionProfile?: ToolPermissionProfile;

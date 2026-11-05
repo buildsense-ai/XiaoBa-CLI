@@ -567,13 +567,18 @@ function hasExplicitVersionApproval(context: ToolExecutionContext, pending: Pend
 }
 
 function latestUserMessageText(context: ToolExecutionContext): string {
+  if (context.currentUserInput !== undefined) return messageContentText(context.currentUserInput);
   const message = [...(Array.isArray(context.conversationHistory) ? context.conversationHistory : [])]
     .reverse()
     .find((item: any) => item?.role === 'user' && !isSyntheticUserMessage(item));
-  const content = typeof message?.content === 'string'
-    ? message.content
-    : Array.isArray(message?.content)
-      ? message.content.filter((part: any) => part?.type === 'text').map((part: any) => part.text).join('\n')
+  return messageContentText(message?.content);
+}
+
+function messageContentText(content: unknown): string {
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.filter((part: any) => part?.type === 'text').map((part: any) => part.text).join('\n')
       : '';
-  return String(content).trim();
+  return String(text).trim();
 }
