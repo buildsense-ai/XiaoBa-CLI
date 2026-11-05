@@ -22,7 +22,11 @@ import {
 import { listInstalledSkillHubSkills } from './install-marker';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
-import { isConfirmedDescriptionCandidate, isNameWhitespaceOnlyChange } from './publication-candidate';
+import {
+  isConfirmedDescriptionCandidate,
+  isNameWhitespaceAndConfirmedDescriptionCandidate,
+  isNameWhitespaceOnlyChange,
+} from './publication-candidate';
 import type {
   SkillHubAuthState,
   SkillHubInstallResult,
@@ -440,7 +444,8 @@ function applyLocalPublicationCandidate(
     if (file.path !== 'SKILL.md' && file.contentBase64 !== originalContent) return reject();
     if (file.path === 'SKILL.md' && file.contentBase64 !== originalContent
       && !isNameWhitespaceOnlyCandidate(originalContent, file.contentBase64)
-      && !(confirmedDescription && isConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription))) return reject();
+      && !(confirmedDescription && (isConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription)
+        || isNameWhitespaceAndConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription)))) return reject();
   }
   if (!seen.has('SKILL.md')) return reject();
   return candidate.map(file => ({ path: file.path, contentBase64: file.contentBase64 }));

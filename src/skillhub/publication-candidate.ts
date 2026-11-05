@@ -136,6 +136,26 @@ export function isConfirmedDescriptionCandidate(
   }
 }
 
+export function isNameWhitespaceAndConfirmedDescriptionCandidate(
+  beforeBase64: string,
+  afterBase64: string,
+  description: string,
+): boolean {
+  const original = [{ path: 'SKILL.md', contentBase64: beforeBase64 }];
+  const normalized = createNameWhitespaceCandidate(original, {
+    coverage: 'complete',
+    issues: [{ code: 'metadata.name_whitespace', category: 'format', blocking: true, repairPolicy: 'automatic',
+      location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' } }],
+  });
+  if (!normalized) return false;
+  const combined = createDescriptionCandidate(normalized, {
+    coverage: 'complete',
+    issues: [{ code: 'metadata.description_missing', category: 'format', blocking: true, repairPolicy: 'confirmation_required',
+      location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' } }],
+  }, description);
+  return Boolean(combined && combined[0].contentBase64 === afterBase64);
+}
+
 export function isNameWhitespaceOnlyChange(beforeText: string, afterText: string): boolean {
   try {
     const before = matter(beforeText);
