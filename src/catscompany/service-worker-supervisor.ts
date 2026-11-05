@@ -25,6 +25,22 @@ export const SERVICE_WORKER_API_PREFIX = '/api/service-worker';
 export const SERVICE_RUN_RESULT_CONTRACT = 'catsco.service-run-result.v1';
 
 const DEFAULT_POLL_MS = 2000;
+
+/**
+ * 空闲退避：连续没活时把「领任务」的轮询拉长。
+ *
+ * 为什么：worker 空闲时也是每 2 秒问一次平台。线上实测 25 台 worker 时
+ * `/api/service-worker/claim` 稳定 742 次/分钟（≈12 req/s），全是空转；
+ * 客户端数量线性放大后（1000 台 ≈ 500 req/s）就是纯浪费，还占着 DB 连接。
+ *
+ * 阶梯：0~30s 用 pollIntervalMs（2s，刚干完活保持灵敏）→ 30s 后 5s → 3min 后 10s。
+ * 一旦领到活立刻回到 0 延迟，跑完继续按 2s 观察一小会儿（连点场景该多快还多快）。
+ * 心跳不走这条路，所以「在线状态」的时效不受影响（仍是 instanceHeartbeatMs）。
+ */
+const DEFAULT_IDLE_AFTER_MS = 30_000;
+const DEFAULT_IDLE_MAX_AFTER_MS = 3 * 60_000;
+const DEFAULT_IDLE_POLL_MS = 5_000;
+const DEFAULT_IDLE_POLL_MAX_MS = 10_000;
 const DEFAULT_INSTANCE_HEARTBEAT_MS = 20000;
 const DEFAULT_RUN_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_ERROR_BACKOFF_MS = 5000;
@@ -77,6 +93,14 @@ export interface ServiceWorkerSupervisorOptions {
   /** 兜底命令（应用自己没声明 runner.command 时用）。 */
   fallbackCommand?: string;
   pollIntervalMs?: number;
+  /**
+   * 空闲退避（默认：连续空闲 30s 后 5s 一探、3min 后 10s 一探；测试可缩短）。
+   * 领到活立刻回到 pollIntervalMs，心跳频率不受影响。
+   */
+  idleAfterMs?: number;
+  idleMaxAfterMs?: number;
+  idlePollIntervalMs?: number;
+  idlePollMaxIntervalMs?: number;
   instanceHeartbeatMs?: number;
   runTimeoutMs?: number;
   /**
@@ -287,6 +311,11 @@ export function createServiceWorkerSupervisor(
   const instanceId = (options.instanceId ?? defaultServiceWorkerInstanceId()).slice(0, 64);
   const agentSlugs = (options.agentSlugs ?? []).map((slug) => String(slug).trim()).filter(Boolean);
   const pollIntervalMs = Math.max(200, options.pollIntervalMs ?? DEFAULT_POLL_MS);
+  // 空闲退避参数（见 DEFAULT_IDLE_*）：下限不低于 pollIntervalMs，避免阶梯反而更勤。
+  const idleAfterMs = Math.max(1, options.idleAfterMs ?? DEFAULT_IDLE_AFTER_MS);
+  const idleMaxAfterMs = Math.max(idleAfterMs, options.idleMaxAfterMs ?? DEFAULT_IDLE_MAX_AFTER_MS);
+  const idlePollMs = Math.max(pollIntervalMs, options.idlePollIntervalMs ?? DEFAULT_IDLE_POLL_MS);
+  const idlePollMaxMs = Math.max(idlePollMs, options.idlePollMaxIntervalMs ?? DEFAULT_IDLE_POLL_MAX_MS);
   const instanceHeartbeatMs = Math.max(1000, options.instanceHeartbeatMs ?? DEFAULT_INSTANCE_HEARTBEAT_MS);
   const runTimeoutMs = Math.max(1000, options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
   const doFetch = options.fetchImpl ?? fetch;
@@ -297,6 +326,8 @@ export function createServiceWorkerSupervisor(
   // 账号态被拒后的安静期（见 DEFAULT_AUTH_BLOCKED_BACKOFF_MS）：0 = 没被拒过。
   let authBlockedUntil = 0;
   let authBlockedCount = 0;
+  // 最近一次「真的领到活」或「刚跟平台换过券」的时刻：空闲退避从这里开始计。
+  let lastActiveAt = Date.now();
   let running = false;
   // stopped 只在显式 stop() 之后为 true：runOnce() 是「手动跑一轮」，不需要先 start()。
   const authBackoffStartMs = Math.max(1, options.authBlockedBackoffMs ?? DEFAULT_AUTH_BLOCKED_BACKOFF_MS);
@@ -380,9 +411,11 @@ export function createServiceWorkerSupervisor(
     const expiresAt = Date.parse(String(payload?.expires_at ?? ''));
     const lifetime = Number.isFinite(expiresAt) ? expiresAt - Date.now() : 0;
     const refreshIn = lifetime > 0 ? lifetime * TICKET_REFRESH_RATIO : 5 * 60 * 1000;
-    // 拿到券 = 账号态恢复：把退避计数清零，下次被拒重新从 30s 开始。
+    // 拿到券 = 账号态恢复：退避清零（下次被拒重新从 30s 开始），
+    // 空闲计时也归零 —— 刚跟平台通过话，接下来该按 pollIntervalMs 灵敏地看几轮。
     authBlockedCount = 0;
     authBlockedUntil = 0;
+    lastActiveAt = Date.now();
     ticket = { token, refreshAt: Date.now() + Math.max(30_000, refreshIn) };
     return token;
   };
@@ -544,6 +577,17 @@ export function createServiceWorkerSupervisor(
     return executed;
   };
 
+  /**
+   * 这一轮空转决定下一次隔多久再问：连续空闲越久越钝，领到活立刻恢复灵敏。
+   * 阶梯只在这里定义一次，调度与测试都看它。
+   */
+  const nextIdleDelay = (): number => {
+    const idle = Date.now() - lastActiveAt;
+    if (idle >= idleMaxAfterMs) return idlePollMaxMs;
+    if (idle >= idleAfterMs) return idlePollMs;
+    return pollIntervalMs;
+  };
+
   const scheduleNext = (delay: number) => {
     if (!running || stopped) return;
     loopTimer = setTimeout(() => { void tick(); }, delay);
@@ -560,7 +604,14 @@ export function createServiceWorkerSupervisor(
         scheduleNext(resumeIn);
         return;
       }
-      scheduleNext(executed > 0 ? 0 : pollIntervalMs);
+      if (executed > 0) {
+        // 有活：立刻回到「马上再看一次」（一次可能领到多单，回头可能还有），
+        // 同时把空闲计时清零，接下来的轮询保持 pollIntervalMs 的灵敏度。
+        lastActiveAt = Date.now();
+        scheduleNext(0);
+        return;
+      }
+      scheduleNext(nextIdleDelay());
     } catch (error: any) {
       logger.warning(`CatsCo 内嵌 worker：认领失败 ${error?.message ?? error}`);
       scheduleNext(DEFAULT_ERROR_BACKOFF_MS);
@@ -571,6 +622,8 @@ export function createServiceWorkerSupervisor(
     start() {
       if (running) return;
       running = true;
+      // 重新启动就是一次「刚上线」：别继承上一次停止前的空闲窗口，先按 pollIntervalMs 探。
+      lastActiveAt = Date.now();
       stopped = false;
       logger.info(`CatsCo 内嵌 worker 启动 instance=${instanceId}`);
       void sendInstanceHeartbeat(0);
