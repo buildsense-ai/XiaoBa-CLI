@@ -28,6 +28,17 @@ const DEFAULT_POLL_MS = 2000;
 const DEFAULT_INSTANCE_HEARTBEAT_MS = 20000;
 const DEFAULT_RUN_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_ERROR_BACKOFF_MS = 5000;
+
+/**
+ * 账号态被拒（401/403）后的退避：起点 30 秒，逐次翻倍，封顶 5 分钟。
+ *
+ * 为什么要退避：平台回 403 是「这个账号现在没资格接单」，不是「这一轮没活儿」。
+ * 以前把两者当成同一件事，worker 每 2 秒重试一次 —— 2026-11-05 线上该接口累计
+ * 36.6 万次 403（几乎全部来自这种重试），把接口和自己的日志都淹了。
+ * 退避之后：一次拒绝换来 30s→60s→…→5min 的安静，登录态恢复后下一次尝试自动接上。
+ */
+const DEFAULT_AUTH_BLOCKED_BACKOFF_MS = 30_000;
+const MAX_AUTH_BLOCKED_BACKOFF_MS = 5 * 60_000;
 /** 券在「有效期的一半」时刻续期：既不过于频繁，也不会卡在边界上。 */
 const TICKET_REFRESH_RATIO = 0.5;
 
@@ -68,6 +79,12 @@ export interface ServiceWorkerSupervisorOptions {
   pollIntervalMs?: number;
   instanceHeartbeatMs?: number;
   runTimeoutMs?: number;
+  /**
+   * 账号态被拒（401/403）后的退避起点与上限（默认 30s / 5min，测试可缩短）。
+   * 被拒是「账号没资格」，不是「这一轮没活儿」，不该按 pollIntervalMs 反复问。
+   */
+  authBlockedBackoffMs?: number;
+  authBlockedMaxBackoffMs?: number;
   /** 注入 fetch（测试用）。 */
   fetchImpl?: typeof fetch;
   /** 注入命令执行器（测试用）。 */
@@ -277,8 +294,16 @@ export function createServiceWorkerSupervisor(
   const logger = options.logger ?? Logger;
 
   let ticket: TicketState | null = null;
+  // 账号态被拒后的安静期（见 DEFAULT_AUTH_BLOCKED_BACKOFF_MS）：0 = 没被拒过。
+  let authBlockedUntil = 0;
+  let authBlockedCount = 0;
   let running = false;
   // stopped 只在显式 stop() 之后为 true：runOnce() 是「手动跑一轮」，不需要先 start()。
+  const authBackoffStartMs = Math.max(1, options.authBlockedBackoffMs ?? DEFAULT_AUTH_BLOCKED_BACKOFF_MS);
+  const authBackoffMaxMs = Math.max(
+    authBackoffStartMs,
+    options.authBlockedMaxBackoffMs ?? MAX_AUTH_BLOCKED_BACKOFF_MS,
+  );
   let stopped = false;
   let loopTimer: ReturnType<typeof setTimeout> | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -323,17 +348,29 @@ export function createServiceWorkerSupervisor(
 
   /**
    * 拿一张可用券：没有或快过期就用账号态换一张。
-   * 账号态失效（401/403）时返回 null —— 停止认领，等用户重新登录。
+   *
+   * 账号态被拒（401/403）时返回 null —— 停止认领，等用户重新登录；
+   * 同时进入退避安静期，免得每 2 秒问一次平台（见 DEFAULT_AUTH_BLOCKED_BACKOFF_MS）。
    */
   const ensureTicket = async (auth: ServiceWorkerAuthState): Promise<string | null> => {
     if (ticket && Date.now() < ticket.refreshAt) return ticket.token;
+    // 安静期内不再问平台：reject 是账号态问题，问得再勤也不会变好。
+    if (Date.now() < authBlockedUntil) return null;
     let payload: any;
     try {
       payload = await postJson(auth, auth.token, '/session', {});
     } catch (error: any) {
       if (error?.status === 401 || error?.status === 403) {
-        logger.warning('CatsCo 内嵌 worker：账号态不可用，暂停认领（重新登录后自动恢复）');
+        authBlockedCount += 1;
+        const delay = Math.min(
+          authBackoffMaxMs,
+          authBackoffStartMs * 2 ** (authBlockedCount - 1),
+        );
+        authBlockedUntil = Date.now() + delay;
         ticket = null;
+        logger.warning(
+          `CatsCo 内嵌 worker：账号态不可用，暂停认领 ${Math.round(delay / 1000)}s（重新登录后自动恢复）`,
+        );
         return null;
       }
       throw error;
@@ -343,6 +380,9 @@ export function createServiceWorkerSupervisor(
     const expiresAt = Date.parse(String(payload?.expires_at ?? ''));
     const lifetime = Number.isFinite(expiresAt) ? expiresAt - Date.now() : 0;
     const refreshIn = lifetime > 0 ? lifetime * TICKET_REFRESH_RATIO : 5 * 60 * 1000;
+    // 拿到券 = 账号态恢复：把退避计数清零，下次被拒重新从 30s 开始。
+    authBlockedCount = 0;
+    authBlockedUntil = 0;
     ticket = { token, refreshAt: Date.now() + Math.max(30_000, refreshIn) };
     return token;
   };
@@ -514,6 +554,12 @@ export function createServiceWorkerSupervisor(
     if (!running || stopped) return;
     try {
       const executed = await runOnce();
+      // 账号态被拒：按退避的安静期再醒，别每 pollIntervalMs 去问一次平台。
+      const resumeIn = authBlockedUntil - Date.now();
+      if (resumeIn > 0) {
+        scheduleNext(resumeIn);
+        return;
+      }
       scheduleNext(executed > 0 ? 0 : pollIntervalMs);
     } catch (error: any) {
       logger.warning(`CatsCo 内嵌 worker：认领失败 ${error?.message ?? error}`);

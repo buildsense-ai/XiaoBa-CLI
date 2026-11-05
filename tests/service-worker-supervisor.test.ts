@@ -119,12 +119,17 @@ test('没登录时不发任何请求（用户没登录就不该打扰平台）',
   supervisor.stop();
 });
 
-test('账号态失效（401）时停止认领而不是反复刷接口', async () => {
+test('账号态失效（401）后退避：安静期内不重复换券，也不去 claim', async () => {
   let sessionCalls = 0;
+  let claimCalls = 0;
   const { fetchImpl } = createFakeServer({
     '/session': () => {
       sessionCalls += 1;
       return { status: 401, body: { error: 'invalid or expired token' } };
+    },
+    '/claim': () => {
+      claimCalls += 1;
+      return { body: { runs: [] } };
     },
   });
   const supervisor = createServiceWorkerSupervisor({
@@ -135,8 +140,34 @@ test('账号态失效（401）时停止认领而不是反复刷接口', async ()
   });
   assert.equal(await supervisor.runOnce(), 0);
   assert.equal(await supervisor.runOnce(), 0);
-  // 每轮都尝试换券（用户重新登录后自然恢复），但不会去调 claim。
-  assert.equal(sessionCalls, 2);
+  // 被拒是账号态问题：安静期内（默认 30s）不再问平台，也不该去 claim。
+  assert.equal(sessionCalls, 1);
+  assert.equal(claimCalls, 0);
+  supervisor.stop();
+});
+
+test('退避期过后自动重试，登录态恢复就继续认领（不需要重启 worker）', async () => {
+  let sessionCalls = 0;
+  const { fetchImpl } = createFakeServer({
+    '/session': () => {
+      sessionCalls += 1;
+      if (sessionCalls === 1) return { status: 403, body: { error: 'forbidden' } };
+      return { body: { token: 'ticket-2', expires_at: new Date(Date.now() + 3600_000).toISOString() } };
+    },
+    '/claim': () => ({ body: { runs: [] } }),
+  });
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w2',
+    fetchImpl,
+    logger: silentLogger,
+    authBlockedBackoffMs: 20,
+  });
+  assert.equal(await supervisor.runOnce(), 0);
+  assert.equal(sessionCalls, 1);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(await supervisor.runOnce(), 0);
+  assert.equal(sessionCalls, 2, '退避结束后应重新换券');
   supervisor.stop();
 });
 
@@ -545,4 +576,31 @@ test('真实超时：整条命令的进程树被杀掉，不留孤儿继续跑',
   if (survived) fs.rmSync(marker, { force: true });
   assert.equal(survived, false, 'the command process tree must be killed, not left running');
   supervisor.stop();
+});
+
+// 2026-11-05 线上：`POST /api/service-worker/session` 累计 36.6 万次 403。
+// 原因不是平台被打，而是客户端把「账号态被拒」当成「这一轮没活儿」，
+// 每 2 秒再问一次。这里锁住「被拒之后要退避」。
+test('账号态被拒（403）后退避：不再按轮询间隔反复打 /session', async () => {
+  const { fetchImpl, requests } = createFakeServer({
+    '/session': () => ({ status: 403, body: { error: 'forbidden' } }),
+  });
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w-backoff',
+    fetchImpl,
+    logger: silentLogger,
+    pollIntervalMs: 20,
+    instanceHeartbeatMs: 1000,
+  });
+
+  supervisor.start();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  supervisor.stop();
+
+  const sessionCalls = requests.filter((request) => request.path.endsWith('/session')).length;
+  assert.ok(
+    sessionCalls <= 2,
+    `403 之后应该进入退避安静期，实际在 200ms 内打了 ${sessionCalls} 次 /session`,
+  );
 });
