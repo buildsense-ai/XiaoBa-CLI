@@ -118,8 +118,11 @@ export function isConfirmedDescriptionCandidate(
   description: string,
 ): boolean {
   try {
-    const beforeText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(beforeBase64, 'base64'));
-    const afterText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(afterBase64, 'base64'));
+    const beforeBytes = Buffer.from(beforeBase64, 'base64');
+    const afterBytes = Buffer.from(afterBase64, 'base64');
+    if (beforeBytes.toString('base64') !== beforeBase64 || afterBytes.toString('base64') !== afterBase64) return false;
+    const beforeText = new TextDecoder('utf-8', { fatal: true }).decode(beforeBytes);
+    const afterText = new TextDecoder('utf-8', { fatal: true }).decode(afterBytes);
     const expected = createDescriptionCandidate([
       { path: 'SKILL.md', contentBase64: beforeBase64 },
     ], {
@@ -127,8 +130,7 @@ export function isConfirmedDescriptionCandidate(
       issues: [{ code: 'metadata.description_missing', category: 'format', blocking: true, repairPolicy: 'confirmation_required',
         location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' } }],
     }, description);
-    return Boolean(expected && Buffer.from(expected[0].contentBase64, 'base64').toString('utf8') === afterText
-      && Buffer.from(beforeBase64, 'base64').toString('utf8') === beforeText);
+    return Boolean(expected && Buffer.from(expected[0].contentBase64, 'base64').toString('utf8') === afterText);
   } catch {
     return false;
   }

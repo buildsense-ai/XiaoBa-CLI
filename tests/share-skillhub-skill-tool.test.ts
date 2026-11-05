@@ -143,32 +143,36 @@ test('missing description creates a paused draft and only publishes the exact co
     },
   }));
   const history: any[] = [{ role: 'user', content: '发布 sample-skill' }];
+  const sentMessages: string[] = [];
   const context = {
     conversationHistory: history,
     sessionId: 'description-confirmation-session',
+    channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
     runtimeServices: { aiService: { chat: async (_messages: unknown, _tools: unknown, options: any) => {
       modelCalls++;
       assert.deepEqual(options.providerRequestBudget, { maxRequests: 1, usedRequests: 0 });
-      return { content: '{"description":"从 SKILL.md 的说明可知，该 Skill 用于样例任务。"}' };
+      return { content: '```json\n{"description":"从 SKILL.md 的说明可知，该 Skill 用于样例任务。"}\n```' };
     } } },
   } as any;
 
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
   assert.equal(draft.ok, true);
   assert.equal(draft.controlSignal, 'pause_turn');
-  assert.match(String(draft.content), /该 Skill 用于样例任务/);
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0], /该 Skill 用于样例任务/);
   assert.equal(modelCalls, 1);
   assert.equal(shareCalls, 1);
   assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
 
-  const reportId = String(draft.content).match(/report ([a-z-]+)/)?.[1] || '';
+  const reportId = sentMessages[0].match(/report ([a-z-]+)/)?.[1] || '';
   const noApproval = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: '从 SKILL.md 的说明可知，该 Skill 用于样例任务。' }, context);
   assert.equal(noApproval.ok, false);
   assert.equal(noApproval.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
   assert.equal(shareCalls, 1);
 
-  history.push({ role: 'user', content: '确认使用这个描述并发布。' });
+  history.length = 0;
+  history.push({ role: 'user', content: '确认发布' });
   const mismatch = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: 'A different draft.' }, context);
   assert.equal(mismatch.ok, false);
@@ -181,6 +185,71 @@ test('missing description creates a paused draft and only publishes the exact co
   assert.match(uploadedCopy, /description: "从 SKILL\.md 的说明可知，该 Skill 用于样例任务。"/);
   assert.match(uploadedCopy, /# Original instructions/);
   assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
+});
+
+test('description draft remains visible through the normal result path without an outbound chat channel', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      options?.onPackageCaptured?.(files);
+      throw validationError('description-report-cli', {
+        code: 'metadata.description_missing',
+        repairPolicy: 'confirmation_required',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+      });
+    },
+  }));
+  const result = await tool.execute({ skillName: 'sample-skill' }, {
+    sessionId: 'description-cli-session',
+    conversationHistory: [{ role: 'user', content: 'publish sample-skill' }],
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  } as any);
+  assert.equal(result.ok, true);
+  assert.equal(result.controlSignal, undefined);
+  assert.match(String(result.content), /A sample Skill/);
+});
+
+test('version confirmation is separate and retained after the description is approved', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  let shareCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(files);
+        throw validationError('description-version-report', {
+          code: 'metadata.description_missing',
+          repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      if (!(options as any)?.confirmedDescription) throw new Error('description candidate missing');
+      if (shareCalls === 2) return { requiresConfirmation: true, latestVersion: '1.2.0' };
+      assert.equal((_input as any).confirmPublish, true);
+      return { submission: { id: 'published-v2' }, skill: { id: 'sample-skill', name: 'sample-skill' } };
+    },
+  }));
+  const history: any[] = [{ role: 'user', content: 'Publish sample-skill' }];
+  const context: any = {
+    sessionId: 'description-version-session',
+    conversationHistory: history,
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  };
+  const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  const reportId = String(draft.content).match(/report ([a-z-]+)/)?.[1] || '';
+  history.push({ role: 'user', content: 'I approve this description.' });
+  const versionGate = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
+    confirmedDescription: 'A sample Skill.' }, context);
+  assert.equal(versionGate.ok, true);
+  assert.match(String(versionGate.content), /new patch version/i);
+  assert.equal(shareCalls, 2);
+
+  history.push({ role: 'user', content: 'I approve publishing the new version.' });
+  const published = await tool.execute({ confirmDescription: true, confirmPublish: true,
+    descriptionReportId: reportId, confirmedDescription: 'A sample Skill.' }, context);
+  assert.equal(published.ok, true);
+  assert.match(String(published.content), /published-v2/);
+  assert.equal(shareCalls, 3);
 });
 
 test('description confirmation cannot be replayed or used from another session', async () => {

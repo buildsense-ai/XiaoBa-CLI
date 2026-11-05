@@ -24,7 +24,9 @@ interface PendingDescriptionConfirmation {
   files: SkillPresentationFile[];
   validation: any;
   description: string;
-  conversationHistoryLength: number;
+  initialUserMessage: string;
+  descriptionApproved?: boolean;
+  awaitingVersionConfirmation?: boolean;
   expiresAt: number;
 }
 
@@ -234,7 +236,7 @@ export class ShareSkillHubSkillTool implements Tool {
       }
       if (!automaticRepairAttempted && publicationError?.validation && presentationFiles && service) {
         const draft = await this.createDescriptionDraft(
-          context, service, skillName, localSkillPath, writeLocalMetadata, args, presentationFiles, publicationError.validation,
+          context, skillName, localSkillPath, writeLocalMetadata, args, presentationFiles, publicationError.validation,
         );
         if (draft) return draft;
       }
@@ -251,7 +253,6 @@ export class ShareSkillHubSkillTool implements Tool {
 
   private async createDescriptionDraft(
     context: ToolExecutionContext,
-    service: ReturnType<ShareSkillHubSkillTool['createService']>,
     skillName: string,
     localSkillPath: string,
     writeLocalMetadata: boolean,
@@ -309,7 +310,7 @@ export class ShareSkillHubSkillTool implements Tool {
       sessionId, reportId, skillName, localSkillPath, writeLocalMetadata,
       notes: String(args?.notes || ''), files: files.map(file => ({ ...file })),
       validation: structuredClone(validation), description,
-      conversationHistoryLength: Array.isArray(context.conversationHistory) ? context.conversationHistory.length : 0,
+      initialUserMessage: latestUserMessageText(context),
       expiresAt: now + DESCRIPTION_CONFIRMATION_TTL_MS,
     };
     this.pendingDescriptions.set(this.descriptionKey(sessionId, reportId), pending);
@@ -318,7 +319,11 @@ export class ShareSkillHubSkillTool implements Tool {
       `Suggested description:\n${description}`,
       'This draft has not been written or published. Reply with explicit approval of this exact text to continue; otherwise request a revision.',
     ].join('\n\n');
-    return { ok: true, content: prompt, newMessages: [{ role: 'assistant', content: prompt }], controlSignal: 'pause_turn' };
+    if (context.channel?.reply) {
+      await context.channel.reply(context.channel.chatId, prompt);
+      return { ok: true, content: 'Description draft sent for user confirmation.', controlSignal: 'pause_turn' };
+    }
+    return { ok: true, content: prompt };
   }
 
   private async confirmDescription(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
@@ -335,8 +340,11 @@ export class ShareSkillHubSkillTool implements Tool {
     if (description !== pending.description) {
       return { ok: false, errorCode: 'DESCRIPTION_CONFIRMATION_MISMATCH', message: 'The approved text must exactly match the description draft shown to the user. No files were changed or uploaded.' };
     }
-    if (!hasExplicitDescriptionApproval(context, pending)) {
+    if (!pending.descriptionApproved && !hasExplicitDescriptionApproval(context, pending)) {
       return { ok: false, errorCode: 'DESCRIPTION_USER_APPROVAL_REQUIRED', message: 'A newer explicit user approval is required before publishing this draft. No files were changed or uploaded.' };
+    }
+    if (pending.awaitingVersionConfirmation && (args?.confirmPublish !== true || !hasExplicitVersionApproval(context, pending))) {
+      return { ok: false, errorCode: 'DESCRIPTION_VERSION_CONFIRMATION_REQUIRED', message: 'A newer explicit approval to publish a new patch version is required.' };
     }
     const candidate = createDescriptionCandidate(pending.files, pending.validation, pending.description);
     if (!candidate) {
@@ -349,13 +357,29 @@ export class ShareSkillHubSkillTool implements Tool {
     try {
       const service = this.createService();
       let captured: SkillPresentationFile[] | undefined;
-      const result = await service.shareLocalSkill({ skillName: pending.skillName, notes: pending.notes }, {
+      const result = await service.shareLocalSkill({
+        skillName: pending.skillName,
+        notes: pending.notes,
+        confirmPublish: pending.awaitingVersionConfirmation && args?.confirmPublish === true,
+      }, {
         writeLocalMetadata: pending.writeLocalMetadata,
         ...(pending.localSkillPath ? { localSkillPath: pending.localSkillPath } : {}),
         packageFiles: candidate,
         confirmedDescription: pending.description,
         onPackageCaptured: current => { captured = current; },
       });
+      if (result?.requiresConfirmation) {
+        this.pendingDescriptions.set(key, {
+          ...pending,
+          descriptionApproved: true,
+          awaitingVersionConfirmation: true,
+          initialUserMessage: latestUserMessageText(context),
+        });
+        return {
+          ok: true,
+          content: 'The description draft was approved, but SkillHub requires separate confirmation to publish a new patch version. No package was published. Ask the user to explicitly approve the version bump, then retry with confirmDescription=true and confirmPublish=true.',
+        };
+      }
       const submission = result?.submission || {};
       const presentationQueued = this.queuePresentationGeneration(context, service, result?.skill?.id, result?.latestVersion, captured || candidate);
       return {
@@ -483,7 +507,9 @@ function packageSummary(files: SkillPresentationFile[] | undefined): string {
 }
 
 function parseDescriptionDraft(raw: string): string {
-  const value = JSON.parse(raw.trim());
+  const text = raw.trim();
+  const fenced = text.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i);
+  const value = JSON.parse(fenced ? fenced[1].trim() : text);
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).some(key => key !== 'description')
     || typeof value.description !== 'string') throw new Error('Invalid description draft.');
@@ -503,17 +529,25 @@ function invalidConfirmationArguments(): ToolExecutionResult {
 }
 
 function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
-  const history = context.conversationHistory;
-  if (!Array.isArray(history) || history.length <= pending.conversationHistoryLength) return false;
-  return history.slice(pending.conversationHistoryLength).some((message: any) => {
-    if (message?.role !== 'user') return false;
-    const content = typeof message.content === 'string'
-      ? message.content
-      : Array.isArray(message.content)
-        ? message.content.filter((part: any) => part?.type === 'text').map((part: any) => part.text).join('\n')
-        : '';
-    const text = String(content).trim();
-    return /^(?:我)?(?:确认|同意|批准|接受)(?:使用|采用)?(?:这个|该)?(?:描述|草稿)?(?:并(?:发布|上传|继续))?[。！! ]*$/u.test(text)
-      || /^(?:用|采用)这个(?:描述|草稿)?(?:并(?:发布|上传|继续))?[。！! ]*$/u.test(text);
-  });
+  const text = latestUserMessageText(context);
+  if (!text || text === pending.initialUserMessage) return false;
+  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|采用)?(?:这个|该)?(?:描述|草稿)?(?:(?:并)?(?:发布|上传|继续))?|(?:用|采用)这个(?:描述|草稿)?(?:(?:并)?(?:发布|上传|继续))?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
+}
+
+function hasExplicitVersionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
+  const text = latestUserMessageText(context);
+  if (!text || text === pending.initialUserMessage) return false;
+  return /^(?:(?:我)?(?:确认|同意|批准|接受)(?:发布|升级|创建)?(?:这个|该)?(?:新)?(?:版本|补丁版本)?|(?:发布|升级|创建)(?:这个|该)?(?:新的?|补丁)?(?:版本|补丁版本)|(?:yes|y|ok(?:ay)?|approved?|i\s+approve\s+(?:(?:publishing|to\s+publish)\s+(?:(?:a|the)\s+)?(?:new\s+)?version|the\s+new\s+version)|publish\s+the\s+new\s+version))\s*[。！!,. ]*$/iu.test(text);
+}
+
+function latestUserMessageText(context: ToolExecutionContext): string {
+  const message = [...(Array.isArray(context.conversationHistory) ? context.conversationHistory : [])]
+    .reverse()
+    .find((item: any) => item?.role === 'user');
+  const content = typeof message?.content === 'string'
+    ? message.content
+    : Array.isArray(message?.content)
+      ? message.content.filter((part: any) => part?.type === 'text').map((part: any) => part.text).join('\n')
+      : '';
+  return String(content).trim();
 }
