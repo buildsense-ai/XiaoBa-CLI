@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import test from 'node:test';
 import type { Message, ChatResponse, ToolDefinition } from '../src/types';
 
+const require = createRequire(__filename);
 const isolatedDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'execution-late-branch-data-'));
 const previousDataRoot = process.env.XIAOBA_USER_DATA_DIR;
 process.env.XIAOBA_USER_DATA_DIR = isolatedDataRoot;
@@ -23,7 +25,7 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-function waitFor<T>(label: string, promise: Promise<T>, ms = 120000): Promise<T> {
+function waitFor<T>(label: string, promise: Promise<T>, ms = 30000): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label} after ${ms}ms`)), ms);
     promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
@@ -68,14 +70,16 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
   let originalRuntimeEvent: any;
   let abortController: AbortController | undefined;
   let running: Promise<any> | undefined;
+  let synthetic: any;
+  let loggerModule: any;
 
   try {
-    const [agent, synthetic, context, ai, loggerModule, turnLoggerModule, fixture] = await Promise.all([
+    synthetic = require('../src/core/synthetic-observation');
+    loggerModule = require('../src/utils/logger');
+    const [agent, context, ai, turnLoggerModule, fixture] = await Promise.all([
       import('../src/core/agent-turn-controller'),
-      import('../src/core/synthetic-observation'),
       import('../src/core/turn-context-builder'),
       import('../src/utils/ai-service'),
-      import('../src/utils/logger'),
       import('../src/utils/session-turn-logger'),
       import('./helpers/catslog-projection-reference-fixture'),
     ]);
@@ -207,8 +211,8 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
       abortController?.abort();
       if (running) await Promise.race([running.then(() => undefined, () => undefined), new Promise(resolve => setTimeout(resolve, 1000))]);
     }
-    if (originalPush) (await import('../src/core/synthetic-observation')).InMemorySyntheticObservationQueue.prototype.push = originalPush;
-    if (originalRuntimeEvent) (await import('../src/utils/logger')).Logger.runtimeEvent = originalRuntimeEvent;
+    if (originalPush) synthetic.InMemorySyntheticObservationQueue.prototype.push = originalPush;
+    if (originalRuntimeEvent) loggerModule.Logger.runtimeEvent = originalRuntimeEvent;
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
