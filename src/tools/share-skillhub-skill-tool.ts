@@ -580,5 +580,23 @@ function messageContentText(content: unknown): string {
     : Array.isArray(content)
       ? content.filter((part: any) => part?.type === 'text').map((part: any) => part.text).join('\n')
       : '';
-  return String(text).trim().replace(/^\[发言人: [^\]\r\n]+\]\r?\n/, '').trim();
+  const normalized = String(text).trim();
+  const lines = normalized.split(/\r?\n/);
+  let sawSpeaker = false;
+  let speakerIsHuman = false;
+  let speakerContent: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^\[发言人: (.*)\]$/);
+    if (match) {
+      sawSpeaker = true;
+      speakerIsHuman = /（人）$/.test(match[1]);
+      speakerContent = [];
+    } else if (sawSpeaker) {
+      speakerContent.push(line);
+    }
+  }
+
+  if (!sawSpeaker) return normalized;
+  return speakerIsHuman ? speakerContent.join('\n').trim() : '';
 }
