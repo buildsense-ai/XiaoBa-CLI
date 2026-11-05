@@ -17,6 +17,7 @@ function validationError(
       coverage: options.coverage ?? 'complete',
       issues: [{
         code: options.code ?? 'metadata.name_whitespace',
+        category: 'format',
         blocking: true,
         repairPolicy: options.repairPolicy ?? 'automatic',
         location: options.location ?? { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' },
@@ -116,6 +117,184 @@ test('manual or confirmation-required issues do not trigger an automatic retry',
   assert.match(result.message, /report-manual/);
   assert.match(result.message, /metadata.description_missing/);
   assert.match(result.message, /confirmation_required/);
+});
+
+test('missing description creates a paused draft and only publishes the exact confirmed upload copy', async () => {
+  const originalText = '---\nname: sample-skill\n---\n# Original instructions\n';
+  const originalFiles = [{ path: 'SKILL.md', contentBase64: Buffer.from(originalText).toString('base64') }];
+  let shareCalls = 0;
+  let uploadedCopy = '';
+  let modelCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(originalFiles);
+        throw validationError('description-report', {
+          code: 'metadata.description_missing',
+          repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      const files = (options as any)?.packageFiles;
+      uploadedCopy = Buffer.from(files[0].contentBase64, 'base64').toString('utf8');
+      options?.onPackageCaptured?.(files);
+      return { submission: { id: 'description-submission' }, skill: { name: 'sample-skill', id: 'sample-skill' } };
+    },
+  }));
+  const history: any[] = [{ role: 'user', content: '发布 sample-skill' }];
+  const sentMessages: string[] = [];
+  const context = {
+    conversationHistory: history,
+    sessionId: 'description-confirmation-session',
+    channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
+    runtimeServices: { aiService: { chat: async (_messages: unknown, _tools: unknown, options: any) => {
+      modelCalls++;
+      assert.deepEqual(options.providerRequestBudget, { maxRequests: 1, usedRequests: 0 });
+      return { content: '```json\n{"description":"从 SKILL.md 的说明可知，该 Skill 用于样例任务。"}\n```' };
+    } } },
+  } as any;
+
+  const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  const reportId = sentMessages[0].match(/report ([a-z-]+)/)?.[1] || '';
+  assert.equal(draft.ok, true);
+  assert.equal(draft.controlSignal, 'pause_turn');
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0], /该 Skill 用于样例任务/);
+  assert.ok(reportId);
+  assert.match(String(draft.content), new RegExp(reportId));
+  assert.match(String(draft.content), /该 Skill 用于样例任务/);
+  assert.equal(modelCalls, 1);
+  assert.equal(shareCalls, 1);
+  assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
+
+  const noApproval = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
+    confirmedDescription: '从 SKILL.md 的说明可知，该 Skill 用于样例任务。' }, context);
+  assert.equal(noApproval.ok, false);
+  assert.equal(noApproval.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
+  assert.equal(shareCalls, 1);
+
+  history.length = 0;
+  history.push({ role: 'user', content: '确认发布' });
+  const mismatch = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
+    confirmedDescription: 'A different draft.' }, context);
+  assert.equal(mismatch.ok, false);
+  assert.equal(shareCalls, 1);
+
+  const confirmed = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
+    confirmedDescription: '从 SKILL.md 的说明可知，该 Skill 用于样例任务。' }, context);
+  assert.equal(confirmed.ok, true);
+  assert.equal(shareCalls, 2);
+  assert.match(uploadedCopy, /description: "从 SKILL\.md 的说明可知，该 Skill 用于样例任务。"/);
+  assert.match(uploadedCopy, /# Original instructions/);
+  assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
+});
+
+test('description draft remains visible through the normal result path without an outbound chat channel', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      options?.onPackageCaptured?.(files);
+      throw validationError('description-report-cli', {
+        code: 'metadata.description_missing',
+        repairPolicy: 'confirmation_required',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+      });
+    },
+  }));
+  const result = await tool.execute({ skillName: 'sample-skill' }, {
+    sessionId: 'description-cli-session',
+    conversationHistory: [{ role: 'user', content: 'publish sample-skill' }],
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  } as any);
+  assert.equal(result.ok, true);
+  assert.equal(result.controlSignal, undefined);
+  assert.match(String(result.content), /A sample Skill/);
+});
+
+test('outbound description draft respects execution scope and falls back to the normal response when scope mismatches', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  let sendCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      options?.onPackageCaptured?.(files);
+      throw validationError('description-scope-report', {
+        code: 'metadata.description_missing',
+        repairPolicy: 'confirmation_required',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+      });
+    },
+  }));
+  const result = await tool.execute({ skillName: 'sample-skill' }, {
+    sessionId: 'description-scope-session',
+    surface: 'catscompany',
+    executionScope: { topicId: 'authorized-topic', sessionKey: 'description-scope-session' },
+    channel: { chatId: 'different-topic', reply: async () => { sendCalls++; } },
+    conversationHistory: [{ role: 'user', content: 'publish sample-skill' }],
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  } as any);
+  assert.equal(sendCalls, 0);
+  assert.equal(result.controlSignal, undefined);
+  assert.match(String(result.content), /description-scope-report/);
+  assert.match(String(result.content), /A sample Skill/);
+});
+
+test('version confirmation is separate and retained after the description is approved', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  let shareCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(files);
+        throw validationError('description-version-report', {
+          code: 'metadata.description_missing',
+          repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      if (!(options as any)?.confirmedDescription) throw new Error('description candidate missing');
+      if (shareCalls === 2) return { requiresConfirmation: true, latestVersion: '1.2.0' };
+      assert.equal((_input as any).confirmPublish, true);
+      return { submission: { id: 'published-v2' }, skill: { id: 'sample-skill', name: 'sample-skill' } };
+    },
+  }));
+  const history: any[] = [{ role: 'user', content: 'Publish sample-skill' }];
+  const context: any = {
+    sessionId: 'description-version-session',
+    conversationHistory: history,
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  };
+  const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  const reportId = String(draft.content).match(/report ([a-z-]+)/)?.[1] || '';
+  history.push({ role: 'user', content: '确认发布新版本' });
+  const versionGate = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
+    confirmedDescription: 'A sample Skill.' }, context);
+  assert.equal(versionGate.ok, true);
+  assert.match(String(versionGate.content), /new patch version/i);
+  assert.equal(shareCalls, 2);
+
+  history.push({ role: 'user', content: '确认' });
+  const weakVersionApproval = await tool.execute({ confirmDescription: true, confirmPublish: true,
+    descriptionReportId: reportId, confirmedDescription: 'A sample Skill.' }, context);
+  assert.equal(weakVersionApproval.ok, false);
+  assert.equal(weakVersionApproval.errorCode, 'DESCRIPTION_VERSION_CONFIRMATION_REQUIRED');
+  assert.equal(shareCalls, 2);
+
+  history.push({ role: 'user', content: '确认发布新版本' });
+  const published = await tool.execute({ confirmDescription: true, confirmPublish: true,
+    descriptionReportId: reportId, confirmedDescription: 'A sample Skill.' }, context);
+  assert.equal(published.ok, true);
+  assert.match(String(published.content), /published-v2/);
+  assert.equal(shareCalls, 3);
+});
+
+test('description confirmation cannot be replayed or used from another session', async () => {
+  const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async () => { throw new Error('must not publish'); } }));
+  const result = await tool.execute({ confirmDescription: true, descriptionReportId: 'unknown-report',
+    confirmedDescription: 'A description.' }, { sessionId: 'other-session' } as any);
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'DESCRIPTION_CONFIRMATION_EXPIRED');
 });
 
 test('an imprecise automatic issue location does not create a candidate', async () => {
