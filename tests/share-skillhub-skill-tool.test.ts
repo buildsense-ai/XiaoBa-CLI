@@ -277,6 +277,32 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   assert.equal(rejected.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
   assert.equal(shareCalls, 1);
 
+  context.currentUserApprovalInputs = [
+    { text: '确认使用这条说明并发布', isBot: false },
+    { text: '先不要发布', isBot: false },
+  ];
+  const approvalWithdrawn = await tool.execute({
+    confirmDescription: true,
+    descriptionReportId: 'episode-input-report',
+    confirmedDescription: 'A sample Skill.',
+  }, context);
+  assert.equal(approvalWithdrawn.ok, false);
+  assert.equal(approvalWithdrawn.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
+  assert.equal(shareCalls, 1);
+
+  context.currentUserApprovalInputs = [
+    { text: '确认使用这条说明并发布', isBot: false },
+    { text: '这个说明合适吗？', isBot: false },
+  ];
+  const followUpQuestion = await tool.execute({
+    confirmDescription: true,
+    descriptionReportId: 'episode-input-report',
+    confirmedDescription: 'A sample Skill.',
+  }, context);
+  assert.equal(followUpQuestion.ok, false);
+  assert.equal(followUpQuestion.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
+  assert.equal(shareCalls, 1);
+
   context.currentUserInput = [
     '在你处理上一轮时，又有 2 条消息到达。',
     '请把它们与当前任务一并考虑；如果前后要求冲突，以最后一条为准。',
@@ -505,6 +531,16 @@ test('version confirmation is separate and retained after the description is app
     descriptionReportId: reportId, confirmedDescription: 'A sample Skill.' }, context);
   assert.equal(weakVersionApproval.ok, false);
   assert.equal(weakVersionApproval.errorCode, 'DESCRIPTION_VERSION_CONFIRMATION_REQUIRED');
+  assert.equal(shareCalls, 2);
+
+  context.currentUserApprovalInputs = [
+    { text: '确认发布新版本', isBot: false },
+    { text: '这个版本需要再检查一下吗？', isBot: false },
+  ];
+  const versionQuestion = await tool.execute({ confirmDescription: true, confirmPublish: true,
+    descriptionReportId: reportId, confirmedDescription: 'A sample Skill.' }, context);
+  assert.equal(versionQuestion.ok, false);
+  assert.equal(versionQuestion.errorCode, 'DESCRIPTION_VERSION_CONFIRMATION_REQUIRED');
   assert.equal(shareCalls, 2);
 
   history.push({ role: 'user', content: '[发言人: arrowhaken（人）]\n确认发布新版本' });

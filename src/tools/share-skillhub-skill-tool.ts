@@ -553,18 +553,17 @@ function invalidConfirmationArguments(): ToolExecutionResult {
 }
 
 function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
-  return latestUserMessageTexts(context).some(text => Boolean(text)
-    && text !== pending.initialUserMessage
-    && /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text));
+  const text = latestUserMessageText(context);
+  if (!text || text === pending.initialUserMessage) return false;
+  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
 }
 
 function hasExplicitVersionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
-  return latestUserMessageTexts(context).some(text => {
-    if (!text || text === pending.initialUserMessage) return false;
-    const hasVersion = /(?:版本号?|patch\s+version|new\s+version|version\s+bump)/iu.test(text);
-    const isApproval = /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受|授权)(?:发布|升级|创建)?|(?:发布|升级|创建)|(?:yes|y|ok(?:ay)?|approved?|i\s+approve\s+(?:(?:publishing|to\s+publish)\s+(?:(?:a|the)\s+)?(?:new\s+)?version|the\s+new\s+version)|publish\s+the\s+new\s+version))(?:这个|该)?(?:新|补丁)?(?:版本号?|patch\s+version|new\s+version|version\s+bump)?\s*[。！!,. ]*$/iu.test(text);
-    return hasVersion && isApproval;
-  });
+  const text = latestUserMessageText(context);
+  if (!text || text === pending.initialUserMessage) return false;
+  const hasVersion = /(?:版本号?|patch\s+version|new\s+version|version\s+bump)/iu.test(text);
+  const isApproval = /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受|授权)(?:发布|升级|创建)?|(?:发布|升级|创建)|(?:yes|y|ok(?:ay)?|approved?|i\s+approve\s+(?:(?:publishing|to\s+publish)\s+(?:(?:a|the)\s+)?(?:new\s+)?version|the\s+new\s+version)|publish\s+the\s+new\s+version))(?:这个|该)?(?:新|补丁)?(?:版本号?|patch\s+version|new\s+version|version\s+bump)?\s*[。！!,. ]*$/iu.test(text);
+  return hasVersion && isApproval;
 }
 
 function latestUserMessageText(context: ToolExecutionContext): string {
