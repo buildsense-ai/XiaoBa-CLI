@@ -1,3 +1,5 @@
+import { buildExecutionGraphCallEvent, ensureExecutionNodeRefs, type ExecutionGraphOrigin } from './execution-graph-metadata';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { DeviceGrantLease, DEVICE_GRANT_HEARTBEAT_MS } from './device-grant-lease';
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
@@ -128,6 +130,12 @@ export interface RunnerCallbacks {
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   /** 工具执行完成 */
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
+  /** Actual executor result, before transcript projection. */
+  onToolExecutionResult?: (result: ToolResult, precedingMessages: readonly Message[], origin: ExecutionGraphOrigin) => void;
+  /** Exact input submitted to the primary model after trimming/compaction. */
+  onModelInput?: (messages: readonly Message[]) => void;
+  /** Additive, content-free execution graph event for a successful model response. */
+  onExecutionGraphEvent?: (event: Record<string, any>, submittedMessages: readonly Message[]) => void;
   /** 需要显示工具输出（如 task_planner） */
   onToolDisplay?: (name: string, content: string) => void;
   /** 重试通知 */
@@ -420,6 +428,7 @@ export class ConversationRunner {
       };
     }
     this.removeLegacyArtifactObservations(messages);
+    ensureExecutionNodeRefs(messages, this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner', this.episodeId);
     const allTools = this.toolExecutor.getToolDefinitions();
     const supportsToolCalling = (this.aiService as any).isToolCallingSupported?.() !== false;
     const activeTools = supportsToolCalling ? allTools : [];
@@ -514,6 +523,7 @@ export class ConversationRunner {
         ...nextTurnTransientHints,
         ...orchestrationHints,
       ];
+      ensureExecutionNodeRefs(messages, this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner', this.episodeId);
       let requestMessages = this.buildProviderInputMessages(messages, providerTransientHints, {
         includeCurrentDirectoryHint: transientPolicy.injectEnvironment,
         currentDirectory,
@@ -581,8 +591,14 @@ export class ConversationRunner {
       Logger.info(`[${this.sessionLabel}Turn ${turns}] 调用AI推理 (可用工具: ${requestTools.length}个)`);
 
       let response: ChatResponse;
+      let submittedRequestMessages: Message[] = [];
+      let submittedRequestTools: ToolDefinition[] = [];
       try {
-        response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
+        this.runObservation(() => callbacks?.onModelInput?.(structuredClone(requestMessages)));
+        response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks, (submittedMessages, submittedTools) => {
+          submittedRequestMessages = submittedMessages;
+          submittedRequestTools = submittedTools;
+        });
       } catch (error: any) {
         this.runObservation(() => this.promptTraceLogger.recordError(turns, error));
         if (this.isMessageSurface() && isModelImageSafetyError(error)) {
@@ -627,6 +643,22 @@ export class ConversationRunner {
       // Never turn a late response into another tool execution or final reply.
       this.toolExecutionContext?.abortSignal?.throwIfAborted();
       const aiDuration = Date.now() - aiStartTime;
+      const executionSessionId = this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner';
+      const executionModelCallId = randomUUID();
+      const executionOrigin: ExecutionGraphOrigin = {
+        session_id: executionSessionId,
+        episode_id: this.episodeId ?? '',
+        model_call_id: executionModelCallId,
+      };
+      const executionEvent = buildExecutionGraphCallEvent(submittedRequestMessages, response, {
+        sessionId: executionSessionId,
+        episodeId: this.episodeId,
+        modelCallId: executionModelCallId,
+        attempt: turns,
+        outputMessageRef: `session:${executionSessionId}:episode:${this.episodeId ?? 'unknown'}:model-call:${executionModelCallId}:output:${response.toolCalls?.length ?? 0}`,
+        tools: submittedRequestTools,
+      });
+      this.runObservation(() => callbacks?.onExecutionGraphEvent?.(executionEvent, submittedRequestMessages));
       this.runObservation(() => this.promptTraceLogger.recordResponse(turns, response, aiDuration));
       Logger.info(`[${this.sessionLabel}Turn ${turns}] AI推理完成，耗时: ${aiDuration}ms`);
 
@@ -640,8 +672,8 @@ export class ConversationRunner {
             this.checkpointCompactionCoordinator,
             response.usage.promptTokens,
             messages,
-            requestMessages,
-            estimateToolsTokens(requestTools),
+            submittedRequestMessages,
+            estimateToolsTokens(submittedRequestTools),
           );
         }
       }
@@ -706,6 +738,7 @@ export class ConversationRunner {
             // Private provider replay stays separate from user-visible content.
             providerContent: response.providerContent,
             providerState: response.providerState,
+            __executionNodeRef: `session:${this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner'}:episode:${this.episodeId ?? 'unknown'}:output:${turns}:0`,
             ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
           };
           messages.push(finalAssistantMessage);
@@ -780,6 +813,10 @@ export class ConversationRunner {
         tool_calls: response.toolCalls,
         providerContent: response.providerContent,
         providerState: response.providerState,
+        ...(response.content ? { __executionNodeRef: `session:${executionSessionId}:episode:${this.episodeId ?? 'unknown'}:model-call:${executionModelCallId}:output:${response.toolCalls?.length ?? 0}` } : {}),
+        __executionSourceSessionId: this.episodeId ? executionSessionId : undefined,
+        __executionSourceEpisodeId: this.episodeId,
+        __executionSourceModelCallId: this.episodeId ? executionModelCallId : undefined,
       };
       const executionRecords: ToolExecutionRecord[] = [];
       let shouldPauseTurn = false;
@@ -791,6 +828,7 @@ export class ConversationRunner {
           turns,
           callbacks,
           toolDefinitions,
+          executionOrigin,
         });
 
       if (this.parallelToolExecution && response.toolCalls.length > 1) {
@@ -1063,6 +1101,8 @@ export class ConversationRunner {
     if (!result.compacted) return false;
     this.toolExecutionContext?.abortSignal?.throwIfAborted();
 
+    const checkpointMessage = result.messages.find(message => message.__checkpointSummary && message.__checkpointId);
+    if (checkpointMessage && this.onCompactionCheckpoint) checkpointMessage.__checkpointPersisted = true;
     try {
       await this.onCompactionCheckpoint?.(result.messages);
     } catch (error) {
@@ -1078,6 +1118,32 @@ export class ConversationRunner {
       throw new CheckpointPersistenceError(error);
     }
 
+    if (checkpointMessage && this.onCompactionCheckpoint) {
+      Logger.runtimeEvent('INFO', `[${this.sessionLabel}Turn ${turns}] continuation checkpoint persisted`, {
+        type: 'execution_graph_checkpoint',
+        payload: {
+          contract_version: 'execution-graph/1',
+          identity_contract: 'execution-identity/1',
+          type: 'checkpoint_persisted',
+          event_id: `${checkpointMessage.__checkpointId}:persisted`,
+          session_id: this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner',
+          episode_id: this.episodeId ?? null,
+          checkpoint_id: checkpointMessage.__checkpointId,
+          version: checkpointMessage.__checkpointVersion,
+          summary_sha256: checkpointMessage.__checkpointSummarySHA256,
+          covered_node_refs: checkpointMessage.__checkpointCoveredNodeRefs ?? [],
+          covered_node_origins: checkpointMessage.__checkpointCoveredNodeOrigins ?? [],
+          covered_node_refs_complete: checkpointMessage.__checkpointCoveredRefsComplete === true,
+          covered_unknown_ref_count: checkpointMessage.__checkpointUnknownRefCount ?? 0,
+          coverage_complete: checkpointMessage.__checkpointCoverageComplete === true,
+          coverage_reason: checkpointMessage.__checkpointCoverageReason ?? null,
+          previous_checkpoint_id: checkpointMessage.__checkpointPreviousId ?? null,
+          previous_last_message_ref: checkpointMessage.__checkpointPreviousLastMessageRef ?? null,
+          previous_frontier_ref: checkpointMessage.__checkpointPreviousFrontierRef ?? [],
+          persistence_state: 'persisted_before_next_model_call',
+        },
+      });
+    }
     messages.splice(0, messages.length, ...result.messages);
     this.refreshRuntimeContextForPendingInput(messages);
     try {
@@ -1205,6 +1271,10 @@ export class ConversationRunner {
       ...(providerContent?.length
         ? { providerContent, providerState: assistantMsg.providerState }
         : {}),
+      ...(assistantMsg.__executionNodeRef ? { __executionNodeRef: assistantMsg.__executionNodeRef } : {}),
+      __executionSourceSessionId: assistantMsg.__executionSourceSessionId,
+      __executionSourceEpisodeId: assistantMsg.__executionSourceEpisodeId,
+      __executionSourceModelCallId: assistantMsg.__executionSourceModelCallId,
       ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
     };
 
@@ -1241,6 +1311,9 @@ export class ConversationRunner {
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
           ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
+          __executionSourceSessionId: assistantMsg.__executionSourceSessionId,
+          __executionSourceEpisodeId: assistantMsg.__executionSourceEpisodeId,
+          __executionSourceModelCallId: assistantMsg.__executionSourceModelCallId,
         });
       } else {
         // 正常的 tool result
@@ -1250,6 +1323,9 @@ export class ConversationRunner {
           tool_call_id: record.result.tool_call_id,
           name: record.result.name,
           ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
+          __executionSourceSessionId: assistantMsg.__executionSourceSessionId,
+          __executionSourceEpisodeId: assistantMsg.__executionSourceEpisodeId,
+          __executionSourceModelCallId: assistantMsg.__executionSourceModelCallId,
         });
 
         // 插入额外消息（如图片）
@@ -1723,6 +1799,7 @@ export class ConversationRunner {
     activeTools: ToolDefinition[],
     episodeNumber: number,
     callbacks?: RunnerCallbacks,
+    onDispatch?: (messages: Message[], tools: ToolDefinition[]) => void,
   ) {
     const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
@@ -1743,15 +1820,22 @@ export class ConversationRunner {
       },
       streamOutputMode: callbacks?.onText ? 'live' as const : 'buffered' as const,
     };
+    const prepareDispatch = () => {
+      const dispatchedMessages = structuredClone(messages);
+      const dispatchedTools = structuredClone(activeTools);
+      onDispatch?.(structuredClone(dispatchedMessages), structuredClone(dispatchedTools));
+      return { messages: dispatchedMessages, tools: dispatchedTools };
+    };
     try {
+      const dispatched = prepareDispatch();
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
           ...(callbacks?.onText ? { onText: callbacks.onText } : {}),
         };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
+        return await this.aiService.chatStream(dispatched.messages, dispatched.tools, streamCallbacks, requestOptions);
       }
-      return await this.aiService.chat(messages, activeTools, requestOptions);
+      return await this.aiService.chat(dispatched.messages, dispatched.tools, requestOptions);
     } catch (error: any) {
       if (!this.isPromptTooLongError(error)) {
         throw error;
@@ -1769,14 +1853,15 @@ export class ConversationRunner {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
       }
 
+      const dispatched = prepareDispatch();
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
           onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
           ...(callbacks?.onText ? { onText: callbacks.onText } : {}),
         };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
+        return await this.aiService.chatStream(dispatched.messages, dispatched.tools, streamCallbacks, requestOptions);
       }
-      return await this.aiService.chat(messages, activeTools, requestOptions);
+      return await this.aiService.chat(dispatched.messages, dispatched.tools, requestOptions);
     }
   }
 
@@ -2062,8 +2147,9 @@ export class ConversationRunner {
     turns: number;
     callbacks?: RunnerCallbacks;
     toolDefinitions: Map<string, ToolDefinition>;
+    executionOrigin: ExecutionGraphOrigin;
   }): Promise<ToolExecutionOutcome> {
-    const { toolCall, messages, turns, callbacks, toolDefinitions } = args;
+    const { toolCall, messages, turns, callbacks, toolDefinitions, executionOrigin } = args;
     const toolName = toolCall.function.name;
     const toolUseId = toolCall.id;
     // Parsing errors must reach the tool executor's recoverable argument handler.
@@ -2081,6 +2167,7 @@ export class ConversationRunner {
     this.metrics.recordToolCall(toolName, toolDuration);
     this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
     Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
+    this.runObservation(() => callbacks?.onToolExecutionResult?.(result, messages, executionOrigin));
     callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
 
     const deliveredOutbound = (
