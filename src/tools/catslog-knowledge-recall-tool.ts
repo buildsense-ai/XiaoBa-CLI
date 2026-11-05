@@ -9,7 +9,7 @@ import type {
   CatsLogKnowledgeSearchQuery,
 } from '../utils/catslog-knowledge-types';
 
-import { canonicalRecallJSON, recallTextHash, dailyKnowledgeRef, hashedRecallRef, nativeRecallAttribution, type NativeRecallSource } from '../core/native-recall-attribution';
+import { canonicalRecallJSON, recallTextHash, dailyKnowledgeRef, sourceRecallRef, hashedRecallRef, nativeRecallAttribution, type NativeRecallSource } from '../core/native-recall-attribution';
 import { validateKnowledgeSourceQuery } from '../utils/catsco-log-agent-client';
 import type { CatsLogKnowledgeSourceQuery, CatsLogKnowledgeSourceContent } from '../utils/catslog-knowledge-types';
 export const CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME = 'catslog_knowledge_recall';
@@ -124,7 +124,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
           properties: {
             kind: {
               type: 'string',
-              enum: ['session_query', 'session_result', 'graph_node', 'learning_node', 'knowledge_entry', 'skill_program', 'skill_node'],
+              enum: ['session_query', 'session_result', 'graph_node', 'learning_node', 'knowledge_entry', 'source_memory_projection_node', 'skill_program', 'skill_node'],
             },
             id: { type: 'string' },
             document_id: { type: 'string', description: 'knowledge_entry 锚点必填；其他 kind 禁止。' },
@@ -134,6 +134,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
             stream_id: { type: 'string' },
             byte_offset: { type: 'number' },
             byte_length: { type: 'number' },
+            source_projection_ref: { type: 'string', description: 'source_memory_projection_node 的精确 ref_ projection pin。' },
             skill_version_id: { type: 'string', description: 'skill_program/skill_node 必填；program 的 id 等于该版本 ID。' },
           },
           description: 'expand/read_source 必填。typed anchor；read_source 的 knowledge_entry 必须 document_id+revision，其他来源必须 session_id；raw 还需 stream_id 与精确 byte_offset。',
@@ -393,10 +394,11 @@ export class CatsLogKnowledgeRecallTool implements Tool {
         if (item.status !== 'read') return item;
         const ref = item.anchor.kind === 'knowledge_entry'
           ? dailyKnowledgeRef(item.anchor.document_id!, item.anchor.revision!, item.anchor.id)
-          : hashedRecallRef('source', [item.anchor, item.content_hash ?? null]);
+          : sourceRecallRef(item.anchor, item.content_hash, item.projection_context);
         sources.push({ ref,
           ...(item.anchor.revision ? { anchor: item.anchor } : {}),
           ...(item.content_hash ? { ref_content_hash: item.content_hash } : {}),
+          ...(item.projection_context ? { disclosed_context_hash: recallTextHash(canonicalRecallJSON(item.projection_context)) } : {}),
           disclosure: item.text ? 'text' : 'metadata',
           coverage: item.coverage, role: item.role, truncated: item.truncated, redacted: item.redacted,
           ...(item.text ? { disclosed_text_hash: recallTextHash(item.text) } : {}) });
@@ -446,6 +448,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       ...(typeof raw.byte_length === 'number' && Number.isSafeInteger(raw.byte_length) && raw.byte_length > 0
         ? { byte_length: raw.byte_length }
         : {}),
+      ...(typeof raw.source_projection_ref === 'string' ? { source_projection_ref: raw.source_projection_ref } : {}),
       ...(typeof raw.skill_version_id === 'string' && raw.skill_version_id.trim()
         ? { skill_version_id: raw.skill_version_id.trim() }
         : {}),

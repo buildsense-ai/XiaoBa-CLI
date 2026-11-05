@@ -1,7 +1,9 @@
 import { NativeRecallFeedbackOutbox } from './native-recall-feedback-outbox';
+import type { ExecutionGraphOrigin } from './execution-graph-metadata';
 import { randomUUID as feedbackUUID } from 'node:crypto';
 import { ContentBlock, Message } from '../types';
 import { randomUUID } from 'crypto';
+import { createHash } from 'node:crypto';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
@@ -999,8 +1001,31 @@ export class AgentTurnController {
       onAssistantText: callbacks?.onAssistantText,
       onThinking: callbacks?.onThinking,
       onToolStart: callbacks?.onToolStart,
-      onToolExecutionResult: (result, messages) => nativeRecall?.observe(result, messages, feedbackOutbox?.captureScope()),
+      onToolExecutionResult: (result, messages, origin: ExecutionGraphOrigin) => {
+        nativeRecall?.observe(result, messages, feedbackOutbox?.captureScope());
+        Logger.runtimeEvent('INFO', 'execution graph function result', {
+          type: 'execution_graph',
+          payload: {
+            contract_version: 'execution-graph/1',
+            identity_contract: 'execution-identity/1',
+            event_id: randomUUID(),
+            session_id: origin.session_id,
+            episode_id: origin.episode_id,
+            model_call_id: origin.model_call_id,
+            type: 'function_result',
+            provider_call_id: result.tool_call_id,
+            call_node_ref: `provider-call:${result.tool_call_id}`,
+            result_node_ref: `provider-result:${result.tool_call_id}`,
+            result_sha256: createHash('sha256').update(JSON.stringify(result.content)).digest('hex'),
+            result_state: 'captured',
+          },
+        });
+      },
       onModelInput: messages => nativeRecall?.deliver(messages),
+      onExecutionGraphEvent: (event, submittedMessages) => {
+        nativeRecall?.bindConsumerModelCall(String(event.model_call_id || ''), submittedMessages);
+        Logger.runtimeEvent('INFO', 'execution graph model call', { type: 'execution_graph', payload: event });
+      },
       onToolEnd: callbacks?.onToolEnd,
       onToolDisplay: callbacks?.onToolDisplay,
       onRetry: callbacks?.onRetry,

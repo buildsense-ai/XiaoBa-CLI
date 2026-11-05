@@ -1573,6 +1573,20 @@ function validateKnowledgeAnchorForRequest(anchor: unknown, name = 'anchor'): Re
     }
     body.skill_version_id = skillVersionId;
   }
+  const sourceProjectionRef = knowledgeOptionalId(raw.source_projection_ref, `${name}.source_projection_ref`, KNOWLEDGE_MAX_ANCHOR_ID_BYTES);
+  if (kind === 'source_memory_projection_node') {
+    if (!sourceProjectionRef || !/^ref_[a-f0-9]{64}$/.test(sourceProjectionRef)
+      || !/^[a-f0-9]{64}$/.test(String(id)) || !/^[a-f0-9]{64}$/.test(revision ?? '')) {
+      throw new Error(`CatsLog knowledge ${name} projection node identity is invalid`);
+    }
+    if (sessionId !== undefined || sessionType !== undefined || streamId !== undefined || byteOffset !== undefined || byteLength !== undefined
+      || skillVersionId !== undefined) {
+      throw new Error(`CatsLog knowledge ${name} projection node carries coordinates from another anchor domain`);
+    }
+    body.source_projection_ref = sourceProjectionRef;
+  } else if (sourceProjectionRef !== undefined) {
+    throw new Error(`CatsLog knowledge ${name}.source_projection_ref is only valid on source memory projection nodes`);
+  }
   return body;
 }
 
@@ -1668,13 +1682,14 @@ export function validateKnowledgeSourceQuery(query: CatsLogKnowledgeSourceQuery)
     throw new Error('CatsLog knowledge source anchor is required');
   }
   const raw = query.anchor;
-  const fields = new Set(['kind', 'id', 'document_id', 'revision', 'session_id', 'session_type', 'stream_id', 'byte_offset', 'byte_length', 'skill_version_id']);
+  const fields = new Set(['kind', 'id', 'document_id', 'revision', 'session_id', 'session_type', 'stream_id', 'byte_offset', 'byte_length', 'skill_version_id', 'source_projection_ref']);
   if (Object.keys(raw).some(key => !fields.has(key))) throw new Error('CatsLog knowledge source anchor has unknown fields');
   const { revision, byte_length, ...withoutPin } = raw;
   // The generic anchor validator forbids zero byte_length and SHA prefixes;
   // source v1 allows explicit zero for turn anchors and a prefixed SHA pin.
   const anchor = validateKnowledgeAnchorForRequest({ ...withoutPin,
     ...(byte_length !== undefined && byte_length !== 0 ? { byte_length } : {}),
+    ...(raw.kind === 'source_memory_projection_node' && revision !== undefined ? { revision } : {}),
   });
   if (revision !== undefined) {
     if (typeof revision !== 'string' || (raw.kind === 'knowledge_entry'
@@ -1684,7 +1699,12 @@ export function validateKnowledgeSourceQuery(query: CatsLogKnowledgeSourceQuery)
     }
     anchor.revision = revision;
   }
-  if (raw.kind === 'knowledge_entry') {
+  if (raw.kind === 'source_memory_projection_node') {
+    if (!revision || typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)
+      || !/^ref_[a-f0-9]{64}$/.test(String(raw.source_projection_ref ?? ''))) {
+      throw new Error('CatsLog knowledge source projection node requires exact projection ref and revision pins');
+    }
+  } else if (raw.kind === 'knowledge_entry') {
     if (!revision) throw new Error('CatsLog knowledge source knowledge_entry requires a revision pin');
     if (!/^ake-[a-f0-9]{24}$/.test(raw.id) || !/^akd-[a-f0-9]{24}$/.test(raw.document_id || '')) {
       throw new Error('CatsLog knowledge source knowledge_entry identity is invalid');

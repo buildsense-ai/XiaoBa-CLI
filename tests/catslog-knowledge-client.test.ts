@@ -100,6 +100,16 @@ describe('CatscoLogAgentClient knowledge routes', () => {
     assert.equal(calls.length, 1);
   });
 
+  test('source memory projection node anchor preserves exact opaque ref, revision, and node ID', async () => {
+    const projectionAnchor = { kind: 'source_memory_projection_node', id: 'a'.repeat(64), revision: 'b'.repeat(64), source_projection_ref: 'ref_' + 'c'.repeat(64) };
+    responder = () => ({ status: 200, body: JSON.stringify({ edges: [], exhausted: true }) });
+    await client().expandKnowledge({ anchor: projectionAnchor, direction: 'both', token: TOKEN });
+    assert.deepEqual(wire().anchor, projectionAnchor);
+    await assert.rejects(() => client().expandKnowledge({ anchor: { ...projectionAnchor, source_projection_ref: 'smp_' + 'c'.repeat(64) }, token: TOKEN }), /projection node identity/);
+    await assert.rejects(() => client().expandKnowledge({ anchor: { ...projectionAnchor, stream_id: 'stream' }, token: TOKEN }), /stream coordinates/);
+    assert.equal(calls.length, 1);
+  });
+
   test('revision generic domain accepts Go limit 128 and rejects 129 before HTTP in both routes', async () => {
     const transport = client();
     await transport.readKnowledge({ document_id: DOC, revision: 'r'.repeat(128), token: TOKEN });

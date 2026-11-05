@@ -20,9 +20,15 @@ import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import { hasCatsLogControlCodePoint, isCatsLogPoolCitationRef } from '../utils/catsco-log-agent-client';
 import {
   MAX_SOURCE_REFERENCE_EXPANSIONS, MAX_TOTAL_PROJECTION_VIEW_CHARS, discoverSourceReferenceItems,
-  expandSourceReferences, retainedEvidenceBytes, classifyExpansionError,
+  expandSourceReferences, classifyExpansionError,
+  type ProjectionReferenceObservation,
 } from './catslog-projection-reference';
 import { collectBranchRefLanes } from './branch-citation-reporter';
+
+interface DeliveredProjectionEvidence {
+  semantic_view: Record<string, unknown>;
+  observation?: ProjectionReferenceObservation;
+}
 
 export interface MemorySearchBranchSessionOptions {
   sessionKey: string;
@@ -46,7 +52,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private readonly store: MemoryLogStore;
   private readonly remoteAbort = new AbortController();
   private readonly candidates = new Map<string, string | undefined>(); // ref -> issuing request_id
-  private readonly delivered = new Map<string, Record<string, unknown>>();
+  private readonly delivered = new Map<string, DeliveredProjectionEvidence>();
   private readonly knowledgeCandidates = new Map<string, CatsLogKnowledgeAnchor>();
   private readonly knowledgeGraphs: CatsLogKnowledgeGraph[] = [];
   private readonly graphFeedbackScopes = new Map<CatsLogKnowledgeGraph, string | undefined>();
@@ -144,7 +150,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     return this.fetchCandidates(keywords[0].trim(), false, signal);
   }
 
-  private contextBytes(graphs = this.knowledgeGraphs, remote = [...this.delivered].map(([ref, semantic_view]) => ({ ref, semantic_view }))): number {
+  private contextBytes(graphs = this.knowledgeGraphs, remote = [...this.delivered].map(([ref, evidence]) => ({ ref, ...evidence }))): number {
     return Buffer.byteLength(JSON.stringify({ memory_graphs: graphs, retained_remote_evidence: remote }), 'utf8');
   }
 
@@ -213,10 +219,14 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       }), deadline.signal);
       if (!result || deadline.signal.aborted || !this.shouldContinue()) return referenceOnly('aborted');
       if (result.status !== 'expanded' || !result.semantic_view) return { ...result };
-      const retained = [...this.delivered].map(([r, semantic_view]) => ({ ref: r, semantic_view }));
-      retained.push({ ref, semantic_view: result.semantic_view });
+      const retained = [...this.delivered].map(([r, evidence]) => ({ ref: r, ...evidence }));
+      const item: DeliveredProjectionEvidence = {
+        semantic_view: result.semantic_view,
+        ...(result.observation ? { observation: result.observation } : {}),
+      };
+      retained.push({ ref, ...item });
       if (this.contextBytes(this.knowledgeGraphs, retained) > MAX_TOTAL_PROJECTION_VIEW_CHARS) return referenceOnly('semantic_view_over_budget');
-      this.delivered.set(ref, result.semantic_view);
+      this.delivered.set(ref, item);
       return { ...result, content_trust: 'untrusted_branch_evidence' };
     } catch (error) { return referenceOnly(classifyExpansionError(error, deadline.signal)); }
     finally { deadline.dispose(); }
@@ -241,12 +251,12 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const feedbackSources = feedbackScope ? [...new Map(memoryGraphs.flatMap(g => g.nodes)
       .filter(n => payload.refs.includes(graphNodeRef(n)))
       .map(n => [graphNodeRef(n), { ref: graphNodeRef(n), anchor: n.anchor, disclosure: 'metadata' }])).values()] : [];
-    const retained: Array<{ ref: string; semantic_view: Record<string, unknown> }> = [];
+    const retained: Array<{ ref: string } & DeliveredProjectionEvidence> = [];
     const dropped: string[] = [];
     if (payload.inject) for (const ref of payload.refs) {
-      const view = this.delivered.get(ref);
-      if (!view) continue;
-      const item = { ref, semantic_view: view };
+      const evidence = this.delivered.get(ref);
+      if (!evidence) continue;
+      const item = { ref, ...evidence };
       if (this.contextBytes(memoryGraphs, [...retained, item]) <= MAX_TOTAL_PROJECTION_VIEW_CHARS) retained.push(item);
       else dropped.push(ref); // whole item, never cut conditions/omissions
     }

@@ -10,8 +10,10 @@ export interface NativeRecallSource {
   anchor?: CatsLogKnowledgeAnchor;
   ref_content_hash?: string;
   disclosure: 'metadata' | 'text';
-  /** Hash of the actual disclosed body; no private text is persisted here. */
+  /** Hash of the actual disclosed text body. */
   disclosed_text_hash?: string;
+  /** Hash of the canonical projection graph context actually disclosed. */
+  disclosed_context_hash?: string;
   coverage?: 'complete' | 'partial' | 'structural_only';
   role?: 'organic' | 'learning' | 'knowledge';
   truncated?: boolean;
@@ -65,6 +67,11 @@ export function hashedRecallRef(domain: 'source' | 'history' | 'document', ident
     ? [canonicalKnowledgeSourceAnchor(identity[0]), ...identity.slice(1)] : identity;
   return `catslog:${domain}:${recallTextHash(canonicalRecallJSON(normalized))}`;
 }
+export function sourceRecallRef(anchor: CatsLogKnowledgeAnchor, contentHash?: string, projectionContext?: unknown): string {
+  return projectionContext === undefined
+    ? hashedRecallRef('source', [anchor, contentHash ?? null])
+    : hashedRecallRef('source', [anchor, contentHash ?? null, projectionContext]);
+}
 function sanitizeSource(source: any): NativeRecallSource | undefined {
   if (!source || !isNativeRecallRef(source.ref) || (source.disclosure !== 'metadata' && source.disclosure !== 'text')) return undefined;
   const anchor = source.anchor && typeof source.anchor === 'object'
@@ -75,6 +82,8 @@ function sanitizeSource(source: any): NativeRecallSource | undefined {
       ? { ref_content_hash: source.ref_content_hash } : {}),
     ...(typeof source.disclosed_text_hash === 'string' && /^[a-f0-9]{64}$/.test(source.disclosed_text_hash)
       ? { disclosed_text_hash: source.disclosed_text_hash } : {}),
+    ...(typeof source.disclosed_context_hash === 'string' && /^[a-f0-9]{64}$/.test(source.disclosed_context_hash)
+      ? { disclosed_context_hash: source.disclosed_context_hash } : {}),
     ...(['complete', 'partial', 'structural_only'].includes(source.coverage) ? { coverage: source.coverage } : {}),
     ...(['organic', 'learning', 'knowledge'].includes(source.role) ? { role: source.role } : {}),
     ...(typeof source.truncated === 'boolean' ? { truncated: source.truncated } : {}),
@@ -94,6 +103,7 @@ interface ObservedCall {
   precedingAssistant: Set<Message>;
   feedbackScope?: string;
   graphDigest?: string;
+  consumerModelCallId?: string;
 }
 /** Turn-local ledger. Only runner execution results may register observations;
  * only the actual provider input may mark delivery. A successful read alone
@@ -101,6 +111,18 @@ interface ObservedCall {
  */
 export class NativeRecallTracker {
   private calls = new Map<string, ObservedCall>();
+
+  bindConsumerModelCall(modelCallId: string, submittedMessages: readonly Message[]): void {
+    if (!modelCallId) return;
+    const submittedToolIds = new Set(submittedMessages
+      .filter(message => message.role === 'tool')
+      .map(message => message.tool_call_id || ''));
+    for (const call of this.calls.values()) {
+      if (submittedToolIds.has(call.tool_call_id) && call.delivered.size && !call.consumerModelCallId) {
+        call.consumerModelCallId = modelCallId;
+      }
+    }
+  }
 
   observe(result: ToolResult, precedingMessages: readonly Message[] = [], feedbackScope?: string): void {
     if (result.name !== 'catslog_knowledge_recall' || result.ok !== true || result.errorCode || typeof result.content !== 'string') return;
@@ -130,10 +152,16 @@ export class NativeRecallTracker {
         const attribution = JSON.parse(message.content).recall_attribution;
         if (attribution?.trace_id !== call.attribution.trace_id || !Array.isArray(attribution.sources)) continue;
         const textByRef = new Map<string, string>();
+        const contextHashByRef = new Map<string, string>();
         const body = JSON.parse(message.content);
         if (call.graphDigest && call.graphDigest !== recallTextHash(canonicalRecallJSON({ contract: body.contract, seeds: body.seeds, nodes: body.nodes, edges: body.edges, closure_complete: body.closure_complete }))) continue;
         for (const item of [...(body.nodes || []).map((node: any) => ({ ref: node.ref, text: node.entry?.text })), ...(body.entries || []), ...(body.hits || []), body.source, ...(body.before || []), ...(body.after || [])]) {
-          if (item && typeof item.ref === 'string') textByRef.set(item.ref, typeof item.text === 'string' ? item.text : '');
+          if (item && typeof item.ref === 'string') {
+            textByRef.set(item.ref, typeof item.text === 'string' ? item.text : '');
+            if (item.projection_context && typeof item.projection_context === 'object') {
+              contextHashByRef.set(item.ref, recallTextHash(canonicalRecallJSON(item.projection_context)));
+            }
+          }
         }
         for (const edge of body.edges || []) {
           if (typeof edge.remote_ref === 'string') textByRef.set(edge.remote_ref, '');
@@ -147,6 +175,7 @@ export class NativeRecallTracker {
           if (!attribution.sources.some((item: any) => item?.ref === source.ref)) continue;
           // An envelope without the corresponding item is not disclosure.
           if (!textByRef.has(source.ref)) continue;
+          if (source.disclosed_context_hash && contextHashByRef.get(source.ref) !== source.disclosed_context_hash) continue;
           const text = textByRef.get(source.ref)!;
           const disclosure = source.disclosure === 'text' && source.disclosed_text_hash
             && recallTextHash(text) === source.disclosed_text_hash ? 'text' : 'metadata';
@@ -177,6 +206,7 @@ export class NativeRecallTracker {
       const cited = delivered.filter(source => corpus.includes(source.ref)).map(source => source.ref);
       const retained = outcome === 'completed' ? delivered.filter(source => finalText.includes(source.ref)).map(source => source.ref) : [];
       return {
+        ...(call.consumerModelCallId ? { consumer_model_call_id: call.consumerModelCallId } : {}),
         trace_id: call.attribution.trace_id,
         event_id: `feedback-${randomUUID()}`,
         kind: 'native_recall',

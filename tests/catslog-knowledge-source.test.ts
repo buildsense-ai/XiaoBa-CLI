@@ -57,6 +57,69 @@ describe('source v1 wire and native action', () => {
     assert.doesNotMatch(String(requests[0].init.body), /token|principal|agent_subject|memory_scope/);
   });
 
+  test('source route resolves exact Source Memory Projection node refs', async () => {
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+    const anchor = { kind: 'source_memory_projection_node' as const, id: 'a'.repeat(64), revision: HASH,
+      source_projection_ref: 'ref_' + 'b'.repeat(64) };
+    await client.readKnowledgeSource({ anchor, max_bytes: 256, token: 'read' });
+    assert.deepEqual(JSON.parse(String(requests[0].init.body)), { anchor, max_bytes: 256 });
+    await assert.rejects(client.readKnowledgeSource({ anchor: { ...anchor, source_projection_ref: 'smp_' + 'b'.repeat(64) }, token: 'read' }), /projection node identity/);
+    assert.equal(requests.length, 1);
+  });
+
+  test('source-memory projection anchors are model-visible and survive native read normalization', async () => {
+    const anchor = { kind: 'source_memory_projection_node' as const, id: 'a'.repeat(64), revision: HASH,
+      source_projection_ref: `ref_${'b'.repeat(64)}` };
+    let receivedAnchor: unknown;
+    const projectionContext = {
+      selected_node_id: anchor.id,
+      nodes: [
+        { id: anchor.id, kind: 'assertion' as const, text: 'Pinned projection node.' },
+        { id: 'c'.repeat(64), kind: 'condition' as const, text: 'Only after the health check succeeds.' },
+        { id: 'd'.repeat(64), kind: 'omission' as const, text: 'Rollback behavior was not observed.' },
+      ],
+      edges: [
+        { from: 'c'.repeat(64), to: anchor.id, kind: 'qualifies' as const },
+        { from: 'd'.repeat(64), to: anchor.id, kind: 'omits' as const },
+      ],
+      mappings: [
+        { node_id: anchor.id, anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
+        { node_id: 'c'.repeat(64), anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
+        { node_id: 'd'.repeat(64), anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
+      ],
+    };
+    const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async query => {
+      receivedAnchor = query.anchor;
+      return page(content({ anchor, text: 'Pinned projection node.', coverage: 'complete', truncated: false,
+        projection_context: projectionContext,
+        conditions: ['preserve this condition'], omissions: ['do not infer missing history'] }));
+    } });
+    const anchorSchema = tool.definition.parameters.properties.anchor;
+    assert.ok(anchorSchema.properties.kind.enum.includes('source_memory_projection_node'));
+    assert.equal(anchorSchema.properties.source_projection_ref.type, 'string');
+    const result = await tool.execute({ action: 'read_source', anchor }, toolContext());
+    assert.equal(result.ok, true);
+    assert.deepEqual(receivedAnchor, anchor);
+    const body = JSON.parse(String(result.content));
+    assert.deepEqual(body.source.anchor, anchor);
+    assert.equal(body.source.text, 'Pinned projection node.');
+    assert.deepEqual(body.source.conditions, ['preserve this condition']);
+    assert.deepEqual(body.source.omissions, ['do not infer missing history']);
+    assert.deepEqual(body.source.projection_context, projectionContext);
+    const { sourceRecallRef, recallTextHash, canonicalRecallJSON } = await import('../src/core/native-recall-attribution');
+    assert.equal(body.source.ref, sourceRecallRef(anchor, body.source.content_hash, projectionContext));
+    assert.deepEqual(body.recall_attribution.sources[0], {
+      ref: body.source.ref, anchor,
+      ref_content_hash: body.source.content_hash,
+      disclosed_context_hash: recallTextHash(canonicalRecallJSON(projectionContext)),
+      disclosure: 'text', coverage: 'complete', role: 'organic', truncated: false, redacted: true,
+      disclosed_text_hash: recallTextHash(body.source.text),
+    });
+    assert.equal(body.source.coverage, 'complete');
+    assert.equal(body.source.truncated, false);
+    assert.equal(typeof body.source.ref, 'string', 'existing attribution ref remains additive');
+  });
+
   test('Go response omitted raw offset zero hashes to the same ref as the explicit request without changing transport', async () => {
     const explicit = { ...RAW, byte_offset: 0, byte_length: 0 };
     const { byte_offset, byte_length, ...canonical } = explicit;

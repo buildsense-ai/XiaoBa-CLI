@@ -10,7 +10,7 @@ import type {
   CatsLogKnowledgeSourcePage,
   CatsLogKnowledgeSourceStatus,
 } from '../utils/catslog-knowledge-types';
-import { hashedRecallRef } from './native-recall-attribution';
+import { sourceRecallRef } from './native-recall-attribution';
 import { catslogKnowledgeCitationRef } from '../tools/memory-branch-tools';
 
 export type DailyKnowledgeLaneStatus = 'ok' | 'empty' | 'truncated' | 'unavailable';
@@ -302,7 +302,9 @@ function validSkillNodeMapping(
 }
 
 function shortenSourceContent(content: DailyKnowledgeSourceContent, maxChars: number): void {
-  if (content.text.length <= maxChars) return;
+  // Projection contexts are atomic semantic graphs. Trimming selected text
+  // while retaining qualifier nodes would make the visible input misleading.
+  if (content.projection_context || content.text.length <= maxChars) return;
   const chars = Array.from(content.text);
   let prefix = '';
   for (const char of chars) {
@@ -536,7 +538,7 @@ export function projectDailyKnowledgeLane(
   // Skill node mappings are independent per-node provenance, not body text.
   // Shed their tail before any whole source page identity is lost.
   for (const page of [...(view.source_reads ?? [])].reverse()) {
-    while (!fits() && (page.source.node_sources?.length ?? 0) > 0) {
+    while (!fits() && !page.source.projection_context && (page.source.node_sources?.length ?? 0) > 0) {
       page.source.node_sources!.pop();
       page.source.node_sources_omitted = (page.source.node_sources_omitted ?? 0) + 1;
       omitted.skill_nodes = (omitted.skill_nodes ?? 0) + 1;
@@ -928,7 +930,7 @@ export async function searchDailyKnowledgeLane(
             } : {}),
             ...(nodeMappings && nodeMappings.length - kept.length > 0
               ? { node_sources_omitted: nodeMappings.length - kept.length } : {}),
-            ref: hashedRecallRef('source', [item.anchor, item.content_hash ?? null]),
+            ref: sourceRecallRef(item.anchor, item.content_hash, item.projection_context),
             disclosure: item.status === 'read' && item.coverage !== 'structural_only' && item.text.length > 0 ? 'text' : 'metadata',
             // Non-readable endpoints cannot disclose text even if a malformed
             // backend returns it; no fallback into a history search.

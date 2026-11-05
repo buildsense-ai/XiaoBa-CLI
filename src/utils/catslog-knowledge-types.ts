@@ -16,12 +16,13 @@ export type CatsLogKnowledgeAnchorKind =
   | 'graph_node'
   | 'learning_node'
   | 'knowledge_entry'
+  | 'source_memory_projection_node'
   | 'skill_program'
   | 'skill_node';
 
 export const CATSLOG_KNOWLEDGE_ANCHOR_KINDS: readonly CatsLogKnowledgeAnchorKind[] = [
   'session_query', 'session_result', 'graph_node', 'learning_node', 'knowledge_entry',
-  'skill_program', 'skill_node',
+  'source_memory_projection_node', 'skill_program', 'skill_node',
 ];
 
 /**
@@ -43,6 +44,8 @@ export interface CatsLogKnowledgeAnchor {
   /** Skill lineage anchors only: the program version. skill_program's `id`
    * equals this value; skill_node's `id` is the node ID inside that version. */
   skill_version_id?: string;
+  /** Exact immutable SourceMemoryProjection reference domain. */
+  source_projection_ref?: string;
 }
 
 export type CatsLogKnowledgeEntryStatus = 'draft' | 'active' | 'superseded' | 'retired';
@@ -228,10 +231,26 @@ export interface CatsLogKnowledgeSourceContent {
   /** Declared provenance; separate from the learning selected set. */
   source_anchors?: CatsLogKnowledgeAnchor[];
   selected_anchors?: CatsLogKnowledgeAnchor[];
-  node_kind?: 'query' | 'action' | 'result' | 'teachback';
+  node_kind?: 'query' | 'action' | 'result' | 'teachback' | 'assertion' | 'condition' | 'omission';
   /** Skill program reads only: one independently proved mapping per node,
    * preserved exactly as stored — never collapsed into a program-wide union. */
   node_sources?: CatsLogKnowledgeSourceNodeMapping[];
+  /** Source Memory Projection node semantic closure, returned atomically with node text. */
+  projection_context?: CatsLogKnowledgeSourceProjectionContext;
+  conditions?: string[];
+  omissions?: string[];
+}
+
+export interface CatsLogKnowledgeSourceProjectionContext {
+  selected_node_id: string;
+  nodes: Array<{ id: string; kind: 'assertion' | 'condition' | 'omission'; text: string }>;
+  /** Stored relation direction and kind are preserved exactly. */
+  edges: Array<{ from: string; to: string; kind: 'supports' | 'qualifies' | 'omits' }>;
+  mappings: Array<{
+    node_id: string;
+    anchor: CatsLogKnowledgeAnchor;
+    source_anchors: CatsLogKnowledgeAnchor[];
+  }>;
 }
 
 /** Mirrors knowledge.SourceNodeMapping (node_sources entries). */

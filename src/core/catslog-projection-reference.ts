@@ -12,10 +12,25 @@ const MAX_CANDIDATES = 8;
 export type SourceProjectionFailureClass = 'capability_unavailable' | 'http_401' | 'http_403' | 'http_404'
   | 'http_error' | 'network_error' | 'aborted' | 'invalid_response' | 'stale_ref' | 'semantic_view_over_budget';
 export interface SourceReferenceItem { ref: string; kind: 'source_reference'; text: string; score_hint?: number }
+export interface ProjectionNodeReference {
+  kind: 'source_memory_projection_node';
+  source_projection_ref: string;
+  revision: string;
+  id: string;
+}
+export interface ProjectionReferenceObservation {
+  hit: { projection_ref: string };
+  read?: { projection_ref: string; revision: string; node_refs: ProjectionNodeReference[] };
+  consumer_model_call_id?: string;
+  returned_to_branch: boolean;
+  cited_node_refs: string[];
+  retained_node_refs: string[];
+}
 export interface SourceReferenceExpansion {
   ref: string;
   status: 'expanded' | 'reference_only';
   semantic_view?: Record<string, unknown>;
+  observation?: ProjectionReferenceObservation;
   expansion_error?: SourceProjectionFailureClass;
 }
 export interface SourceProjectionValidation {
@@ -23,6 +38,8 @@ export interface SourceProjectionValidation {
   reason?: SourceProjectionFailureClass;
   document?: Record<string, any>;
   sources?: unknown[];
+  projectionRef?: string;
+  revision?: string;
 }
 
 export function recomputeSourceProjectionRef(revision: unknown, streamId: unknown): string | undefined {
@@ -90,7 +107,7 @@ export function validateSourceMemoryProjectionDocument(
     || !(d.mappings ?? []).every((m: any) => record(m) && ids.has(m.node_id))) return invalid();
   if (d.aggregate !== undefined && d.aggregate !== null && !validAggregate(d.aggregate)) return invalid();
   // No shortening, slicing, depth replacement, or filtering of semantic arrays before validation.
-  return { ok: true, document: d, sources };
+  return { ok: true, document: d, sources, projectionRef: requestedRef, revision: projection.Revision };
 }
 
 /** Complete semantic fields; proofs/body sources remain server revalidation material. */
@@ -164,7 +181,21 @@ export async function expandSourceReferences(
             result.expansion_error = 'semantic_view_over_budget';
           } else {
             kept.push({ ref: candidate.ref, semantic_view: view });
-            result = { ref: candidate.ref, status: 'expanded', semantic_view: view };
+            result = {
+              ref: candidate.ref, status: 'expanded', semantic_view: view,
+              observation: {
+                hit: { projection_ref: candidate.ref },
+                read: {
+                  projection_ref: candidate.ref,
+                  revision: validation.revision!,
+                  node_refs: validation.document!.nodes.map((node: any) => ({
+                    kind: 'source_memory_projection_node', source_projection_ref: candidate.ref,
+                    revision: validation.revision!, id: node.id,
+                  })),
+                },
+                returned_to_branch: true, cited_node_refs: [], retained_node_refs: [],
+              },
+            };
           }
         }
       } catch (error) { result.expansion_error = classifyExpansionError(error, options.signal); }

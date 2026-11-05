@@ -6,6 +6,7 @@ import {
   searchDailyKnowledgeLane,
 } from '../src/core/catslog-daily-knowledge-lane';
 import { catslogKnowledgeCitationRef, isMemoryCitationRef } from '../src/tools/memory-branch-tools';
+import { sourceRecallRef } from '../src/core/native-recall-attribution';
 import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
 import type { CatsLogKnowledgeAnchor, CatsLogKnowledgeSourceContent, CatsLogKnowledgeSourcePage } from '../src/utils/catslog-knowledge-types';
 
@@ -150,6 +151,43 @@ describe('daily knowledge lane', () => {
     assert.equal(projected.hits[2].status, 'draft');
     assert.equal(projected.reads[0].text, 'full body text');
     assert.match(projected.refs_note, /catslog:knowledge/);
+  });
+
+  test('projection source context stays atomic in the daily lane and binds its citable ref', async () => {
+    const anchor: CatsLogKnowledgeAnchor = { kind: 'source_memory_projection_node', id: 'a'.repeat(64), revision: 'b'.repeat(64), source_projection_ref: `ref_${'c'.repeat(64)}` };
+    const context = {
+      selected_node_id: anchor.id,
+      nodes: [
+        { id: anchor.id, kind: 'assertion' as const, text: 'The deployment is ready.' },
+        { id: 'd'.repeat(64), kind: 'condition' as const, text: 'Only after the health check succeeds.' },
+        { id: 'e'.repeat(64), kind: 'omission' as const, text: 'Rollback behavior was not observed.' },
+      ],
+      edges: [
+        { from: 'd'.repeat(64), to: anchor.id, kind: 'qualifies' as const },
+        { from: 'e'.repeat(64), to: anchor.id, kind: 'omits' as const },
+      ],
+      mappings: [],
+    };
+    const contentHash = `sha256:${'f'.repeat(64)}`;
+    const backend = fakeBackend({
+      readKnowledge: async () => ({ format: 'json' as const, page: {
+        document_id: DOC, revision: REV, day: '2026-10-07', generated_at: '', generated_by: 'w',
+        entries: [{ id: ENTRY, title: 'T', text: 'body', status: 'active', source_anchors: [anchor] }], exhausted: true,
+      } }),
+      readKnowledgeSource: async () => skillPage({
+        anchor, status: 'read', role: 'knowledge', speaker: 'assistant', occurred_at: null,
+        text: 'The deployment is ready.', content_hash: contentHash, coverage: 'complete', truncated: false,
+        redacted: false, missing: false, revoked: false, projection_context: context,
+      }),
+    } as any);
+    const lane = await searchDailyKnowledgeLane({ backend, queryText: 'q', keywords: [], maxReads: 1 });
+    const source = lane.source_reads![0].source;
+    assert.deepEqual(source.projection_context, context);
+    assert.equal(source.ref, sourceRecallRef(anchor, contentHash, context));
+    assert.equal(source.text, 'The deployment is ready.');
+    const projected = projectDailyKnowledgeLane(lane) as any;
+    assert.deepEqual(projected.source_reads[0].source.projection_context, context);
+    assert.equal(projected.source_reads[0].source.ref, source.ref);
   });
 
   test('lane refs are collectible for the observed tracker and citable', async () => {

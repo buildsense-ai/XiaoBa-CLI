@@ -16,6 +16,7 @@ import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
 import type { SubAgentInfo } from '../core/sub-agent-session';
 import type { PromptTraceSnapshot } from './prompt-observability';
 import { PathResolver } from './path-resolver';
+import { SharedInputManifestEncoder } from './shared-input-manifest';
 
 export type {
   LegacySessionTurnLogEntry,
@@ -60,6 +61,7 @@ export class SessionTurnLogger {
   private turnCounter = 0;
   private agentIdentity?: SessionLogAgentIdentity;
   private fileLoggingDisabled = false;
+  private readonly inputManifestEncoder = new SharedInputManifestEncoder();
 
   constructor(sessionType: string, sessionId: string, agentIdentity?: SessionLogAgentIdentity) {
     this.sessionType = sessionType;
@@ -171,7 +173,7 @@ export class SessionTurnLogger {
       ...this.agentIdentityFields(),
       level,
       message,
-      ...(event && { event }),
+      ...(event && { event: this.inputManifestEncoder.encodeEvent(event) }),
     };
     this.appendLog(runtimeEntry);
   }
