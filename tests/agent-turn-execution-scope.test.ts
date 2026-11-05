@@ -8,6 +8,8 @@ import type { Message } from '../src/types';
 const agentSessionSource = readFileSync(join(process.cwd(), 'src/core/agent-session.ts'), 'utf-8');
 const agentTurnSource = readFileSync(join(process.cwd(), 'src/core/agent-turn-controller.ts'), 'utf-8');
 const toolTypesSource = readFileSync(join(process.cwd(), 'src/types/tool.ts'), 'utf-8');
+const conversationRunnerSource = readFileSync(join(process.cwd(), 'src/core/conversation-runner.ts'), 'utf-8');
+const catsCompanySource = readFileSync(join(process.cwd(), 'src/catscompany/index.ts'), 'utf-8');
 
 test('AgentSession accepts executionScope in HandleMessageOptions', () => {
   assert.match(agentSessionSource, /executionScope\?:\s*ExecutionScope/);
@@ -41,6 +43,22 @@ test('AgentTurnController forwards executionScope into ToolExecutionContext', ()
   assert.match(agentTurnSource, /artifactContextRef:\s*options\.artifactContextRef/);
   assert.match(agentTurnSource, /artifactTaskRef:\s*params\.artifactTaskRef/);
   assert.match(agentTurnSource, /artifactTaskRef:\s*options\.artifactTaskRef/);
+});
+
+test('AgentTurnController forwards the current user input and marks observation turns as absent', () => {
+  assert.match(agentTurnSource, /currentUserInput:\s*params\.runtimeObservationSource\s*\?\s*null\s*:\s*params\.input/);
+  assert.match(agentTurnSource, /currentUserInput:\s*options\.currentUserInput/);
+  assert.match(conversationRunnerSource, /currentUserInput:\s*content/);
+  assert.match(toolTypesSource, /currentUserInput\?:\s*string\s*\|\s*ContentBlock\[\]\s*\|\s*null/);
+  assert.match(agentSessionSource, /currentUserApprovalInputs\s*=\s*opts\.currentUserApprovalInputs/);
+  assert.match(agentTurnSource, /currentUserApprovalInputs:\s*params\.runtimeObservationSource\s*\?\s*null\s*:\s*params\.currentUserApprovalInputs/);
+  assert.match(agentTurnSource, /currentUserApprovalInputs:\s*options\.currentUserApprovalInputs/);
+  assert.match(conversationRunnerSource, /currentUserApprovalInputs:\s*pending\.currentUserApprovalInputs/);
+  assert.match(toolTypesSource, /currentUserApprovalInputs\?:\s*CurrentUserApprovalInput\[\]\s*\|\s*null/);
+  assert.match(catsCompanySource, /currentUserApprovalInputs:\s*\[currentUserApprovalInputFromCatsMessage\(msg\)\]/);
+  assert.match(catsCompanySource, /approvalInput:\s*currentUserApprovalInputFromCatsMessage\(msg\)/);
+  assert.match(catsCompanySource, /currentUserApprovalInputs:\s*msg\.approvalInput\s*\?\s*\[msg\.approvalInput\]\s*:\s*null/);
+  assert.match(catsCompanySource, /msg\.envelope\?\.identityTrust\s*===\s*'server_canonical'[\s\S]*?actor\?\.is_bot/);
 });
 
 test('ToolExecutionContext exposes executionScope for future ToolGateway checks', () => {
