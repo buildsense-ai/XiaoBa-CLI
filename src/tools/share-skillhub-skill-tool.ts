@@ -4,6 +4,7 @@ import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from 
 import { SkillHubService } from '../skillhub/service';
 import { createDescriptionCandidate, createNameWhitespaceCandidate } from '../skillhub/publication-candidate';
 import { PathResolver } from '../utils/path-resolver';
+import { resolveOutboundTarget } from './outbound-gateway';
 import {
   startSkillPresentationGeneration,
   type SkillPresentationFile,
@@ -319,9 +320,26 @@ export class ShareSkillHubSkillTool implements Tool {
       `Suggested description:\n${description}`,
       'This draft has not been written or published. Reply with explicit approval of this exact text to continue; otherwise request a revision.',
     ].join('\n\n');
-    if (context.channel?.reply) {
-      await context.channel.reply(context.channel.chatId, prompt);
-      return { ok: true, content: 'Description draft sent for user confirmation.', controlSignal: 'pause_turn' };
+    const target = resolveOutboundTarget(context, {
+      operation: 'send_text',
+      missingChannelMessage: 'No outbound channel is available for the description draft.',
+    });
+    if (target.ok && context.channel?.reply) {
+      try {
+        await context.channel.reply(target.chatId, prompt);
+        return {
+          ok: true,
+          content: [
+            'Description draft sent to the user for confirmation.',
+            `Report: ${reportId}`,
+            `Description: ${description}`,
+            'After the user approves, retry with confirmDescription=true, this report ID, and this exact description.',
+          ].join('\n'),
+          controlSignal: 'pause_turn',
+        };
+      } catch {
+        // Keep the draft visible through the normal assistant response if outbound delivery fails.
+      }
     }
     return { ok: true, content: prompt };
   }
@@ -373,7 +391,6 @@ export class ShareSkillHubSkillTool implements Tool {
           ...pending,
           descriptionApproved: true,
           awaitingVersionConfirmation: true,
-          initialUserMessage: latestUserMessageText(context),
         });
         return {
           ok: true,
@@ -531,13 +548,15 @@ function invalidConfirmationArguments(): ToolExecutionResult {
 function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
   const text = latestUserMessageText(context);
   if (!text || text === pending.initialUserMessage) return false;
-  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|采用)?(?:这个|该)?(?:描述|草稿)?(?:(?:并)?(?:发布|上传|继续))?|(?:用|采用)这个(?:描述|草稿)?(?:(?:并)?(?:发布|上传|继续))?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
+  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|采用)?(?:这个|该)?(?:描述|草稿)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:描述|草稿)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
 }
 
 function hasExplicitVersionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
   const text = latestUserMessageText(context);
   if (!text || text === pending.initialUserMessage) return false;
-  return /^(?:(?:我)?(?:确认|同意|批准|接受)(?:发布|升级|创建)?(?:这个|该)?(?:新)?(?:版本|补丁版本)?|(?:发布|升级|创建)(?:这个|该)?(?:新的?|补丁)?(?:版本|补丁版本)|(?:yes|y|ok(?:ay)?|approved?|i\s+approve\s+(?:(?:publishing|to\s+publish)\s+(?:(?:a|the)\s+)?(?:new\s+)?version|the\s+new\s+version)|publish\s+the\s+new\s+version))\s*[。！!,. ]*$/iu.test(text);
+  const hasVersion = /(?:版本号?|patch\s+version|new\s+version|version\s+bump)/iu.test(text);
+  const isApproval = /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受|授权)(?:发布|升级|创建)?|(?:发布|升级|创建)|(?:yes|y|ok(?:ay)?|approved?|i\s+approve\s+(?:(?:publishing|to\s+publish)\s+(?:(?:a|the)\s+)?(?:new\s+)?version|the\s+new\s+version)|publish\s+the\s+new\s+version))(?:这个|该)?(?:新|补丁)?(?:版本号?|patch\s+version|new\s+version|version\s+bump)?\s*[。！!,. ]*$/iu.test(text);
+  return hasVersion && isApproval;
 }
 
 function latestUserMessageText(context: ToolExecutionContext): string {

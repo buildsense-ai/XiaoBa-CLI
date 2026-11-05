@@ -156,15 +156,18 @@ test('missing description creates a paused draft and only publishes the exact co
   } as any;
 
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  const reportId = sentMessages[0].match(/report ([a-z-]+)/)?.[1] || '';
   assert.equal(draft.ok, true);
   assert.equal(draft.controlSignal, 'pause_turn');
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0], /该 Skill 用于样例任务/);
+  assert.ok(reportId);
+  assert.match(String(draft.content), new RegExp(reportId));
+  assert.match(String(draft.content), /该 Skill 用于样例任务/);
   assert.equal(modelCalls, 1);
   assert.equal(shareCalls, 1);
   assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
 
-  const reportId = sentMessages[0].match(/report ([a-z-]+)/)?.[1] || '';
   const noApproval = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: '从 SKILL.md 的说明可知，该 Skill 用于样例任务。' }, context);
   assert.equal(noApproval.ok, false);
@@ -209,6 +212,33 @@ test('description draft remains visible through the normal result path without a
   assert.match(String(result.content), /A sample Skill/);
 });
 
+test('outbound description draft respects execution scope and falls back to the normal response when scope mismatches', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  let sendCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      options?.onPackageCaptured?.(files);
+      throw validationError('description-scope-report', {
+        code: 'metadata.description_missing',
+        repairPolicy: 'confirmation_required',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+      });
+    },
+  }));
+  const result = await tool.execute({ skillName: 'sample-skill' }, {
+    sessionId: 'description-scope-session',
+    surface: 'catscompany',
+    executionScope: { topicId: 'authorized-topic', sessionKey: 'description-scope-session' },
+    channel: { chatId: 'different-topic', reply: async () => { sendCalls++; } },
+    conversationHistory: [{ role: 'user', content: 'publish sample-skill' }],
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
+  } as any);
+  assert.equal(sendCalls, 0);
+  assert.equal(result.controlSignal, undefined);
+  assert.match(String(result.content), /description-scope-report/);
+  assert.match(String(result.content), /A sample Skill/);
+});
+
 test('version confirmation is separate and retained after the description is approved', async () => {
   const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
   let shareCalls = 0;
@@ -237,14 +267,21 @@ test('version confirmation is separate and retained after the description is app
   };
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
   const reportId = String(draft.content).match(/report ([a-z-]+)/)?.[1] || '';
-  history.push({ role: 'user', content: 'I approve this description.' });
+  history.push({ role: 'user', content: '确认发布新版本' });
   const versionGate = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: 'A sample Skill.' }, context);
   assert.equal(versionGate.ok, true);
   assert.match(String(versionGate.content), /new patch version/i);
   assert.equal(shareCalls, 2);
 
-  history.push({ role: 'user', content: 'I approve publishing the new version.' });
+  history.push({ role: 'user', content: '确认' });
+  const weakVersionApproval = await tool.execute({ confirmDescription: true, confirmPublish: true,
+    descriptionReportId: reportId, confirmedDescription: 'A sample Skill.' }, context);
+  assert.equal(weakVersionApproval.ok, false);
+  assert.equal(weakVersionApproval.errorCode, 'DESCRIPTION_VERSION_CONFIRMATION_REQUIRED');
+  assert.equal(shareCalls, 2);
+
+  history.push({ role: 'user', content: '确认发布新版本' });
   const published = await tool.execute({ confirmDescription: true, confirmPublish: true,
     descriptionReportId: reportId, confirmedDescription: 'A sample Skill.' }, context);
   assert.equal(published.ok, true);
