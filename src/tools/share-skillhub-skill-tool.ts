@@ -111,8 +111,8 @@ export class ShareSkillHubSkillTool implements Tool {
 
     let presentationFiles: SkillPresentationFile[] | undefined;
     let service: ReturnType<ShareSkillHubSkillTool['createService']> | undefined;
+    let descriptionDraftAllowed = true;
 
-    let automaticRepairAttempted = false;
     try {
       service = this.createService();
       const result = await service.shareLocalSkill({
@@ -195,7 +195,6 @@ export class ShareSkillHubSkillTool implements Tool {
           validation,
         );
         if (repaired && 'ok' in repaired) {
-          automaticRepairAttempted = true;
           const submission = repaired.result?.submission || {};
           if (repaired.result?.requiresConfirmation) {
             return {
@@ -233,11 +232,12 @@ export class ShareSkillHubSkillTool implements Tool {
           };
         }
         if (repaired && 'error' in repaired) {
-          automaticRepairAttempted = true;
           publicationError = repaired.error;
+          descriptionDraftAllowed = Boolean(repaired.files);
+          if (repaired.files) presentationFiles = repaired.files;
         }
       }
-      if (!automaticRepairAttempted && publicationError?.validation && presentationFiles && service) {
+      if (descriptionDraftAllowed && publicationError?.validation && presentationFiles && service) {
         const draft = await this.createDescriptionDraft(
           context, skillName, localSkillPath, writeLocalMetadata, args, presentationFiles, publicationError.validation,
         );
@@ -319,6 +319,7 @@ export class ShareSkillHubSkillTool implements Tool {
     this.pendingDescriptions.set(this.descriptionKey(sessionId, reportId), pending);
     const prompt = [
       `SkillHub 发现「${skillName}」的 SKILL.md 缺少 description，因此暂未发布（报告 ${reportId}）。`,
+      '如本次发布还修正了 name 首尾空白，该修正只会保留在待确认的上传副本中，不会改动本地文件。',
       '我根据 Skill 文件整理了一条候选说明，供你确认：',
       `> ${description}`,
       '这条说明还没有写入本地文件，也没有上传。确认后请回复“确认使用这条说明并发布”；不合适的话，直接告诉我怎么修改。',
@@ -447,7 +448,7 @@ export class ShareSkillHubSkillTool implements Tool {
     writeLocalMetadata: boolean,
     initialFiles: SkillPresentationFile[],
     initialReport: any,
-  ): Promise<{ ok: true; result: any; files: SkillPresentationFile[] } | { error: any } | undefined> {
+  ): Promise<{ ok: true; result: any; files: SkillPresentationFile[] } | { error: any; files?: SkillPresentationFile[] } | undefined> {
     let files = initialFiles.map(file => ({ ...file }));
     let report = initialReport;
     let attempts = 0;
@@ -475,10 +476,10 @@ export class ShareSkillHubSkillTool implements Tool {
           : [];
         if (!validation?.reportId || validation.coverage !== 'complete' || !blocking.length
           || !blocking.every((issue: any) => issue?.repairPolicy === 'automatic'
-            && issue?.code === 'metadata.name_whitespace')) return { error };
-        if (attempts >= MAX_AUTOMATIC_REPAIR_UPLOAD_ATTEMPTS) return { error };
+            && issue?.code === 'metadata.name_whitespace')) return { error, ...(captured ? { files: captured } : {}) };
+        if (attempts >= MAX_AUTOMATIC_REPAIR_UPLOAD_ATTEMPTS) return { error, ...(captured ? { files: captured } : {}) };
         const next = createNameWhitespaceCandidate(candidate, validation);
-        if (!next) return { error };
+        if (!next) return { error, ...(captured ? { files: captured } : {}) };
         files = next;
         report = validation;
       }
