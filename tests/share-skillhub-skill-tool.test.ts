@@ -161,8 +161,8 @@ test('missing description creates a paused draft and only publishes the exact co
   assert.equal(draft.ok, true);
   assert.equal(draft.controlSignal, 'pause_turn');
   assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0], new RegExp(reportId));
   assert.match(sentMessages[0], /该 Skill 用于样例任务/);
-  assert.ok(reportId);
   assert.match(String(draft.content), new RegExp(reportId));
   assert.match(String(draft.content), /该 Skill 用于样例任务/);
   assert.equal(modelCalls, 1);
@@ -234,7 +234,7 @@ test('every canonical synthetic user flag is ignored when resolving an explicit 
   }
 });
 
-test('current human approval takes precedence over later user-role context without a human-input marker', async () => {
+test('the exact confirmation phrase shown in the user prompt is accepted', async () => {
   const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
   let shareCalls = 0;
   const tool = new ShareSkillHubSkillTool(() => ({
@@ -252,15 +252,19 @@ test('current human approval takes precedence over later user-role context witho
     },
   }));
   const history: any[] = [{ role: 'user', content: 'publish sample-skill', __episodeInputKind: 'root' }];
+  const sentMessages: string[] = [];
   const context: any = {
     sessionId: 'description-episode-input',
     conversationHistory: history,
+    channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
     runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"A sample Skill."}' }) } },
   };
-  await tool.execute({ skillName: 'sample-skill' }, context);
+  const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  assert.equal(draft.ok, true);
+  assert.match(sentMessages[0], /确认使用这条说明并发布/);
 
-  history.push({ role: 'user', content: '我确认使用这个描述并发布', __episodeInputKind: 'root' });
-  history.push({ role: 'user', content: 'internal continuation context' });
+  history.push({ role: 'user', content: '确认使用这条说明并发布', __episodeInputKind: 'root' });
+  history.push({ role: 'user', content: 'internal observation', __runtimeObservation: true });
   const published = await tool.execute({
     confirmDescription: true,
     descriptionReportId: 'episode-input-report',
@@ -348,6 +352,7 @@ test('version confirmation is separate and retained after the description is app
   };
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
   const reportId = 'description-version-report';
+  assert.match(String(draft.content), new RegExp(reportId));
   history.push({ role: 'user', content: '确认发布新版本' });
   const versionGate = await tool.execute({ confirmDescription: true, descriptionReportId: reportId,
     confirmedDescription: 'A sample Skill.' }, context);
