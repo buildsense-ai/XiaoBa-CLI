@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { Logger } from '../src/utils/logger';
@@ -74,7 +75,11 @@ test('E2E: checkpoint persists before request and exact summary is consumed in s
   const executionLines = entries.filter(entry => entry.entry_type === 'runtime'
     && ['execution_graph', 'execution_graph_checkpoint'].includes(entry.event?.type));
   const execution = decodeSharedRuntime(executionLines).map(entry => entry.event.payload);
-  fs.writeFileSync('/tmp/catslog-three-layer-luna/client-execution-fixture.jsonl', executionLines.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  const capturePath = process.env.CATSLOG_EXECUTION_GRAPH_E2E_CAPTURE_PATH;
+  if (capturePath) {
+    fs.mkdirSync(path.dirname(capturePath), { recursive: true });
+    fs.writeFileSync(capturePath, executionLines.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  }
   const checkpointIndex = execution.findIndex(event => event.type === 'checkpoint_persisted');
   const calls = execution.filter(event => event.type === 'successful_model_call');
   assert.ok(checkpointIndex >= 0, 'durable checkpoint event emitted');

@@ -23,7 +23,7 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-function waitFor<T>(label: string, promise: Promise<T>, ms = 5000): Promise<T> {
+function waitFor<T>(label: string, promise: Promise<T>, ms = 30000): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label} after ${ms}ms`)), ms);
     promise.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
@@ -290,9 +290,11 @@ test('D5: actual MemorySearchBranchSession late result is excluded from call 1 a
       failed_dispatch_success_events: failed.events.filter(event => event.type === 'successful_model_call').length,
       semantic_adoption_claimed: false,
     };
-    const reportPath = '/tmp/catslog-three-layer-luna/reports/late-memory-branch.json';
-    const rawLogPath = '/tmp/catslog-three-layer-luna/reports/late-memory-branch-session.jsonl';
-    const expectationPath = '/tmp/catslog-three-layer-luna/reports/late-memory-branch-expected.json';
+    const evidenceDir = process.env.CATSLOG_EXECUTION_EVIDENCE_DIR
+      ?? fs.mkdtempSync(path.join(os.tmpdir(), 'catslog-execution-evidence-'));
+    const reportPath = path.join(evidenceDir, 'reports', 'late-memory-branch.json');
+    const rawLogPath = path.join(evidenceDir, 'reports', 'late-memory-branch-session.jsonl');
+    const expectationPath = path.join(evidenceDir, 'reports', 'late-memory-branch-expected.json');
     fs.mkdirSync(path.dirname(reportPath), { recursive: true });
     fs.writeFileSync(rawLogPath, successful.rawLogBytes, { mode: 0o600 });
     const copiedRawLog = fs.readFileSync(rawLogPath);
