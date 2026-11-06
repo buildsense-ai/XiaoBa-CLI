@@ -13,15 +13,23 @@ export function createNameWhitespaceCandidate<T extends PublicationCandidateFile
   const blocking = Array.isArray(report?.issues)
     ? report.issues.filter((issue: any) => issue?.blocking === true)
     : [];
-  if (report?.coverage !== 'complete' || !blocking.length || blocking.some((issue: any) => (
-    issue?.code !== 'metadata.name_whitespace'
-    || issue?.repairPolicy !== 'automatic'
-    || issue?.location?.field !== 'name'
-    || (issue?.location?.relativePath && issue.location.relativePath !== 'SKILL.md')
-  ))) return undefined;
+  const nameIssues = blocking.filter((issue: any) => issue?.code === 'metadata.name_whitespace');
+  if (report?.coverage !== 'complete' || !nameIssues.length || blocking.some((issue: any) => {
+    const location = issue?.location;
+    if (!Number.isInteger(location?.entryIndex) || files[location.entryIndex]?.path !== 'SKILL.md'
+      || (location?.relativePath && location.relativePath !== 'SKILL.md')) return true;
+    if (issue?.code === 'metadata.name_whitespace') {
+      return issue?.category !== 'format' || issue?.repairPolicy !== 'automatic' || location?.field !== 'name';
+    }
+    if (issue?.code === 'metadata.description_missing') {
+      return issue?.category !== 'format' || issue?.repairPolicy !== 'confirmation_required' || location?.field !== 'description'
+        || !nameIssues.some((nameIssue: any) => nameIssue?.location?.entryIndex === location.entryIndex);
+    }
+    return true;
+  })) return undefined;
 
   const candidate = files.map(file => ({ ...file })) as T;
-  for (const issue of blocking) {
+  for (const issue of nameIssues) {
     const index = issue?.location?.entryIndex;
     if (!Number.isInteger(index) || candidate[index]?.path !== 'SKILL.md') return undefined;
     const entry = candidate[index];

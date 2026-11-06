@@ -102,6 +102,90 @@ test('automatic name repair continues into a missing-description draft without c
   assert.match(Buffer.from(originalFiles[0].contentBase64, 'base64').toString('utf8'), /name: " demo " # keep/);
 });
 
+test('repairs name whitespace when Cloud reports it together with a missing description', async () => {
+  const originalText = '---\nname: " demo " # keep\n---\n# Original instructions\n';
+  const originalFiles = [{ path: 'SKILL.md', contentBase64: Buffer.from(originalText).toString('base64') }];
+  let shareCalls = 0;
+  let modelCalls = 0;
+  const sentMessages: string[] = [];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      const candidate = (options as any)?.packageFiles || originalFiles;
+      options?.onPackageCaptured?.(candidate);
+      if (shareCalls === 1) {
+        const error: any = new Error('Rejected by publication preflight.');
+        error.status = 422;
+        error.validation = {
+          reportId: 'report-combined',
+          coverage: 'complete',
+          issues: [
+            { code: 'metadata.description_missing', category: 'format', blocking: true, repairPolicy: 'confirmation_required',
+              location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' } },
+            { code: 'metadata.name_whitespace', category: 'format', blocking: true, repairPolicy: 'automatic',
+              location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' } },
+          ],
+        };
+        throw error;
+      }
+      assert.match(Buffer.from(candidate[0].contentBase64, 'base64').toString('utf8'), /name: "demo" # keep/);
+      assert.match(Buffer.from(candidate[0].contentBase64, 'base64').toString('utf8'), /# Original instructions/);
+      throw validationError('report-description', {
+        code: 'metadata.description_missing',
+        repairPolicy: 'confirmation_required',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+      });
+    },
+  }));
+  const result = await tool.execute({ skillName: 'test-skill' }, {
+    sessionId: 'combined-format-description',
+    conversationHistory: [{ role: 'user', content: '发布 test-skill' }],
+    channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
+    runtimeServices: { aiService: { chat: async () => {
+      modelCalls++;
+      return { content: '{"description":"这是一个一次性测试 Skill。"}' };
+    } } },
+  } as any);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.controlSignal, 'pause_turn');
+  assert.equal(shareCalls, 2);
+  assert.equal(modelCalls, 1);
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0], /report-description/);
+  assert.match(sentMessages[0], /这是一个一次性测试 Skill/);
+  assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
+});
+
+test('does not auto-repair name whitespace when the same report contains a manual security issue', async () => {
+  const originalFiles = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: " demo "\ndescription: safe\n---\n# Test\n').toString('base64') }];
+  let calls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      calls++;
+      options?.onPackageCaptured?.(originalFiles);
+      const error: any = new Error('Rejected by publication preflight.');
+      error.status = 422;
+      error.validation = {
+        reportId: 'report-security-and-format',
+        coverage: 'complete',
+        issues: [
+          { code: 'metadata.name_whitespace', category: 'format', blocking: true, repairPolicy: 'automatic',
+            location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' } },
+          { code: 'security.review_required', category: 'security', blocking: true, repairPolicy: 'manual',
+            location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'content' } },
+        ],
+      };
+      throw error;
+    },
+  }));
+
+  const result = await tool.execute({ skillName: 'test-skill' }, { sessionId: 'security-and-format' } as any);
+  assert.equal(result.ok, false);
+  assert.equal(calls, 1);
+  assert.match(result.message, /security\.review_required/);
+});
+
 test('partial validation reports are never used for automatic repair', async () => {
   let calls = 0;
   const tool = new ShareSkillHubSkillTool(() => ({
