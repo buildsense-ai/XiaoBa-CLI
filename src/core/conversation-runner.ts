@@ -739,7 +739,10 @@ export class ConversationRunner {
             // Private provider replay stays separate from user-visible content.
             providerContent: response.providerContent,
             providerState: response.providerState,
-            __executionNodeRef: `session:${this.toolExecutionContext?.sessionId || this.sessionLabel.trim() || 'runner'}:episode:${this.episodeId ?? 'unknown'}:output:${turns}:0`,
+            __executionNodeRef: `session:${executionSessionId}:episode:${this.episodeId ?? 'unknown'}:model-call:${executionModelCallId}:output:0`,
+            __executionSourceSessionId: this.episodeId ? executionSessionId : undefined,
+            __executionSourceEpisodeId: this.episodeId,
+            __executionSourceModelCallId: this.episodeId ? executionModelCallId : undefined,
             ...(this.episodeId ? { __episodeId: this.episodeId } : {}),
           };
           messages.push(finalAssistantMessage);

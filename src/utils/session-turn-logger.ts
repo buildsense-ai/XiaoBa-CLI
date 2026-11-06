@@ -10,6 +10,7 @@ import type {
   SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
+  SessionOutputLog,
   SessionTurnLogEntry,
 } from './session-log-schema';
 import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
@@ -28,6 +29,7 @@ export type {
   SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
+  SessionOutputLog,
   SessionTurnLogEntry,
 } from './session-log-schema';
 
@@ -47,6 +49,9 @@ export interface LogTurnOptions {
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
   prompt?: SessionPromptTurnLog;
+  outputs?: SessionOutputLog[];
+  outputsContract?: 'session-output/1';
+  outputsComplete?: boolean;
 }
 
 /**
@@ -144,6 +149,11 @@ export class SessionTurnLogger {
           ...tc,
           result: this.truncate(tc.result, MAX_TOOL_RESULT_LENGTH),
         })),
+        ...(options.outputs && options.outputs.length > 0 && {
+          outputs_contract: options.outputsContract,
+          outputs_complete: options.outputsComplete,
+          outputs: options.outputs,
+        }),
       },
       tokens,
       ...(options.prompt && { prompt: options.prompt }),

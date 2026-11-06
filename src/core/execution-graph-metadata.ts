@@ -15,6 +15,17 @@ function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 function contentDigest(content: Message['content']): string { return digest(content); }
+function outputBodyDigest(kind: 'message' | 'tool_call', providerCallID: string, name: string, body: string): string {
+  const hash = createHash('sha256');
+  if (kind === 'message') return hash.update(body, 'utf8').digest('hex');
+  for (const field of [providerCallID, name, body]) {
+    const bytes = Buffer.from(field, 'utf8');
+    const length = Buffer.allocUnsafe(4);
+    length.writeUInt32BE(bytes.length);
+    hash.update(length).update(bytes);
+  }
+  return hash.digest('hex');
+}
 function utf8Bytes(value: string): number { return Buffer.byteLength(value, 'utf8'); }
 
 interface MessageExecutionRef { kind: string; ref: string; identity_state: string; source_kind?: string }
@@ -123,7 +134,10 @@ export function buildExecutionGraphCallEvent(
     }
     outputs.push({
       kind: 'tool_call', node_ref: `provider-call:${call.id}`, provider_call_id: call.id,
-      output_position: index, name: call.function.name,
+      output_position: index,
+      name: call.function.name,
+      body_sha256: outputBodyDigest('tool_call', call.id, call.function.name, call.function.arguments || ''),
+      content_sha256: contentDigest(call.function.arguments || ''),
     });
   }
   if (response.content) {
@@ -131,7 +145,9 @@ export function buildExecutionGraphCallEvent(
     else outputs.push({
       kind: 'message',
       node_ref: options.outputMessageRef || `session:${options.sessionId}:episode:${options.episodeId ?? 'unknown'}:model-call:${modelCallId}:output:0`,
-      output_position: outputs.length, content_sha256: contentDigest(response.content),
+      output_position: outputs.length,
+      content_sha256: contentDigest(response.content),
+      body_sha256: outputBodyDigest('message', '', '', response.content),
     });
   }
   outputsComplete &&= toolCalls.length + (response.content ? 1 : 0) <= MAX_OUTPUTS;
