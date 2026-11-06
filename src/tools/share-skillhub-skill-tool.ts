@@ -235,7 +235,7 @@ export class ShareSkillHubSkillTool implements Tool {
               submission.id || submission.submissionId ? `Submission: ${submission.id || submission.submissionId}` : '',
               submission.status ? `Status: ${submission.status}` : '',
               repaired.change === 'missing-name'
-                ? `The uploaded candidate name was derived from local directory "${repaired.name}". The local SKILL.md was not rewritten.`
+                ? `The uploaded candidate name was derived from local directory "${repaired.name}". The local SKILL.md name and instructions were not rewritten; SkillHub tracking metadata may have been recorded locally.`
                 : 'The uploaded candidate had SKILL.md name whitespace corrected. The local SKILL.md name and instructions were not rewritten.',
               !writeLocalMetadata ? 'The source is outside the configured Skill workspace; no local tracking metadata was written.' : '',
               presentationQueued ? 'A background attempt to generate and publish the Chinese Skill guide has started. It may take several minutes; check SkillHub later for the result.' : '',

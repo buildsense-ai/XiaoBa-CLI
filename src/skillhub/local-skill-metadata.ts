@@ -48,15 +48,18 @@ export function applySkillHubLocalMetadata(markdown: string, metadata: Required<
     [SKILLHUB_METADATA_KEYS.version]: metadata.version,
     [SKILLHUB_METADATA_KEYS.uploadedAt]: metadata.uploadedAt,
   };
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  const match = text.match(/^(---[ \t]*\r?\n)([\s\S]*?)(^---[ \t]*(?:\r?\n|$))/m);
   if (!match) {
     return `---\n${frontmatterLines(fields)}---\n\n${text}`;
   }
-  const head = match[1]
+  const lineEnding = match[1].includes('\r\n') ? '\r\n' : '\n';
+  const head = match[2]
     .split(/\r?\n/)
     .filter(line => !/^skillhub_(author|version|uploaded_at)\s*:/.test(line));
-  const body = text.slice(match[0].length).replace(/^\r?\n/, '');
-  return `---\n${[...head, ...frontmatterLines(fields).trimEnd().split('\n')].filter(Boolean).join('\n')}\n---\n\n${body}`;
+  const body = text.slice(match[0].length);
+  const fieldsText = frontmatterLines(fields).trimEnd().replace(/\n/g, lineEnding);
+  const content = [...head, ...fieldsText.split(lineEnding)].filter(Boolean).join(lineEnding);
+  return `${match[1]}${content}${lineEnding}${match[3]}${body}`;
 }
 
 export function computeLocalSkillContentHash(skillDir: string): string {

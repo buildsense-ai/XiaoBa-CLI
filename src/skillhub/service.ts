@@ -337,7 +337,7 @@ export class SkillHubService {
       || normalizeDirectoryNameToSkillName(sourceDirectoryName)
       || '';
     if (!manifestSkillName) {
-      const error: any = new Error('The local directory name cannot be safely normalized into a Skill name. Rename the folder to a simple ASCII identifier and retry.');
+      const error: any = new Error('The local directory name cannot be safely normalized into a Skill name. Rename the folder to an unambiguous ASCII identifier of at most 72 characters and retry.');
       error.status = 400;
       error.code = 'skillhub.local_skill_name_unrepairable';
       throw error;
@@ -748,7 +748,7 @@ function listLocalSkillNames(): string[] {
       const skill = SkillParser.parse(skillFile, { allowMissingDescription: true, allowMissingName: true });
       names.push(skill.metadata.name || path.basename(path.dirname(skillFile)));
     } catch {
-      names.push(path.basename(path.dirname(skillFile)));
+      continue;
     }
   }
   return Array.from(new Set(names)).sort();

@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import express from 'express';
+import matter from 'gray-matter';
 import type { Server } from 'http';
 import { SkillHubService } from '../src/skillhub/service';
 import { ShareSkillHubSkillTool } from '../src/tools/share-skillhub-skill-tool';
@@ -238,6 +239,35 @@ describe('SkillHub connected install service', () => {
     assert.match(repairedPackageText, /name: "missing-name-sample"/);
     assert.match(repairedPackageText, /# Original instructions/);
     assert.equal(fs.readFileSync(sourceFile, 'utf8'), originalText);
+  });
+
+  test('records tracking metadata without moving an empty frontmatter block into the Skill body', async () => {
+    const app = express();
+    app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app);
+    app.post('/api/skills/share', (_req, res) => res.json({
+      skillHub: { author: 'u1', version: '1.0.0', uploadedAt: '2026-11-06T00:00:00.000Z' },
+      submission: { id: 'submission-empty-frontmatter', status: 'submitted' },
+    }));
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+    const skillRoot = path.join(testRoot, 'skills', 'empty-frontmatter');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const skillFile = path.join(skillRoot, 'SKILL.md');
+    const originalBody = '# Title\n\n---\n\n## Section\nText\n';
+    const originalText = `---\n---\n${originalBody}`;
+    fs.writeFileSync(skillFile, originalText);
+
+    await new SkillHubService().shareLocalSkill({}, { localSkillPath: skillRoot });
+
+    const saved = fs.readFileSync(skillFile, 'utf8');
+    assert.ok(saved.endsWith(originalBody));
+    assert.equal(matter(saved).content, originalBody);
+    assert.match(saved, /skillhub_author: "u1"/);
+    assert.match(saved, /skillhub_version: "1\.0\.0"/);
   });
 
   test('allows an absent name for publication preflight but still rejects explicitly invalid names', () => {
@@ -541,6 +571,30 @@ describe('SkillHub connected install service', () => {
       (error: any) => error?.code === 'skillhub.local_skill_invalid' && error?.status === 400,
     );
     assert.equal(requestCount, 0);
+  });
+
+  test('reports the supported directory-name limit when a missing name cannot be inferred', async () => {
+    const skillRoot = path.join(testRoot, 'skills', 'a'.repeat(73));
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), '---\ndescription: Valid fixture\n---\n# Instructions\n');
+
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: skillRoot }),
+      (error: any) => error?.code === 'skillhub.local_skill_name_unrepairable'
+        && /at most 72 characters/.test(error.message),
+    );
+  });
+
+  test('does not list Skills with an explicitly invalid name as available', async () => {
+    const invalidRoot = path.join(testRoot, 'skills', 'numeric-name');
+    fs.mkdirSync(invalidRoot, { recursive: true });
+    fs.writeFileSync(path.join(invalidRoot, 'SKILL.md'), '---\nname: 12\ndescription: Invalid fixture\n---\n# Instructions\n');
+
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({ skillName: 'missing-skill' }),
+      (error: any) => error?.code === 'skillhub.local_skill_not_found'
+        && !error.message.includes('Available skills: numeric-name'),
+    );
   });
 
   test('logs in, persists session cookie, verifies package, and installs skill files', async () => {

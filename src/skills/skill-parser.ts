@@ -45,9 +45,10 @@ export class SkillParser {
     options: { allowMissingDescription?: boolean; allowMissingName?: boolean },
   ): Skill {
     const hasName = Object.prototype.hasOwnProperty.call(data, 'name');
-    if ((!hasName && !options.allowMissingName)
-      || (hasName && (typeof data.name !== 'string' || !data.name.trim()))
-      || (!options.allowMissingDescription && !data.description)) {
+    if (options.allowMissingName
+      ? (hasName && (typeof data.name !== 'string' || !data.name.trim()))
+        || (!options.allowMissingDescription && !data.description)
+      : (!data.name || (!options.allowMissingDescription && !data.description))) {
       throw new Error(`Invalid skill file: ${filePath}. Missing required fields (name or description).`);
     }
 
@@ -58,9 +59,9 @@ export class SkillParser {
       userInvocable: data.invocable === 'user' || data.invocable === 'both',
     };
 
-    if (options.allowMissingDescription || options.allowMissingName
-      ? (!options.allowMissingName && !metadata.name) || (!options.allowMissingDescription && !metadata.description)
-      : !this.validate(metadata)) {
+    if (options.allowMissingName
+      ? (!options.allowMissingDescription && !metadata.description)
+      : options.allowMissingDescription ? !metadata.name : !this.validate(metadata)) {
       throw new Error(`Invalid skill metadata in file: ${filePath}`);
     }
 
@@ -81,9 +82,10 @@ export class SkillParser {
     options: { allowMissingDescription?: boolean; allowMissingName?: boolean },
   ): Skill {
     const hasName = Object.prototype.hasOwnProperty.call(data, 'name');
-    if ((!hasName && !options.allowMissingName)
-      || (hasName && (typeof data.name !== 'string' || !data.name.trim()))
-      || (!options.allowMissingDescription && !data.description)) {
+    if (options.allowMissingName
+      ? (hasName && (typeof data.name !== 'string' || !data.name.trim()))
+        || (!options.allowMissingDescription && !data.description)
+      : (!data.name || (!options.allowMissingDescription && !data.description))) {
       throw new Error(`Invalid skill file: ${filePath}. Missing required fields (name or description).`);
     }
 
@@ -94,9 +96,9 @@ export class SkillParser {
       userInvocable: data['user-invocable'] !== false,
     };
 
-    if (options.allowMissingDescription || options.allowMissingName
-      ? (!options.allowMissingName && !metadata.name) || (!options.allowMissingDescription && !metadata.description)
-      : !this.validate(metadata)) {
+    if (options.allowMissingName
+      ? (!options.allowMissingDescription && !metadata.description)
+      : options.allowMissingDescription ? !metadata.name : !this.validate(metadata)) {
       throw new Error(`Invalid skill metadata in file: ${filePath}`);
     }
 
