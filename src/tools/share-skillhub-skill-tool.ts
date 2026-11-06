@@ -268,7 +268,7 @@ export class ShareSkillHubSkillTool implements Tool {
     const sessionId = String(context.sessionId || '').trim();
     const entry = files.find(file => file.path === 'SKILL.md');
     if (!reportId || !sessionId || !entry || !createDescriptionCandidate(files, validation, 'validation-only')) return undefined;
-    const resolvedSkillName = normalizeDisplaySkillName(skillName) || skillNameFromFiles(files) || '该 Skill';
+    const resolvedSkillName = skillNameFromFiles(files) || normalizeDisplaySkillName(skillName) || '当前 Skill';
     const aiService = context.runtimeServices?.aiService;
     if (!aiService) return undefined;
 
@@ -312,7 +312,7 @@ export class ShareSkillHubSkillTool implements Tool {
       this.pendingDescriptions.delete(oldest);
     }
     const pending: PendingDescriptionConfirmation = {
-      sessionId, reportId, skillName: resolvedSkillName, localSkillPath, writeLocalMetadata,
+      sessionId, reportId, skillName, localSkillPath, writeLocalMetadata,
       notes: String(args?.notes || ''), files: files.map(file => ({ ...file })),
       validation: structuredClone(validation), description,
       initialUserMessage: latestUserMessageText(context),
