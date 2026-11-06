@@ -5,6 +5,7 @@ import * as path from 'path';
 import { test } from 'node:test';
 import { ShareSkillHubSkillTool } from '../src/tools/share-skillhub-skill-tool';
 import { SYNTHETIC_USER_MESSAGE_FLAGS } from '../src/core/session-fork';
+import { normalizeDirectoryNameToSkillName } from '../src/skillhub/publication-candidate';
 
 function validationError(
   reportId: string,
@@ -58,6 +59,107 @@ test('automatic name repair retries with a private candidate and preserves comme
   assert.equal(originalFiles[0].contentBase64, originalContent);
   assert.match(Buffer.from(originalFiles[0].contentBase64, 'base64').toString('utf8'), /name: " demo " # keep/);
   assert.match(result.content, /local SKILL.md name and instructions were not rewritten/);
+});
+
+test('fills only a missing name from a safely normalized local directory in the upload copy', async () => {
+  const originalText = '---\ndescription: safe\n---\n# Original instructions\n';
+  const originalFiles = [{ path: 'SKILL.md', contentBase64: Buffer.from(originalText).toString('base64') }];
+  let calls = 0;
+  let uploaded = '';
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      calls++;
+      const files = (options as any)?.packageFiles || originalFiles;
+      options?.onPackageCaptured?.(files, 'My Skill_v2');
+      if (calls === 1) throw validationError('report-name-missing', {
+        code: 'metadata.name_missing',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' },
+      });
+      uploaded = Buffer.from(files[0].contentBase64, 'base64').toString('utf8');
+      return { submission: { id: 'submission-name-derived' }, skill: { name: 'my-skill-v2', id: 'my-skill-v2' } };
+    },
+  }));
+
+  const result = await tool.execute({ localSkillPath: '/tmp/My Skill_v2' }, { sessionId: 'missing-name-repair' } as any);
+  assert.equal(result.ok, true);
+  assert.equal(calls, 2);
+  assert.match(uploaded, /name: "my-skill-v2"/);
+  assert.match(uploaded, /# Original instructions/);
+  assert.match(String(result.content), /derived from local directory/);
+  assert.equal(Buffer.from(originalFiles[0].contentBase64, 'base64').toString('utf8'), originalText);
+});
+
+test('does not infer a missing name from a directory that cannot be normalized unambiguously', async () => {
+  const originalFiles = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\ndescription: safe\n---\n# Test\n').toString('base64') }];
+  let calls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      calls++;
+      options?.onPackageCaptured?.(originalFiles, '文档读取');
+      throw validationError('report-name-ambiguous', {
+        code: 'metadata.name_missing',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' },
+      });
+    },
+  }));
+  const result = await tool.execute({ localSkillPath: '/tmp/文档读取' }, { sessionId: 'missing-name-ambiguous' } as any);
+  assert.equal(result.ok, false);
+  assert.equal(calls, 1);
+  assert.equal(normalizeDirectoryNameToSkillName('文档读取'), undefined);
+  assert.equal(normalizeDirectoryNameToSkillName('a'.repeat(72)), 'a'.repeat(72));
+  assert.equal(normalizeDirectoryNameToSkillName('a'.repeat(73)), undefined);
+});
+
+test('adds a missing name before drafting a separately confirmed description', async () => {
+  const originalText = '---\n---\n# Original instructions\n';
+  const originalFiles = [{ path: 'SKILL.md', contentBase64: Buffer.from(originalText).toString('base64') }];
+  let shareCalls = 0;
+  let modelCalls = 0;
+  const sentMessages: string[] = [];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      const candidate = (options as any)?.packageFiles || originalFiles;
+      options?.onPackageCaptured?.(candidate, 'Missing Name Sample');
+      if (shareCalls === 1) {
+        const error: any = new Error('Rejected by publication preflight.');
+        error.validation = {
+          reportId: 'report-missing-name-and-description',
+          coverage: 'complete',
+          issues: [
+            { code: 'metadata.name_missing', category: 'format', blocking: true, repairPolicy: 'automatic',
+              location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' } },
+            { code: 'metadata.description_missing', category: 'format', blocking: true, repairPolicy: 'confirmation_required',
+              location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' } },
+          ],
+        };
+        throw error;
+      }
+      assert.match(Buffer.from(candidate[0].contentBase64, 'base64').toString('utf8'), /name: "missing-name-sample"/);
+      throw validationError('report-description-after-name', {
+        code: 'metadata.description_missing',
+        repairPolicy: 'confirmation_required',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+      });
+    },
+  }));
+  const result = await tool.execute({ localSkillPath: '/tmp/Missing Name Sample' }, {
+    sessionId: 'missing-name-and-description',
+    conversationHistory: [{ role: 'user', content: '发布这个 Skill' }],
+    channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
+    runtimeServices: { aiService: { chat: async () => {
+      modelCalls++;
+      return { content: '{"description":"用于验证 Skill 发布流程的一次性测试。"}' };
+    } } },
+  } as any);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.controlSignal, 'pause_turn');
+  assert.equal(shareCalls, 2);
+  assert.equal(modelCalls, 1);
+  assert.match(sentMessages[0], /missing-name-sample/);
+  assert.match(sentMessages[0], /用于验证 Skill 发布流程/);
+  assert.equal(Buffer.from(originalFiles[0].contentBase64, 'base64').toString('utf8'), originalText);
 });
 
 test('automatic name repair continues into a missing-description draft without changing the local Skill', async () => {

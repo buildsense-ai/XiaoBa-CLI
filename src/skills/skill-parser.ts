@@ -11,7 +11,7 @@ export class SkillParser {
    * @param filePath - SKILL.md 文件路径
    * @returns Skill 对象
    */
-  static parse(filePath: string, options: { allowMissingDescription?: boolean } = {}): Skill {
+  static parse(filePath: string, options: { allowMissingDescription?: boolean; allowMissingName?: boolean } = {}): Skill {
     try {
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const { data, content } = matter(fileContent);
@@ -42,20 +42,25 @@ export class SkillParser {
     filePath: string,
     data: any,
     content: string,
-    options: { allowMissingDescription?: boolean },
+    options: { allowMissingDescription?: boolean; allowMissingName?: boolean },
   ): Skill {
-    if (!data.name || (!options.allowMissingDescription && !data.description)) {
+    const hasName = Object.prototype.hasOwnProperty.call(data, 'name');
+    if ((!hasName && !options.allowMissingName)
+      || (hasName && (typeof data.name !== 'string' || !data.name.trim()))
+      || (!options.allowMissingDescription && !data.description)) {
       throw new Error(`Invalid skill file: ${filePath}. Missing required fields (name or description).`);
     }
 
     const metadata: SkillMetadata = {
-      name: data.name,
+      name: typeof data.name === 'string' ? data.name : '',
       description: typeof data.description === 'string' ? data.description : '',
       argumentHint: data['argument-hint'] || data.argumentHint,
       userInvocable: data.invocable === 'user' || data.invocable === 'both',
     };
 
-    if (options.allowMissingDescription ? !metadata.name : !this.validate(metadata)) {
+    if (options.allowMissingDescription || options.allowMissingName
+      ? (!options.allowMissingName && !metadata.name) || (!options.allowMissingDescription && !metadata.description)
+      : !this.validate(metadata)) {
       throw new Error(`Invalid skill metadata in file: ${filePath}`);
     }
 
@@ -73,20 +78,25 @@ export class SkillParser {
     filePath: string,
     data: any,
     content: string,
-    options: { allowMissingDescription?: boolean },
+    options: { allowMissingDescription?: boolean; allowMissingName?: boolean },
   ): Skill {
-    if (!data.name || (!options.allowMissingDescription && !data.description)) {
+    const hasName = Object.prototype.hasOwnProperty.call(data, 'name');
+    if ((!hasName && !options.allowMissingName)
+      || (hasName && (typeof data.name !== 'string' || !data.name.trim()))
+      || (!options.allowMissingDescription && !data.description)) {
       throw new Error(`Invalid skill file: ${filePath}. Missing required fields (name or description).`);
     }
 
     const metadata: SkillMetadata = {
-      name: data.name,
+      name: typeof data.name === 'string' ? data.name : '',
       description: typeof data.description === 'string' ? data.description : '',
       argumentHint: data['argument-hint'],
       userInvocable: data['user-invocable'] !== false,
     };
 
-    if (options.allowMissingDescription ? !metadata.name : !this.validate(metadata)) {
+    if (options.allowMissingDescription || options.allowMissingName
+      ? (!options.allowMissingName && !metadata.name) || (!options.allowMissingDescription && !metadata.description)
+      : !this.validate(metadata)) {
       throw new Error(`Invalid skill metadata in file: ${filePath}`);
     }
 

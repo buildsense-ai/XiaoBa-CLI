@@ -22,10 +22,14 @@ import {
 import { listInstalledSkillHubSkills } from './install-marker';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
+import matter from 'gray-matter';
 import {
   isConfirmedDescriptionCandidate,
+  isNameMissingAndConfirmedDescriptionCandidate,
+  isNameMissingOnlyChange,
   isNameWhitespaceAndConfirmedDescriptionCandidate,
   isNameWhitespaceOnlyChange,
+  normalizeDirectoryNameToSkillName,
 } from './publication-candidate';
 import type {
   SkillHubAuthState,
@@ -257,7 +261,7 @@ export class SkillHubService {
       localSkillPath?: string;
       packageFiles?: Array<{ path: string; contentBase64: string }>;
       confirmedDescription?: string;
-      onPackageCaptured?: (files: Array<{ path: string; contentBase64: string }>) => void;
+      onPackageCaptured?: (files: Array<{ path: string; contentBase64: string }>, sourceDirectoryName?: string) => void;
     } = {},
   ): Promise<any> {
     const skillName = String(input.skillName || input.skill || input.name || '').trim();
@@ -302,6 +306,7 @@ export class SkillHubService {
 
     const { skill } = localSkill;
     const localPath = path.dirname(skill.filePath);
+    const sourceDirectoryName = path.basename(localPath);
     let files: Array<{ path: string; contentBase64: string }>;
     try {
       files = collectBotSkillPackageFiles(localPath).map(({ path: filePath, contentBase64 }) => ({
@@ -324,11 +329,19 @@ export class SkillHubService {
       throw error;
     }
     if (options.packageFiles) {
-      files = applyLocalPublicationCandidate(files, options.packageFiles, options.confirmedDescription);
+      files = applyLocalPublicationCandidate(files, options.packageFiles, options.confirmedDescription, sourceDirectoryName);
     }
-    options.onPackageCaptured?.(files);
-    const manifestSkillName = String(skill.metadata.name).trim();
-    if (!manifestSkillName) throw localSkillValidationFailed();
+    options.onPackageCaptured?.(files, sourceDirectoryName);
+    const manifestSkillName = readSkillNameFromPackage(files)
+      || String(skill.metadata.name || '').trim()
+      || normalizeDirectoryNameToSkillName(sourceDirectoryName)
+      || '';
+    if (!manifestSkillName) {
+      const error: any = new Error('The local directory name cannot be safely normalized into a Skill name. Rename the folder to a simple ASCII identifier and retry.');
+      error.status = 400;
+      error.code = 'skillhub.local_skill_name_unrepairable';
+      throw error;
+    }
     await this.requireAuthenticatedUser();
     const submission = await this.client.quickShare({
       manifest: {
@@ -363,9 +376,9 @@ export class SkillHubService {
           || submission?.upload?.skillId
           || submission?.packageVersion?.skillId
           || submission?.submission?.normalizedManifest?.id
-          || skill.metadata.name,
+          || manifestSkillName,
         name: manifestSkillName,
-        description: skill.metadata.description,
+        description: options.confirmedDescription || skill.metadata.description,
         path: localPath,
       },
       submission: submission?.submission || submission,
@@ -424,6 +437,7 @@ function applyLocalPublicationCandidate(
   original: Array<{ path: string; contentBase64: string }>,
   candidate: Array<{ path: string; contentBase64: string }>,
   confirmedDescription?: string,
+  sourceDirectoryName = '',
 ): Array<{ path: string; contentBase64: string }> {
   const reject = (): never => {
     const error: any = new Error('The publication candidate does not match the captured local Skill package.');
@@ -443,12 +457,34 @@ function applyLocalPublicationCandidate(
     const originalContent = originalByPath.get(file.path)!;
     if (file.path !== 'SKILL.md' && file.contentBase64 !== originalContent) return reject();
     if (file.path === 'SKILL.md' && file.contentBase64 !== originalContent
+      && !isNameMissingOnlyChange(decodeBase64Utf8(originalContent), decodeBase64Utf8(file.contentBase64), sourceDirectoryName)
       && !isNameWhitespaceOnlyCandidate(originalContent, file.contentBase64)
       && !(confirmedDescription && (isConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription)
-        || isNameWhitespaceAndConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription)))) return reject();
+        || isNameWhitespaceAndConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription)
+        || isNameMissingAndConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription, sourceDirectoryName)))) return reject();
   }
   if (!seen.has('SKILL.md')) return reject();
   return candidate.map(file => ({ path: file.path, contentBase64: file.contentBase64 }));
+}
+
+function decodeBase64Utf8(value: string): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(value, 'base64'));
+  } catch {
+    return '';
+  }
+}
+
+function readSkillNameFromPackage(files: Array<{ path: string; contentBase64: string }>): string {
+  const entry = files.find(file => file.path === 'SKILL.md');
+  if (!entry) return '';
+  try {
+    const text = decodeBase64Utf8(entry.contentBase64);
+    const name = matter(text).data?.name;
+    return typeof name === 'string' ? name.trim() : '';
+  } catch {
+    return '';
+  }
 }
 
 function isNameWhitespaceOnlyCandidate(beforeBase64: string, afterBase64: string): boolean {
@@ -667,7 +703,7 @@ function findLocalShareableSkill(skillName: string): { skill: Skill } | undefine
   const matches: Skill[] = [];
   for (const skillFile of listLocalSkillFiles()) {
     try {
-      const skill = SkillParser.parse(skillFile);
+      const skill = SkillParser.parse(skillFile, { allowMissingDescription: true, allowMissingName: true });
       const dirName = path.basename(path.dirname(skillFile));
       if (skill.metadata.name === skillName || dirName === skillName) {
         matches.push(skill);
@@ -700,7 +736,7 @@ function findLocalShareableSkillAtPath(
   }
   const skillStat = fs.lstatSync(skillFile);
   if (skillStat.isSymbolicLink() || !skillStat.isFile()) return undefined;
-  const skill = SkillParser.parse(skillFile, { allowMissingDescription: true });
+  const skill = SkillParser.parse(skillFile, { allowMissingDescription: true, allowMissingName: true });
   const dirName = path.basename(root);
   return !skillName || skill.metadata.name === skillName || dirName === skillName ? { skill } : undefined;
 }
@@ -709,8 +745,8 @@ function listLocalSkillNames(): string[] {
   const names: string[] = [];
   for (const skillFile of listLocalSkillFiles()) {
     try {
-      const skill = SkillParser.parse(skillFile);
-      names.push(skill.metadata.name);
+      const skill = SkillParser.parse(skillFile, { allowMissingDescription: true, allowMissingName: true });
+      names.push(skill.metadata.name || path.basename(path.dirname(skillFile)));
     } catch {
       names.push(path.basename(path.dirname(skillFile)));
     }
