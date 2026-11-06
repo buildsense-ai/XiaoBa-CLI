@@ -18,6 +18,7 @@ import { SkillManager } from '../skills/skill-manager';
 import type { TurnSkillSnapshotStore } from '../skills/turn-skill-snapshot';
 import {
   ChannelCallbacks,
+  CurrentUserApprovalInput,
   DeviceRpcTransport,
   GroupRosterEntry,
   TargetRoutes,
@@ -180,6 +181,8 @@ export interface HandleMessageOptions {
   sessionRoute?: SessionRoute;
   /** 当前 turn 的可信执行身份 */
   executionScope?: ExecutionScope;
+  /** Trusted speaker metadata kept separate from user-controlled message text. */
+  currentUserApprovalInputs?: CurrentUserApprovalInput[] | null;
   /** 当前 turn 的短期 Artifact context ref；不进入模型消息或持久历史。 */
   artifactContextRef?: string;
   /** 当前 turn 的短期 Artifact task ref；不进入模型消息或持久历史。 */
@@ -726,6 +729,7 @@ export class AgentSession {
       let channel: ChannelCallbacks | undefined;
       let sessionRoute: SessionRoute | undefined;
       let executionScope: ExecutionScope | undefined;
+      let currentUserApprovalInputs: CurrentUserApprovalInput[] | null | undefined;
       let artifactContextRef: string | undefined;
       let artifactTaskRef: string | undefined;
       let skillConnectorGrants: SkillConnectorGrant[] | undefined;
@@ -746,6 +750,7 @@ export class AgentSession {
           'channel' in callbacksOrOptions
           || 'sessionRoute' in callbacksOrOptions
           || 'executionScope' in callbacksOrOptions
+          || 'currentUserApprovalInputs' in callbacksOrOptions
           || 'artifactContextRef' in callbacksOrOptions
           || 'artifactTaskRef' in callbacksOrOptions
           || 'skillConnectorGrants' in callbacksOrOptions
@@ -766,6 +771,7 @@ export class AgentSession {
           channel = opts.channel;
           sessionRoute = opts.sessionRoute;
           executionScope = opts.executionScope;
+          currentUserApprovalInputs = opts.currentUserApprovalInputs;
           artifactContextRef = opts.artifactContextRef;
           artifactTaskRef = opts.artifactTaskRef;
           skillConnectorGrants = opts.skillConnectorGrants;
@@ -894,6 +900,7 @@ export class AgentSession {
           channel,
           sessionRoute,
           executionScope,
+          currentUserApprovalInputs,
           artifactContextRef,
           artifactTaskRef,
           skillConnectorGrants,

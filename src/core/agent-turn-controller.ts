@@ -15,6 +15,7 @@ import type {
 } from '../types/session-identity';
 import {
   ChannelCallbacks,
+  CurrentUserApprovalInput,
   DeviceRpcTransport,
   GroupRosterEntry,
   TargetRoutes,
@@ -205,6 +206,7 @@ export interface RunAgentTurnParams {
   channel?: ChannelCallbacks;
   sessionRoute?: SessionRoute;
   executionScope?: ExecutionScope;
+  currentUserApprovalInputs?: CurrentUserApprovalInput[] | null;
   artifactContextRef?: string;
   artifactTaskRef?: string;
   skillConnectorGrants?: SkillConnectorGrant[];
@@ -402,6 +404,8 @@ export class AgentTurnController {
         targetRoutes: params.targetRoutes,
         localFileGrants: params.localFileGrants,
         executionContext: turnContext.executionContext,
+        currentUserInput: params.runtimeObservationSource ? null : params.input,
+        currentUserApprovalInputs: params.runtimeObservationSource ? null : params.currentUserApprovalInputs,
         pendingUserInputProvider: params.pendingUserInputProvider,
         confirmToolExecution: params.callbacks?.confirmToolExecution,
         episodeId,
@@ -586,6 +590,8 @@ export class AgentTurnController {
     groupRoster?: GroupRosterEntry[];
     localFileGrants?: ScopedLocalFileGrant[];
     executionContext?: import('./runtime-context-builder').ExecutionContextSnapshot;
+    currentUserInput?: string | ContentBlock[] | null;
+    currentUserApprovalInputs?: CurrentUserApprovalInput[] | null;
     pendingUserInputProvider?: PendingUserInputProvider;
     confirmToolExecution?: AgentTurnCallbacks['confirmToolExecution'];
     episodeId?: string;
@@ -640,6 +646,8 @@ export class AgentTurnController {
           targetRoutes: options.targetRoutes,
           groupRoster: options.groupRoster,
           executionContext: options.executionContext,
+          currentUserInput: options.currentUserInput,
+          currentUserApprovalInputs: options.currentUserApprovalInputs,
           localFileGrants: options.localFileGrants,
           confirmToolExecution: options.confirmToolExecution,
         },

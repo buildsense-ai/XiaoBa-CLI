@@ -119,12 +119,17 @@ test('没登录时不发任何请求（用户没登录就不该打扰平台）',
   supervisor.stop();
 });
 
-test('账号态失效（401）时停止认领而不是反复刷接口', async () => {
+test('账号态失效（401）后退避：安静期内不重复换券，也不去 claim', async () => {
   let sessionCalls = 0;
+  let claimCalls = 0;
   const { fetchImpl } = createFakeServer({
     '/session': () => {
       sessionCalls += 1;
       return { status: 401, body: { error: 'invalid or expired token' } };
+    },
+    '/claim': () => {
+      claimCalls += 1;
+      return { body: { runs: [] } };
     },
   });
   const supervisor = createServiceWorkerSupervisor({
@@ -135,8 +140,34 @@ test('账号态失效（401）时停止认领而不是反复刷接口', async ()
   });
   assert.equal(await supervisor.runOnce(), 0);
   assert.equal(await supervisor.runOnce(), 0);
-  // 每轮都尝试换券（用户重新登录后自然恢复），但不会去调 claim。
-  assert.equal(sessionCalls, 2);
+  // 被拒是账号态问题：安静期内（默认 30s）不再问平台，也不该去 claim。
+  assert.equal(sessionCalls, 1);
+  assert.equal(claimCalls, 0);
+  supervisor.stop();
+});
+
+test('退避期过后自动重试，登录态恢复就继续认领（不需要重启 worker）', async () => {
+  let sessionCalls = 0;
+  const { fetchImpl } = createFakeServer({
+    '/session': () => {
+      sessionCalls += 1;
+      if (sessionCalls === 1) return { status: 403, body: { error: 'forbidden' } };
+      return { body: { token: 'ticket-2', expires_at: new Date(Date.now() + 3600_000).toISOString() } };
+    },
+    '/claim': () => ({ body: { runs: [] } }),
+  });
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w2',
+    fetchImpl,
+    logger: silentLogger,
+    authBlockedBackoffMs: 20,
+  });
+  assert.equal(await supervisor.runOnce(), 0);
+  assert.equal(sessionCalls, 1);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(await supervisor.runOnce(), 0);
+  assert.equal(sessionCalls, 2, '退避结束后应重新换券');
   supervisor.stop();
 });
 
@@ -545,4 +576,106 @@ test('真实超时：整条命令的进程树被杀掉，不留孤儿继续跑',
   if (survived) fs.rmSync(marker, { force: true });
   assert.equal(survived, false, 'the command process tree must be killed, not left running');
   supervisor.stop();
+});
+
+// 2026-11-05 线上：`POST /api/service-worker/session` 累计 36.6 万次 403。
+// 原因不是平台被打，而是客户端把「账号态被拒」当成「这一轮没活儿」，
+// 每 2 秒再问一次。这里锁住「被拒之后要退避」。
+test('账号态被拒（403）后退避：不再按轮询间隔反复打 /session', async () => {
+  const { fetchImpl, requests } = createFakeServer({
+    '/session': () => ({ status: 403, body: { error: 'forbidden' } }),
+  });
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w-backoff',
+    fetchImpl,
+    logger: silentLogger,
+    pollIntervalMs: 20,
+    instanceHeartbeatMs: 1000,
+  });
+
+  supervisor.start();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  supervisor.stop();
+
+  const sessionCalls = requests.filter((request) => request.path.endsWith('/session')).length;
+  assert.ok(
+    sessionCalls <= 2,
+    `403 之后应该进入退避安静期，实际在 200ms 内打了 ${sessionCalls} 次 /session`,
+  );
+});
+
+// 线上实测：25 台空闲 worker 让 /api/service-worker/claim 稳定 742 次/分钟（全是空转）。
+// 空闲越久越该钝，但不能影响「有活时够快」。注意 pollIntervalMs 有 200ms 下限。
+test('空闲退避：长时间没活时，claim 的轮询间隔被拉长', async () => {
+  const { fetchImpl, requests } = createFakeServer({
+    '/session': () => ({ body: { token: 'ticket-1', expires_at: new Date(Date.now() + 3600_000).toISOString() } }),
+    '/claim': () => ({ body: { runs: [] } }),
+  });
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w-idle',
+    fetchImpl,
+    logger: silentLogger,
+    pollIntervalMs: 200,
+    idleAfterMs: 200,
+    idleMaxAfterMs: 1000,
+    idlePollIntervalMs: 800,
+    idlePollMaxIntervalMs: 2000,
+  });
+
+  supervisor.start();
+  await new Promise((resolve) => setTimeout(resolve, 3500));
+  supervisor.stop();
+
+  const claims = requests.filter((request) => request.path.endsWith('/claim')).length;
+  // 不退避：3500 / 200 ≈ 17 次；退避后约 4 次（0 / 0.2s / 1.0s / 3.0s）。
+  assert.ok(claims <= 8, `3500ms 内 claim 了 ${claims} 次，说明退避没生效`);
+  assert.ok(claims >= 2, `只 claim 了 ${claims} 次，退避把轮询彻底停掉了`);
+});
+
+// 先空闲到退避（200ms → 800ms → 2000ms），第 4 次 claim 才来活：
+// 跑完之后必须立刻回到 200ms，而不是被刚才的阶梯拖成 2000ms 一次。
+test('领到活之后立刻恢复灵敏（不会被上一次的空闲阶梯拖慢）', async () => {
+  let claimCalls = 0;
+  const { fetchImpl } = createFakeServer({
+    '/session': () => ({ body: { token: 'ticket-1', expires_at: new Date(Date.now() + 3600_000).toISOString() } }),
+    '/claim': () => {
+      claimCalls += 1;
+      if (claimCalls === 4) {
+        return {
+          body: {
+            runs: [withCommand({ run_id: 'run_1', session_id: 'sess_1', agent_slug: 'my-agent', input: { text: 'hi' } })],
+          },
+        };
+      }
+      return { body: { runs: [] } };
+    },
+    '/complete': () => ({ body: { ok: true } }),
+  });
+  const exec: ExecCommand = async () => ({
+    stdout: JSON.stringify({ output: { text: 'done' }, usage: { prompt_tokens: 1 } }),
+    stderr: '',
+    exitCode: 0,
+  });
+  const supervisor = createServiceWorkerSupervisor({
+    resolveAuth: authOk,
+    instanceId: 'w-busy',
+    fetchImpl,
+    execImpl: exec,
+    logger: silentLogger,
+    pollIntervalMs: 200,
+    idleAfterMs: 200,
+    idleMaxAfterMs: 400,
+    idlePollIntervalMs: 800,
+    idlePollMaxIntervalMs: 2000,
+  });
+
+  supervisor.start();
+  await new Promise((resolve) => setTimeout(resolve, 4600));
+  supervisor.stop();
+
+  // 节奏：0（空）→ 0.2s（空，进 800ms 档）→ 1.0s（空，进 2000ms 档）→ 3.0s（来活，跑完）
+  // → 之后每 200ms 一次，到 4s 大约 8 次。不重置的话 3.0s 后还要等 2000ms，只有 4 次。
+  assert.ok(claimCalls >= 7, `执行完一单后只 claim 了 ${claimCalls} 次，退避没被重置`);
 });

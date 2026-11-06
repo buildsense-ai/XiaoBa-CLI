@@ -4,7 +4,7 @@ import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { DeviceGrantLease, DEVICE_GRANT_HEARTBEAT_MS } from './device-grant-lease';
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
 import type { ScopedDeviceGrant, ScopedDeviceSelection, ScopedLocalFileGrant } from '../types/session-identity';
-import type { GroupRosterEntry, TargetRoutes } from '../types/tool';
+import type { CurrentUserApprovalInput, GroupRosterEntry, TargetRoutes } from '../types/tool';
 import { AIService } from '../utils/ai-service';
 import { ToolCall, ToolDefinition, ToolExecutionContext, ToolExecutor, ToolResult, ToolTranscriptMode } from '../types/tool';
 import { AIRequestOptions, StreamCallbacks, StreamRetryInfo } from '../providers/provider';
@@ -158,6 +158,7 @@ export interface RunResult {
 
 export interface PendingUserInput {
   content: string | ContentBlock[];
+  currentUserApprovalInputs?: CurrentUserApprovalInput[] | null;
   /** Replaces the current turn's short-lived Artifact context ref when present, including explicit undefined. */
   artifactContextRef?: string;
   skillConnectorGrants?: import('../types/session-identity').SkillConnectorGrant[];
@@ -978,6 +979,13 @@ export class ConversationRunner {
     if (this.toolExecutionContext?.abortSignal?.aborted) return false;
 
     const content = isPendingUserInput(pending) ? pending.content : pending;
+    this.toolExecutionContext = {
+      ...(this.toolExecutionContext || {}),
+      currentUserInput: content,
+      ...(isPendingUserInput(pending) && Object.prototype.hasOwnProperty.call(pending, 'currentUserApprovalInputs')
+        ? { currentUserApprovalInputs: pending.currentUserApprovalInputs }
+        : { currentUserApprovalInputs: null }),
+    };
     let shouldRefreshRuntimeContext = false;
     if (isPendingUserInput(pending) && Object.prototype.hasOwnProperty.call(pending, 'artifactContextRef')) {
       this.toolExecutionContext = {

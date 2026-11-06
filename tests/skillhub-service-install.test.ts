@@ -7,6 +7,7 @@ import * as path from 'path';
 import express from 'express';
 import type { Server } from 'http';
 import { SkillHubService } from '../src/skillhub/service';
+import { ShareSkillHubSkillTool } from '../src/tools/share-skillhub-skill-tool';
 import { collectBotSkillPackageFiles } from '../src/bot-skills/local-manifest';
 import type { SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from '../src/skillhub/trusted-keys';
@@ -191,6 +192,73 @@ describe('SkillHub connected install service', () => {
       packageFiles,
     });
     assert.equal(success.skill.name, 'whitespace-name');
+  });
+
+  test('publishes a name-normalized candidate after the user confirms its missing-description draft', async () => {
+    const uploaded: any[] = [];
+    const app = express();
+    app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app);
+    app.post('/api/skills/share', (req, res) => {
+      uploaded.push(req.body);
+      const reportId = uploaded.length === 1
+        ? '00000000-0000-4000-8000-000000000101'
+        : '00000000-0000-4000-8000-000000000102';
+      const issue = uploaded.length === 1
+        ? { code: 'metadata.name_whitespace', category: 'format', repairPolicy: 'automatic', field: 'name', message: 'trim name' }
+        : { code: 'metadata.description_missing', category: 'format', repairPolicy: 'confirmation_required', field: 'description', message: 'add description' };
+      if (uploaded.length < 3) {
+        return res.status(422).json({ error: { code: 'skillhub.publish_validation_failed', message: 'Rejected.', validation: {
+          schemaVersion: '1', ruleVersion: 'skillhub-publish-v1.0.1', profile: 'skillhub-publish-v1', reportId,
+          outcome: 'rejected', coverage: 'complete', candidateHash: 'a'.repeat(64), limitsFingerprint: 'b'.repeat(64),
+          issues: [{ ...issue, blocking: true, location: { entryIndex: 0, relativePath: 'SKILL.md', field: issue.field } }],
+          truncated: false, nextAction: 'review_report',
+        } } });
+      }
+      return res.json({ submission: { id: 'submission-combined', status: 'submitted' } });
+    });
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+    const skillRoot = path.join(testRoot, 'skills', 'format-and-description');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const skillPath = path.join(skillRoot, 'SKILL.md');
+    const originalText = '---\nname: " format-and-description " # keep\n---\n# Original instructions\n';
+    fs.writeFileSync(skillPath, originalText);
+    const realService = new SkillHubService();
+    const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: realService.shareLocalSkill.bind(realService) }));
+    const history: any[] = [{ role: 'user', content: '发布这个 skill' }];
+    const sentMessages: string[] = [];
+    const context: any = {
+      sessionId: 'format-and-description-confirmation',
+      conversationHistory: history,
+      channel: { chatId: 'test-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
+      runtimeServices: { aiService: { chat: async () => ({
+        content: '{"description":"用于整理示例文档的一次性测试 Skill。"}',
+      }) } },
+    };
+
+    const draft = await tool.execute({ localSkillPath: skillRoot }, context);
+    assert.equal(draft.ok, true);
+    assert.equal(draft.controlSignal, 'pause_turn');
+    assert.equal(uploaded.length, 2);
+    assert.match(sentMessages[0], /name 首尾空白/);
+    assert.match(Buffer.from(uploaded[1].source.files[0].contentBase64, 'base64').toString('utf8'), /name: "format-and-description" # keep/);
+
+    history.push({ role: 'user', content: '确认使用这条说明并发布' });
+    const published = await tool.execute({ confirmDescription: true,
+      descriptionReportId: '00000000-0000-4000-8000-000000000102',
+      confirmedDescription: '用于整理示例文档的一次性测试 Skill。' }, context);
+    assert.equal(published.ok, true);
+    assert.equal(uploaded.length, 3);
+    const submittedEntry = uploaded[2].source.files.find((file: any) => file.path === 'SKILL.md');
+    const submittedText = Buffer.from(submittedEntry.contentBase64, 'base64').toString('utf8');
+    assert.match(submittedText, /name: "format-and-description" # keep/);
+    assert.match(submittedText, /description: "用于整理示例文档的一次性测试 Skill。"/);
+    assert.match(submittedText, /# Original instructions/);
+    assert.equal(fs.readFileSync(skillPath, 'utf8'), originalText);
   });
 
   test('publishes an explicitly supplied Skill path outside the configured workspace without changing the source', async () => {

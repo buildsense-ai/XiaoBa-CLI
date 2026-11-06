@@ -22,7 +22,11 @@ import {
 import { listInstalledSkillHubSkills } from './install-marker';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
-import { isNameWhitespaceOnlyChange } from './publication-candidate';
+import {
+  isConfirmedDescriptionCandidate,
+  isNameWhitespaceAndConfirmedDescriptionCandidate,
+  isNameWhitespaceOnlyChange,
+} from './publication-candidate';
 import type {
   SkillHubAuthState,
   SkillHubInstallResult,
@@ -252,6 +256,7 @@ export class SkillHubService {
       writeLocalMetadata?: boolean;
       localSkillPath?: string;
       packageFiles?: Array<{ path: string; contentBase64: string }>;
+      confirmedDescription?: string;
       onPackageCaptured?: (files: Array<{ path: string; contentBase64: string }>) => void;
     } = {},
   ): Promise<any> {
@@ -319,7 +324,7 @@ export class SkillHubService {
       throw error;
     }
     if (options.packageFiles) {
-      files = applyLocalPublicationCandidate(files, options.packageFiles);
+      files = applyLocalPublicationCandidate(files, options.packageFiles, options.confirmedDescription);
     }
     options.onPackageCaptured?.(files);
     const manifestSkillName = String(skill.metadata.name).trim();
@@ -331,8 +336,9 @@ export class SkillHubService {
         name: manifestSkillName,
         displayName: manifestSkillName,
         version: '1.0.0',
-        ...(skill.metadata.description.trim() ? { description: skill.metadata.description } : {}),
-        keywords: [manifestSkillName, ...splitWords(skill.metadata.description)].slice(0, 8),
+        ...((options.confirmedDescription || skill.metadata.description).trim()
+          ? { description: options.confirmedDescription || skill.metadata.description } : {}),
+        keywords: [manifestSkillName, ...splitWords(options.confirmedDescription || skill.metadata.description)].slice(0, 8),
         triggerExamples: skill.metadata.argumentHint ? [`/${manifestSkillName} ${skill.metadata.argumentHint}`] : [`/${manifestSkillName}`],
         minAgentVersion: '0.0.0',
         platforms: ['windows', 'macos', 'linux'],
@@ -417,6 +423,7 @@ export class SkillHubService {
 function applyLocalPublicationCandidate(
   original: Array<{ path: string; contentBase64: string }>,
   candidate: Array<{ path: string; contentBase64: string }>,
+  confirmedDescription?: string,
 ): Array<{ path: string; contentBase64: string }> {
   const reject = (): never => {
     const error: any = new Error('The publication candidate does not match the captured local Skill package.');
@@ -436,7 +443,9 @@ function applyLocalPublicationCandidate(
     const originalContent = originalByPath.get(file.path)!;
     if (file.path !== 'SKILL.md' && file.contentBase64 !== originalContent) return reject();
     if (file.path === 'SKILL.md' && file.contentBase64 !== originalContent
-      && !isNameWhitespaceOnlyCandidate(originalContent, file.contentBase64)) return reject();
+      && !isNameWhitespaceOnlyCandidate(originalContent, file.contentBase64)
+      && !(confirmedDescription && (isConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription)
+        || isNameWhitespaceAndConfirmedDescriptionCandidate(originalContent, file.contentBase64, confirmedDescription)))) return reject();
   }
   if (!seen.has('SKILL.md')) return reject();
   return candidate.map(file => ({ path: file.path, contentBase64: file.contentBase64 }));
