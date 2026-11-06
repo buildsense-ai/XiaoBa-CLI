@@ -575,7 +575,49 @@ function invalidConfirmationArguments(): ToolExecutionResult {
 function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
   const text = latestUserMessageText(context);
   if (!text || text === pending.initialUserMessage) return false;
-  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
+  if (isDescriptionApprovalPhrase(text)) return true;
+
+  const lines = text.split(/\r?\n/).map(normalizeApprovalLine).filter(Boolean);
+  let approvalCount = 0;
+  let reportBound = false;
+  let descriptionBound = false;
+  for (const line of lines) {
+    if (isDescriptionApprovalPhrase(line)) {
+      approvalCount++;
+      continue;
+    }
+    if (line === `报告 ID：${pending.reportId}` || line === `报告 ID: ${pending.reportId}`
+      || line === `报告：${pending.reportId}` || line === `报告: ${pending.reportId}`
+      || line === `Report ID: ${pending.reportId}` || line === `Report ID：${pending.reportId}`) {
+      reportBound = true;
+      continue;
+    }
+    if (line === `说明原文：${pending.description}` || line === `说明原文: ${pending.description}`
+      || line === `候选说明：${pending.description}` || line === `候选说明: ${pending.description}`
+      || line === `Description: ${pending.description}`) {
+      descriptionBound = true;
+      continue;
+    }
+    if (line === '请仅对此报告继续确认一次。如果还需要单独确认版本发布，请停下并告诉我，不要自行继续。') continue;
+    // Unknown text fails closed. This includes withdrawal, revisions, and
+    // any other instruction appended after an otherwise valid approval.
+    return false;
+  }
+  return approvalCount === 1 && reportBound && descriptionBound;
+}
+
+function isDescriptionApprovalPhrase(text: string): boolean {
+  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?(?:描述|草稿|说明)?[，, ]*(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
+}
+
+function normalizeApprovalLine(line: string): string {
+  return line.trim()
+    .replace(/^(?:>\s*)+/, '')
+    .replace(/^(?:[-*+]\s+|\d+[.)、]\s+)/, '')
+    .trim()
+    .replace(/^[「『“”"']+/, '')
+    .replace(/[」』“”"']+$/, '')
+    .trim();
 }
 
 function hasExplicitVersionApproval(context: ToolExecutionContext, pending: PendingDescriptionConfirmation): boolean {
