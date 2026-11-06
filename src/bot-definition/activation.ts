@@ -216,19 +216,27 @@ export async function prepareBoundBotDefinition(
                 await validateCatsRelayCatalogRuntimeCredential(runtime, options.fetchImpl ?? fetch);
               } catch (error) {
                 if (error instanceof RelayCredentialRejectedError) {
-                  const rematerialized = await provisionCatsRelayCatalogRuntime({
-                    botId,
-                    modelId: definition.model.modelId,
-                    reasoningEffort: definition.model.reasoningEffort,
-                    contextWindowTokens: cloudContextWindowTokens,
-                    catalogRuntime: cloudCatalogRuntime,
-                    existingRuntime: runtime,
-                    auth,
-                    fetchImpl: options.fetchImpl,
-                  });
-                  definitionService.storeCatalogRuntime(rematerialized);
-                  materializedCatalogRuntime = true;
-                  effectiveRuntime = rematerialized;
+                  try {
+                    const rematerialized = await provisionCatsRelayCatalogRuntime({
+                      botId,
+                      modelId: definition.model.modelId,
+                      reasoningEffort: definition.model.reasoningEffort,
+                      contextWindowTokens: cloudContextWindowTokens,
+                      catalogRuntime: cloudCatalogRuntime,
+                      existingRuntime: runtime,
+                      auth,
+                      fetchImpl: options.fetchImpl,
+                    });
+                    definitionService.storeCatalogRuntime(rematerialized);
+                    materializedCatalogRuntime = true;
+                    effectiveRuntime = rematerialized;
+                  } catch (rematerializeError) {
+                    // 重新物化失败（平台接口瞬断等）不该把启动拖死：先带着旧凭据
+                    // 起来，下一次启动/模型切换时再重试。
+                    Logger.warning(
+                      `CatsCo relay 凭据已失效但重新物化失败，继续使用当前模型: ${errorMessage(rematerializeError)}`,
+                    );
+                  }
                 } else if (!(error instanceof RelayCredentialUnreachableError)) {
                   throw error;
                 }
