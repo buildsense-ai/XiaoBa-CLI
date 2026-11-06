@@ -31,9 +31,9 @@ function proof(ref: string, kind: 'message' | 'tool_call', extra: Record<string,
     ref, kind, ...(kind === 'tool_call' ? { subtype: 'tool_call', provider_call_id: 'provider-tool-1', name: 'lookup' } : {}),
     body_sha256: digest(`body-${ref}`),
     source_session_id: 'source-session-1', source_episode_id: 'episode-1', source_model_call_id: 'model-call-1',
-    output_position: kind === 'tool_call' ? 1 : 0, body_path: `assistant.outputs[${kind === 'tool_call' ? 1 : 0}]`,
+    output_position: kind === 'tool_call' ? 1 : 0, body_path: `assistant.outputs[${kind === 'tool_call' ? 1 : 0}].body`,
     source_revision: ROOT_REVISION, source_basis: sourceBasis, parent_anchor: parentAnchor,
-    parent_digest: 'c'.repeat(64), generation_hyperedge_ref: 'hyperedge-1', hyperedge_output_refs: hyperedgeOutputs,
+    parent_digest: 'c'.repeat(64), generation_hyperedge_ref: 'model-call-1', hyperedge_output_refs: hyperedgeOutputs,
     ...extra,
   };
 }
@@ -63,7 +63,7 @@ function outputDocument(overrides: Record<string, unknown> = {}): any {
       { node_id: nodeToolSibling, output_refs: [outputTool] },
       { node_id: nodeOmission, source_ref: 'legacy-source-ref', source_digest: 'd'.repeat(64) },
     ],
-    output_proofs: [proof(outputMessageA, 'message'), proof(outputMessageB, 'message', { output_position: 2, body_path: 'assistant.outputs[2]' }), proof(outputTool, 'tool_call')],
+    output_proofs: [proof(outputMessageA, 'message'), proof(outputMessageB, 'message', { output_position: 2, body_path: 'assistant.outputs[2].body' }), proof(outputTool, 'tool_call')],
     ...overrides,
   };
 }
@@ -84,6 +84,18 @@ const invalidCases: Array<[string, (document: any) => void]> = [
   ['orphan proof', document => { document.output_proofs.push(proof('orphan-output', 'message')); }],
   ['duplicate output ref in node declaration', document => { document.nodes[0].output_evidence_refs = [outputMessageA, outputMessageA]; }],
   ['message/tool-call kind mismatch', document => { document.nodes[2].output_evidence_refs = [outputMessageA]; document.mappings[2].output_refs = [outputMessageA]; }],
+  ['empty evidence refs with absent proofs', document => {
+    for (const node of document.nodes) if (node.kind === 'message' || node.kind === 'tool_call') node.output_evidence_refs = [];
+    for (const mapping of document.mappings) delete mapping.output_refs;
+    delete document.output_proofs;
+  }],
+  ['empty evidence refs with empty proofs', document => {
+    for (const node of document.nodes) if (node.kind === 'message' || node.kind === 'tool_call') node.output_evidence_refs = [];
+    for (const mapping of document.mappings) delete mapping.output_refs;
+    document.output_proofs = [];
+  }],
+  ['malformed output body path', document => { document.output_proofs[0].body_path = 'assistant.outputs[0]'; }],
+  ['mismatched hyperedge identity', document => { document.output_proofs[0].generation_hyperedge_ref = 'different-call'; }],
   ['output meaning without proof', document => { document.output_proofs = document.output_proofs.filter((candidate: any) => candidate.ref !== outputTool); }],
   ['cross-projection output alignment', document => { document.mappings[0].output_refs = ['other-projection-output']; }],
 ];
@@ -104,7 +116,7 @@ test('valid output consumer preserves multiplicity, identity, generation context
   assert.deepEqual((view.nodes as any[]).find(node => node.id === nodeTool).output_evidence_refs, [outputTool]);
   assert.deepEqual((view.mappings as any[]).find(mapping => mapping.node_id === nodeMessage).output_refs, [outputMessageA, outputMessageB]);
   assert.equal((view.output_proofs as any[]).length, 3);
-  assert.equal((view.output_proofs as any[]).find(proof => proof.ref === outputTool).generation_hyperedge_ref, 'hyperedge-1');
+  assert.equal((view.output_proofs as any[]).find(proof => proof.ref === outputTool).generation_hyperedge_ref, 'model-call-1');
   assert.equal(JSON.stringify(view).includes('parent-result'), false, 'authority-only parent anchor leaked');
   assert.equal(JSON.stringify(view).includes(ROOT_REVISION), false, 'authority-only source revision leaked');
   assert.equal(JSON.stringify(view).includes(sourceBasis), false, 'authority-only source basis leaked');
@@ -131,6 +143,39 @@ test('valid output projection expands through the actual client and reaches nati
     }] as any);
     assert.ok(bindings.some(binding => binding.anchor.id === nodeMessage), 'native input binding lost output node anchor');
     assert.ok(run.mainResponse.includes(fixture.identities[0].ref), 'main model did not receive retained evidence');
+    const artifactPath = process.env.CATSLOG_CONSUMER_ARTIFACT;
+    if (artifactPath) {
+      const nodeCounts = (retainedView.nodes as any[]).reduce((counts: Record<string, number>, node: any) => {
+        counts[node.kind] = (counts[node.kind] ?? 0) + 1;
+        return counts;
+      }, {});
+      const actualBindingIds = bindings.map(binding => binding.anchor.id).sort();
+      fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+      fs.writeFileSync(artifactPath, JSON.stringify({
+        schema_version: 1,
+        provenance: {
+          source: 'local deterministic HTTP fixture',
+          server: 'simulated source/read response; Go source reproof not invoked',
+          production: false,
+        },
+        fixture_input_sha256: digest(JSON.stringify(outputDocument())),
+        projection_ref_sha256: digest(fixture.identities[0].ref),
+        retained_view_sha256: digest(JSON.stringify(retainedView)),
+        node_counts: nodeCounts,
+        output_proof_count: (retainedView.output_proofs as any[]).length,
+        binding_ids_sha256: {
+          expected: digest(JSON.stringify([nodeMessage])),
+          actual: digest(JSON.stringify(actualBindingIds)),
+        },
+        checks: {
+          output_nodes_retained: true,
+          conditions_and_omissions_retained: true,
+          observation_delivered: run.observations.length > 0,
+          native_binding_contains_expected_node: actualBindingIds.includes(nodeMessage),
+          passed: true,
+        },
+      }, null, 2) + '\n', 'utf8');
+    }
   } finally {
     await fixture.close();
     fs.rmSync(root, { recursive: true, force: true });

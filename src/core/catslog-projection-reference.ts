@@ -258,7 +258,7 @@ function record(v: unknown): Record<string, any> | undefined {
 function text(v: unknown): v is string { return typeof v === 'string' && v.trim().length > 0; }
 function strings(v: unknown): boolean { return v === null || Array.isArray(v) && v.length <= 4096 && v.every(x => typeof x === 'string'); }
 function uniqueStrings(v: unknown, max: number, requireNonEmpty = false): v is string[] {
-  if (!Array.isArray(v) || v.length > max) return false;
+  if (!Array.isArray(v) || v.length > max || (requireNonEmpty && v.length === 0)) return false;
   const seen = new Set<string>();
   for (const item of v) {
     if (typeof item !== 'string' || (requireNonEmpty && !item.trim()) || seen.has(item)) return false;
@@ -282,8 +282,10 @@ function validOutputProof(proof: any): boolean {
   if (!record(proof) || !text(proof.ref) || proof.ref.length > 256
     || !['message', 'tool_call'].includes(proof.kind) || !/^[a-f0-9]{64}$/.test(proof.body_sha256)
     || !text(proof.source_session_id) || !text(proof.source_episode_id) || !text(proof.source_model_call_id)
-    || !Number.isSafeInteger(proof.output_position) || proof.output_position < 0 || !text(proof.body_path)
+    || !Number.isSafeInteger(proof.output_position) || proof.output_position < 0
+    || !/^assistant\.outputs\[(0|[1-9]\d{0,8})\]\.body$/.test(proof.body_path)
     || !/^[a-f0-9]{64}$/.test(proof.source_revision) || !/^[a-f0-9]{64}$/.test(proof.source_basis)
+    || proof.generation_hyperedge_ref !== proof.source_model_call_id
     || !record(proof.parent_anchor) || !/^[a-f0-9]{64}$/.test(proof.parent_digest)
     || !text(proof.generation_hyperedge_ref)
     || !uniqueStrings(proof.hyperedge_output_refs, 512, true) || !proof.hyperedge_output_refs.includes(proof.ref)) return false;
