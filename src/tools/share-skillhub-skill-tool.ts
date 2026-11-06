@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import matter from 'gray-matter';
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { SkillHubService } from '../skillhub/service';
 import { createDescriptionCandidate, createNameWhitespaceCandidate } from '../skillhub/publication-candidate';
@@ -267,6 +268,7 @@ export class ShareSkillHubSkillTool implements Tool {
     const sessionId = String(context.sessionId || '').trim();
     const entry = files.find(file => file.path === 'SKILL.md');
     if (!reportId || !sessionId || !entry || !createDescriptionCandidate(files, validation, 'validation-only')) return undefined;
+    const resolvedSkillName = normalizeDisplaySkillName(skillName) || skillNameFromFiles(files) || '该 Skill';
     const aiService = context.runtimeServices?.aiService;
     if (!aiService) return undefined;
 
@@ -291,7 +293,7 @@ export class ShareSkillHubSkillTool implements Tool {
             '只返回 JSON：{"description":"..."}。',
           ].join('\n'),
         },
-        { role: 'user', content: JSON.stringify({ skillName, skillFile: source }) },
+        { role: 'user', content: JSON.stringify({ skillName: resolvedSkillName, skillFile: source }) },
       ], undefined, { signal: context.abortSignal, providerRequestBudget: { maxRequests: 1, usedRequests: 0 } });
       description = parseDescriptionDraft(response.content || '');
     } catch {
@@ -310,7 +312,7 @@ export class ShareSkillHubSkillTool implements Tool {
       this.pendingDescriptions.delete(oldest);
     }
     const pending: PendingDescriptionConfirmation = {
-      sessionId, reportId, skillName, localSkillPath, writeLocalMetadata,
+      sessionId, reportId, skillName: resolvedSkillName, localSkillPath, writeLocalMetadata,
       notes: String(args?.notes || ''), files: files.map(file => ({ ...file })),
       validation: structuredClone(validation), description,
       initialUserMessage: latestUserMessageText(context),
@@ -318,7 +320,7 @@ export class ShareSkillHubSkillTool implements Tool {
     };
     this.pendingDescriptions.set(this.descriptionKey(sessionId, reportId), pending);
     const prompt = [
-      `SkillHub 发现「${skillName}」的 SKILL.md 缺少 description，因此暂未发布（报告 ${reportId}）。`,
+      `SkillHub 发现「${resolvedSkillName}」的 SKILL.md 缺少 description，因此暂未发布（报告 ${reportId}）。`,
       '如本次发布还修正了 name 首尾空白，该修正只会保留在待确认的上传副本中，不会改动本地文件。',
       '我根据 Skill 文件整理了一条候选说明，供你确认：',
       `> ${description}`,
@@ -529,6 +531,23 @@ function packageSummary(files: SkillPresentationFile[] | undefined): string {
   if (!files?.length) return '';
   const bytes = files.reduce((total, file) => total + Buffer.from(file.contentBase64, 'base64').byteLength, 0);
   return `Files: ${files.length} (${(bytes / 1024).toFixed(1)} KB)`;
+}
+
+function skillNameFromFiles(files: SkillPresentationFile[]): string {
+  const entry = files.find(file => file.path === 'SKILL.md');
+  if (!entry) return '';
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(entry.contentBase64, 'base64'));
+    const name = matter(text).data?.name;
+    return typeof name === 'string' ? normalizeDisplaySkillName(name) : '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeDisplaySkillName(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
 function parseDescriptionDraft(raw: string): string {
