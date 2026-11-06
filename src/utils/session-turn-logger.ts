@@ -52,6 +52,8 @@ export interface LogTurnOptions {
   outputs?: SessionOutputLog[];
   outputsContract?: 'session-output/1';
   outputsComplete?: boolean;
+  outputsOmittedCount?: number;
+  outputsOmissionReasons?: string[];
 }
 
 /**
@@ -108,6 +110,10 @@ export class SessionTurnLogger {
     return true;
   }
 
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
   getLogFilePath(): string {
     return this.logFilePath;
   }
@@ -149,16 +155,26 @@ export class SessionTurnLogger {
           ...tc,
           result: this.truncate(tc.result, MAX_TOOL_RESULT_LENGTH),
         })),
-        ...(options.outputs && options.outputs.length > 0 && {
+        ...(options.outputsContract && {
           outputs_contract: options.outputsContract,
           outputs_complete: options.outputsComplete,
-          outputs: options.outputs,
+          outputs_omitted_count: options.outputsOmittedCount,
+          outputs_omission_reasons: options.outputsOmissionReasons,
+          ...(options.outputs && options.outputs.length > 0 && { outputs: options.outputs }),
         }),
       },
       tokens,
       ...(options.prompt && { prompt: options.prompt }),
     };
 
+    const serialized = JSON.stringify(turnLog);
+    if (Buffer.byteLength(serialized, 'utf8') > 240 * 1024 && turnLog.assistant.outputs) {
+      const omitted = turnLog.assistant.outputs.length + (options.outputsOmittedCount || 0);
+      turnLog.assistant.outputs = undefined;
+      turnLog.assistant.outputs_complete = false;
+      turnLog.assistant.outputs_omitted_count = omitted;
+      turnLog.assistant.outputs_omission_reasons = [...new Set([...(options.outputsOmissionReasons || []), 'turn_line_budget'])].sort();
+    }
     this.appendLog(turnLog);
   }
 

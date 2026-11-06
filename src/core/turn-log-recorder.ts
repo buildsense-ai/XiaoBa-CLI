@@ -1,5 +1,5 @@
 import type { ContentBlock, Message } from '../types';
-import { createHash } from 'node:crypto';
+import { outputBodyHash } from './output-body-proof';
 import {
   SessionPromptTurnLog,
   SessionToolCallLog,
@@ -7,6 +7,18 @@ import {
   SessionTurnLogger,
 } from '../utils/session-turn-logger';
 import type { RunResult } from './conversation-runner';
+
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff) return true;
+      i++;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return true;
+  }
+  return false;
+}
 
 export interface RecordTurnParams {
   userInput: string | ContentBlock[];
@@ -45,64 +57,89 @@ export class TurnLogRecorder {
         outputs: extracted.outputs,
         outputsContract: 'session-output/1',
         outputsComplete: extracted.complete,
+        outputsOmittedCount: extracted.omittedCount,
+        outputsOmissionReasons: extracted.reasons,
       },
     );
   }
 
-  private extractOutputs(messages: Message[]): { outputs: SessionOutputLog[]; complete: boolean } {
+  private extractOutputs(messages: Message[]): { outputs: SessionOutputLog[]; complete: boolean; omittedCount: number; reasons: string[] } {
     const outputs: SessionOutputLog[] = [];
-    let totalBytes = 0;
-    let complete = true;
+    const reasons = new Set<string>();
+    const seenOutputRefs = new Set<string>();
+    let omittedCount = 0;
+    let bodyBytes = 0;
+    const maxOutputs = 128;
+    const maxBodyBytes = 48 * 1024;
+    const omit = (reason: string): void => { omittedCount++; reasons.add(reason); };
+    let descriptorBytes = 0;
+    let sawAssistant = false;
+    let sawOutput = false;
     for (const message of messages) {
       if (message.role !== 'assistant') continue;
+      sawAssistant = true;
       const episodeId = message.__executionSourceEpisodeId || message.__episodeId;
       const modelCallId = message.__executionSourceModelCallId;
-      if (!episodeId || !modelCallId) continue;
+      const sourceSessionId = message.__executionSourceSessionId;
+      if (!episodeId || !modelCallId || sourceSessionId !== this.logger.getSessionId()) {
+        if (message.content || message.tool_calls?.length) omit(sourceSessionId && sourceSessionId !== this.logger.getSessionId() ? 'foreign_session_origin' : 'missing_origin');
+        continue;
+      }
       const add = (output: SessionOutputLog): void => {
-        const bytes = Buffer.byteLength(output.body, 'utf8');
-        if (!output.ref || bytes > 64 * 1024 || totalBytes + bytes > 256 * 1024) {
-          complete = false;
-          return;
-        }
-        totalBytes += bytes;
+        const bodyLength = Buffer.byteLength(output.body, 'utf8');
+        const outputEncodedBytes = Buffer.byteLength(JSON.stringify(output), 'utf8');
+        const outputKey = `${output.model_call_id}\u0000${output.ref}`;
+        if (seenOutputRefs.has(outputKey)) { omit('duplicate_output_ref'); return; }
+        if (!output.ref || Buffer.byteLength(output.ref) > 512 || Buffer.byteLength(output.subtype || '') > 256) { omit('output_identity_overbound'); return; }
+        if (hasUnpairedSurrogate(output.body)) { omit('invalid_utf8_body'); return; }
+        if (bodyLength > 16 * 1024 || bodyBytes + bodyLength > maxBodyBytes) { omit('body_byte_limit'); return; }
+        if (outputs.length >= maxOutputs) { omit('output_count_limit'); return; }
+        if (descriptorBytes + outputEncodedBytes > 56 * 1024) { omit('encoded_descriptor_limit'); return; }
+        bodyBytes += bodyLength;
+        descriptorBytes += outputEncodedBytes;
+        seenOutputRefs.add(outputKey);
         outputs.push(output);
+        sawOutput = true;
       };
-      let outputPosition = 0;
-      for (const toolCall of message.tool_calls || []) {
-        const body = toolCall.function.arguments || '';
+      const toolCalls = message.tool_calls || [];
+      const toolCallLimit = Math.min(toolCalls.length, maxOutputs);
+      for (let toolIndex = 0; toolIndex < toolCallLimit; toolIndex++) {
+        const toolCall = toolCalls[toolIndex];
+        if (!toolCall.id || Buffer.byteLength(toolCall.id, 'utf8') > 512 || !toolCall.function?.name || Buffer.byteLength(toolCall.function.name, 'utf8') > 256) {
+          omit('output_identity_overbound');
+          continue;
+        }
+        if (typeof toolCall.function.arguments !== 'string') {
+          omit('unsupported_tool_arguments');
+          continue;
+        }
+        const body = toolCall.function.arguments;
+        const ref = `provider-call:${toolCall.id}`;
         add({
-          kind: 'tool_call', ref: `provider-call:${toolCall.id}`, subtype: toolCall.function.name,
-          episode_id: episodeId, model_call_id: modelCallId, output_position: outputPosition++,
+          kind: 'tool_call', source_session_id: sourceSessionId, ref, subtype: toolCall.function.name,
+          episode_id: episodeId, model_call_id: modelCallId, output_position: toolIndex,
           body_path: `assistant.outputs[${outputs.length}].body`, body,
-          body_sha256: this.outputBodyHash('tool_call', toolCall.id, toolCall.function.name, body),
+          body_sha256: outputBodyHash('tool_call', toolCall.id, toolCall.function.name, body),
           body_complete: true, body_truncated: false,
         });
       }
+      if (toolCalls.length > toolCallLimit) omit('output_count_limit');
       const content = typeof message.content === 'string' ? message.content : '';
       if (content) {
         add({
-          kind: 'message', ref: message.__executionNodeRef || '', subtype: 'assistant_text',
-          episode_id: episodeId, model_call_id: modelCallId, output_position: outputPosition,
+          kind: 'message', source_session_id: sourceSessionId, ref: message.__executionNodeRef || '', subtype: 'assistant_text',
+          episode_id: episodeId, model_call_id: modelCallId, output_position: toolCalls.length,
           body_path: `assistant.outputs[${outputs.length}].body`, body: content,
-          body_sha256: this.outputBodyHash('message', '', '', content),
+          body_sha256: outputBodyHash('message', '', '', content),
           body_complete: true, body_truncated: false,
         });
       }
-      if (message.content && typeof message.content !== 'string') complete = false;
+      if (message.content && typeof message.content !== 'string') omit('unsupported_multiblock_content');
     }
-    return { outputs, complete };
-  }
-
-  private outputBodyHash(kind: 'message' | 'tool_call', ref: string, name: string, body: string): string {
-    if (kind === 'message') return createHash('sha256').update(body, 'utf8').digest('hex');
-    const hash = createHash('sha256');
-    for (const field of [ref, name, body]) {
-      const bytes = Buffer.from(field, 'utf8');
-      const length = Buffer.allocUnsafe(4);
-      length.writeUInt32BE(bytes.length);
-      hash.update(length).update(bytes);
-    }
-    return hash.digest('hex');
+    if (!sawAssistant) omit('no_assistant_output');
+    else if (!sawOutput) omit('no_proven_output');
+    const complete = omittedCount === 0;
+    return { outputs, complete, omittedCount, reasons: [...reasons].sort() };
   }
 
   private extractToolCalls(messages: Message[]): SessionToolCallLog[] {

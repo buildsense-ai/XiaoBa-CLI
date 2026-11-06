@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Message, ChatResponse } from '../types';
 import type { ToolDefinition } from '../types/tool';
 import { collectExecutionMemoryInputs } from './execution-memory-bindings';
+import { outputBodyHash } from './output-body-proof';
 
 export const EXECUTION_GRAPH_CONTRACT = 'execution-graph/1';
 export const EXECUTION_IDENTITY_CONTRACT = 'execution-identity/1';
@@ -136,7 +137,7 @@ export function buildExecutionGraphCallEvent(
       kind: 'tool_call', node_ref: `provider-call:${call.id}`, provider_call_id: call.id,
       output_position: index,
       name: call.function.name,
-      body_sha256: outputBodyDigest('tool_call', call.id, call.function.name, call.function.arguments || ''),
+      body_sha256: outputBodyHash('tool_call', call.id, call.function.name, call.function.arguments || ''),
       content_sha256: contentDigest(call.function.arguments || ''),
     });
   }
@@ -147,7 +148,7 @@ export function buildExecutionGraphCallEvent(
       node_ref: options.outputMessageRef || `session:${options.sessionId}:episode:${options.episodeId ?? 'unknown'}:model-call:${modelCallId}:output:0`,
       output_position: outputs.length,
       content_sha256: contentDigest(response.content),
-      body_sha256: outputBodyDigest('message', '', '', response.content),
+      body_sha256: outputBodyHash('message', '', '', response.content),
     });
   }
   outputsComplete &&= toolCalls.length + (response.content ? 1 : 0) <= MAX_OUTPUTS;

@@ -18,6 +18,7 @@ interface SessionLogIdentityFields {
 
 export interface SessionOutputLog {
   kind: 'message' | 'tool_call';
+  source_session_id: string;
   ref: string;
   subtype?: string;
   episode_id: string;
@@ -74,6 +75,8 @@ export interface SessionTurnLogEntry extends SessionLogIdentityFields {
     outputs?: SessionOutputLog[];
     outputs_contract?: 'session-output/1';
     outputs_complete?: boolean;
+    outputs_omitted_count?: number;
+    outputs_omission_reasons?: string[];
   };
   tokens: {
     prompt: number;
