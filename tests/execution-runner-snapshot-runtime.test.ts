@@ -95,9 +95,10 @@ test('runtime call evidence snapshots dispatched messages, tool schema, and late
   assert.equal(events[0].memory_node_inputs.length, 0, 'late Branch result is not attributed to the earlier call');
 
   assert.ok(dispatched[1].messages.some(message => message.content === 'late Branch result'), 'runtimeTransientProvider material is included in the later request');
-  assert.ok(events[1].input_manifest.items.some((item: any) => item.sha256 === createHash('sha256').update(JSON.stringify({
-    role: 'system', content: 'late Branch result', tool_calls: undefined, tool_call_id: undefined,
-  })).digest('hex')), 'later call metadata includes the late material actually dispatched');
+  assert.ok(events[1].input_manifest.items.some((item: any) => item.kind === 'runtime_material' && item.source_kind === 'branch'
+    && item.sha256 === createHash('sha256').update(JSON.stringify({
+      role: 'system', content: 'late Branch result', tool_calls: undefined, tool_call_id: undefined,
+    })).digest('hex')), 'later call identifies late branch material explicitly in the submitted manifest');
   assert.equal(events[1].input_manifest.tools[0].schema_sha256, changedSchemaHash, 'second call records schema captured at its dispatch');
   assert.deepEqual(events[1].memory_node_inputs.map((binding: any) => binding.anchor), [anchor], 'binding follows the source body captured at dispatch');
   const sourceItem = events[1].input_manifest.items.find((item: any) => item.ref === 'provider-result:source-read');

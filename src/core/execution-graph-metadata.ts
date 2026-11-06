@@ -17,7 +17,7 @@ function digest(value: unknown): string {
 function contentDigest(content: Message['content']): string { return digest(content); }
 function utf8Bytes(value: string): number { return Buffer.byteLength(value, 'utf8'); }
 
-interface MessageExecutionRef { kind: string; ref: string; identity_state: string }
+interface MessageExecutionRef { kind: string; ref: string; identity_state: string; source_kind?: string }
 
 /** Expand one transcript record to its actual graph identities. An assistant
  * wrapper containing sibling calls has one node per call plus an independent
@@ -41,13 +41,16 @@ export function executionRefsForMessage(
       identity_state: message.__checkpointPersisted ? 'client_checkpoint' : 'unknown',
     }];
   }
-  if (message.role === 'system') {
+  if (message.role === 'system' && !message.__injected && !message.__runtimeObservation) {
     const sha = digest({ role: message.role, content: message.content, tool_calls: message.tool_calls, tool_call_id: message.tool_call_id });
     return [{ kind: 'prompt', ref: `prompt:${sessionId}:${episodeId ?? 'unknown'}:${sha.slice(0, 24)}`, identity_state: 'client_prompt_material' }];
   }
   if (message.__injected || message.__runtimeObservation) {
     const sha = digest({ role: message.role, content: message.content, tool_calls: message.tool_calls, tool_call_id: message.tool_call_id });
-    return [{ kind: 'runtime_material', ref: `runtime-material:${sessionId}:${episodeId ?? 'unknown'}:${sha.slice(0, 24)}`, identity_state: 'client_runtime_material' }];
+    const sourceKind = message.__runtimeObservation
+      ? (message.runtimeObservationSource || 'unknown')
+      : message.__injected ? 'injected_context' : undefined;
+    return [{ kind: 'runtime_material', ref: `runtime-material:${sessionId}:${episodeId ?? 'unknown'}:${sha.slice(0, 24)}`, identity_state: 'client_runtime_material', ...(sourceKind ? { source_kind: sourceKind } : {}) }];
   }
   const refs: MessageExecutionRef[] = [];
   if (message.role === 'assistant' && message.tool_calls?.length) {
@@ -167,6 +170,7 @@ export function buildExecutionGraphCallEvent(
         ? { source_session_id: options.sessionId, source_episode_id: options.episodeId ?? 'unknown' }
         : undefined;
       return { ...shared, kind: ref.kind, ref: ref.ref, identity_state: ref.identity_state,
+        ...(ref.source_kind ? { source_kind: ref.source_kind } : {}),
         ...(programmaticScope ?? (origin && (ref.kind === 'tool_call' || ref.kind === 'turn_result' || ref.ref === message.__executionNodeRef) ? origin : {})),
         ...(checkpoint ? { checkpoint } : {}) };
     });
