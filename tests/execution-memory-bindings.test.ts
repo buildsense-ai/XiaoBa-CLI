@@ -32,6 +32,23 @@ test('preserves separate producer origins for identical bodies and reused provid
  assert.equal(bindings[0].input_sha256,bindings[1].input_sha256);
 });
 
+test('binds an output projection node anchor from the actual structured source body',()=>{
+ const outputAnchor={...anchor,id:`output-${'d'.repeat(64)}`};
+ const body={source:{status:'read',coverage:'complete',text:'Output node.',anchor:outputAnchor}};
+ const result=collectExecutionMemoryInputs([message(body)]);
+ assert.equal(result.length,1);
+ assert.deepEqual(result[0].anchor,outputAnchor);
+});
+
+test('rejects malformed output node anchors while retaining legacy anchor support',()=>{
+ const outputAnchor={...anchor,id:`output-${'d'.repeat(64)}`};
+ assert.equal(collectExecutionMemoryInputs([message({source:{status:'read',coverage:'complete',text:'Output node.',anchor:outputAnchor}})]).length,1);
+ for(const id of [`output-${'d'.repeat(63)}`,`output-${'D'.repeat(64)}`,`output-${'d'.repeat(64)}-suffix`,'output-not-hex']){
+  assert.deepEqual(collectExecutionMemoryInputs([message({source:{status:'read',coverage:'complete',text:'Output node.',anchor:{...outputAnchor,id}}})]),[]);
+ }
+ assert.equal(collectExecutionMemoryInputs([message({source:{status:'read',coverage:'complete',text:'Legacy node.',anchor}})]).length,1);
+});
+
 test('binds the MemorySourceReadTool expanded body delivered to the real model input',()=>{
  const response={status:'expanded',ref:anchor.source_projection_ref,semantic_view:{content_trust:'derived_memory_projection',nodes:[{id:anchor.id,text:'same node',anchor}]}};
  const result=collectExecutionMemoryInputs([message(response)]);

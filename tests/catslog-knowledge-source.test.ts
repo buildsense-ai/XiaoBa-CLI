@@ -57,14 +57,33 @@ describe('source v1 wire and native action', () => {
     assert.doesNotMatch(String(requests[0].init.body), /token|principal|agent_subject|memory_scope/);
   });
 
-  test('source route resolves exact Source Memory Projection node refs', async () => {
+  test('source route accepts and round-trips output projection node IDs exactly', async () => {
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+    const anchor = { kind: 'source_memory_projection_node' as const, id: `output-${'a'.repeat(64)}`, revision: HASH,
+      source_projection_ref: 'ref_' + 'b'.repeat(64) };
+    await client.readKnowledgeSource({ anchor, max_bytes: 256, token: 'read' });
+    assert.deepEqual(JSON.parse(String(requests[0].init.body)), { anchor, max_bytes: 256 });
+    assert.equal(requests.length, 1);
+  });
+
+  test('source route continues to round-trip legacy bare projection node IDs', async () => {
     const client = new CatscoLogAgentClient('https://logs.example.test');
     const anchor = { kind: 'source_memory_projection_node' as const, id: 'a'.repeat(64), revision: HASH,
       source_projection_ref: 'ref_' + 'b'.repeat(64) };
     await client.readKnowledgeSource({ anchor, max_bytes: 256, token: 'read' });
     assert.deepEqual(JSON.parse(String(requests[0].init.body)), { anchor, max_bytes: 256 });
-    await assert.rejects(client.readKnowledgeSource({ anchor: { ...anchor, source_projection_ref: 'smp_' + 'b'.repeat(64) }, token: 'read' }), /projection node identity/);
     assert.equal(requests.length, 1);
+  });
+  test('source route rejects malformed output node IDs without weakening other pins', async () => {
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+    const anchor = { kind: 'source_memory_projection_node' as const, id: `output-${'a'.repeat(64)}`, revision: HASH,
+      source_projection_ref: 'ref_' + 'b'.repeat(64) };
+    for (const id of [`output-${'a'.repeat(63)}`, `output-${'A'.repeat(64)}`, `output-${'a'.repeat(64)}-suffix`, 'output-not-hex', 'A'.repeat(64)]) {
+      await assert.rejects(client.readKnowledgeSource({ anchor: { ...anchor, id }, token: 'read' }));
+    }
+    await assert.rejects(client.readKnowledgeSource({ anchor: { ...anchor, revision: `output-${HASH}` }, token: 'read' }));
+    await assert.rejects(client.readKnowledgeSource({ anchor: { ...anchor, source_projection_ref: 'smp_' + 'b'.repeat(64) }, token: 'read' }));
+    assert.equal(requests.length, 0);
   });
 
   test('source-memory projection anchors are model-visible and survive native read normalization', async () => {

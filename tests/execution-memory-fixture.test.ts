@@ -54,6 +54,17 @@ test('session_b resolves verifier environment aliases and exact typed anchor fil
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('session_b accepts output-prefixed projection anchor IDs', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'execution-fixture-config-output-'));
+  try {
+    const outputAnchor = { ...anchor, id: `output-${'c'.repeat(64)}` };
+    const anchorFile = path.join(directory, 'anchor.json');
+    fs.writeFileSync(anchorFile, JSON.stringify(outputAnchor));
+    const config = resolveExecutionFixtureConfig(validBEnv(anchorFile, directory));
+    assert.deepEqual(config.anchor, outputAnchor);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
 test('fixture config rejects unknown roles and malformed anchors', () => {
   assert.throws(() => resolveExecutionFixtureConfig({ CATSLOG_EXECUTION_FIXTURE_ROLE: 'other' }), /role/i);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'execution-fixture-invalid-'));

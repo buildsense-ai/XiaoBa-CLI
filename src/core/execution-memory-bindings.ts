@@ -17,11 +17,12 @@ export interface ExecutionMemoryInput {
   source_model_call_id?: string;
 }
 const SHA = /^[a-f0-9]{64}$/;
+const NODE_ID = /^(?:output-)?[a-f0-9]{64}$/;
 function nodeAnchor(value: unknown): ProjectionNodeAnchor | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const a=value as Record<string,unknown>;
   if(a.kind!=='source_memory_projection_node'||typeof a.source_projection_ref!=='string'||!/^ref_[a-f0-9]{64}$/.test(a.source_projection_ref)
-    ||typeof a.revision!=='string'||!SHA.test(a.revision)||typeof a.id!=='string'||!SHA.test(a.id)) return undefined;
+    ||typeof a.revision!=='string'||!SHA.test(a.revision)||typeof a.id!=='string'||!NODE_ID.test(a.id)) return undefined;
   return {kind:'source_memory_projection_node',source_projection_ref:a.source_projection_ref,revision:a.revision,id:a.id};
 }
 

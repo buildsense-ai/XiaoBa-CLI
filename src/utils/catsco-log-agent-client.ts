@@ -1576,7 +1576,7 @@ function validateKnowledgeAnchorForRequest(anchor: unknown, name = 'anchor'): Re
   const sourceProjectionRef = knowledgeOptionalId(raw.source_projection_ref, `${name}.source_projection_ref`, KNOWLEDGE_MAX_ANCHOR_ID_BYTES);
   if (kind === 'source_memory_projection_node') {
     if (!sourceProjectionRef || !/^ref_[a-f0-9]{64}$/.test(sourceProjectionRef)
-      || !/^[a-f0-9]{64}$/.test(String(id)) || !/^[a-f0-9]{64}$/.test(revision ?? '')) {
+      || !/^(?:output-)?[a-f0-9]{64}$/.test(String(id)) || !/^[a-f0-9]{64}$/.test(revision ?? '')) {
       throw new Error(`CatsLog knowledge ${name} projection node identity is invalid`);
     }
     if (sessionId !== undefined || sessionType !== undefined || streamId !== undefined || byteOffset !== undefined || byteLength !== undefined

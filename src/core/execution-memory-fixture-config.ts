@@ -19,6 +19,7 @@ export interface ExecutionFixtureConfig {
 
 const anchorRefPattern = /^ref_[a-f0-9]{64}$/;
 const digestPattern = /^[a-f0-9]{64}$/;
+const nodeIdPattern = /^(?:output-)?[a-f0-9]{64}$/;
 
 function asRecord(value: unknown): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Fixture config must be a JSON object.');
@@ -31,7 +32,7 @@ function readJsonFile(filePath: string, name: string): unknown {
 function parseAnchor(value: unknown): ExecutionFixtureAnchor {
   const anchor = asRecord(value);
   if (anchor.kind !== 'source_memory_projection_node' || !anchorRefPattern.test(anchor.source_projection_ref)
-    || !digestPattern.test(anchor.revision) || !digestPattern.test(anchor.id)) {
+    || !digestPattern.test(anchor.revision) || !nodeIdPattern.test(anchor.id)) {
     throw new Error('Fixture anchor must be a typed source_memory_projection_node with ref, revision, and id.');
   }
   return {
