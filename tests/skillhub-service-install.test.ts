@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import express from 'express';
+import matter from 'gray-matter';
 import type { Server } from 'http';
 import { SkillHubService } from '../src/skillhub/service';
 import { ShareSkillHubSkillTool } from '../src/tools/share-skillhub-skill-tool';
@@ -194,6 +195,98 @@ describe('SkillHub connected install service', () => {
     assert.equal(success.skill.name, 'whitespace-name');
   });
 
+  test('publishes a missing-name Skill under a normalized directory name without changing its source', async () => {
+    const uploaded: any[] = [];
+    const app = express();
+    app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app);
+    app.post('/api/skills/share', (req, res) => {
+      uploaded.push(req.body);
+      if (uploaded.length === 1) {
+        return res.status(422).json({ error: { code: 'skillhub.publish_validation_failed', message: 'Rejected.', validation: {
+          schemaVersion: '1', ruleVersion: 'skillhub-publish-v1.0.1', profile: 'skillhub-publish-v1',
+          reportId: '00000000-0000-4000-8000-000000000103', outcome: 'rejected', coverage: 'complete',
+          candidateHash: 'a'.repeat(64), limitsFingerprint: 'b'.repeat(64),
+          issues: [{ code: 'metadata.name_missing', category: 'format', blocking: true, repairPolicy: 'automatic',
+            location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' }, message: 'name missing' }],
+          truncated: false, nextAction: 'review_report',
+        } } });
+      }
+      return res.json({ submission: { id: 'submission-name-missing-repair', status: 'submitted' } });
+    });
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+    const skillRoot = path.join(testRoot, 'skills', 'Missing Name Sample');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const sourceFile = path.join(skillRoot, 'SKILL.md');
+    const originalText = '---\ndescription: Safe test fixture\n---\n# Original instructions\n';
+    fs.writeFileSync(sourceFile, originalText);
+    const realService = new SkillHubService();
+    const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: realService.shareLocalSkill.bind(realService) }));
+
+    const result = await tool.execute({ localSkillPath: skillRoot }, { sessionId: 'service-name-missing-repair' } as any);
+
+    assert.equal(result.ok, true);
+    assert.equal(uploaded.length, 2);
+    assert.equal(uploaded[0].manifest.name, 'missing-name-sample');
+    assert.equal(uploaded[1].manifest.name, 'missing-name-sample');
+    const originalPackageText = Buffer.from(uploaded[0].source.files.find((file: any) => file.path === 'SKILL.md').contentBase64, 'base64').toString('utf8');
+    const repairedPackageText = Buffer.from(uploaded[1].source.files.find((file: any) => file.path === 'SKILL.md').contentBase64, 'base64').toString('utf8');
+    assert.equal(originalPackageText, originalText);
+    assert.match(repairedPackageText, /name: "missing-name-sample"/);
+    assert.match(repairedPackageText, /# Original instructions/);
+    assert.equal(fs.readFileSync(sourceFile, 'utf8'), originalText);
+  });
+
+  test('records tracking metadata without moving an empty frontmatter block into the Skill body', async () => {
+    const app = express();
+    app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app);
+    app.post('/api/skills/share', (_req, res) => res.json({
+      skillHub: { author: 'u1', version: '1.0.0', uploadedAt: '2026-11-06T00:00:00.000Z' },
+      submission: { id: 'submission-empty-frontmatter', status: 'submitted' },
+    }));
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+
+    const skillRoot = path.join(testRoot, 'skills', 'empty-frontmatter');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const skillFile = path.join(skillRoot, 'SKILL.md');
+    const originalBody = '# Title\n\n---\n\n## Section\nText\n';
+    const originalText = `---\n---\n${originalBody}`;
+    fs.writeFileSync(skillFile, originalText);
+
+    await new SkillHubService().shareLocalSkill({}, { localSkillPath: skillRoot });
+
+    const saved = fs.readFileSync(skillFile, 'utf8');
+    assert.ok(saved.endsWith(originalBody));
+    assert.equal(matter(saved).content, originalBody);
+    assert.match(saved, /skillhub_author: "u1"/);
+    assert.match(saved, /skillhub_version: "1\.0\.0"/);
+  });
+
+  test('allows an absent name for publication preflight but still rejects explicitly invalid names', () => {
+    const skillRoot = path.join(testRoot, 'skills', 'parser-name-validation');
+    fs.mkdirSync(skillRoot, { recursive: true });
+    const skillFile = path.join(skillRoot, 'SKILL.md');
+    fs.writeFileSync(skillFile, '---\ndescription: Valid fixture\n---\n# Instructions\n');
+    assert.equal(SkillParser.parse(skillFile, { allowMissingName: true }).metadata.name, '');
+
+    fs.writeFileSync(skillFile, '---\nname: 12\ndescription: Valid fixture\n---\n# Instructions\n');
+    assert.throws(() => SkillParser.parse(skillFile, { allowMissingName: true }), /Missing required fields/);
+    fs.writeFileSync(skillFile, '---\nname: ""\ndescription: Valid fixture\n---\n# Instructions\n');
+    assert.throws(() => SkillParser.parse(skillFile, { allowMissingName: true }), /Missing required fields/);
+
+    fs.writeFileSync(skillFile, '---\nname: 12\ndescription: Valid fixture\n---\n# Instructions\n');
+    assert.equal((SkillParser.parse(skillFile).metadata as any).name, 12);
+    assert.throws(() => SkillParser.parse(skillFile, { allowMissingName: true }), /Missing required fields/);
+  });
+
   test('publishes a name-normalized candidate after the user confirms its missing-description draft', async () => {
     const uploaded: any[] = [];
     const app = express();
@@ -244,7 +337,7 @@ describe('SkillHub connected install service', () => {
     assert.equal(draft.ok, true);
     assert.equal(draft.controlSignal, 'pause_turn');
     assert.equal(uploaded.length, 2);
-    assert.match(sentMessages[0], /name 首尾空白/);
+    assert.match(sentMessages[0], /自动修正了 name/);
     assert.match(sentMessages[0], /发现「demo」/);
     assert.match(Buffer.from(uploaded[1].source.files[0].contentBase64, 'base64').toString('utf8'), /name: "demo" # keep/);
 
@@ -482,6 +575,30 @@ describe('SkillHub connected install service', () => {
       (error: any) => error?.code === 'skillhub.local_skill_invalid' && error?.status === 400,
     );
     assert.equal(requestCount, 0);
+  });
+
+  test('reports the supported directory-name limit when a missing name cannot be inferred', async () => {
+    const skillRoot = path.join(testRoot, 'skills', 'a'.repeat(73));
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(path.join(skillRoot, 'SKILL.md'), '---\ndescription: Valid fixture\n---\n# Instructions\n');
+
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({}, { localSkillPath: skillRoot }),
+      (error: any) => error?.code === 'skillhub.local_skill_name_unrepairable'
+        && /at most 72 characters/.test(error.message),
+    );
+  });
+
+  test('does not list Skills with an explicitly invalid name as available', async () => {
+    const invalidRoot = path.join(testRoot, 'skills', 'numeric-name');
+    fs.mkdirSync(invalidRoot, { recursive: true });
+    fs.writeFileSync(path.join(invalidRoot, 'SKILL.md'), '---\nname: 12\ndescription: Invalid fixture\n---\n# Instructions\n');
+
+    await assert.rejects(
+      new SkillHubService().shareLocalSkill({ skillName: 'missing-skill' }),
+      (error: any) => error?.code === 'skillhub.local_skill_not_found'
+        && !error.message.includes('Available skills: numeric-name'),
+    );
   });
 
   test('logs in, persists session cookie, verifies package, and installs skill files', async () => {

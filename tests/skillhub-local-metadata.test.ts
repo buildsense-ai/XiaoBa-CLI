@@ -3,6 +3,7 @@ import * as assert from 'node:assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import matter from 'gray-matter';
 import {
   applySkillHubLocalMetadata,
   computeLocalSkillContentHash,
@@ -43,6 +44,32 @@ describe('SkillHub local metadata', () => {
     assert.match(text, /name: demo/);
     assert.match(text, /skillhub_author: "lin"/);
     assert.match(text, /skillhub_version: "1\.0\.1"/);
+  });
+
+  test('recognizes empty frontmatter and preserves body separators during metadata writes', () => {
+    const originalBody = '# Title\n\n---\n\n## Section\nText\n';
+    const text = applySkillHubLocalMetadata(`---\n---\n${originalBody}`, {
+      author: 'lin',
+      version: '1.0.1',
+      uploadedAt: '2026-05-28T01:00:00.000Z',
+    });
+
+    assert.match(text, /^---\nskillhub_author: "lin"\nskillhub_version: "1\.0\.1"\nskillhub_uploaded_at: "2026-05-28T01:00:00\.000Z"\n---\n/);
+    assert.ok(text.endsWith(originalBody));
+    assert.deepEqual(matter(text).content, originalBody);
+  });
+
+  test('does not treat horizontal rules in a document without frontmatter as metadata delimiters', () => {
+    const original = '# Title\n\nIntro.\n\n---\n\n## Section\n\nBody.\n\n---\n\nEnd.\n';
+    const text = applySkillHubLocalMetadata(original, {
+      author: 'lin',
+      version: '1.0.1',
+      uploadedAt: '2026-05-28T01:00:00.000Z',
+    });
+
+    assert.ok(text.endsWith(original));
+    assert.ok(text.indexOf('# Title') < text.indexOf('## Section'));
+    assert.equal((text.match(/^---$/gm) || []).length, 4);
   });
 
   test('reads metadata and ignores generated package files in local hash', () => {

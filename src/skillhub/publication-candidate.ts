@@ -6,6 +6,77 @@ export interface PublicationCandidateFile {
   contentBase64: string;
 }
 
+export function normalizeDirectoryNameToSkillName(directoryName: string): string | undefined {
+  const input = String(directoryName || '')
+    .trim()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (!input || /[^\x00-\x7f]/.test(input)) return undefined;
+  const normalized = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-');
+  if (normalized.length > 72) return undefined;
+  return /^[a-z0-9](?:[a-z0-9-]{0,70}[a-z0-9])?$/.test(normalized) ? normalized : undefined;
+}
+
+export function createMissingNameCandidate<T extends PublicationCandidateFile[]>(
+  files: T,
+  report: any,
+  directoryName: string,
+): { files: T; name: string } | undefined {
+  const blocking = Array.isArray(report?.issues)
+    ? report.issues.filter((issue: any) => issue?.blocking === true)
+    : [];
+  const nameIssues = blocking.filter((issue: any) => issue?.code === 'metadata.name_missing');
+  const name = normalizeDirectoryNameToSkillName(directoryName);
+  if (report?.coverage !== 'complete' || !nameIssues.length || !name || blocking.some((issue: any) => {
+    const location = issue?.location;
+    if (!Number.isInteger(location?.entryIndex) || files[location.entryIndex]?.path !== 'SKILL.md'
+      || (location?.relativePath && location.relativePath !== 'SKILL.md')) return true;
+    if (issue?.code === 'metadata.name_missing') {
+      return issue?.category !== 'format' || issue?.repairPolicy !== 'automatic' || location?.field !== 'name';
+    }
+    if (issue?.code === 'metadata.description_missing') {
+      return issue?.category !== 'format' || issue?.repairPolicy !== 'confirmation_required' || location?.field !== 'description'
+        || !nameIssues.some((nameIssue: any) => nameIssue?.location?.entryIndex === location.entryIndex);
+    }
+    return true;
+  })) return undefined;
+
+  const candidate = files.map(file => ({ ...file })) as T;
+  for (const issue of nameIssues) {
+    const index = issue?.location?.entryIndex;
+    if (!Number.isInteger(index) || candidate[index]?.path !== 'SKILL.md') return undefined;
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(candidate[index].contentBase64, 'base64'));
+    } catch {
+      return undefined;
+    }
+    const frontmatter = text.match(/^(---[ \t]*\r?\n)([\s\S]*?)(^---[ \t]*(?:\r?\n|$))/m);
+    if (!frontmatter) return undefined;
+    try {
+      const before = matter(text);
+      if (Object.prototype.hasOwnProperty.call(before.data, 'name')) return undefined;
+      const lineEnding = text.includes('\r\n') ? '\r\n' : '\n';
+      const body = frontmatter[2];
+      const separator = body.endsWith(lineEnding) ? '' : lineEnding;
+      const nextText: string = `${frontmatter[1]}${body}${separator}name: ${JSON.stringify(name)}${lineEnding}${frontmatter[3]}${text.slice(frontmatter[0].length)}`;
+      const after: ReturnType<typeof matter> = matter(nextText);
+      if (after.data.name !== name || after.content !== before.content
+        || !isDeepStrictEqual(before.data, Object.fromEntries(Object.entries(after.data).filter(([key]) => key !== 'name')))) return undefined;
+      candidate[index] = { ...candidate[index], contentBase64: Buffer.from(nextText, 'utf8').toString('base64') };
+    } catch {
+      return undefined;
+    }
+  }
+  const unchanged = files.length === candidate.length
+    && files.every(file => candidate.some(next => next.path === file.path && next.contentBase64 === file.contentBase64));
+  return unchanged ? undefined : { files: candidate, name };
+}
+
 export function createNameWhitespaceCandidate<T extends PublicationCandidateFile[]>(
   files: T,
   report: any,
@@ -162,6 +233,44 @@ export function isNameWhitespaceAndConfirmedDescriptionCandidate(
       location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' } }],
   }, description);
   return Boolean(combined && combined[0].contentBase64 === afterBase64);
+}
+
+export function isNameMissingAndConfirmedDescriptionCandidate(
+  beforeBase64: string,
+  afterBase64: string,
+  description: string,
+  directoryName: string,
+): boolean {
+  const original = [{ path: 'SKILL.md', contentBase64: beforeBase64 }];
+  const normalized = createMissingNameCandidate(original, {
+    coverage: 'complete',
+    issues: [{ code: 'metadata.name_missing', category: 'format', blocking: true, repairPolicy: 'automatic',
+      location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' } }],
+  }, directoryName);
+  if (!normalized) return false;
+  const combined = createDescriptionCandidate(normalized.files, {
+    coverage: 'complete',
+    issues: [{ code: 'metadata.description_missing', category: 'format', blocking: true, repairPolicy: 'confirmation_required',
+      location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' } }],
+  }, description);
+  return Boolean(combined && combined[0].contentBase64 === afterBase64);
+}
+
+export function isNameMissingOnlyChange(beforeText: string, afterText: string, directoryName: string): boolean {
+  try {
+    const before = matter(beforeText);
+    const after = matter(afterText);
+    const expectedName = normalizeDirectoryNameToSkillName(directoryName);
+    if (!expectedName || Object.prototype.hasOwnProperty.call(before.data, 'name') || after.data.name !== expectedName) return false;
+    const expected = createMissingNameCandidate([{ path: 'SKILL.md', contentBase64: Buffer.from(beforeText, 'utf8').toString('base64') }], {
+      coverage: 'complete',
+      issues: [{ code: 'metadata.name_missing', category: 'format', blocking: true, repairPolicy: 'automatic',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'name' } }],
+    }, directoryName);
+    return Boolean(expected && Buffer.from(expected.files[0].contentBase64, 'base64').toString('utf8') === afterText);
+  } catch {
+    return false;
+  }
 }
 
 export function isNameWhitespaceOnlyChange(beforeText: string, afterText: string): boolean {
