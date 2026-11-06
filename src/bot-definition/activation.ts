@@ -206,18 +206,47 @@ export async function prepareBoundBotDefinition(
             definitionService.storeCatalogRuntime(materialized);
             materializedCatalogRuntime = true;
           } else {
-            // Keep the credential, but reconcile all non-secret catalog
-            // metadata from CatsCompany. This repairs older runtimes that
-            // persisted OpenAI Chat mode and prevents local metadata drift.
+            // 缓存里的 relay key 可能已经在别的设备上被轮换：rotate 会删旧建新，
+            // 而物化缓存不会自动失效，worker 会一直用旧 key，只在模型调用时
+            // 报"服务暂时不稳定"（2026-11-06 事故：uid 1598 / bot 1611）。
+            // 这里做一次轻量校验，401/403 就重新物化。
+            let effectiveRuntime = runtime;
+            if (auth?.token) {
+              try {
+                await validateCatsRelayCatalogRuntimeCredential(runtime, options.fetchImpl ?? fetch);
+              } catch (error) {
+                if (error instanceof RelayCredentialRejectedError) {
+                  const rematerialized = await provisionCatsRelayCatalogRuntime({
+                    botId,
+                    modelId: definition.model.modelId,
+                    reasoningEffort: definition.model.reasoningEffort,
+                    contextWindowTokens: cloudContextWindowTokens,
+                    catalogRuntime: cloudCatalogRuntime,
+                    existingRuntime: runtime,
+                    auth,
+                    fetchImpl: options.fetchImpl,
+                  });
+                  definitionService.storeCatalogRuntime(rematerialized);
+                  materializedCatalogRuntime = true;
+                  effectiveRuntime = rematerialized;
+                } else if (!(error instanceof RelayCredentialUnreachableError)) {
+                  throw error;
+                }
+              }
+            }
+            // Keep the (possibly refreshed) credential, but reconcile all
+            // non-secret catalog metadata from CatsCompany. This repairs older
+            // runtimes that persisted OpenAI Chat mode and prevents local
+            // metadata drift.
             const reconciled = retargetCatsRelayCatalogRuntime(
-              runtime,
+              effectiveRuntime,
               definition.model.modelId,
-              definition.model.reasoningEffort ?? runtime.reasoningEffort,
-              cloudContextWindowTokens ?? runtime.contextWindowTokens,
-              runtime.ownerUid,
+              definition.model.reasoningEffort ?? effectiveRuntime.reasoningEffort,
+              cloudContextWindowTokens ?? effectiveRuntime.contextWindowTokens,
+              effectiveRuntime.ownerUid,
               cloudCatalogRuntime,
             );
-            if (JSON.stringify(reconciled) !== JSON.stringify(runtime)) {
+            if (JSON.stringify(reconciled) !== JSON.stringify(effectiveRuntime)) {
               definitionService.storeCatalogRuntime(reconciled);
             }
             if (catalogCapabilitiesNeedRefresh(reconciled)) {
