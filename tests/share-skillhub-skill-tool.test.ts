@@ -137,7 +137,7 @@ test('repairs name whitespace when Cloud reports it together with a missing desc
       });
     },
   }));
-  const result = await tool.execute({ skillName: 'test-skill' }, {
+  const result = await tool.execute({ localSkillPath: '/tmp/format-and-description' }, {
     sessionId: 'combined-format-description',
     conversationHistory: [{ role: 'user', content: '发布 test-skill' }],
     channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
@@ -152,6 +152,7 @@ test('repairs name whitespace when Cloud reports it together with a missing desc
   assert.equal(shareCalls, 2);
   assert.equal(modelCalls, 1);
   assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0], /发现「demo」/);
   assert.match(sentMessages[0], /report-description/);
   assert.match(sentMessages[0], /这是一个一次性测试 Skill/);
   assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
@@ -452,6 +453,124 @@ test('prompted confirmation and the user natural phrasing are accepted without a
     confirmedDescription: 'A sample Skill.',
   }, context);
 
+  assert.equal(published.ok, true);
+  assert.equal(shareCalls, 2);
+});
+
+test('accepts a long user confirmation bound to the report and exact draft', async () => {
+  const reportId = 'bound-confirmation-report';
+  const description = '用于验证说明确认流程的一次性测试 Skill。';
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  let shareCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(files);
+        throw validationError(reportId, {
+          code: 'metadata.description_missing',
+          repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      return { submission: { id: 'bound-confirmation-submitted' }, skill: { id: 'sample-skill', name: 'sample-skill' } };
+    },
+  }));
+  const context: any = {
+    sessionId: 'description-bound-confirmation',
+    conversationHistory: [{ role: 'user', content: 'publish sample-skill' }],
+    currentUserInput: 'publish sample-skill',
+    currentUserApprovalInputs: [{ text: 'publish sample-skill', isBot: false }],
+    runtimeServices: { aiService: { chat: async () => ({ content: JSON.stringify({ description }) }) } },
+  };
+  const draft = await tool.execute({ skillName: 'sample-skill' }, context);
+  assert.equal(draft.ok, true);
+
+  const confirmation = [
+    '我确认使用这条说明并发布。',
+    `报告 ID：${reportId}`,
+    `说明原文：${description}`,
+    '请仅对此报告继续确认一次。如果还需要单独确认版本发布，请停下并告诉我，不要自行继续。',
+  ].join('\n');
+  for (const withdrawal of [
+    '更正：先不要发布。',
+    '算了，取消吧。',
+    '先取消',
+    '暂缓发布。',
+    '不要了。',
+    '等等，先等一下。',
+    '稍等，我说错了。',
+    '抱歉，发早了。',
+    '再想想，先放着。',
+    '第二句能换个说法吗？',
+    '请改成更短的版本再发布。',
+    'hold off',
+    'cancel that',
+    'please do not publish',
+  ]) {
+    const withdrawnReply = `${confirmation}\n${withdrawal}`;
+    context.currentUserInput = withdrawnReply;
+    context.currentUserApprovalInputs = [{ text: withdrawnReply, isBot: false }];
+    const withdrawnResult = await tool.execute({
+      confirmDescription: true,
+      descriptionReportId: reportId,
+      confirmedDescription: description,
+    }, context);
+    assert.equal(withdrawnResult.ok, false, `withdrawal must fail closed: ${withdrawal}`);
+    assert.equal(withdrawnResult.errorCode, 'DESCRIPTION_USER_APPROVAL_REQUIRED');
+    assert.equal(shareCalls, 1);
+  }
+
+  context.currentUserInput = confirmation;
+  context.currentUserApprovalInputs = [{ text: confirmation, isBot: false }];
+  const approved = await tool.execute({
+    confirmDescription: true,
+    descriptionReportId: reportId,
+    confirmedDescription: description,
+  }, context);
+  assert.equal(approved.ok, true);
+  assert.equal(shareCalls, 2);
+});
+
+test('accepts markdown and quoted forms of a structured description approval', async () => {
+  const reportId = 'markdown-confirmation-report';
+  const description = 'A one-time SkillHub confirmation fixture.';
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample-skill\n---\n# Instructions\n').toString('base64') }];
+  let shareCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      shareCalls++;
+      if (shareCalls === 1) {
+        options?.onPackageCaptured?.(files);
+        throw validationError(reportId, {
+          code: 'metadata.description_missing',
+          repairPolicy: 'confirmation_required',
+          location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+        });
+      }
+      return { submission: { id: 'markdown-confirmation-submitted' }, skill: { id: 'sample-skill', name: 'sample-skill' } };
+    },
+  }));
+  const context: any = {
+    sessionId: 'description-markdown-confirmation',
+    conversationHistory: [{ role: 'user', content: 'publish sample-skill' }],
+    currentUserInput: 'publish sample-skill',
+    currentUserApprovalInputs: [{ text: 'publish sample-skill', isBot: false }],
+    runtimeServices: { aiService: { chat: async () => ({ content: JSON.stringify({ description }) }) } },
+  };
+  await tool.execute({ skillName: 'sample-skill' }, context);
+  const approval = [
+    '> 1. 「我确认使用这条说明，并发布。」',
+    `> 报告 ID：${reportId}`,
+    `> 说明原文：${description}`,
+  ].join('\n');
+  context.currentUserInput = approval;
+  context.currentUserApprovalInputs = [{ text: approval, isBot: false }];
+  const published = await tool.execute({
+    confirmDescription: true,
+    descriptionReportId: reportId,
+    confirmedDescription: description,
+  }, context);
   assert.equal(published.ok, true);
   assert.equal(shareCalls, 2);
 });
