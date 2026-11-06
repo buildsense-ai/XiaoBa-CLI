@@ -1,0 +1,156 @@
+import { test } from 'node:test';
+import * as assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  buildSourceProjectionSemanticView, expandSourceReferences, validateSourceMemoryProjectionDocument,
+} from '../src/core/catslog-projection-reference';
+import { collectExecutionMemoryInputs } from '../src/core/execution-memory-bindings';
+import { startCatsLogProjectionFixture, ROOT_REVISION, ROOT_STREAM, opaqueRef, digest } from './helpers/catslog-projection-fixture';
+import { runActualFlow } from './helpers/catslog-projection-harness';
+
+// Failure matrix is declared before the implementation assertions below:
+// missing/foreign/duplicate/orphan output alignment, kind mismatch, source
+// withdrawal, and whole-view over-budget must never promote semantic evidence.
+const outputMessageA = 'scoped-output-message-a';
+const outputMessageB = 'scoped-output-message-b';
+const outputTool = 'scoped-output-tool';
+const hyperedgeOutputs = [outputMessageA, outputMessageB, outputTool];
+const sourceBasis = 'b'.repeat(64);
+const parentAnchor = { kind: 'session_result', stream_id: 'session-stream', id: 'parent-result' };
+const nodeMessage = digest('cleaned-message');
+const nodeMessageReuse = digest('cleaned-message-reuse');
+const nodeTool = digest('cleaned-tool');
+const nodeToolSibling = digest('cleaned-tool-sibling');
+const nodeOmission = digest('cleaned-omission');
+
+function proof(ref: string, kind: 'message' | 'tool_call', extra: Record<string, unknown> = {}) {
+  return {
+    ref, kind, ...(kind === 'tool_call' ? { subtype: 'tool_call', provider_call_id: 'provider-tool-1', name: 'lookup' } : {}),
+    body_sha256: digest(`body-${ref}`),
+    source_session_id: 'source-session-1', source_episode_id: 'episode-1', source_model_call_id: 'model-call-1',
+    output_position: kind === 'tool_call' ? 1 : 0, body_path: `assistant.outputs[${kind === 'tool_call' ? 1 : 0}]`,
+    source_revision: ROOT_REVISION, source_basis: sourceBasis, parent_anchor: parentAnchor,
+    parent_digest: 'c'.repeat(64), generation_hyperedge_ref: 'hyperedge-1', hyperedge_output_refs: hyperedgeOutputs,
+    ...extra,
+  };
+}
+
+function outputDocument(overrides: Record<string, unknown> = {}): any {
+  return {
+    schema_version: 1, goal: 'Output identity retention', summary: 'Cleaned outputs retain generation context.',
+    provenance: 'derived', model_steps: 'unknown', causality: 'unknown', overall_coverage: 'complete',
+    conditions: ['Only use the message after the condition is checked.'],
+    omissions: ['The withheld metric remains unknown.'],
+    nodes: [
+      { id: nodeMessage, kind: 'message', text: 'Use the approved message.', output_evidence_refs: [outputMessageA, outputMessageB] },
+      { id: nodeMessageReuse, kind: 'message', text: 'The same message also supports this cleaned meaning.', output_evidence_refs: [outputMessageA] },
+      { id: nodeTool, kind: 'tool_call', text: 'Call lookup with the preserved arguments.', output_evidence_refs: [outputTool] },
+      { id: nodeToolSibling, kind: 'tool_call', text: 'The tool output also supports this sibling meaning.', output_evidence_refs: [outputTool] },
+      { id: nodeOmission, kind: 'omission', text: 'The withheld metric remains unknown.' },
+    ],
+    edges: [
+      { from: nodeMessage, to: nodeMessageReuse, kind: 'supports' },
+      { from: nodeMessage, to: nodeTool, kind: 'qualifies' },
+      { from: nodeOmission, to: nodeMessage, kind: 'omits' },
+    ],
+    mappings: [
+      { node_id: nodeMessage, output_refs: [outputMessageA, outputMessageB] },
+      { node_id: nodeMessageReuse, output_refs: [outputMessageA] },
+      { node_id: nodeTool, output_refs: [outputTool] },
+      { node_id: nodeToolSibling, output_refs: [outputTool] },
+      { node_id: nodeOmission, source_ref: 'legacy-source-ref', source_digest: 'd'.repeat(64) },
+    ],
+    output_proofs: [proof(outputMessageA, 'message'), proof(outputMessageB, 'message', { output_position: 2, body_path: 'assistant.outputs[2]' }), proof(outputTool, 'tool_call')],
+    ...overrides,
+  };
+}
+
+function readFor(document: any): any {
+  return {
+    schema_version: 1, content_trust: 'derived_memory_projection',
+    projection: { Revision: ROOT_REVISION, StreamID: ROOT_STREAM, Document: document },
+    sources: [{ text: 'server-authenticated source proof material must not enter model context', status: 'read' }],
+  };
+}
+function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
+
+const invalidCases: Array<[string, (document: any) => void]> = [
+  ['foreign output ref', document => { document.nodes[0].output_evidence_refs = ['foreign-output']; document.mappings[0].output_refs = ['foreign-output']; }],
+  ['missing output mapping', document => { document.mappings = document.mappings.filter((mapping: any) => mapping.node_id !== nodeTool); }],
+  ['duplicate proof definition', document => { document.output_proofs.push(clone(document.output_proofs[0])); }],
+  ['orphan proof', document => { document.output_proofs.push(proof('orphan-output', 'message')); }],
+  ['duplicate output ref in node declaration', document => { document.nodes[0].output_evidence_refs = [outputMessageA, outputMessageA]; }],
+  ['message/tool-call kind mismatch', document => { document.nodes[2].output_evidence_refs = [outputMessageA]; document.mappings[2].output_refs = [outputMessageA]; }],
+  ['output meaning without proof', document => { document.output_proofs = document.output_proofs.filter((candidate: any) => candidate.ref !== outputTool); }],
+  ['cross-projection output alignment', document => { document.mappings[0].output_refs = ['other-projection-output']; }],
+];
+for (const [name, mutate] of invalidCases) {
+  test(`consumer rejects ${name} before semantic promotion`, () => {
+    const document = outputDocument(); mutate(document);
+    assert.equal(validateSourceMemoryProjectionDocument(readFor(document), opaqueRef(ROOT_REVISION, ROOT_STREAM)).reason, 'invalid_response');
+  });
+}
+
+test('valid output consumer preserves multiplicity, identity, generation context, and interpretation closure', () => {
+  const validation = validateSourceMemoryProjectionDocument(readFor(outputDocument()), opaqueRef(ROOT_REVISION, ROOT_STREAM));
+  assert.equal(validation.ok, true);
+  const view = buildSourceProjectionSemanticView(validation)!;
+  assert.deepEqual(view.conditions, outputDocument().conditions);
+  assert.deepEqual(view.omissions, outputDocument().omissions);
+  assert.deepEqual((view.nodes as any[]).find(node => node.id === nodeMessage).output_evidence_refs, [outputMessageA, outputMessageB]);
+  assert.deepEqual((view.nodes as any[]).find(node => node.id === nodeTool).output_evidence_refs, [outputTool]);
+  assert.deepEqual((view.mappings as any[]).find(mapping => mapping.node_id === nodeMessage).output_refs, [outputMessageA, outputMessageB]);
+  assert.equal((view.output_proofs as any[]).length, 3);
+  assert.equal((view.output_proofs as any[]).find(proof => proof.ref === outputTool).generation_hyperedge_ref, 'hyperedge-1');
+  assert.equal(JSON.stringify(view).includes('parent-result'), false, 'authority-only parent anchor leaked');
+  assert.equal(JSON.stringify(view).includes(ROOT_REVISION), false, 'authority-only source revision leaked');
+  assert.equal(JSON.stringify(view).includes(sourceBasis), false, 'authority-only source basis leaked');
+});
+
+test('valid output projection expands through the actual client and reaches native execution-memory input', async () => {
+  const fixture = await startCatsLogProjectionFixture({ document: outputDocument() });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'consumer-output-e2e-'));
+  try {
+    const run = await runActualFlow({
+      targetRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), root, baseUrl: fixture.baseUrl,
+      token: fixture.token, question: 'What output and condition should be retained?', keyword: 'output',
+    });
+    assert.ok(run.delivered.size > 0);
+    const retainedView = [...run.delivered.values()][0];
+    assert.equal((retainedView.nodes as any[]).some(node => node.kind === 'message'), true);
+    assert.equal((retainedView.nodes as any[]).some(node => node.kind === 'tool_call'), true);
+    assert.deepEqual(retainedView.conditions, outputDocument().conditions);
+    assert.deepEqual(retainedView.omissions, outputDocument().omissions);
+    assert.ok(run.observations.length > 0);
+    assert.ok(run.mainCalls.length > 0);
+    const bindings = collectExecutionMemoryInputs([{
+      role: 'tool', tool_call_id: 'memory-observation', content: run.observations[0].formattedContent,
+    }] as any);
+    assert.ok(bindings.some(binding => binding.anchor.id === nodeMessage), 'native input binding lost output node anchor');
+    assert.ok(run.mainResponse.includes(fixture.identities[0].ref), 'main model did not receive retained evidence');
+  } finally {
+    await fixture.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('source withdrawal remains typed reference_only and never becomes semantic evidence', async () => {
+  const response = { branches: [{ source: 'agent_memory', items: [{ source: 'agent_memory', kind: 'source_reference', ref: opaqueRef(ROOT_REVISION, ROOT_STREAM) }] }] };
+  const result = await expandSourceReferences(response, async () => { throw Object.assign(new Error('withdrawn'), { status: 404 }); });
+  assert.equal(result[0].status, 'reference_only');
+  assert.equal(result[0].expansion_error, 'http_404');
+  assert.equal(result[0].semantic_view, undefined);
+});
+
+test('proof context is whole-view bounded; it becomes reference_only rather than silently clipped', async () => {
+  const document = outputDocument();
+  document.output_proofs[0].input_refs = Array.from({ length: 512 }, (_, index) => `input-${index}-${'x'.repeat(80)}`);
+  const response = { branches: [{ source: 'agent_memory', items: [{ source: 'agent_memory', kind: 'source_reference', ref: opaqueRef(ROOT_REVISION, ROOT_STREAM) }] }] };
+  const result = await expandSourceReferences(response, async () => readFor(document));
+  assert.equal(result[0].status, 'reference_only');
+  assert.equal(result[0].expansion_error, 'semantic_view_over_budget');
+  assert.equal(result[0].semantic_view, undefined);
+});

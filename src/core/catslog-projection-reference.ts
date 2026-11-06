@@ -96,15 +96,46 @@ export function validateSourceMemoryProjectionDocument(
     || !['complete', 'partial'].includes(d.overall_coverage)
     || (d.overall_coverage === 'partial' && !text(d.gap_acknowledgement))) return invalid();
   if (!Array.isArray(d.nodes) || !d.nodes.length || d.nodes.length > 32
-    || !d.nodes.every((n: any) => record(n) && text(n.id) && ['assertion', 'condition', 'omission'].includes(n.kind) && text(n.text))
+    || !d.nodes.every((n: any) => validProjectionNode(n))
     || !Array.isArray(d.edges) && d.edges !== null
     || !strings(d.conditions) || !strings(d.omissions)
     || !Array.isArray(d.mappings) && d.mappings !== null) return invalid();
-  const ids = new Set(d.nodes.map((n: any) => n.id));
+  const ids = new Set<string>(d.nodes.map((n: any) => n.id));
   if (ids.size !== d.nodes.length || (d.edges ?? []).length > 64
     || !(d.edges ?? []).every((e: any) => record(e) && ids.has(e.from) && ids.has(e.to) && ['supports', 'qualifies', 'omits'].includes(e.kind))
     || !Array.isArray(d.mappings) || d.mappings.length === 0 || d.mappings.length > 128
-    || !(d.mappings ?? []).every((m: any) => record(m) && ids.has(m.node_id))) return invalid();
+    || !(d.mappings ?? []).every((m: any) => validProjectionMapping(m, ids))) return invalid();
+  const proofs = new Map<string, any>();
+  if (d.output_proofs !== undefined && (!Array.isArray(d.output_proofs) || d.output_proofs.length > 128
+    || !d.output_proofs.every((proof: any) => {
+      if (!validOutputProof(proof) || proofs.has(proof.ref)) return false;
+      proofs.set(proof.ref, proof);
+      return true;
+    }))) return invalid();
+  const mappedOutputRefs = new Set<string>();
+  const mappedNodeRefs = new Map<string, Set<string>>();
+  for (const mapping of d.mappings) {
+    const refs = Array.isArray(mapping.output_refs) ? mapping.output_refs : [];
+    const nodeRefs = mappedNodeRefs.get(mapping.node_id) ?? new Set<string>();
+    for (const ref of refs) {
+      const proof = proofs.get(ref);
+      const node = d.nodes.find((candidate: any) => candidate.id === mapping.node_id);
+      if (!proof || !node) return invalid();
+      if (!['message', 'tool_call'].includes(node.kind) || proof.kind !== node.kind) return invalid();
+      nodeRefs.add(ref); mappedOutputRefs.add(ref);
+    }
+    mappedNodeRefs.set(mapping.node_id, nodeRefs);
+  }
+  for (const node of d.nodes) {
+    const declared = node.kind === 'message' || node.kind === 'tool_call'
+      ? new Set<string>(node.output_evidence_refs as string[]) : new Set<string>();
+    const aligned = mappedNodeRefs.get(node.id) ?? new Set<string>();
+    if (declared.size !== aligned.size || [...declared].some(ref => !aligned.has(ref))) return invalid();
+    for (const ref of declared) if (proofs.get(ref)?.kind !== node.kind) return invalid();
+  }
+  // Every proof must participate in at least one explicit alignment. Reuse by
+  // multiple cleaned nodes is valid and preserves one-to-many/many-to-one work.
+  if (mappedOutputRefs.size !== proofs.size) return invalid();
   if (d.aggregate !== undefined && d.aggregate !== null && !validAggregate(d.aggregate)) return invalid();
   // No shortening, slicing, depth replacement, or filtering of semantic arrays before validation.
   return { ok: true, document: d, sources, projectionRef: requestedRef, revision: projection.Revision };
@@ -125,14 +156,18 @@ export function buildSourceProjectionSemanticView(
     overall_coverage: d.overall_coverage,
     gap_acknowledgement: d.gap_acknowledgement ?? '',
     conditions: d.conditions ?? [], omissions: d.omissions ?? [],
-    nodes: d.nodes.map((n: any) => ({ id: n.id, kind: n.kind, text: n.text })),
+    nodes: d.nodes.map((n: any) => ({ id: n.id, kind: n.kind, text: n.text,
+      ...(Array.isArray(n.output_evidence_refs) ? { output_evidence_refs: [...n.output_evidence_refs] } : {}),
+    })),
     edges: (d.edges ?? []).map((e: any) => ({ from: e.from, to: e.to, kind: e.kind })),
     mappings: (d.mappings ?? []).map((m: any) => ({
       node_id: m.node_id,
       ...(isCatsLogPoolCitationRef(m.source_ref) ? { source_ref: m.source_ref } : {}),
       ...(typeof m.digest === 'string' ? { digest: m.digest } : {}),
       ...(typeof m.source_digest === 'string' ? { source_digest: m.source_digest } : {}),
+      ...(Array.isArray(m.output_refs) && m.output_refs.length ? { output_refs: [...m.output_refs] } : {}),
     })),
+    ...(Array.isArray(d.output_proofs) && d.output_proofs.length ? { output_proofs: d.output_proofs.map(semanticOutputProof) } : {}),
     ...(a ? { aggregate: {
       contract: a.contract, version: a.version, disclosure: a.disclosure,
       coverage_digest: a.coverage_digest,
@@ -222,6 +257,59 @@ function record(v: unknown): Record<string, any> | undefined {
 }
 function text(v: unknown): v is string { return typeof v === 'string' && v.trim().length > 0; }
 function strings(v: unknown): boolean { return v === null || Array.isArray(v) && v.length <= 4096 && v.every(x => typeof x === 'string'); }
+function uniqueStrings(v: unknown, max: number, requireNonEmpty = false): v is string[] {
+  if (!Array.isArray(v) || v.length > max) return false;
+  const seen = new Set<string>();
+  for (const item of v) {
+    if (typeof item !== 'string' || (requireNonEmpty && !item.trim()) || seen.has(item)) return false;
+    seen.add(item);
+  }
+  return true;
+}
+function validProjectionNode(node: any): boolean {
+  if (!record(node) || !text(node.id) || !text(node.text)) return false;
+  if (['assertion', 'condition', 'omission'].includes(node.kind)) {
+    return node.output_evidence_refs === undefined;
+  }
+  return ['message', 'tool_call'].includes(node.kind)
+    && uniqueStrings(node.output_evidence_refs, 128, true);
+}
+function validProjectionMapping(mapping: any, ids: Set<string>): boolean {
+  if (!record(mapping) || !text(mapping.node_id) || !ids.has(mapping.node_id)) return false;
+  return mapping.output_refs === undefined || uniqueStrings(mapping.output_refs, 128, true);
+}
+function validOutputProof(proof: any): boolean {
+  if (!record(proof) || !text(proof.ref) || proof.ref.length > 256
+    || !['message', 'tool_call'].includes(proof.kind) || !/^[a-f0-9]{64}$/.test(proof.body_sha256)
+    || !text(proof.source_session_id) || !text(proof.source_episode_id) || !text(proof.source_model_call_id)
+    || !Number.isSafeInteger(proof.output_position) || proof.output_position < 0 || !text(proof.body_path)
+    || !/^[a-f0-9]{64}$/.test(proof.source_revision) || !/^[a-f0-9]{64}$/.test(proof.source_basis)
+    || !record(proof.parent_anchor) || !/^[a-f0-9]{64}$/.test(proof.parent_digest)
+    || !text(proof.generation_hyperedge_ref)
+    || !uniqueStrings(proof.hyperedge_output_refs, 512, true) || !proof.hyperedge_output_refs.includes(proof.ref)) return false;
+  if (proof.subtype !== undefined && !text(proof.subtype)) return false;
+  if (proof.kind === 'tool_call' && (proof.subtype !== 'tool_call' || !text(proof.provider_call_id) || !text(proof.name))) return false;
+  if (proof.provider_call_id !== undefined && !text(proof.provider_call_id)) return false;
+  if (proof.name !== undefined && !text(proof.name)) return false;
+  return ['input_refs', 'query_refs', 'turn_result_refs'].every(key =>
+    proof[key] === undefined || uniqueStrings(proof[key], 512, true));
+}
+function semanticOutputProof(proof: any): Record<string, unknown> {
+  return {
+    ref: proof.ref, kind: proof.kind,
+    ...(proof.subtype !== undefined ? { subtype: proof.subtype } : {}),
+    body_sha256: proof.body_sha256,
+    ...(proof.provider_call_id !== undefined ? { provider_call_id: proof.provider_call_id } : {}),
+    ...(proof.name !== undefined ? { name: proof.name } : {}),
+    source_session_id: proof.source_session_id, source_episode_id: proof.source_episode_id,
+    source_model_call_id: proof.source_model_call_id, output_position: proof.output_position,
+    body_path: proof.body_path, generation_hyperedge_ref: proof.generation_hyperedge_ref,
+    hyperedge_output_refs: [...proof.hyperedge_output_refs],
+    ...(proof.input_refs ? { input_refs: [...proof.input_refs] } : {}),
+    ...(proof.query_refs ? { query_refs: [...proof.query_refs] } : {}),
+    ...(proof.turn_result_refs ? { turn_result_refs: [...proof.turn_result_refs] } : {}),
+  };
+}
 function invalid(): SourceProjectionValidation { return { ok: false, reason: 'invalid_response' }; }
 function validAggregate(a: any): boolean {
   if (!record(a)) return false;
