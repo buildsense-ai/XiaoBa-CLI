@@ -231,7 +231,7 @@ export interface CatsLogKnowledgeSourceContent {
   /** Declared provenance; separate from the learning selected set. */
   source_anchors?: CatsLogKnowledgeAnchor[];
   selected_anchors?: CatsLogKnowledgeAnchor[];
-  node_kind?: 'query' | 'action' | 'result' | 'teachback' | 'assertion' | 'condition' | 'omission';
+  node_kind?: 'query' | 'action' | 'result' | 'teachback' | 'assertion' | 'condition' | 'omission' | 'message' | 'tool_call';
   /** Skill program reads only: one independently proved mapping per node,
    * preserved exactly as stored — never collapsed into a program-wide union. */
   node_sources?: CatsLogKnowledgeSourceNodeMapping[];
@@ -241,9 +241,45 @@ export interface CatsLogKnowledgeSourceContent {
   omissions?: string[];
 }
 
+export type CatsLogKnowledgeSourceProjectionNodeKind =
+  | 'assertion' | 'condition' | 'omission' | 'message' | 'tool_call';
+
+export interface CatsLogKnowledgeSourceProjectionNode {
+  id: string;
+  kind: CatsLogKnowledgeSourceProjectionNodeKind;
+  text: string;
+}
+
+/** One independently preserved output proof context for a cleaned node. */
+export interface CatsLogKnowledgeSourceGenerationContext {
+  source_output_refs: string[];
+  subtype: string;
+  generation_hyperedge_ref: string;
+  query_refs?: string[];
+  turn_result_refs?: string[];
+}
+
+/** Output identity metadata for a message/tool_call projection node. */
+export interface CatsLogKnowledgeSourceMemoryOutputNode {
+  id: string;
+  /** Legacy summary; absent or empty when contexts disagree. */
+  subtype?: string;
+  cleaned_content: string;
+  source_output_refs: string[];
+  /** Legacy summary; absent or empty when contexts span multiple hyperedges. */
+  generation_hyperedge_ref?: string;
+  query_refs?: string[];
+  turn_result_refs?: string[];
+  generation_contexts?: CatsLogKnowledgeSourceGenerationContext[];
+}
+
 export interface CatsLogKnowledgeSourceProjectionContext {
+  /** Present on memory-graph/2 responses; optional for legacy source readers. */
+  contract_version?: string;
+  /** Server authority; the client does not infer proof validity from this field. */
+  output_identity_status?: string;
   selected_node_id: string;
-  nodes: Array<{ id: string; kind: 'assertion' | 'condition' | 'omission'; text: string }>;
+  nodes: CatsLogKnowledgeSourceProjectionNode[];
   /** Stored relation direction and kind are preserved exactly. */
   edges: Array<{ from: string; to: string; kind: 'supports' | 'qualifies' | 'omits' }>;
   mappings: Array<{
@@ -251,6 +287,7 @@ export interface CatsLogKnowledgeSourceProjectionContext {
     anchor: CatsLogKnowledgeAnchor;
     source_anchors: CatsLogKnowledgeAnchor[];
   }>;
+  output_nodes?: CatsLogKnowledgeSourceMemoryOutputNode[];
 }
 
 /** Mirrors knowledge.SourceNodeMapping (node_sources entries). */
