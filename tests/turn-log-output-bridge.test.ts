@@ -32,7 +32,7 @@ function setTestRoot(): string {
 
 async function captureOrdinaryTurn(sessionId: string, calls: Array<{ id: string; name: string; args: string }[]>, finalText: string) {
   const root = setTestRoot();
-  const logger = new SessionTurnLogger('bridge', sessionId);
+  const logger = new SessionTurnLogger('cli', sessionId);
   const recorder = new TurnLogRecorder(logger);
   const tool: ToolDefinition = { name: 'lookup', description: 'deterministic fixture', parameters: { type: 'object', properties: {} } };
   let providerCalls = 0;
@@ -116,7 +116,7 @@ test('ConversationRunner -> TurnLogRecorder -> SessionTurnLogger binds ordinary 
 test('missing/foreign origin, unsupported content, and overbound output are explicitly incomplete', async () => {
   const root = setTestRoot();
   const sessionId = `bounded-output-${randomUUID()}`;
-  const logger = new SessionTurnLogger('bridge', sessionId);
+  const logger = new SessionTurnLogger('cli', sessionId);
   const recorder = new TurnLogRecorder(logger);
   const assistant = (extra: Record<string, unknown>) => ({ role: 'assistant', content: 'ordinary', ...extra });
   recorder.recordTurn({ userInput: 'x', tokens: { prompt: 1, completion: 1 }, result: { response: 'x', newMessages: [assistant({})] } as any });
@@ -136,7 +136,7 @@ test('missing/foreign origin, unsupported content, and overbound output are expl
 test('output count and invalid UTF-16 boundaries fail closed with omission reasons', async () => {
   setTestRoot();
   const sessionId = `bounded-count-${randomUUID()}`;
-  const logger = new SessionTurnLogger('bridge', sessionId);
+  const logger = new SessionTurnLogger('cli', sessionId);
   const recorder = new TurnLogRecorder(logger);
   const toolCalls = Array.from({ length: 129 }, (_, index) => ({ id: `call-${index}`, function: { name: 'lookup', arguments: '{}' } }));
   recorder.recordTurn({ userInput: 'x', tokens: { prompt: 1, completion: 1 }, result: { response: 'x', newMessages: [{
