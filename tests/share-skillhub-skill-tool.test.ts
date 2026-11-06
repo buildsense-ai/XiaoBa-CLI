@@ -137,7 +137,7 @@ test('repairs name whitespace when Cloud reports it together with a missing desc
       });
     },
   }));
-  const result = await tool.execute({ skillName: 'test-skill' }, {
+  const result = await tool.execute({ localSkillPath: '/tmp/format-and-description' }, {
     sessionId: 'combined-format-description',
     conversationHistory: [{ role: 'user', content: '发布 test-skill' }],
     channel: { chatId: 'current-chat', reply: async (_chatId: string, text: string) => { sentMessages.push(text); } },
@@ -152,6 +152,7 @@ test('repairs name whitespace when Cloud reports it together with a missing desc
   assert.equal(shareCalls, 2);
   assert.equal(modelCalls, 1);
   assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0], /发现「demo」/);
   assert.match(sentMessages[0], /report-description/);
   assert.match(sentMessages[0], /这是一个一次性测试 Skill/);
   assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));

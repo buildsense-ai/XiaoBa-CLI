@@ -225,7 +225,7 @@ describe('SkillHub connected install service', () => {
     const skillRoot = path.join(testRoot, 'skills', 'format-and-description');
     fs.mkdirSync(skillRoot, { recursive: true });
     const skillPath = path.join(skillRoot, 'SKILL.md');
-    const originalText = '---\nname: " format-and-description " # keep\n---\n# Original instructions\n';
+    const originalText = '---\nname: " demo " # keep\n---\n# Original instructions\n';
     fs.writeFileSync(skillPath, originalText);
     const realService = new SkillHubService();
     const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: realService.shareLocalSkill.bind(realService) }));
@@ -245,7 +245,8 @@ describe('SkillHub connected install service', () => {
     assert.equal(draft.controlSignal, 'pause_turn');
     assert.equal(uploaded.length, 2);
     assert.match(sentMessages[0], /name 首尾空白/);
-    assert.match(Buffer.from(uploaded[1].source.files[0].contentBase64, 'base64').toString('utf8'), /name: "format-and-description" # keep/);
+    assert.match(sentMessages[0], /发现「demo」/);
+    assert.match(Buffer.from(uploaded[1].source.files[0].contentBase64, 'base64').toString('utf8'), /name: "demo" # keep/);
 
     history.push({ role: 'user', content: '确认使用这条说明并发布' });
     const published = await tool.execute({ confirmDescription: true,
@@ -255,7 +256,7 @@ describe('SkillHub connected install service', () => {
     assert.equal(uploaded.length, 3);
     const submittedEntry = uploaded[2].source.files.find((file: any) => file.path === 'SKILL.md');
     const submittedText = Buffer.from(submittedEntry.contentBase64, 'base64').toString('utf8');
-    assert.match(submittedText, /name: "format-and-description" # keep/);
+    assert.match(submittedText, /name: "demo" # keep/);
     assert.match(submittedText, /description: "用于整理示例文档的一次性测试 Skill。"/);
     assert.match(submittedText, /# Original instructions/);
     assert.equal(fs.readFileSync(skillPath, 'utf8'), originalText);
