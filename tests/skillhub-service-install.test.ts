@@ -281,6 +281,10 @@ describe('SkillHub connected install service', () => {
     assert.throws(() => SkillParser.parse(skillFile, { allowMissingName: true }), /Missing required fields/);
     fs.writeFileSync(skillFile, '---\nname: ""\ndescription: Valid fixture\n---\n# Instructions\n');
     assert.throws(() => SkillParser.parse(skillFile, { allowMissingName: true }), /Missing required fields/);
+
+    fs.writeFileSync(skillFile, '---\nname: 12\ndescription: Valid fixture\n---\n# Instructions\n');
+    assert.equal((SkillParser.parse(skillFile).metadata as any).name, 12);
+    assert.throws(() => SkillParser.parse(skillFile, { allowMissingName: true }), /Missing required fields/);
   });
 
   test('publishes a name-normalized candidate after the user confirms its missing-description draft', async () => {

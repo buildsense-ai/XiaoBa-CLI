@@ -53,7 +53,7 @@ export class SkillParser {
     }
 
     const metadata: SkillMetadata = {
-      name: typeof data.name === 'string' ? data.name : '',
+      name: typeof data.name === 'string' || !options.allowMissingName ? data.name : '',
       description: typeof data.description === 'string' ? data.description : '',
       argumentHint: data['argument-hint'] || data.argumentHint,
       userInvocable: data.invocable === 'user' || data.invocable === 'both',
@@ -90,7 +90,7 @@ export class SkillParser {
     }
 
     const metadata: SkillMetadata = {
-      name: typeof data.name === 'string' ? data.name : '',
+      name: typeof data.name === 'string' || !options.allowMissingName ? data.name : '',
       description: typeof data.description === 'string' ? data.description : '',
       argumentHint: data['argument-hint'],
       userInvocable: data['user-invocable'] !== false,

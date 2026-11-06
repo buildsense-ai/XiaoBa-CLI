@@ -59,6 +59,19 @@ describe('SkillHub local metadata', () => {
     assert.deepEqual(matter(text).content, originalBody);
   });
 
+  test('does not treat horizontal rules in a document without frontmatter as metadata delimiters', () => {
+    const original = '# Title\n\nIntro.\n\n---\n\n## Section\n\nBody.\n\n---\n\nEnd.\n';
+    const text = applySkillHubLocalMetadata(original, {
+      author: 'lin',
+      version: '1.0.1',
+      uploadedAt: '2026-05-28T01:00:00.000Z',
+    });
+
+    assert.ok(text.endsWith(original));
+    assert.ok(text.indexOf('# Title') < text.indexOf('## Section'));
+    assert.equal((text.match(/^---$/gm) || []).length, 4);
+  });
+
   test('reads metadata and ignores generated package files in local hash', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-skillhub-meta-'));
     try {

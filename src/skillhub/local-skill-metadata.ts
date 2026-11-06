@@ -49,7 +49,7 @@ export function applySkillHubLocalMetadata(markdown: string, metadata: Required<
     [SKILLHUB_METADATA_KEYS.uploadedAt]: metadata.uploadedAt,
   };
   const match = text.match(/^(---[ \t]*\r?\n)([\s\S]*?)(^---[ \t]*(?:\r?\n|$))/m);
-  if (!match) {
+  if (!match || match.index !== 0) {
     return `---\n${frontmatterLines(fields)}---\n\n${text}`;
   }
   const lineEnding = match[1].includes('\r\n') ? '\r\n' : '\n';
