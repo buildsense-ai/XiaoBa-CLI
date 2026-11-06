@@ -107,7 +107,7 @@ async function runSessionB(config: ExecutionFixtureConfig, runtimePath: string):
         content: null, usage,
         toolCalls: [{ id: 'fixture-exact-source-read', type: 'function', function: {
           name: definition.name,
-          arguments: JSON.stringify({ action: 'read_source', anchor: config.anchor, before: 0, after: 0, max_bytes: 8192 }),
+          arguments: JSON.stringify({ action: 'read_source', anchor: config.anchor, before: 0, after: 0 }),
         } }],
       };
       const submittedReadResult = messages.find(message => message.role === 'tool' && message.tool_call_id === 'fixture-exact-source-read');

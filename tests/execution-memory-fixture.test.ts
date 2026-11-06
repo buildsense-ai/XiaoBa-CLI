@@ -108,6 +108,7 @@ test('compiled fixture runs A before source publication, then reads and consumes
     assert.equal(request.method, 'POST');
     assert.equal(request.url, '/catsco/agent/knowledge/source/read');
     assert.deepEqual(body.anchor, anchor);
+    assert.equal(body.max_bytes, undefined, 'fixture uses the source/read API default budget');
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({
       source: { anchor, status: 'read', role: 'knowledge', speaker: 'knowledge', occurred_at: null,
