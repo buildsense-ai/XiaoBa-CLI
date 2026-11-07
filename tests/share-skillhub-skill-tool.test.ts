@@ -173,12 +173,67 @@ test('requires an exact filename to select among multiple authorized ZIP attachm
   try {
     const ambiguous = await tool.execute({}, context);
     assert.equal(ambiguous.ok, false);
-    assert.match(ambiguous.message, /exact attached filename/);
+    assert.match(ambiguous.message, /Rename the ZIP and attach it again/);
     assert.equal(serviceCalls, 0);
 
     const selected = await tool.execute({ zipAttachmentName: 'second.zip' }, context);
     assert.equal(selected.ok, true);
     assert.equal(serviceCalls, 1);
+  } finally {
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('asks for a renamed reattachment when multiple authorized ZIPs share the same filename', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-duplicate-name-test-'));
+  const firstPath = path.join(root, 'first.zip');
+  const secondPath = path.join(root, 'second.zip');
+  const skillText = '---\nname: duplicate-name\ndescription: inert test fixture\n---\n# No-op test fixture\n';
+  const archive = makeZip([{ name: 'SKILL.md', content: Buffer.from(skillText) }]);
+  await fs.promises.writeFile(firstPath, archive);
+  await fs.promises.writeFile(secondPath, archive);
+  let serviceCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async () => { serviceCalls++; return {}; },
+  }));
+  const context = catscoZipContext([
+    catscoZipGrant(firstPath, 'skill.zip', 'catsco_attachment:first-ref'),
+    catscoZipGrant(secondPath, 'skill.zip', 'catsco_attachment:second-ref'),
+  ], 'zip-duplicate-name');
+
+  try {
+    const result = await tool.execute({ zipAttachmentName: 'skill.zip' }, context);
+    assert.equal(result.ok, false);
+    assert.match(result.message, /Rename the ZIP and attach it again/);
+    assert.equal(serviceCalls, 0);
+  } finally {
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects blank ZIP attachment names and mixed ZIP/local selectors without publishing', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-invalid-selector-test-'));
+  const zipPath = path.join(root, 'only.zip');
+  const skillText = '---\nname: invalid-selector\ndescription: inert test fixture\n---\n# No-op test fixture\n';
+  await fs.promises.writeFile(zipPath, makeZip([{ name: 'SKILL.md', content: Buffer.from(skillText) }]));
+  let serviceCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async () => { serviceCalls++; return {}; },
+  }));
+  const context = catscoZipContext([
+    catscoZipGrant(zipPath, 'only.zip', 'catsco_attachment:only-ref'),
+  ], 'zip-invalid-selector');
+
+  try {
+    const blankName = await tool.execute({ zipAttachmentName: '   ' }, context);
+    assert.equal(blankName.ok, false);
+    assert.equal(blankName.errorCode, 'INVALID_TOOL_ARGUMENTS');
+    assert.match(blankName.message, /non-empty exact filename/);
+
+    const mixed = await tool.execute({ zipAttachmentName: 'only.zip', skillName: 'another-skill' }, context);
+    assert.equal(mixed.ok, false);
+    assert.match(mixed.message, /ZIP attachment selector/);
+    assert.equal(serviceCalls, 0);
   } finally {
     await fs.promises.rm(root, { recursive: true, force: true });
   }

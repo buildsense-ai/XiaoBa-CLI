@@ -115,6 +115,9 @@ export class ShareSkillHubSkillTool implements Tool {
     let localSkillPath = typeof args?.localSkillPath === 'string' ? args.localSkillPath.trim() : '';
     const zipAttachmentRef = typeof args?.zipAttachmentRef === 'string' ? args.zipAttachmentRef.trim() : '';
     const zipAttachmentName = typeof args?.zipAttachmentName === 'string' ? args.zipAttachmentName.trim() : '';
+    if (args?.zipAttachmentName != null && !zipAttachmentName) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'zipAttachmentName must be a non-empty exact filename.' };
+    }
     const hasZipSelector = Boolean(zipAttachmentRef || zipAttachmentName);
     let zipCleanupDirectory: string | undefined;
     let zipCleanupRetained = false;
@@ -126,7 +129,7 @@ export class ShareSkillHubSkillTool implements Tool {
       };
     }
     if (hasZipSelector && (localSkillPath || skillName)) {
-      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'Provide either a ZIP attachment reference or a local Skill path/name, not both.' };
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'Provide either a ZIP attachment selector (zipAttachmentRef or zipAttachmentName) or a local Skill path/name, not both.' };
     }
     if (zipAttachmentRef && zipAttachmentName) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'Provide one ZIP attachment selector only.' };
@@ -158,7 +161,7 @@ export class ShareSkillHubSkillTool implements Tool {
             ok: false,
             errorCode: zipAttachmentName ? 'INVALID_TOOL_ARGUMENTS' : 'PERMISSION_DENIED',
             message: zipAttachmentName
-              ? 'No authorized ZIP attachment with that exact filename is available in the current message.'
+              ? 'No authorized ZIP attachment with that exact filename is available in the current message. Filename matching is case-sensitive.'
               : 'Attach a ZIP to the current CatsCo message before publishing it.',
           };
         }
@@ -166,7 +169,7 @@ export class ShareSkillHubSkillTool implements Tool {
           return {
             ok: false,
             errorCode: 'INVALID_TOOL_ARGUMENTS',
-            message: 'More than one authorized ZIP attachment matches. Ask the user to select one by its exact attached filename.',
+            message: 'Multiple authorized ZIP attachments have the same filename, so they cannot be distinguished safely. Rename the ZIP and attach it again, then publish the renamed attachment.',
           };
         }
         const grant = matchingGrants[0];
