@@ -26,6 +26,19 @@ test('extracts one Skill package under a private temporary directory', async () 
   }
 });
 
+test('uses the ZIP filename as the candidate directory when SKILL.md is at archive root', async () => {
+  const fixture = await createFixture([{ name: 'SKILL.md', content: Buffer.from('---\n---\n') }]);
+  let result: Awaited<ReturnType<typeof extractAuthorizedSkillZip>> | undefined;
+  try {
+    result = await extractAuthorizedSkillZip(fixture.zipPath);
+    assert.equal(path.basename(result.directory), 'fixture');
+    assert.equal(await fs.promises.readFile(path.join(result.directory, 'SKILL.md'), 'utf8'), '---\n---\n');
+  } finally {
+    if (result) await fs.promises.rm(result.cleanupDirectory, { recursive: true, force: true });
+    await fs.promises.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('rejects traversal, duplicate entries, symlinks, and multiple Skill roots before extraction', async t => {
   const cases: Array<[string, ZipFixtureEntry[]]> = [
     ['path traversal', [entry('sample/SKILL.md'), entry('../outside.txt')]],

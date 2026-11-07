@@ -35,17 +35,27 @@ export async function extractAuthorizedSkillZip(zipPath: string): Promise<Extrac
   }
 
   const cleanupDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xiaoba-skillhub-zip-'));
+  const extractionRoot = path.join(cleanupDirectory, safePackageDirectoryName(zipPath));
   try {
+    await fs.promises.mkdir(extractionRoot, { mode: 0o700 });
     for (const item of entries) {
       if (item.isDirectory) continue;
-      await extractEntry(zipPath, item, cleanupDirectory);
+      await extractEntry(zipPath, item, extractionRoot);
     }
-    const directory = path.dirname(path.join(cleanupDirectory, skillEntries[0].relativePath));
+    const directory = path.dirname(path.join(extractionRoot, skillEntries[0].relativePath));
     return { directory, cleanupDirectory };
   } catch (error) {
     await fs.promises.rm(cleanupDirectory, { recursive: true, force: true });
     throw error;
   }
+}
+
+function safePackageDirectoryName(zipPath: string): string {
+  const name = path.basename(zipPath, path.extname(zipPath))
+    .replace(/[\x00-\x1f<>:"/\\|?*]/g, '-')
+    .replace(/[ .]+$/g, '')
+    .slice(0, 80);
+  return name && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(name) ? name : 'skill-package';
 }
 
 async function readAndValidateEntries(zipPath: string): Promise<CheckedEntry[]> {
