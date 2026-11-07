@@ -44,6 +44,34 @@ function validationError(
   });
 }
 
+function catscoZipContext(localFileGrants: any[], sessionId: string) {
+  const now = Date.now();
+  return {
+    surface: 'catscompany',
+    sessionId,
+    conversationHistory: [{ role: 'user', content: '发布这个 ZIP' }],
+    currentUserInput: '发布这个 ZIP',
+    executionScope: {
+      source: 'catscompany', sessionKey: 'cc_user:u1', topicId: 'p2p_1_2', topicType: 'p2p',
+      actorUserId: 'u1', agentId: 'agent1', agentBodyId: 'body1', permissionsSource: 'server_canonical_message',
+      identityTrust: 'server_canonical', isTrusted: true,
+    },
+    localDeviceGrant: { kind: 'catscompany_body', source: 'catscompany', bodyId: 'body1', createdAt: now },
+    localFileGrants,
+  } as any;
+}
+
+function catscoZipGrant(filePath: string, fileName: string, attachmentRef: string, now = Date.now()) {
+  const stat = fs.statSync(filePath);
+  return {
+    kind: 'catscompany_attachment', source: 'catscompany', attachmentRef, filePath, fileName,
+    fileType: 'file', size: stat.size, mtimeMs: stat.mtimeMs,
+    sessionKey: 'cc_user:u1', topicId: 'p2p_1_2', topicType: 'p2p', actorUserId: 'u1', agentId: 'agent1',
+    agentBodyId: 'body1', deviceBodyId: 'body1', identityTrust: 'server_canonical',
+    operations: ['read_file'], createdAt: now, expiresAt: now + 60_000,
+  };
+}
+
 test('retains an authorized ZIP temp directory for a description draft without an outbound channel', async () => {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-confirmation-test-'));
   const cachedFileName = '20261107T061234.123Z_ab12cd34_my-skill.zip';
@@ -93,6 +121,89 @@ test('retains an authorized ZIP temp directory for a description draft without a
     assert.equal(fs.existsSync(path.join(extractedDirectory, 'SKILL.md')), true);
   } finally {
     await fs.promises.rm(path.dirname(extractedDirectory), { recursive: true, force: true });
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('selects the single authorized ZIP from current CatsCo attachments without exposing its opaque reference', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-auto-select-test-'));
+  const zipPath = path.join(root, 'automatic-selection.zip');
+  const skillText = '---\nname: automatic-selection\ndescription: inert test fixture\n---\n# No-op test fixture\n';
+  await fs.promises.writeFile(zipPath, makeZip([{ name: 'SKILL.md', content: Buffer.from(skillText) }]));
+  let capturedPath = '';
+  let serviceCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      serviceCalls++;
+      capturedPath = String(options?.localSkillPath || '');
+      assert.equal(fs.readFileSync(path.join(capturedPath, 'SKILL.md'), 'utf8'), skillText);
+      return { submission: { id: 'submission-auto-selected' }, skill: { name: 'automatic-selection' } };
+    },
+  }));
+
+  try {
+    const result = await tool.execute({}, catscoZipContext([
+      catscoZipGrant(zipPath, 'automatic-selection.zip', 'catsco_attachment:hidden-ref'),
+    ], 'zip-auto-select'));
+    assert.equal(result.ok, true);
+    assert.equal(serviceCalls, 1);
+    assert.match(String(result.content), /automatic-selection/);
+  } finally {
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('requires an exact filename to select among multiple authorized ZIP attachments', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-ambiguous-test-'));
+  const firstPath = path.join(root, 'first.zip');
+  const secondPath = path.join(root, 'second.zip');
+  const skillText = '---\nname: selected-zip\ndescription: inert test fixture\n---\n# No-op test fixture\n';
+  const archive = makeZip([{ name: 'SKILL.md', content: Buffer.from(skillText) }]);
+  await fs.promises.writeFile(firstPath, archive);
+  await fs.promises.writeFile(secondPath, archive);
+  let serviceCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async () => { serviceCalls++; return { submission: { id: 'submission-selected' }, skill: { name: 'selected-zip' } }; },
+  }));
+  const context = catscoZipContext([
+    catscoZipGrant(firstPath, 'first.zip', 'catsco_attachment:first-ref'),
+    catscoZipGrant(secondPath, 'second.zip', 'catsco_attachment:second-ref'),
+  ], 'zip-ambiguous');
+
+  try {
+    const ambiguous = await tool.execute({}, context);
+    assert.equal(ambiguous.ok, false);
+    assert.match(ambiguous.message, /exact attached filename/);
+    assert.equal(serviceCalls, 0);
+
+    const selected = await tool.execute({ zipAttachmentName: 'second.zip' }, context);
+    assert.equal(selected.ok, true);
+    assert.equal(serviceCalls, 1);
+  } finally {
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('does not auto-select a ZIP grant when its CatsCo execution identity does not match', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-wrong-identity-test-'));
+  const zipPath = path.join(root, 'identity-mismatch.zip');
+  const skillText = '---\nname: identity-mismatch\ndescription: inert test fixture\n---\n# No-op test fixture\n';
+  await fs.promises.writeFile(zipPath, makeZip([{ name: 'SKILL.md', content: Buffer.from(skillText) }]));
+  let serviceCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async () => { serviceCalls++; return {}; },
+  }));
+  const context = catscoZipContext([
+    catscoZipGrant(zipPath, 'identity-mismatch.zip', 'catsco_attachment:identity-ref'),
+  ], 'zip-wrong-identity');
+  context.executionScope.actorUserId = 'u2';
+
+  try {
+    const result = await tool.execute({}, context);
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PERMISSION_DENIED');
+    assert.equal(serviceCalls, 0);
+  } finally {
     await fs.promises.rm(root, { recursive: true, force: true });
   }
 });
