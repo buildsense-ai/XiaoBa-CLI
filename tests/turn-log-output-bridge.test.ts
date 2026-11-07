@@ -35,44 +35,52 @@ async function captureOrdinaryTurn(sessionId: string, calls: Array<{ id: string;
   const logger = new SessionTurnLogger('cli', sessionId);
   const recorder = new TurnLogRecorder(logger);
   const tool: ToolDefinition = { name: 'lookup', description: 'deterministic fixture', parameters: { type: 'object', properties: {} } };
-  let providerCalls = 0;
-  const ai = {
-    chat: async () => {
-      const batch = calls[providerCalls++];
-      return batch
-        ? { content: null, toolCalls: batch.map(call => ({ id: call.id, type: 'function' as const, function: { name: call.name, arguments: call.args } })), usage }
-        : { content: finalText, toolCalls: [], usage };
-    },
-  };
+  const turnCount = Number(process.env.CATSLOG_OUTPUT_BRIDGE_TURN_COUNT || '1');
+  assert.ok(Number.isInteger(turnCount) && turnCount >= 1 && turnCount <= 2, 'fixture supports one or two ordinary turns');
   const tools: ToolExecutor = {
     getToolDefinitions: () => [tool],
     executeTool: async (call: ToolCall): Promise<ToolResult> => ({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: 'ok', ok: true }),
   };
-  const runner = new ConversationRunner(ai as any, tools, {
-    stream: false,
-    episodeId: 'episode-bridge',
-    toolExecutionContext: { sessionId },
-  });
   let result: any;
-  await Logger.withSessionContext(sessionId, logger, async () => {
-    result = await runner.run([{ role: 'user', content: 'run deterministic output fixture', __episodeId: 'episode-bridge', __episodeInputKind: 'root' }], {
-      onExecutionGraphEvent: event => Logger.runtimeEvent('INFO', 'execution graph model call', { type: 'execution_graph', payload: event }),
+  for (let turnIndex = 0; turnIndex < turnCount; turnIndex++) {
+    let providerCalls = 0;
+    const ai = {
+      chat: async () => {
+        const batch = calls[providerCalls++];
+        return batch
+          ? { content: null, toolCalls: batch.map(call => ({ id: call.id, type: 'function' as const, function: { name: call.name, arguments: call.args } })), usage }
+          : { content: finalText, toolCalls: [], usage };
+      },
+    };
+    const episodeId = turnIndex === 0 ? 'episode-bridge' : `episode-bridge-${turnIndex + 1}`;
+    const userInput = `run deterministic output fixture turn ${turnIndex + 1}`;
+    const runner = new ConversationRunner(ai as any, tools, {
+      stream: false,
+      episodeId,
+      toolExecutionContext: { sessionId },
     });
-    recorder.recordTurn({ userInput: 'run deterministic output fixture', result, tokens: { prompt: usage.promptTokens, completion: usage.completionTokens } });
-  });
+    await Logger.withSessionContext(sessionId, logger, async () => {
+      result = await runner.run([{ role: 'user', content: userInput, __episodeId: episodeId, __episodeInputKind: 'root' }], {
+        onExecutionGraphEvent: event => Logger.runtimeEvent('INFO', 'execution graph model call', { type: 'execution_graph', payload: event }),
+      });
+      recorder.recordTurn({ userInput, result, tokens: { prompt: usage.promptTokens, completion: usage.completionTokens } });
+    });
+  }
   const entries = readFileSync(logger.getLogFilePath(), 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
-  const turn = entries.find(entry => entry.entry_type === 'turn');
+  const turns = entries.filter(entry => entry.entry_type === 'turn');
+  const turn = turns[0];
   const runtime = entries.filter(entry => entry.entry_type === 'runtime' && entry.event?.type === 'execution_graph').map(entry => entry.event.payload);
   const canonicalBytes = readFileSync(logger.getLogFilePath());
   const fullCapturePath = process.env.CATSLOG_OUTPUT_BRIDGE_FULL_LOG_PATH;
   if (fullCapturePath) writeFileSync(fullCapturePath, canonicalBytes, { mode: 0o600 });
   const capturePath = process.env.CATSLOG_OUTPUT_BRIDGE_CAPTURE_PATH;
-  if (capturePath) writeFileSync(capturePath, `${JSON.stringify({ turn, runtime, canonical_log_path: fullCapturePath || null, canonical_log_sha256: createHash('sha256').update(canonicalBytes).digest('hex') }, null, 2)}\n`, { mode: 0o600 });
+  const allOutputs = turns.flatMap(entry => entry.assistant.outputs);
+  if (capturePath) writeFileSync(capturePath, `${JSON.stringify({ turn, turns, runtime, turn_count: turns.length, output_groups: turns.length, output_count: allOutputs.length, complete_output_count: turns.filter(entry => entry.assistant.outputs_complete).reduce((count, entry) => count + entry.assistant.outputs.length, 0), canonical_log_path: fullCapturePath || null, canonical_log_sha256: createHash('sha256').update(canonicalBytes).digest('hex') }, null, 2)}\n`, { mode: 0o600 });
   return { root, turn, runtime, result };
 }
 
 test('ConversationRunner -> TurnLogRecorder -> SessionTurnLogger binds ordinary outputs to exact successful calls', async () => {
-  const sessionId = `output-bridge-e2e-${randomUUID()}`;
+  const sessionId = process.env.CATSLOG_OUTPUT_BRIDGE_SESSION_ID || `output-bridge-e2e-${randomUUID()}`;
   const args = '{"quote":"\\\"","html":"<tag>","unicode":"雪"}';
   const { turn, runtime, result } = await captureOrdinaryTurn(sessionId, [
     [{ id: 'reused-id', name: 'search', args }, { id: 'parallel-id', name: 'lookup', args: '{"n":2}' }],
@@ -111,6 +119,30 @@ test('ConversationRunner -> TurnLogRecorder -> SessionTurnLogger binds ordinary 
   assert.equal(textDescriptor.content_sha256, createHash('sha256').update(JSON.stringify('雪 <done>')).digest('hex'));
   assert.notEqual(textDescriptor.content_sha256, text.body_sha256);
   assert.equal(result.response, '雪 <done>');
+  if (process.env.CATSLOG_OUTPUT_BRIDGE_TURN_COUNT === '2') {
+    const path = process.env.CATSLOG_OUTPUT_BRIDGE_FULL_LOG_PATH;
+    assert.ok(path, 'two-turn capture requires an artifact path');
+    const entries = readFileSync(path, 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const turns = entries.filter(entry => entry.entry_type === 'turn');
+    assert.equal(turns.length, 2, 'the ordinary producer must record two distinct turns');
+    assert.equal(new Set(turns.map(entry => entry.session_id)).size, 1);
+    const origins = new Set<string>();
+    for (const entry of turns) {
+      assert.equal(entry.assistant.outputs_complete, true);
+      assert.equal(entry.assistant.outputs.length, 4);
+      for (const [index, output] of entry.assistant.outputs.entries()) {
+        assert.equal(output.body_path, `assistant.outputs[${index}].body`);
+        assert.equal(output.source_session_id, entry.session_id);
+        const call = runtime.find(event => event.type === 'successful_model_call' && event.model_call_id === output.model_call_id && event.episode_id === output.episode_id);
+        assert.ok(call, 'every output has its own successful producer call');
+        assert.ok(call.outputs.some((descriptor: any) => descriptor.node_ref === output.ref && descriptor.body_sha256 === output.body_sha256 && descriptor.output_position === output.output_position));
+        origins.add(`${output.episode_id}:${output.model_call_id}`);
+      }
+    }
+    assert.equal(origins.size, 6, 'each turn retains three separate call origins');
+    assert.equal(new Set(turns.flatMap(entry => entry.assistant.outputs.map((output: any) => output.episode_id))).size, 2);
+    if (process.env.CATSLOG_OUTPUT_BRIDGE_SESSION_ID) assert.equal(turns[0].session_id, process.env.CATSLOG_OUTPUT_BRIDGE_SESSION_ID);
+  }
 });
 
 test('missing/foreign origin, unsupported content, and overbound output are explicitly incomplete', async () => {
