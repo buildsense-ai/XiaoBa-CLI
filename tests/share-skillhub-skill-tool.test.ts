@@ -173,7 +173,7 @@ test('requires an exact filename to select among multiple authorized ZIP attachm
   try {
     const ambiguous = await tool.execute({}, context);
     assert.equal(ambiguous.ok, false);
-    assert.match(ambiguous.message, /Rename the ZIP and attach it again/);
+    assert.match(ambiguous.message, /select one by its exact attached filename/i);
     assert.equal(serviceCalls, 0);
 
     const selected = await tool.execute({ zipAttachmentName: 'second.zip' }, context);
@@ -229,6 +229,11 @@ test('rejects blank ZIP attachment names and mixed ZIP/local selectors without p
     assert.equal(blankName.ok, false);
     assert.equal(blankName.errorCode, 'INVALID_TOOL_ARGUMENTS');
     assert.match(blankName.message, /non-empty exact filename/);
+
+    const blankReference = await tool.execute({ zipAttachmentRef: '   ' }, context);
+    assert.equal(blankReference.ok, false);
+    assert.equal(blankReference.errorCode, 'INVALID_TOOL_ARGUMENTS');
+    assert.match(blankReference.message, /non-empty authorized attachment reference/);
 
     const mixed = await tool.execute({ zipAttachmentName: 'only.zip', skillName: 'another-skill' }, context);
     assert.equal(mixed.ok, false);

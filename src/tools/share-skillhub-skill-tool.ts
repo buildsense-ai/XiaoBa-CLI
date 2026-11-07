@@ -115,6 +115,9 @@ export class ShareSkillHubSkillTool implements Tool {
     let localSkillPath = typeof args?.localSkillPath === 'string' ? args.localSkillPath.trim() : '';
     const zipAttachmentRef = typeof args?.zipAttachmentRef === 'string' ? args.zipAttachmentRef.trim() : '';
     const zipAttachmentName = typeof args?.zipAttachmentName === 'string' ? args.zipAttachmentName.trim() : '';
+    if (args?.zipAttachmentRef != null && !zipAttachmentRef) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'zipAttachmentRef must be a non-empty authorized attachment reference.' };
+    }
     if (args?.zipAttachmentName != null && !zipAttachmentName) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'zipAttachmentName must be a non-empty exact filename.' };
     }
@@ -169,7 +172,9 @@ export class ShareSkillHubSkillTool implements Tool {
           return {
             ok: false,
             errorCode: 'INVALID_TOOL_ARGUMENTS',
-            message: 'Multiple authorized ZIP attachments have the same filename, so they cannot be distinguished safely. Rename the ZIP and attach it again, then publish the renamed attachment.',
+            message: zipAttachmentName
+              ? 'Multiple authorized ZIP attachments have the same filename, so they cannot be distinguished safely. Rename the ZIP and attach it again, then publish the renamed attachment.'
+              : 'Multiple authorized ZIP attachments are available. Select one by its exact attached filename using zipAttachmentName. If multiple attachments share that filename, rename the ZIP and attach it again.',
           };
         }
         const grant = matchingGrants[0];
