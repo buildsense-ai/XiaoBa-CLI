@@ -96,6 +96,7 @@
     "@types/node": "^20.10.5",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
+    "@types/yauzl": "^2.10.3",
     "electron": "^33.4.11",
     "electron-builder": "^26.17.0",
     "electron-packager": "^17.1.2",

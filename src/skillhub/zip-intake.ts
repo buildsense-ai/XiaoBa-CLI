@@ -21,28 +21,32 @@ interface CheckedEntry {
   isDirectory: boolean;
 }
 
-export async function extractAuthorizedSkillZip(zipPath: string): Promise<ExtractedSkillZip> {
+export async function extractAuthorizedSkillZip(zipPath: string, sourceFileName: string): Promise<ExtractedSkillZip> {
   const stat = await fs.promises.stat(zipPath);
   if (!stat.isFile() || stat.size > MAX_ARCHIVE_BYTES) {
     throw new Error(`ZIP must be a regular file no larger than ${MAX_ARCHIVE_BYTES} bytes.`);
   }
 
   const entries = await readAndValidateEntries(zipPath);
-  const skillEntries = entries.filter(item => !item.isDirectory && item.relativePath.toLowerCase().endsWith('/skill.md')
-    || !item.isDirectory && item.relativePath.toLowerCase() === 'skill.md');
-  if (skillEntries.length !== 1) {
+  const skillLikeEntries = entries.filter(item => !item.isDirectory
+    && (item.relativePath.toLowerCase().endsWith('/skill.md') || item.relativePath.toLowerCase() === 'skill.md'));
+  if (skillLikeEntries.length !== 1) {
     throw new Error('ZIP must contain exactly one SKILL.md entry.');
+  }
+  const skillEntry = skillLikeEntries[0];
+  if (!skillEntry.relativePath.endsWith('/SKILL.md') && skillEntry.relativePath !== 'SKILL.md') {
+    throw new Error('The ZIP entry must use the exact filename SKILL.md.');
   }
 
   const cleanupDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xiaoba-skillhub-zip-'));
-  const extractionRoot = path.join(cleanupDirectory, safePackageDirectoryName(zipPath));
+  const extractionRoot = path.join(cleanupDirectory, safePackageDirectoryName(sourceFileName));
   try {
     await fs.promises.mkdir(extractionRoot, { mode: 0o700 });
     for (const item of entries) {
       if (item.isDirectory) continue;
       await extractEntry(zipPath, item, extractionRoot);
     }
-    const directory = path.dirname(path.join(extractionRoot, skillEntries[0].relativePath));
+    const directory = path.dirname(path.join(extractionRoot, skillEntry.relativePath));
     return { directory, cleanupDirectory };
   } catch (error) {
     await fs.promises.rm(cleanupDirectory, { recursive: true, force: true });
@@ -50,11 +54,11 @@ export async function extractAuthorizedSkillZip(zipPath: string): Promise<Extrac
   }
 }
 
-function safePackageDirectoryName(zipPath: string): string {
-  const name = path.basename(zipPath, path.extname(zipPath))
+function safePackageDirectoryName(sourceFileName: string): string {
+  const name = path.basename(sourceFileName, path.extname(sourceFileName))
     .replace(/[\x00-\x1f<>:"/\\|?*]/g, '-')
     .replace(/[ .]+$/g, '')
-    .slice(0, 80);
+    .slice(0, 72);
   return name && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(name) ? name : 'skill-package';
 }
 

@@ -142,7 +142,7 @@ export class ShareSkillHubSkillTool implements Tool {
         return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'The authorized attachment must be a .zip file.' };
       }
       try {
-        const extracted = await extractAuthorizedSkillZip(reference.absolutePath);
+        const extracted = await extractAuthorizedSkillZip(reference.absolutePath, reference.grant.fileName);
         localSkillPath = extracted.directory;
         zipCleanupDirectory = extracted.cleanupDirectory;
       } catch (error: any) {
@@ -290,7 +290,8 @@ export class ShareSkillHubSkillTool implements Tool {
           zipCleanupDirectory,
         );
         if (draft) {
-          zipCleanupRetained = Boolean(zipCleanupDirectory && draft.controlSignal === 'pause_turn');
+          zipCleanupRetained = Boolean(zipCleanupDirectory
+            && this.pendingDescriptions.has(this.descriptionKey(String(context.sessionId || '').trim(), String(publicationError?.validation?.reportId || '').trim())));
           return draft;
         }
       }
