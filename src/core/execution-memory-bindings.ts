@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Message } from '../types';
-import { validateCanonicalSourceToolBody } from './canonical-memory-graph';
+import { validateCanonicalSemanticProjectionView, validateCanonicalSourceToolBody } from './canonical-memory-graph';
 import { stripToolTargetContextForDisplay } from '../tools/tool-target-context';
 
 interface ProjectionNodeAnchor {
@@ -94,13 +94,15 @@ export function collectExecutionMemoryInputs(
     const directView=body.semantic_view;
     const directRead = body.observation?.read;
     if(body.status==='expanded'&&directView?.content_trust==='derived_memory_projection'&&Array.isArray(directView.nodes)
-      &&directView.nodes.length<=32&&typeof body.ref==='string') {
+      &&directView.nodes.length<=32&&typeof body.ref==='string'
+      && (directView.contract_version !== 'memory-graph/3' || validateCanonicalSemanticProjectionView(directView))) {
       for(const node of directView.nodes) addNode(node,body.ref,directRead);
     }
     const bundles=Array.isArray(body.retained_remote_evidence)?body.retained_remote_evidence.slice(0,8):[];
     for(const bundle of bundles){
       const view=bundle?.semantic_view;
       if(view?.content_trust!=='derived_memory_projection'||!Array.isArray(view.nodes)||view.nodes.length>32)continue;
+      if (view.contract_version === 'memory-graph/3' && !validateCanonicalSemanticProjectionView(view)) continue;
       const readObservation=bundle?.observation?.read;
       for(const node of view.nodes) addNode(node,bundle.ref,readObservation);
     }

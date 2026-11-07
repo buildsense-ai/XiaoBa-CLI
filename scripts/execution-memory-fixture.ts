@@ -92,6 +92,7 @@ async function runSessionB(config: ExecutionFixtureConfig, runtimePath: string):
     getToolDefinitions: () => [definition],
     executeTool: async (call: ToolCall, context?: any): Promise<ToolResult> => {
       const result = await recallTool.execute(JSON.parse(call.function.arguments), context);
+      if (!result.ok) throw new Error(result.message || result.errorCode || 'read_source tool failed');
       return { role: 'tool', tool_call_id: call.id, name: call.function.name, content: result.content ?? '', ok: result.ok };
     },
   };

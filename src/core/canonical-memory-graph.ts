@@ -77,12 +77,11 @@ function projectionContextValid(c: any, anchor: any): c is CatsLogKnowledgeSourc
   }
   const proofs = new Map<string, Obj>();
   for (const p of c.output_proofs) {
-    if (!obj(p) || !onlyKeys(p, ['ref', 'source_ref', 'kind', 'subtype', 'body_sha256', 'context_id', 'provider_call_id', 'name', 'output_position', 'body_path', 'generation_hyperedge_ref'])
+    if (!obj(p) || !onlyKeys(p, ['ref', 'source_ref', 'kind', 'subtype', 'body_sha256', 'context_id', 'provider_call_id', 'name', 'output_position', 'body_path'])
       || !str(p.ref) || proofs.has(p.ref) || !['message', 'tool_call'].includes(p.kind)
       || !sha(p.body_sha256) || !str(p.context_id) || !str(p.source_ref)
       || !Number.isSafeInteger(p.output_position) || p.output_position < 0
       || !/^assistant\.outputs\[(0|[1-9]\d{0,8})\]\.body$/.test(p.body_path)
-      || !str(p.generation_hyperedge_ref)
       || p.subtype !== undefined && !str(p.subtype)
       || p.provider_call_id !== undefined && !str(p.provider_call_id)
       || p.name !== undefined && !str(p.name)) return false;
@@ -91,8 +90,7 @@ function projectionContextValid(c: any, anchor: any): c is CatsLogKnowledgeSourc
       || contextID(ctx) !== p.context_id
       || ![ctx.source_session_id, ctx.source_episode_id, ctx.source_model_call_id].every(str)
       || !sha(ctx.source_revision) || !sha(ctx.source_basis) || !strings(ctx.hyperedge_output_refs) || !ctx.hyperedge_output_refs.length
-      || !ctx.hyperedge_output_refs.includes(p.ref)
-      || p.generation_hyperedge_ref !== ctx.source_model_call_id) return false;
+      || !ctx.hyperedge_output_refs.includes(p.ref)) return false;
     for (const k of ['input_refs', 'query_refs', 'turn_result_refs'] as const) if (ctx[k] !== undefined && !strings(ctx[k])) return false;
     proofs.set(p.ref, p);
   }
@@ -203,6 +201,86 @@ export function validateCanonicalSourceToolBody(body: unknown): boolean {
   const selected = s.projection_context.nodes.find((n: any) => n.id === s.projection_context.selected_node_id);
   return !!selected && /^sha256:[a-f0-9]{64}$/.test(s.content_hash)
     && s.content_hash.slice(7) === createHash('sha256').update(selected.text).digest('hex');
+}
+
+export function validateCanonicalSemanticProjectionView(view: unknown): boolean {
+  if (!obj(view) || view.contract_version !== 'memory-graph/3'
+    || view.content_trust !== 'derived_memory_projection'
+    || !['supported', 'unsupported_legacy_identity'].includes(view.output_identity_status)
+    || !Array.isArray(view.nodes) || !Array.isArray(view.edges)
+    || !Array.isArray(view.mappings) || !Array.isArray(view.output_proofs) || !obj(view.generation_contexts)) return false;
+  const nodes = new Map<string, Obj>();
+  for (const node of view.nodes) {
+    if (!obj(node) || !str(node.id) || !['assertion', 'condition', 'omission', 'message', 'tool_call'].includes(node.kind)
+      || typeof node.text !== 'string' || nodes.has(node.id)
+      || node.output_proof_refs !== undefined && !strings(node.output_proof_refs)) return false;
+    nodes.set(node.id, node);
+  }
+  const edgeSet = new Set<string>();
+  for (const edge of view.edges) {
+    if (!obj(edge) || !nodes.has(edge.from) || !nodes.has(edge.to)
+      || !['supports', 'qualifies', 'omits'].includes(edge.kind)) return false;
+    const key = canonical([edge.from, edge.to, edge.kind]);
+    if (edgeSet.has(key)) return false;
+    edgeSet.add(key);
+  }
+  if (!obj(view.qualifiers) || !Array.isArray(view.qualifiers.conditions) || !Array.isArray(view.qualifiers.omissions)) return false;
+  for (const [key, expectedKind] of [['conditions', 'condition'], ['omissions', 'omission']] as const) {
+    for (const qualifier of view.qualifiers[key]) {
+      if (!obj(qualifier) || !onlyKeys(qualifier, ['node_id', 'text'])
+        || (typeof qualifier.node_id === 'string') === (typeof qualifier.text === 'string')
+        || qualifier.node_id !== undefined && nodes.get(qualifier.node_id)?.kind !== expectedKind
+        || qualifier.text !== undefined && typeof qualifier.text !== 'string') return false;
+    }
+  }
+  const supported = view.output_identity_status === 'supported';
+  if (!supported && (view.output_proofs.length || Object.keys(view.generation_contexts).length
+    || [...nodes.values()].some(node => ['message', 'tool_call'].includes(node.kind) || node.output_proof_refs?.length))) return false;
+  if (supported && (!view.output_proofs.length || !Object.keys(view.generation_contexts).length)) return false;
+  const proofs = new Map<string, Obj>();
+  for (const proof of view.output_proofs) {
+    if (!obj(proof) || !onlyKeys(proof, ['ref', 'source_ref', 'kind', 'subtype', 'body_sha256', 'context_id', 'provider_call_id', 'name', 'output_position', 'body_path'])
+      || !str(proof.ref) || proofs.has(proof.ref) || !str(proof.source_ref) || !['message', 'tool_call'].includes(proof.kind)
+      || !sha(proof.body_sha256) || !str(proof.context_id) || !Number.isSafeInteger(proof.output_position) || proof.output_position < 0
+      || !/^assistant\.outputs\[(0|[1-9]\d{0,8})\]\.body$/.test(proof.body_path)) return false;
+    const context = view.generation_contexts[proof.context_id];
+    if (!obj(context) || contextID(context) !== proof.context_id || !strings(context.hyperedge_output_refs)
+      || !context.hyperedge_output_refs.includes(proof.ref) || !context.hyperedge_output_refs.length
+      || ![context.source_session_id, context.source_episode_id, context.source_model_call_id].every(str)
+      || !sha(context.source_revision) || !sha(context.source_basis)) return false;
+    for (const key of ['input_refs', 'query_refs', 'turn_result_refs'] as const) {
+      if (context[key] !== undefined && !strings(context[key])) return false;
+    }
+    proofs.set(proof.ref, proof);
+  }
+  const used = new Set<string>();
+  for (const node of nodes.values()) {
+    const refs = node.output_proof_refs ?? [];
+    if (['message', 'tool_call'].includes(node.kind) && supported && !refs.length) return false;
+    for (const ref of refs) {
+      const proof = proofs.get(ref);
+      if (!proof || proof.kind !== node.kind) return false;
+      used.add(ref);
+    }
+  }
+  if (used.size !== proofs.size) return false;
+  const mappingRefs = new Map<string, Set<string>>();
+  for (const mapping of view.mappings) {
+    if (!obj(mapping) || !nodes.has(mapping.node_id)
+      || mapping.output_refs !== undefined && !strings(mapping.output_refs)) return false;
+    const refs = mappingRefs.get(mapping.node_id) ?? new Set<string>();
+    for (const ref of mapping.output_refs ?? []) refs.add(ref);
+    mappingRefs.set(mapping.node_id, refs);
+  }
+  for (const node of nodes.values()) {
+    const refs = new Set<string>(node.output_proof_refs ?? []);
+    const mapped = mappingRefs.get(node.id) ?? new Set<string>();
+    if (refs.size !== mapped.size || [...refs].some(ref => !mapped.has(ref))) return false;
+  }
+  for (const id of Object.keys(view.generation_contexts)) {
+    if (!view.output_proofs.some((proof: Obj) => proof.context_id === id)) return false;
+  }
+  return true;
 }
 
 export function canonicalProjectionContextHash(context: CatsLogKnowledgeSourceProjectionContext): string {

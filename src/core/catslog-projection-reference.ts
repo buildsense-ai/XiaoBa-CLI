@@ -42,6 +42,11 @@ export interface SourceProjectionValidation {
   revision?: string;
 }
 
+export function sourceProjectionGenerationContextID(proof: any): string {
+  const tuple = [proof.source_session_id, proof.source_episode_id, proof.source_model_call_id, proof.source_revision, proof.source_basis];
+  return `ctx_${createHash('sha256').update(`memory-graph/3/context\0${tuple.join('\0')}`).digest('hex')}`;
+}
+
 export function recomputeSourceProjectionRef(revision: unknown, streamId: unknown): string | undefined {
   if (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)
     || typeof streamId !== 'string' || !streamId || Buffer.byteLength(streamId) > 512) return undefined;
@@ -112,6 +117,14 @@ export function validateSourceMemoryProjectionDocument(
       proofs.set(proof.ref, proof);
       return true;
     }))) return invalid();
+  const contexts = new Map<string, string>();
+  for (const proof of proofs.values()) {
+    const id = sourceProjectionGenerationContextID(proof);
+    const identity = JSON.stringify([proof.input_refs ?? [], proof.query_refs ?? [], proof.turn_result_refs ?? [], proof.hyperedge_output_refs]);
+    const previous = contexts.get(id);
+    if (previous !== undefined && previous !== identity) return invalid();
+    contexts.set(id, identity);
+  }
   const mappedOutputRefs = new Set<string>();
   const mappedNodeRefs = new Map<string, Set<string>>();
   for (const mapping of d.mappings) {
@@ -149,15 +162,20 @@ export function buildSourceProjectionSemanticView(
   const d = validation.document;
   const a = record(d.aggregate);
   const view: Record<string, unknown> = {
+    contract_version: 'memory-graph/3',
+    output_identity_status: Array.isArray(d.output_proofs) && d.output_proofs.length ? 'supported' : 'unsupported_legacy_identity',
     content_trust: 'derived_memory_projection',
     schema_version: d.schema_version,
     goal: d.goal, summary: d.summary,
     provenance: d.provenance, model_steps: d.model_steps, causality: d.causality,
     overall_coverage: d.overall_coverage,
     gap_acknowledgement: d.gap_acknowledgement ?? '',
-    conditions: d.conditions ?? [], omissions: d.omissions ?? [],
+    qualifiers: {
+      conditions: qualifierReferences(d.conditions ?? [], d.nodes, 'condition'),
+      omissions: qualifierReferences(d.omissions ?? [], d.nodes, 'omission'),
+    },
     nodes: d.nodes.map((n: any) => ({ id: n.id, kind: n.kind, text: n.text,
-      ...(Array.isArray(n.output_evidence_refs) ? { output_evidence_refs: [...n.output_evidence_refs] } : {}),
+      ...(Array.isArray(n.output_evidence_refs) ? { output_proof_refs: [...n.output_evidence_refs] } : {}),
     })),
     edges: (d.edges ?? []).map((e: any) => ({ from: e.from, to: e.to, kind: e.kind })),
     mappings: (d.mappings ?? []).map((m: any) => ({
@@ -167,7 +185,13 @@ export function buildSourceProjectionSemanticView(
       ...(typeof m.source_digest === 'string' ? { source_digest: m.source_digest } : {}),
       ...(Array.isArray(m.output_refs) && m.output_refs.length ? { output_refs: [...m.output_refs] } : {}),
     })),
-    ...(Array.isArray(d.output_proofs) && d.output_proofs.length ? { output_proofs: d.output_proofs.map(semanticOutputProof) } : {}),
+      generation_contexts: Array.isArray(d.output_proofs) ? Object.fromEntries(d.output_proofs.map((proof: any) => [sourceProjectionGenerationContextID(proof), {
+        source_session_id: proof.source_session_id, source_episode_id: proof.source_episode_id,
+        source_model_call_id: proof.source_model_call_id, source_revision: proof.source_revision,
+        source_basis: proof.source_basis, input_refs: proof.input_refs ?? [], query_refs: proof.query_refs ?? [],
+        turn_result_refs: proof.turn_result_refs ?? [], hyperedge_output_refs: [...proof.hyperedge_output_refs],
+      }])) : {},
+      output_proofs: Array.isArray(d.output_proofs) ? d.output_proofs.map(semanticOutputProof) : [],
     ...(a ? { aggregate: {
       contract: a.contract, version: a.version, disclosure: a.disclosure,
       coverage_digest: a.coverage_digest,
@@ -287,7 +311,7 @@ function validOutputProof(proof: any): boolean {
     || !/^[a-f0-9]{64}$/.test(proof.source_revision) || !/^[a-f0-9]{64}$/.test(proof.source_basis)
     || proof.generation_hyperedge_ref !== proof.source_model_call_id
     || !record(proof.parent_anchor) || !/^[a-f0-9]{64}$/.test(proof.parent_digest)
-    || !text(proof.generation_hyperedge_ref)
+    || !text(proof.generation_hyperedge_ref) || !text(proof.source_ref)
     || !uniqueStrings(proof.hyperedge_output_refs, 512, true) || !proof.hyperedge_output_refs.includes(proof.ref)) return false;
   if (proof.subtype !== undefined && !text(proof.subtype)) return false;
   if (proof.kind === 'tool_call' && (proof.subtype !== 'tool_call' || !text(proof.provider_call_id) || !text(proof.name))) return false;
@@ -298,19 +322,19 @@ function validOutputProof(proof: any): boolean {
 }
 function semanticOutputProof(proof: any): Record<string, unknown> {
   return {
-    ref: proof.ref, kind: proof.kind,
+    ref: proof.ref, source_ref: proof.source_ref, kind: proof.kind,
     ...(proof.subtype !== undefined ? { subtype: proof.subtype } : {}),
-    body_sha256: proof.body_sha256,
+    body_sha256: proof.body_sha256, context_id: sourceProjectionGenerationContextID(proof),
     ...(proof.provider_call_id !== undefined ? { provider_call_id: proof.provider_call_id } : {}),
     ...(proof.name !== undefined ? { name: proof.name } : {}),
-    source_session_id: proof.source_session_id, source_episode_id: proof.source_episode_id,
-    source_model_call_id: proof.source_model_call_id, output_position: proof.output_position,
-    body_path: proof.body_path, generation_hyperedge_ref: proof.generation_hyperedge_ref,
-    hyperedge_output_refs: [...proof.hyperedge_output_refs],
-    ...(proof.input_refs ? { input_refs: [...proof.input_refs] } : {}),
-    ...(proof.query_refs ? { query_refs: [...proof.query_refs] } : {}),
-    ...(proof.turn_result_refs ? { turn_result_refs: [...proof.turn_result_refs] } : {}),
+    output_position: proof.output_position, body_path: proof.body_path,
   };
+}
+function qualifierReferences(literals: string[], nodes: any[], kind: 'condition' | 'omission'): Array<{node_id: string} | {text: string}> {
+  return literals.map(text => {
+    const node = nodes.find(candidate => candidate.kind === kind && candidate.text === text);
+    return node ? { node_id: node.id } : { text };
+  });
 }
 function invalid(): SourceProjectionValidation { return { ok: false, reason: 'invalid_response' }; }
 function validAggregate(a: any): boolean {

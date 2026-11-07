@@ -137,7 +137,7 @@ describe('source v1 wire and native action', () => {
       },
       output_proofs: [{ ref: proofRef, source_ref: 'provider-result:raw-output-1', kind: 'message',
         body_sha256: 'a'.repeat(64), context_id: contextId, output_position: 0,
-        body_path: 'assistant.outputs[2].body', generation_hyperedge_ref: sourceModelCallId }],
+        body_path: 'assistant.outputs[2].body' }],
     };
     const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async query => {
       receivedAnchor = query.anchor;

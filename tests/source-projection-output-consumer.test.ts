@@ -29,6 +29,7 @@ const nodeOmission = digest('cleaned-omission');
 function proof(ref: string, kind: 'message' | 'tool_call', extra: Record<string, unknown> = {}) {
   return {
     ref, kind, ...(kind === 'tool_call' ? { subtype: 'tool_call', provider_call_id: 'provider-tool-1', name: 'lookup' } : {}),
+    source_ref: `raw-producer-output:${ref}`,
     body_sha256: digest(`body-${ref}`),
     source_session_id: 'source-session-1', source_episode_id: 'episode-1', source_model_call_id: 'model-call-1',
     output_position: kind === 'tool_call' ? 1 : 0, body_path: `assistant.outputs[${kind === 'tool_call' ? 1 : 0}].body`,
@@ -96,6 +97,7 @@ const invalidCases: Array<[string, (document: any) => void]> = [
   }],
   ['malformed output body path', document => { document.output_proofs[0].body_path = 'assistant.outputs[0]'; }],
   ['mismatched hyperedge identity', document => { document.output_proofs[0].generation_hyperedge_ref = 'different-call'; }],
+  ['divergent metadata for one call identity', document => { document.output_proofs[1].input_refs = ['conflicting-input']; }],
   ['output meaning without proof', document => { document.output_proofs = document.output_proofs.filter((candidate: any) => candidate.ref !== outputTool); }],
   ['cross-projection output alignment', document => { document.mappings[0].output_refs = ['other-projection-output']; }],
 ];
@@ -107,19 +109,32 @@ for (const [name, mutate] of invalidCases) {
 }
 
 test('valid output consumer preserves multiplicity, identity, generation context, and interpretation closure', () => {
-  const validation = validateSourceMemoryProjectionDocument(readFor(outputDocument()), opaqueRef(ROOT_REVISION, ROOT_STREAM));
+  const document = outputDocument();
+  document.output_proofs[1].source_session_id = 'source-session-2';
+  document.output_proofs[1].hyperedge_output_refs = [outputMessageB];
+  document.output_proofs[0].hyperedge_output_refs = [outputMessageA, outputTool];
+  document.output_proofs[2].hyperedge_output_refs = [outputMessageA, outputTool];
+  const validation = validateSourceMemoryProjectionDocument(readFor(document), opaqueRef(ROOT_REVISION, ROOT_STREAM));
   assert.equal(validation.ok, true);
   const view = buildSourceProjectionSemanticView(validation)!;
-  assert.deepEqual(view.conditions, outputDocument().conditions);
-  assert.deepEqual(view.omissions, outputDocument().omissions);
-  assert.deepEqual((view.nodes as any[]).find(node => node.id === nodeMessage).output_evidence_refs, [outputMessageA, outputMessageB]);
-  assert.deepEqual((view.nodes as any[]).find(node => node.id === nodeTool).output_evidence_refs, [outputTool]);
+  assert.deepEqual(view.qualifiers, {
+    conditions: [{ text: outputDocument().conditions[0] }],
+    omissions: [{ node_id: nodeOmission }],
+  });
+  assert.deepEqual((view.nodes as any[]).find(node => node.id === nodeMessage).output_proof_refs, [outputMessageA, outputMessageB]);
+  assert.deepEqual((view.nodes as any[]).find(node => node.id === nodeTool).output_proof_refs, [outputTool]);
   assert.deepEqual((view.mappings as any[]).find(mapping => mapping.node_id === nodeMessage).output_refs, [outputMessageA, outputMessageB]);
   assert.equal((view.output_proofs as any[]).length, 3);
-  assert.equal((view.output_proofs as any[]).find(proof => proof.ref === outputTool).generation_hyperedge_ref, 'model-call-1');
+  assert.equal(Object.keys(view.generation_contexts as object).length, 2, 'same call ID in distinct sessions remains distinct');
+  const proofContext = Object.values(view.generation_contexts as Record<string, any>)[0];
+  assert.equal(proofContext.source_model_call_id, 'model-call-1');
+  assert.equal(proofContext.source_revision, ROOT_REVISION);
+  assert.equal(proofContext.source_basis, sourceBasis);
+  assert.deepEqual(proofContext.hyperedge_output_refs, [outputMessageA, outputTool]);
+  const collisionContext = Object.values(view.generation_contexts as Record<string, any>)[1];
+  assert.equal(collisionContext.source_session_id, 'source-session-2');
+  assert.deepEqual(collisionContext.hyperedge_output_refs, [outputMessageB]);
   assert.equal(JSON.stringify(view).includes('parent-result'), false, 'authority-only parent anchor leaked');
-  assert.equal(JSON.stringify(view).includes(ROOT_REVISION), false, 'authority-only source revision leaked');
-  assert.equal(JSON.stringify(view).includes(sourceBasis), false, 'authority-only source basis leaked');
 });
 
 test('valid output projection expands through the actual client and reaches native execution-memory input', async () => {
@@ -134,8 +149,10 @@ test('valid output projection expands through the actual client and reaches nati
     const retainedView = [...run.delivered.values()][0];
     assert.equal((retainedView.nodes as any[]).some(node => node.kind === 'message'), true);
     assert.equal((retainedView.nodes as any[]).some(node => node.kind === 'tool_call'), true);
-    assert.deepEqual(retainedView.conditions, outputDocument().conditions);
-    assert.deepEqual(retainedView.omissions, outputDocument().omissions);
+    assert.deepEqual(retainedView.qualifiers, {
+      conditions: [{ text: outputDocument().conditions[0] }],
+      omissions: [{ node_id: nodeOmission }],
+    });
     assert.ok(run.observations.length > 0);
     assert.ok(run.mainCalls.length > 0);
     const bindings = collectExecutionMemoryInputs([{
@@ -192,7 +209,9 @@ test('source withdrawal remains typed reference_only and never becomes semantic 
 
 test('proof context is whole-view bounded; it becomes reference_only rather than silently clipped', async () => {
   const document = outputDocument();
-  document.output_proofs[0].input_refs = Array.from({ length: 512 }, (_, index) => `input-${index}-${'x'.repeat(80)}`);
+  for (const proof of document.output_proofs) {
+    proof.input_refs = Array.from({ length: 512 }, (_, index) => `input-${index}-${'x'.repeat(80)}`);
+  }
   const response = { branches: [{ source: 'agent_memory', items: [{ source: 'agent_memory', kind: 'source_reference', ref: opaqueRef(ROOT_REVISION, ROOT_STREAM) }] }] };
   const result = await expandSourceReferences(response, async () => readFor(document));
   assert.equal(result[0].status, 'reference_only');

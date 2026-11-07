@@ -273,7 +273,6 @@ export interface CatsLogKnowledgeSourceOutputProof {
   name?: string;
   output_position: number;
   body_path: string;
-  generation_hyperedge_ref: string;
 }
 
 export interface CatsLogKnowledgeSourceQualifier { node_id?: string; text?: string }
