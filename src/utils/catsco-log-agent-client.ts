@@ -1686,7 +1686,9 @@ export function validateKnowledgeSourceQuery(query: CatsLogKnowledgeSourceQuery)
   const raw = query.anchor;
   const fields = new Set(['kind', 'id', 'document_id', 'revision', 'session_id', 'session_type', 'stream_id', 'byte_offset', 'byte_length', 'skill_version_id', 'source_projection_ref']);
   if (Object.keys(raw).some(key => !fields.has(key))) throw new Error('CatsLog knowledge source anchor has unknown fields');
-  const { revision, byte_length, ...withoutPin } = raw;
+  const { revision: suppliedRevision, byte_length, ...withoutPin } = raw;
+  const revision = raw.kind === 'source_memory_projection_node' && typeof suppliedRevision === 'string'
+    ? suppliedRevision.replace(/^sha256:/, '') : suppliedRevision;
   // The generic anchor validator forbids zero byte_length and SHA prefixes;
   // source v1 allows explicit zero for turn anchors and a prefixed SHA pin.
   const anchor = validateKnowledgeAnchorForRequest({ ...withoutPin,

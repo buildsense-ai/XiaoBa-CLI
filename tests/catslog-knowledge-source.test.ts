@@ -71,6 +71,17 @@ describe('source v1 wire and native action', () => {
     assert.equal(requests.length, 1);
   });
 
+  test('source route canonicalizes prefixed projection revision pins before transport', async () => {
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+    const anchor = { kind: 'source_memory_projection_node' as const, id: `output-${'a'.repeat(64)}`,
+      revision: `sha256:${HASH}`, source_projection_ref: 'ref_' + 'b'.repeat(64) };
+    const result = await client.readKnowledgeSource({ anchor, max_bytes: 256, token: 'read' });
+    assert.deepEqual(JSON.parse(String(requests[0].init.body)), { anchor: { ...anchor, revision: HASH }, max_bytes: 256 });
+    assert.equal(result.source.anchor.revision, HASH);
+    assert.equal(anchor.revision, `sha256:${HASH}`, 'normalization does not mutate the caller pin');
+    assert.equal(requests.length, 1);
+  });
+
   test('source route continues to round-trip legacy bare projection node IDs', async () => {
     const client = new CatscoLogAgentClient('https://logs.example.test');
     const anchor = { kind: 'source_memory_projection_node' as const, id: 'a'.repeat(64), revision: HASH,
