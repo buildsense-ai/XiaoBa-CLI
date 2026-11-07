@@ -250,44 +250,61 @@ export interface CatsLogKnowledgeSourceProjectionNode {
   text: string;
 }
 
-/** One independently preserved output proof context for a cleaned node. */
 export interface CatsLogKnowledgeSourceGenerationContext {
-  source_output_refs: string[];
-  subtype: string;
-  generation_hyperedge_ref: string;
+  source_session_id: string;
+  source_episode_id: string;
+  source_model_call_id: string;
+  source_revision: string;
+  source_basis: string;
+  input_refs?: string[];
   query_refs?: string[];
   turn_result_refs?: string[];
+  hyperedge_output_refs: string[];
 }
 
-/** Output identity metadata for a message/tool_call projection node. */
+export interface CatsLogKnowledgeSourceOutputProof {
+  ref: string;
+  source_ref: string;
+  kind: 'message' | 'tool_call';
+  subtype?: string;
+  body_sha256: string;
+  context_id: string;
+  provider_call_id?: string;
+  name?: string;
+  output_position: number;
+  body_path: string;
+  generation_hyperedge_ref: string;
+}
+
+export interface CatsLogKnowledgeSourceQualifier { node_id?: string; text?: string }
+
+/** Canonical v3 read graph plus explicitly versioned read-only legacy fields. */
+export interface CatsLogKnowledgeSourceProjectionContext {
+  contract_version?: 'memory-graph/3' | 'memory-graph/2' | 'memory-graph/1';
+  output_identity_status: 'supported' | 'unsupported_legacy_identity';
+  selected_node_id: string;
+  nodes: CatsLogKnowledgeSourceProjectionNode[];
+  edges: Array<{ from: string; to: string; kind: 'supports' | 'qualifies' | 'omits' }>;
+  mappings: Array<{ node_id: string; anchor: CatsLogKnowledgeAnchor; source_anchors: CatsLogKnowledgeAnchor[] }>;
+  qualifiers?: { conditions: CatsLogKnowledgeSourceQualifier[]; omissions: CatsLogKnowledgeSourceQualifier[] };
+  generation_contexts?: Record<string, CatsLogKnowledgeSourceGenerationContext>;
+  output_proofs?: CatsLogKnowledgeSourceOutputProof[];
+  /** Read-only v1/v2 fields; forbidden in v3. */
+  conditions?: string[];
+  omissions?: string[];
+  output_nodes?: CatsLogKnowledgeSourceMemoryOutputNode[];
+}
+
+/** Legacy v1/v2 output summary, never emitted by a v3 server. */
 export interface CatsLogKnowledgeSourceMemoryOutputNode {
   id: string;
-  /** Legacy summary; absent or empty when contexts disagree. */
   subtype?: string;
   cleaned_content: string;
   source_output_refs: string[];
-  /** Legacy summary; absent or empty when contexts span multiple hyperedges. */
   generation_hyperedge_ref?: string;
   query_refs?: string[];
   turn_result_refs?: string[];
-  generation_contexts?: CatsLogKnowledgeSourceGenerationContext[];
-}
-
-export interface CatsLogKnowledgeSourceProjectionContext {
-  /** Present on memory-graph/2 responses; optional for legacy source readers. */
-  contract_version?: string;
-  /** Server authority; the client does not infer proof validity from this field. */
-  output_identity_status?: string;
-  selected_node_id: string;
-  nodes: CatsLogKnowledgeSourceProjectionNode[];
-  /** Stored relation direction and kind are preserved exactly. */
-  edges: Array<{ from: string; to: string; kind: 'supports' | 'qualifies' | 'omits' }>;
-  mappings: Array<{
-    node_id: string;
-    anchor: CatsLogKnowledgeAnchor;
-    source_anchors: CatsLogKnowledgeAnchor[];
-  }>;
-  output_nodes?: CatsLogKnowledgeSourceMemoryOutputNode[];
+  generation_contexts?: Array<{ source_output_refs: string[]; subtype: string; generation_hyperedge_ref: string; query_refs?: string[]; turn_result_refs?: string[] }>;
 }
 
 /** Mirrors knowledge.SourceNodeMapping (node_sources entries). */

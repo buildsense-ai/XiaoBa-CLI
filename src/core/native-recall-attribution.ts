@@ -157,7 +157,10 @@ export class NativeRecallTracker {
         if (call.graphDigest && call.graphDigest !== recallTextHash(canonicalRecallJSON({ contract: body.contract, seeds: body.seeds, nodes: body.nodes, edges: body.edges, closure_complete: body.closure_complete }))) continue;
         for (const item of [...(body.nodes || []).map((node: any) => ({ ref: node.ref, text: node.entry?.text })), ...(body.entries || []), ...(body.hits || []), body.source, ...(body.before || []), ...(body.after || [])]) {
           if (item && typeof item.ref === 'string') {
-            textByRef.set(item.ref, typeof item.text === 'string' ? item.text : '');
+            const selected = item.projection_context?.contract_version === 'memory-graph/3'
+              ? item.projection_context.nodes?.find((node: any) => node?.id === item.projection_context.selected_node_id)?.text
+              : undefined;
+            textByRef.set(item.ref, typeof item.text === 'string' ? item.text : typeof selected === 'string' ? selected : '');
             if (item.projection_context && typeof item.projection_context === 'object') {
               contextHashByRef.set(item.ref, recallTextHash(canonicalRecallJSON(item.projection_context)));
             }

@@ -1,5 +1,6 @@
 import { DEFAULT_KNOWLEDGE_GRAPH_URL, validateKnowledgeGraphQuery, validateKnowledgeGraph, type CatsLogKnowledgeGraphQuery, type CatsLogKnowledgeGraph } from './catslog-knowledge-graph';
 import type { NativeRecallFeedbackEvent } from '../core/native-recall-feedback-outbox';
+import { decodeKnowledgeSourcePage } from '../core/canonical-memory-graph';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -949,10 +950,11 @@ export class CatscoLogAgentClient {
   }): Promise<CatsLogKnowledgeSourcePage> {
     const token = requireCapabilityToken(input.token ?? input.skillToken);
     const body = validateKnowledgeSourceQuery(input);
-    return this.postCapabilityJSON<CatsLogKnowledgeSourcePage>(
+    const page = await this.postCapabilityJSON<unknown>(
       input.knowledgeSourceReadUrl || DEFAULT_KNOWLEDGE_SOURCE_READ_URL,
       token, body, 'CatsLog knowledge source read failed', input.signal,
     );
+    return decodeKnowledgeSourcePage(page, input.anchor);
   }
 
   private async ensureOk(response: Response, fallbackMessage: string): Promise<void> {

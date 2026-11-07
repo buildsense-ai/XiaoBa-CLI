@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Message } from '../types';
+import { validateCanonicalSourceToolBody } from './canonical-memory-graph';
 import { stripToolTargetContextForDisplay } from '../tools/tool-target-context';
 
 interface ProjectionNodeAnchor {
@@ -86,7 +87,10 @@ export function collectExecutionMemoryInputs(
       add(anchor);
     };
     const source=body.source;
-    if(source?.status==='read'&&source.coverage==='complete'&&typeof source.text==='string'&&source.text.length&&!source.truncated) add(source.anchor);
+    if (source?.anchor?.kind === 'source_memory_projection_node'
+      && source.projection_context?.contract_version === 'memory-graph/3') {
+      if (validateCanonicalSourceToolBody(body)) add(source.anchor);
+    } else if(source?.status==='read'&&source.coverage==='complete'&&typeof source.text==='string'&&source.text.length&&!source.truncated) add(source.anchor);
     const directView=body.semantic_view;
     const directRead = body.observation?.read;
     if(body.status==='expanded'&&directView?.content_trust==='derived_memory_projection'&&Array.isArray(directView.nodes)

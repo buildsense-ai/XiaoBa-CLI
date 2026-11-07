@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { CatscoLogAgentClient } from '../src/utils/catsco-log-agent-client';
 import { CatsLogMemoryProvider } from '../src/utils/catslog-memory-provider';
 import { CatsLogKnowledgeRecallTool } from '../src/tools/catslog-knowledge-recall-tool';
+import { collectExecutionMemoryInputs } from '../src/core/execution-memory-bindings';
 import type { CatsLogKnowledgeAnchor, CatsLogKnowledgeSourceContent, CatsLogKnowledgeSourcePage } from '../src/utils/catslog-knowledge-types';
 
 const HASH = 'a'.repeat(64);
@@ -37,7 +39,10 @@ describe('source v1 wire and native action', () => {
     requests = [];
     globalThis.fetch = (async (url: any, init: RequestInit) => {
       requests.push({ url: String(url), init });
-      return Response.json(page());
+      const request = JSON.parse(String(init.body));
+      const responsePage = request.anchor?.kind === 'source_memory_projection_node'
+        ? page(content({ anchor: request.anchor, status: 'unsupported', text: '', coverage: 'structural_only' })) : page();
+      return Response.json(responsePage);
     }) as any;
   });
   afterEach(() => { globalThis.fetch = previousFetch; });
@@ -90,28 +95,54 @@ describe('source v1 wire and native action', () => {
     const anchor = { kind: 'source_memory_projection_node' as const, id: 'a'.repeat(64), revision: HASH,
       source_projection_ref: `ref_${'b'.repeat(64)}` };
     let receivedAnchor: unknown;
+    const nodeId = anchor.id;
+    const conditionId = 'c'.repeat(64);
+    const omissionId = 'd'.repeat(64);
+    const selectedText = 'Pinned projection node.';
+    const sourceSessionId = 'source-session-1';
+    const sourceEpisodeId = 'source-episode-1';
+    const sourceModelCallId = 'model-call-1';
+    const sourceRevision = 'e'.repeat(64);
+    const sourceBasis = 'f'.repeat(64);
+    const contextId = `ctx_${createHash('sha256').update(`memory-graph/3/context\0${sourceSessionId}\0${sourceEpisodeId}\0${sourceModelCallId}\0${sourceRevision}\0${sourceBasis}`).digest('hex')}`;
+    const proofRef = 'scoped-output-ref-1';
     const projectionContext = {
-      selected_node_id: anchor.id,
+      contract_version: 'memory-graph/3',
+      output_identity_status: 'supported',
+      selected_node_id: nodeId,
       nodes: [
-        { id: anchor.id, kind: 'assertion' as const, text: 'Pinned projection node.' },
-        { id: 'c'.repeat(64), kind: 'condition' as const, text: 'Only after the health check succeeds.' },
-        { id: 'd'.repeat(64), kind: 'omission' as const, text: 'Rollback behavior was not observed.' },
+        { id: nodeId, kind: 'message' as const, text: selectedText, output_proof_refs: [proofRef] },
+        { id: conditionId, kind: 'condition' as const, text: 'Only after the health check succeeds.' },
+        { id: omissionId, kind: 'omission' as const, text: 'Rollback behavior was not observed.' },
       ],
       edges: [
-        { from: 'c'.repeat(64), to: anchor.id, kind: 'qualifies' as const },
-        { from: 'd'.repeat(64), to: anchor.id, kind: 'omits' as const },
+        { from: conditionId, to: nodeId, kind: 'qualifies' as const },
+        { from: omissionId, to: nodeId, kind: 'omits' as const },
       ],
       mappings: [
-        { node_id: anchor.id, anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
-        { node_id: 'c'.repeat(64), anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
-        { node_id: 'd'.repeat(64), anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
+        { node_id: nodeId, anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
+        { node_id: nodeId, anchor: { ...TURN_ANCHOR, id: 'another-parent' }, source_anchors: [TURN_ANCHOR] },
+        { node_id: conditionId, anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
+        { node_id: omissionId, anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
       ],
+      qualifiers: {
+        conditions: [{ node_id: conditionId }],
+        omissions: [{ text: 'The withheld rollback metric is unknown.' }],
+      },
+      generation_contexts: {
+        [contextId]: { source_session_id: sourceSessionId, source_episode_id: sourceEpisodeId,
+          source_model_call_id: sourceModelCallId, source_revision: sourceRevision, source_basis: sourceBasis,
+          input_refs: ['input-1'], query_refs: ['query-1'], turn_result_refs: ['turn-result-1'],
+          hyperedge_output_refs: [proofRef, 'offered-but-not-cleaned'] },
+      },
+      output_proofs: [{ ref: proofRef, source_ref: 'provider-result:raw-output-1', kind: 'message',
+        body_sha256: 'a'.repeat(64), context_id: contextId, output_position: 0,
+        body_path: 'assistant.outputs[2].body', generation_hyperedge_ref: sourceModelCallId }],
     };
     const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async query => {
       receivedAnchor = query.anchor;
-      return page(content({ anchor, text: 'Pinned projection node.', coverage: 'complete', truncated: false,
-        projection_context: projectionContext,
-        conditions: ['preserve this condition'], omissions: ['do not infer missing history'] }));
+      return page(content({ anchor, text: selectedText, content_hash: `sha256:${createHash('sha256').update(selectedText).digest('hex')}`,
+        coverage: 'complete', truncated: false, projection_context: projectionContext }));
     } });
     const anchorSchema = tool.definition.parameters.properties.anchor;
     assert.ok(anchorSchema.properties.kind.enum.includes('source_memory_projection_node'));
@@ -121,9 +152,13 @@ describe('source v1 wire and native action', () => {
     assert.deepEqual(receivedAnchor, anchor);
     const body = JSON.parse(String(result.content));
     assert.deepEqual(body.source.anchor, anchor);
-    assert.equal(body.source.text, 'Pinned projection node.');
-    assert.deepEqual(body.source.conditions, ['preserve this condition']);
-    assert.deepEqual(body.source.omissions, ['do not infer missing history']);
+    assert.equal(body.source.text, undefined, 'selected text is not duplicated outside v3 nodes');
+    assert.equal(body.source.conditions, undefined);
+    assert.equal(body.source.omissions, undefined);
+    assert.equal(body.source.projection_context.nodes.find((node: any) => node.id === nodeId).text, selectedText);
+    assert.deepEqual(body.source.projection_context.qualifiers.omissions, [{ text: 'The withheld rollback metric is unknown.' }]);
+    assert.equal(body.source.projection_context.mappings.filter((mapping: any) => mapping.node_id === nodeId).length, 2,
+      'all distinct parent mappings survive many-to-one aggregation');
     assert.deepEqual(body.source.projection_context, projectionContext);
     const { sourceRecallRef, recallTextHash, canonicalRecallJSON } = await import('../src/core/native-recall-attribution');
     assert.equal(body.source.ref, sourceRecallRef(anchor, body.source.content_hash, projectionContext));
@@ -132,10 +167,39 @@ describe('source v1 wire and native action', () => {
       ref_content_hash: body.source.content_hash,
       disclosed_context_hash: recallTextHash(canonicalRecallJSON(projectionContext)),
       disclosure: 'text', coverage: 'complete', role: 'organic', truncated: false, redacted: true,
-      disclosed_text_hash: recallTextHash(body.source.text),
+      disclosed_text_hash: recallTextHash(selectedText),
     });
+    assert.equal(body.recall_attribution.sources[0].disclosure, 'text');
+    assert.equal(body.recall_attribution.sources[0].disclosed_text_hash, recallTextHash(selectedText));
+    assert.equal(body.recall_attribution.sources[0].disclosed_context_hash, recallTextHash(canonicalRecallJSON(projectionContext)));
     assert.equal(body.source.coverage, 'complete');
     assert.equal(body.source.truncated, false);
+    const bindings = collectExecutionMemoryInputs([{ role: 'tool', tool_call_id: 'source-read', content: result.content } as any]);
+    assert.deepEqual(bindings.map(binding => binding.anchor), [anchor]);
+
+    const client = new CatscoLogAgentClient('https://logs.example.test');
+    const { text: _wireText, ...wireSource } = page(content({ anchor, text: selectedText,
+      content_hash: `sha256:${createHash('sha256').update(selectedText).digest('hex')}`, coverage: 'complete',
+      truncated: false, projection_context: projectionContext })).source;
+    let wireResponse: any = { ...page(), source: wireSource };
+    globalThis.fetch = (async () => Response.json(wireResponse)) as any;
+    const decoded = await client.readKnowledgeSource({ anchor, token: 'read' });
+    assert.equal(decoded.source.text, selectedText, 'decoder materializes only after validating v3 selected-node hash');
+    const validContext = wireResponse.source.projection_context;
+    for (const mutate of [
+      (value: any) => { value.source.anchor = { ...anchor, revision: '0'.repeat(64) }; },
+      (value: any) => { value.source.projection_context.nodes = value.source.projection_context.nodes.filter((node: any) => node.id !== anchor.id); },
+      (value: any) => { value.source.projection_context.nodes.push({ ...value.source.projection_context.nodes[0] }); },
+      (value: any) => { value.source.projection_context.output_proofs.push({ ...value.source.projection_context.output_proofs[0] }); },
+      (value: any) => { value.source.projection_context.edges.push({ ...value.source.projection_context.edges[0] }); },
+      (value: any) => { value.source.content_hash = `sha256:${'0'.repeat(64)}`; },
+      (value: any) => { value.source.projection_context.output_nodes = []; },
+    ]) {
+      wireResponse = structuredClone({ ...page(), source: wireSource });
+      wireResponse.source.projection_context = structuredClone(validContext);
+      mutate(wireResponse);
+      await assert.rejects(client.readKnowledgeSource({ anchor, token: 'read' }));
+    }
     assert.equal(typeof body.source.ref, 'string', 'existing attribution ref remains additive');
   });
 

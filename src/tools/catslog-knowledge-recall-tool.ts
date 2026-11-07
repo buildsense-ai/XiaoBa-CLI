@@ -8,7 +8,7 @@ import type {
   CatsLogKnowledgeReadQuery,
   CatsLogKnowledgeSearchQuery,
 } from '../utils/catslog-knowledge-types';
-
+import { canonicalProjectionAnchorMatches, validateCanonicalProjectionSourceContent } from '../core/canonical-memory-graph';
 import { canonicalRecallJSON, recallTextHash, dailyKnowledgeRef, sourceRecallRef, hashedRecallRef, nativeRecallAttribution, type NativeRecallSource } from '../core/native-recall-attribution';
 import { validateKnowledgeSourceQuery } from '../utils/catsco-log-agent-client';
 import type { CatsLogKnowledgeSourceQuery, CatsLogKnowledgeSourceContent } from '../utils/catslog-knowledge-types';
@@ -342,7 +342,19 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     }
     if (!this.backend.readKnowledgeSource) return this.unavailableResult('当前运行环境未接入 CatsLog 精确来源读取');
     const page = await this.backend.readKnowledgeSource(query, signal);
-    return { ok: true, content: JSON.stringify({ ...page,
+    if (page.source.projection_context?.contract_version === 'memory-graph/3'
+      && (!validateCanonicalProjectionSourceContent(page.source)
+        || !canonicalProjectionAnchorMatches(page.source.anchor, query.anchor))) {
+      throw new Error('CatsLog knowledge source read failed: invalid canonical projection source');
+    }
+    const wirePage = page.source.projection_context?.contract_version === 'memory-graph/3'
+      ? { ...page, source: (() => {
+        const { text: _selectedText, conditions: _conditions, omissions: _omissions,
+          source_anchors: _sourceAnchors, node_sources: _nodeSources, ...canonicalSource } = page.source;
+        return canonicalSource;
+      })() }
+      : page;
+    return { ok: true, content: JSON.stringify({ ...wirePage,
       incomplete: page.context_truncated || !page.before_exhausted || !page.after_exhausted
         || [page.source, ...page.before, ...page.after].some(item => item.coverage !== 'complete' || item.status !== 'read'),
       source_view: 'stored_projection_not_original_log_bytes',
@@ -392,6 +404,10 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     } else if (action === 'read_source' || action === 'source') {
       const annotate = (item: CatsLogKnowledgeSourceContent) => {
         if (item.status !== 'read') return item;
+        const selectedText = item.projection_context?.contract_version === 'memory-graph/3'
+          ? item.projection_context.nodes.find(node => node.id === item.projection_context!.selected_node_id)?.text
+          : item.text;
+        const disclosedText = typeof selectedText === 'string' ? selectedText : '';
         const ref = item.anchor.kind === 'knowledge_entry'
           ? dailyKnowledgeRef(item.anchor.document_id!, item.anchor.revision!, item.anchor.id)
           : sourceRecallRef(item.anchor, item.content_hash, item.projection_context);
@@ -399,9 +415,9 @@ export class CatsLogKnowledgeRecallTool implements Tool {
           ...(item.anchor.revision ? { anchor: item.anchor } : {}),
           ...(item.content_hash ? { ref_content_hash: item.content_hash } : {}),
           ...(item.projection_context ? { disclosed_context_hash: recallTextHash(canonicalRecallJSON(item.projection_context)) } : {}),
-          disclosure: item.text ? 'text' : 'metadata',
+          disclosure: disclosedText ? 'text' : 'metadata',
           coverage: item.coverage, role: item.role, truncated: item.truncated, redacted: item.redacted,
-          ...(item.text ? { disclosed_text_hash: recallTextHash(item.text) } : {}) });
+          ...(disclosedText ? { disclosed_text_hash: recallTextHash(disclosedText) } : {}) });
         return { ...item, ref };
       };
       body.source = annotate(body.source);

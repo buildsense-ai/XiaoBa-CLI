@@ -114,9 +114,11 @@ async function runSessionB(config: ExecutionFixtureConfig, runtimePath: string):
       if (providerCalls === 2 && submittedReadResult) {
         const submittedBody = (() => { try { return JSON.parse(String(submittedReadResult.content ?? '')); } catch { return undefined; } })();
         const submittedSource = submittedBody?.source;
-        const sourceFields = (value: any) => value && ({ anchor: value.anchor, text: value.text,
-          conditions: value.conditions, omissions: value.omissions, coverage: value.coverage,
-          truncated: value.truncated, status: value.status });
+        const sourceFields = (value: any) => value && ({ anchor: value.anchor,
+          ...(value.projection_context?.contract_version === 'memory-graph/3'
+            ? { projection_context: value.projection_context, content_hash: value.content_hash }
+            : { text: value.text, conditions: value.conditions, omissions: value.omissions }),
+          coverage: value.coverage, truncated: value.truncated, status: value.status });
         if (JSON.stringify(sourceFields(submittedSource)) !== JSON.stringify(sourceFields(authenticatedSource))) {
           throw new Error('Session B provider input changed source anchor, text, conditions, omissions, or coverage.');
         }
