@@ -777,21 +777,15 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   assert.equal(shareCalls, 1);
 
   context.currentUserInput = [
-    '在你处理上一轮时，又有 2 条消息到达。',
-    '请把它们与当前任务一并考虑；如果前后要求冲突，以最后一条为准。',
-    '',
-    '[发言人: 张]三（人）]',
-    '那挺好的',
-    '',
-    '[发言人: arrowhaken（人）]',
-    '我确认用这条说明发布',
+    '确认使用这个 Skill 的简介并发布',
+    '报告：episode-input-report',
+    'Skill 简介草稿：A sample Skill.',
+    '请仅对此报告继续确认一次。如果还需要单独确认版本发布，请停下并告诉我，不要自行继续。',
   ].join('\n');
   context.currentUserApprovalInputs = [
-    { text: '那挺好的', isBot: false },
-    { text: '我确认用这条说明发布', isBot: false },
-    { text: '我也看过了', isBot: true },
+    { text: context.currentUserInput, isBot: false },
   ];
-  history.push({ role: 'user', content: '我确认用这条说明发布', __episodeInputKind: 'root' });
+  history.push({ role: 'user', content: '确认使用这个 Skill 的简介并发布', __episodeInputKind: 'root' });
   history.push({ role: 'user', content: 'internal observation', __runtimeObservation: true });
   const published = await tool.execute({
     confirmDescription: true,

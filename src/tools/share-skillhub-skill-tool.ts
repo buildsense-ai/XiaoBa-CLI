@@ -480,7 +480,7 @@ export class ShareSkillHubSkillTool implements Tool {
       return {
         ok: false,
         errorCode: 'DESCRIPTION_USER_APPROVAL_REQUIRED',
-        message: '当前会话记录中无法核验到对这条说明的明确确认，因此没有发布，且本地文件和上传包均未改动。请停止重试这次确认；不要声称已发布。',
+        message: '当前会话记录中无法核验到对这段简介的明确确认，因此没有发布，且本地文件和上传包均未改动。请停止重试这次确认；不要声称已发布。',
       };
     }
     if (pending.awaitingVersionConfirmation && (args?.confirmPublish !== true || !hasExplicitVersionApproval(context, pending))) {
@@ -758,6 +758,7 @@ function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: 
     }
     if (line === `简介原文：${pending.description}` || line === `简介原文: ${pending.description}`
       || line === `候选简介：${pending.description}` || line === `候选简介: ${pending.description}`
+      || line === `Skill 简介草稿：${pending.description}` || line === `Skill 简介草稿: ${pending.description}`
       || line === `说明原文：${pending.description}` || line === `说明原文: ${pending.description}`
       || line === `候选说明：${pending.description}` || line === `候选说明: ${pending.description}`
       || line === `Description: ${pending.description}`) {
@@ -773,7 +774,7 @@ function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: 
 }
 
 function isDescriptionApprovalPhrase(text: string): boolean {
-  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?(?:Skill\s*)?(?:简介|描述|草稿|说明)?[，, ]*(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:Skill\s*)?(?:简介|描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
+  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?[ \t]*(?:Skill(?:[ \t]*的)?[ \t]*)?(?:简介|描述|草稿|说明)?[，, ]*(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个[ \t]*(?:Skill(?:[ \t]*的)?[ \t]*)?(?:简介|描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
 }
 
 function normalizeApprovalLine(line: string): string {
