@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { buildSourceProjectionSemanticView, discoverSourceReferenceItems, expandSourceReferences,
   recomputeSourceProjectionRef, retainedEvidenceBytes, validateSourceMemoryProjectionDocument } from '../src/core/catslog-projection-reference';
+import { qualifierTexts } from './helpers/catslog-projection-harness';
 import { FinishMemorySearchTool } from '../src/tools/memory-branch-tools';
 import { fixtureBranch, fixtureRead, fixtureRef } from './helpers/catslog-projection-reference-fixture';
 
@@ -11,9 +12,11 @@ test('Go-cased envelope binds exact opaque ref and preserves complete graph/qual
   const result = validateSourceMemoryProjectionDocument(read, fixtureRef());
   assert.equal(result.ok, true);
   const view = buildSourceProjectionSemanticView(result)!;
-  for (const key of ['goal', 'summary', 'conditions', 'omissions', 'edges', 'gap_acknowledgement']) {
+  for (const key of ['goal', 'summary', 'edges', 'gap_acknowledgement']) {
     assert.deepEqual(view[key], read.projection.Document[key]);
   }
+  assert.deepEqual(qualifierTexts(view, 'conditions'), read.projection.Document.conditions);
+  assert.deepEqual(qualifierTexts(view, 'omissions'), read.projection.Document.omissions);
   assert.deepEqual(view.nodes, read.projection.Document.nodes);
   const expansions = await expandSourceReferences(fixtureBranch(), async () => read);
   assert.equal(expansions[0].observation?.hit.projection_ref, fixtureRef());

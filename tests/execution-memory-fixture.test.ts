@@ -110,11 +110,18 @@ test('compiled fixture runs A before source publication, then reads and consumes
     assert.deepEqual(body.anchor, anchor);
     assert.equal(body.max_bytes, undefined, 'fixture uses the source/read API default budget');
     response.writeHead(200, { 'content-type': 'application/json' });
+    const sourceText = 'This exact source text stays out of additive metadata.';
+    const context = {
+      contract_version: 'memory-graph/3', output_identity_status: 'unsupported_legacy_identity', selected_node_id: anchor.id,
+      nodes: [{ id: anchor.id, kind: 'assertion', text: sourceText }], edges: [],
+      mappings: [{ node_id: anchor.id, anchor, source_anchors: [] }],
+      qualifiers: { conditions: [{ text: 'preserve the verified condition' }], omissions: [{ text: 'no claim beyond the pinned node' }] },
+      generation_contexts: {}, output_proofs: [],
+    };
     response.end(JSON.stringify({
       source: { anchor, status: 'read', role: 'knowledge', speaker: 'knowledge', occurred_at: null,
-        text: 'This exact source text stays out of additive metadata.', coverage: 'complete', truncated: false,
-        redacted: false, missing: false, revoked: false, conditions: ['preserve the verified condition'],
-        omissions: ['no claim beyond the pinned node'] },
+        projection_context: context, content_hash: `sha256:${createHash('sha256').update(sourceText).digest('hex')}`,
+        coverage: 'complete', truncated: false, redacted: false, missing: false, revoked: false },
       before: [], after: [], before_exhausted: true, after_exhausted: true, context_truncated: false,
       served_at: '2026-11-04T00:00:00.000Z',
     }));
