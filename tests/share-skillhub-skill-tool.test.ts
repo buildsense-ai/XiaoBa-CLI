@@ -732,9 +732,13 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   };
   const draft = await tool.execute({ skillName: 'sample-skill' }, context);
   assert.equal(draft.ok, true);
-  assert.match(sentMessages[0], /确认使用这条说明并发布/);
+  assert.match(sentMessages[0], /Skill 的简介/);
+  assert.match(sentMessages[0], /对应 SKILL\.md 的 description 字段/);
+  assert.match(sentMessages[0], /作为 SkillHub 的简短描述展示/);
+  assert.match(sentMessages[0], /不是发布后生成的详细使用说明书/);
+  assert.match(sentMessages[0], /确认使用这条简介并发布/);
 
-  history.push({ role: 'user', content: '确认使用这条说明并发布', __episodeInputKind: 'root' });
+  history.push({ role: 'user', content: '确认使用这条简介并发布', __episodeInputKind: 'root' });
   context.currentUserInput = '先不要发布';
   context.currentUserApprovalInputs = [{ text: '先不要发布', isBot: false }];
   const rejected = await tool.execute({
@@ -747,7 +751,7 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   assert.equal(shareCalls, 1);
 
   context.currentUserApprovalInputs = [
-    { text: '确认使用这条说明并发布', isBot: false },
+    { text: '确认使用这条简介并发布', isBot: false },
     { text: '先不要发布', isBot: false },
   ];
   const approvalWithdrawn = await tool.execute({
@@ -760,7 +764,7 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   assert.equal(shareCalls, 1);
 
   context.currentUserApprovalInputs = [
-    { text: '确认使用这条说明并发布', isBot: false },
+    { text: '确认使用这条简介并发布', isBot: false },
     { text: '这个说明合适吗？', isBot: false },
   ];
   const followUpQuestion = await tool.execute({
@@ -773,21 +777,15 @@ test('prompted confirmation and the user natural phrasing are accepted without a
   assert.equal(shareCalls, 1);
 
   context.currentUserInput = [
-    '在你处理上一轮时，又有 2 条消息到达。',
-    '请把它们与当前任务一并考虑；如果前后要求冲突，以最后一条为准。',
-    '',
-    '[发言人: 张]三（人）]',
-    '那挺好的',
-    '',
-    '[发言人: arrowhaken（人）]',
-    '我确认用这条说明发布',
+    '确认使用这个 Skill 的简介并发布',
+    '报告：episode-input-report',
+    'Skill 简介草稿：A sample Skill.',
+    '请仅对此报告继续确认一次。如果还需要单独确认版本发布，请停下并告诉我，不要自行继续。',
   ].join('\n');
   context.currentUserApprovalInputs = [
-    { text: '那挺好的', isBot: false },
-    { text: '我确认用这条说明发布', isBot: false },
-    { text: '我也看过了', isBot: true },
+    { text: context.currentUserInput, isBot: false },
   ];
-  history.push({ role: 'user', content: '我确认用这条说明发布', __episodeInputKind: 'root' });
+  history.push({ role: 'user', content: '确认使用这个 Skill 的简介并发布', __episodeInputKind: 'root' });
   history.push({ role: 'user', content: 'internal observation', __runtimeObservation: true });
   const published = await tool.execute({
     confirmDescription: true,
@@ -829,9 +827,9 @@ test('accepts a long user confirmation bound to the report and exact draft', asy
   assert.equal(draft.ok, true);
 
   const confirmation = [
-    '我确认使用这条说明并发布。',
+    '我确认使用这条简介并发布。',
     `报告 ID：${reportId}`,
-    `说明原文：${description}`,
+    `简介原文：${description}`,
     '请仅对此报告继续确认一次。如果还需要单独确认版本发布，请停下并告诉我，不要自行继续。',
   ].join('\n');
   for (const withdrawal of [

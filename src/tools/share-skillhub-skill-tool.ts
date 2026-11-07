@@ -432,9 +432,10 @@ export class ShareSkillHubSkillTool implements Tool {
     const prompt = [
       `SkillHub 发现「${resolvedSkillName}」的 SKILL.md 缺少 description，因此暂未发布（报告 ${reportId}）。`,
       '如本次发布还自动修正了 name，该修正只会保留在待确认的上传副本中，不会改动本地文件。',
-      '我根据 Skill 文件整理了一条候选说明，供你确认：',
+      '我根据 Skill 文件起草了该 Skill 的简介，供你确认：',
+      '这段简介对应 SKILL.md 的 description 字段，用于模型判断何时调用，也会作为 SkillHub 的简短描述展示；它不是发布后生成的详细使用说明书。',
       `> ${description}`,
-      '这条说明还没有写入本地文件，也没有上传。确认后请回复“确认使用这条说明并发布”；不合适的话，直接告诉我怎么修改。',
+      '这段简介尚未写入本地文件或上传。确认后请回复“确认使用这条简介并发布”；不合适的话，直接告诉我怎么修改。',
     ].join('\n\n');
     const target = resolveOutboundTarget(context, {
       operation: 'send_text',
@@ -446,10 +447,10 @@ export class ShareSkillHubSkillTool implements Tool {
         return {
           ok: true,
           content: [
-            '候选说明已发给用户等待确认；当前尚未发布，也未修改本地文件。',
+            'Skill 简介草稿已发给用户等待确认；当前尚未发布，也未修改本地文件。',
             `报告：${reportId}`,
-            `候选说明：${description}`,
-            '只有后续真实用户输入明确确认这条说明后，才可用本报告 ID 和相同原文调用一次确认发布。',
+            `Skill 简介草稿：${description}`,
+            '只有后续真实用户输入明确确认这段简介后，才可用本报告 ID 和相同原文调用一次确认发布。',
           ].join('\n'),
           controlSignal: 'pause_turn',
         };
@@ -479,7 +480,7 @@ export class ShareSkillHubSkillTool implements Tool {
       return {
         ok: false,
         errorCode: 'DESCRIPTION_USER_APPROVAL_REQUIRED',
-        message: '当前会话记录中无法核验到对这条说明的明确确认，因此没有发布，且本地文件和上传包均未改动。请停止重试这次确认；不要声称已发布。',
+        message: '当前会话记录中无法核验到对这段简介的明确确认，因此没有发布，且本地文件和上传包均未改动。请停止重试这次确认；不要声称已发布。',
       };
     }
     if (pending.awaitingVersionConfirmation && (args?.confirmPublish !== true || !hasExplicitVersionApproval(context, pending))) {
@@ -755,7 +756,10 @@ function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: 
       reportBound = true;
       continue;
     }
-    if (line === `说明原文：${pending.description}` || line === `说明原文: ${pending.description}`
+    if (line === `简介原文：${pending.description}` || line === `简介原文: ${pending.description}`
+      || line === `候选简介：${pending.description}` || line === `候选简介: ${pending.description}`
+      || line === `Skill 简介草稿：${pending.description}` || line === `Skill 简介草稿: ${pending.description}`
+      || line === `说明原文：${pending.description}` || line === `说明原文: ${pending.description}`
       || line === `候选说明：${pending.description}` || line === `候选说明: ${pending.description}`
       || line === `Description: ${pending.description}`) {
       descriptionBound = true;
@@ -770,7 +774,7 @@ function hasExplicitDescriptionApproval(context: ToolExecutionContext, pending: 
 }
 
 function isDescriptionApprovalPhrase(text: string): boolean {
-  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?(?:描述|草稿|说明)?[，, ]*(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个(?:描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
+  return /^(?:(?:好的?|没问题)[，, ]*)?(?:(?:我)?(?:确认|同意|批准|接受)(?:使用|用|采用)?(?:这个|该|这条|这段)?[ \t]*(?:Skill(?:[ \t]*的)?[ \t]*)?(?:简介|描述|草稿|说明)?[，, ]*(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|(?:用|采用)这个[ \t]*(?:Skill(?:[ \t]*的)?[ \t]*)?(?:简介|描述|草稿|说明)?(?:(?:并)?(?:发布|上传|继续)(?:新?版本|patch\s+version)?)?|就这样发布吧|(?:yes|y|ok(?:ay)?|approved?|i\s+approve(?:\s+this\s+description)?|use\s+this\s+description))\s*[。！!,. ]*$/iu.test(text);
 }
 
 function normalizeApprovalLine(line: string): string {
