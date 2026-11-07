@@ -7,6 +7,21 @@ import { ShareSkillHubSkillTool } from '../src/tools/share-skillhub-skill-tool';
 import { SYNTHETIC_USER_MESSAGE_FLAGS } from '../src/core/session-fork';
 import { normalizeDirectoryNameToSkillName } from '../src/skillhub/publication-candidate';
 
+test('does not read or publish a ZIP attachment without a current CatsCo attachment grant', async () => {
+  let serviceCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async () => { serviceCalls++; return {}; },
+  }));
+  const result = await tool.execute({ zipAttachmentRef: 'catsco_attachment:untrusted' }, {
+    surface: 'catscompany',
+    sessionId: 'zip-attachment-no-grant',
+    conversationHistory: [],
+  } as any);
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'PERMISSION_DENIED');
+  assert.equal(serviceCalls, 0);
+});
+
 function validationError(
   reportId: string,
   options: { coverage?: string; location?: unknown; code?: string; repairPolicy?: string } = {},
