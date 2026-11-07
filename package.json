@@ -85,7 +85,8 @@
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^4.6.82",
     "sharp": "^0.34.5",
-    "ws": "8.21.0"
+    "ws": "8.21.0",
+    "yauzl": "^2.10.0"
   },
   "devDependencies": {
     "@types/deasync": "^0.1.5",
@@ -95,6 +96,7 @@
     "@types/node": "^20.10.5",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
+    "@types/yauzl": "^2.10.3",
     "electron": "^33.4.11",
     "electron-builder": "^26.17.0",
     "electron-packager": "^17.1.2",

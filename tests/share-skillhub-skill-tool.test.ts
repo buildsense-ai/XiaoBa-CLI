@@ -6,6 +6,22 @@ import { test } from 'node:test';
 import { ShareSkillHubSkillTool } from '../src/tools/share-skillhub-skill-tool';
 import { SYNTHETIC_USER_MESSAGE_FLAGS } from '../src/core/session-fork';
 import { normalizeDirectoryNameToSkillName } from '../src/skillhub/publication-candidate';
+import { makeZip } from './helpers/zip-fixture';
+
+test('does not read or publish a ZIP attachment without a current CatsCo attachment grant', async () => {
+  let serviceCalls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async () => { serviceCalls++; return {}; },
+  }));
+  const result = await tool.execute({ zipAttachmentRef: 'catsco_attachment:untrusted' }, {
+    surface: 'catscompany',
+    sessionId: 'zip-attachment-no-grant',
+    conversationHistory: [],
+  } as any);
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'PERMISSION_DENIED');
+  assert.equal(serviceCalls, 0);
+});
 
 function validationError(
   reportId: string,
@@ -27,6 +43,59 @@ function validationError(
     },
   });
 }
+
+test('retains an authorized ZIP temp directory for a description draft without an outbound channel', async () => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-confirmation-test-'));
+  const cachedFileName = '20261107T061234.123Z_ab12cd34_my-skill.zip';
+  const zipPath = path.join(root, cachedFileName);
+  const skillText = '---\nname: my-skill\n---\n# Safe test skill\n';
+  await fs.promises.writeFile(zipPath, makeZip([{ name: 'SKILL.md', content: Buffer.from(skillText) }]));
+  const stat = await fs.promises.stat(zipPath);
+  let extractedDirectory = '';
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_input, options) => {
+      extractedDirectory = String(options?.localSkillPath || '');
+      options?.onPackageCaptured?.([{ path: 'SKILL.md', contentBase64: Buffer.from(skillText).toString('base64') }], 'my-skill');
+      throw validationError('zip-description-confirmation', {
+        code: 'metadata.description_missing',
+        repairPolicy: 'confirmation_required',
+        location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+      });
+    },
+  }));
+  const now = Date.now();
+  const result = await tool.execute({ zipAttachmentRef: 'catsco_attachment:zip-test' }, {
+    surface: 'catscompany',
+    sessionId: 'zip-no-outbound-channel',
+    conversationHistory: [{ role: 'user', content: '发布这个 ZIP' }],
+    currentUserInput: '发布这个 ZIP',
+    executionScope: {
+      source: 'catscompany', sessionKey: 'cc_user:u1', topicId: 'p2p_1_2', topicType: 'p2p',
+      actorUserId: 'u1', agentId: 'agent1', agentBodyId: 'body1', permissionsSource: 'server_canonical_message',
+      identityTrust: 'server_canonical', isTrusted: true,
+    },
+    localDeviceGrant: { kind: 'catscompany_body', source: 'catscompany', bodyId: 'body1', createdAt: now },
+    localFileGrants: [{
+      kind: 'catscompany_attachment', source: 'catscompany', attachmentRef: 'catsco_attachment:zip-test',
+      filePath: zipPath, fileName: 'my-skill.zip', fileType: 'file', size: stat.size, mtimeMs: stat.mtimeMs,
+      sessionKey: 'cc_user:u1', topicId: 'p2p_1_2', topicType: 'p2p', actorUserId: 'u1', agentId: 'agent1',
+      agentBodyId: 'body1', deviceBodyId: 'body1', identityTrust: 'server_canonical',
+      operations: ['read_file'], createdAt: now, expiresAt: now + 60_000,
+    }],
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"用于测试 ZIP 发布确认流程。"}' }) } },
+  } as any);
+
+  try {
+    assert.equal(result.ok, true);
+    assert.equal(result.controlSignal, undefined);
+    assert.match(String(result.content), /用于测试 ZIP 发布确认流程/);
+    assert.equal(path.basename(extractedDirectory), 'my-skill');
+    assert.equal(fs.existsSync(path.join(extractedDirectory, 'SKILL.md')), true);
+  } finally {
+    await fs.promises.rm(path.dirname(extractedDirectory), { recursive: true, force: true });
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
 
 test('automatic name repair retries with a private candidate and preserves comments and local files', async () => {
   const originalFiles = [{
