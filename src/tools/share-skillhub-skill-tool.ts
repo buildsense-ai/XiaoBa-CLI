@@ -435,7 +435,7 @@ export class ShareSkillHubSkillTool implements Tool {
       '我根据 Skill 文件起草了该 Skill 的简介，供你确认：',
       '这段简介对应 SKILL.md 的 description 字段，用于模型判断何时调用，也会作为 SkillHub 的简短描述展示；它不是发布后生成的详细使用说明书。',
       `> ${description}`,
-      '这段简介尚未写入本地文件或上传。确认后请回复“确认使用这条简介并发布”；不合适的话，直接告诉我怎么修改。',
+      '这段简介尚未写入本地文件或上传。草稿在当前对话中有效 15 分钟；请在有效期内回复“确认使用这条简介并发布”。若已过期，请重新发起预检并确认新草稿；不合适的话，直接告诉我怎么修改。',
     ].join('\n\n');
     const target = resolveOutboundTarget(context, {
       operation: 'send_text',
@@ -450,7 +450,7 @@ export class ShareSkillHubSkillTool implements Tool {
             'Skill 简介草稿已发给用户等待确认；当前尚未发布，也未修改本地文件。',
             `报告：${reportId}`,
             `Skill 简介草稿：${description}`,
-            '只有后续真实用户输入明确确认这段简介后，才可用本报告 ID 和相同原文调用一次确认发布。',
+            '只有后续真实用户输入在 15 分钟有效期内明确确认这段简介后，才可用本报告 ID 和相同原文调用一次确认发布；若已过期，必须重新预检并取得对新草稿的确认。',
           ].join('\n'),
           controlSignal: 'pause_turn',
         };
@@ -471,7 +471,11 @@ export class ShareSkillHubSkillTool implements Tool {
     if (!pending || pending.expiresAt <= Date.now()) {
       await this.disposePendingDescription(pending);
       this.pendingDescriptions.delete(key);
-      return { ok: false, errorCode: 'DESCRIPTION_CONFIRMATION_EXPIRED', message: 'Description draft expired or belongs to another session. Publish again to generate a fresh draft.' };
+      return {
+        ok: false,
+        errorCode: 'DESCRIPTION_CONFIRMATION_EXPIRED',
+        message: '这条 Skill 简介草稿已过期或不属于当前对话。本次没有发布，也没有改动本地文件。草稿有效期为 15 分钟；请回到生成草稿的对话，并在有效期内确认。若已过期，请重新发起一次预检，再确认新报告对应的简介；不要重试旧报告。',
+      };
     }
     if (description !== pending.description) {
       return { ok: false, errorCode: 'DESCRIPTION_CONFIRMATION_MISMATCH', message: 'The approved text must exactly match the description draft shown to the user. No files were changed or uploaded.' };

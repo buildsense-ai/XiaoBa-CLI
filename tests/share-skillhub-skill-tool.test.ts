@@ -632,8 +632,12 @@ test('missing description creates a paused draft and only publishes the exact co
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0], new RegExp(reportId));
   assert.match(sentMessages[0], /该 Skill 用于样例任务/);
+  assert.match(sentMessages[0], /有效 15 分钟/);
+  assert.match(sentMessages[0], /重新发起预检并确认新草稿/);
   assert.match(String(draft.content), new RegExp(reportId));
   assert.match(String(draft.content), /该 Skill 用于样例任务/);
+  assert.match(String(draft.content), /15 分钟有效期/);
+  assert.match(String(draft.content), /必须重新预检并取得对新草稿的确认/);
   assert.equal(modelCalls, 1);
   assert.equal(shareCalls, 1);
   assert.equal(originalFiles[0].contentBase64, Buffer.from(originalText).toString('base64'));
@@ -1154,6 +1158,9 @@ test('description confirmation cannot be replayed or used from another session',
     confirmedDescription: 'A description.' }, { sessionId: 'other-session' } as any);
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'DESCRIPTION_CONFIRMATION_EXPIRED');
+  assert.match(String(result.message), /有效期为 15 分钟/);
+  assert.match(String(result.message), /不要重试旧报告/);
+  assert.match(String(result.message), /重新发起一次预检/);
 });
 
 test('an imprecise automatic issue location does not create a candidate', async () => {
