@@ -270,6 +270,28 @@ describe('SkillHub connected install service', () => {
     assert.match(saved, /skillhub_version: "1\.0\.0"/);
   });
 
+  test('returns the assigned upload version and ID even when registry latest still points at an older version', async () => {
+    const app = express();
+    app.use(express.json());
+    installCatsCoSkillHubSessionRoutes(app);
+    app.post('/api/skills/share', (_req, res) => res.json({
+      upload: { id: 'queued-upload-10', skillId: 'alice/version-receipt', version: '1.0.10' },
+      skill: { skillId: 'alice/version-receipt', latestVersion: '1.0.9' }, contentHash: 'a'.repeat(64),
+    }));
+    server = await listen(app);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server did not bind');
+    process.env.CATSCO_SKILLHUB_BASE_URL = `http://127.0.0.1:${address.port}`;
+    const source = path.join(testRoot, 'skills', 'version-receipt');
+    fs.mkdirSync(source, { recursive: true });
+    fs.writeFileSync(path.join(source, 'SKILL.md'), '---\nname: version-receipt\ndescription: Test receipt\n---\n# Test\n');
+    const result = await new SkillHubService().shareLocalSkill({ skillName: 'version-receipt' });
+    assert.equal(result.latestVersion, '1.0.10');
+    assert.equal(result.uploadId, 'queued-upload-10');
+    assert.equal(result.publicationStatus, 'submitted');
+    assert.equal(result.skill.id, 'alice/version-receipt');
+  });
+
   test('allows an absent name for publication preflight but still rejects explicitly invalid names', () => {
     const skillRoot = path.join(testRoot, 'skills', 'parser-name-validation');
     fs.mkdirSync(skillRoot, { recursive: true });
