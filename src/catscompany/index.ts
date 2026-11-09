@@ -1826,6 +1826,20 @@ export class CatsCompanyBot {
     const channel: ChannelCallbacks & { hasOutbound: boolean } = {
       chatId: topic,
       get hasOutbound() { return _hasOutbound; },
+      createFollowUp: () => {
+        const replyTo = this.replyOptionsFor(opts?.sessionKey)?.replyTo;
+        const clearGeneration = this.getSessionClearGeneration(opts?.sessionKey || '');
+        const stopGeneration = this.getSessionStopGeneration(opts?.sessionKey || '');
+        return async (text: string) => {
+          if (this.shuttingDown || this.getSessionClearGeneration(opts?.sessionKey || '') !== clearGeneration
+            || this.getSessionStopGeneration(opts?.sessionKey || '') !== stopGeneration) {
+            throw new Error('The originating conversation was cleared or stopped.');
+          }
+          // This is a standalone result notice, not progress or a later turn's
+          // terminal response. Freeze reply_to and never consult the tracker later.
+          await this.sender.reply(topic, text, replyTo ? { replyTo } : undefined);
+        };
+      },
       reply: async (_targetTopic: string, text: string) => {
         _hasOutbound = true;
         try {

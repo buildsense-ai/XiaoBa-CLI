@@ -30,6 +30,7 @@ const skillHubPhase1Tests = [
   'tests/skillhub-publication-capture-rpc.test.ts',
   'tests/skillhub-publication-upload.test.ts',
   'tests/share-skillhub-skill-tool.test.ts',
+  'tests/skillhub-publication-result.test.ts',
   'tests/skillhub-zip-intake.test.ts',
   'tests/bot-skill-trash-gc.test.ts',
   'tests/bot-definition-skills.test.ts',

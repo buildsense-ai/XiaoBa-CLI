@@ -22,6 +22,7 @@ import {
 import { listInstalledSkillHubSkills } from './install-marker';
 import { verifySkillHubPackage } from './package-verifier';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from './trusted-keys';
+import { publicationFilesMatch, type PublicationFile, type PublicationProbe } from './publication-result';
 import matter from 'gray-matter';
 import {
   isConfirmedDescriptionCandidate,
@@ -401,6 +402,33 @@ export class SkillHubService {
   async getPublishedVersion(skillId: string, version: string): Promise<SkillHubRegistryEntry | undefined> {
     const detail = await this.client.getVersion(skillId, version);
     return normalizeRegistryEntryVersion(detail.version || detail.skill, version);
+  }
+
+  async verifyPublication(skillId: string, version: string, files: PublicationFile[], budgetMs: number): Promise<PublicationProbe> {
+    if (!skillId || !version || !files.length) return { status: 'unverified', reason: 'incomplete_receipt' };
+    // Public reads use an isolated session, never a later user's login cookie.
+    // Six header/body timeouts bound the three requests by the caller's budget.
+    const client = new SkillHubClient({ baseUrl: this.client.config.baseUrl, sessionScope: 'memory',
+      timeoutMs: Math.max(1, Math.min(5000, Math.floor(budgetMs / 6))) });
+    try {
+      const detail = await client.getVersion(skillId, version);
+      const entry = normalizeRegistryEntryVersion(detail.version || detail.skill, version);
+      if (!entry) return { status: 'unverified', reason: 'not_ready' };
+      assertRegistryEntryMatchesRequest(entry, skillId, version);
+      const [trust, packageBytes] = await Promise.all([client.getTrust(), client.downloadPackage(entry)]);
+      const verified = verifySkillHubPackage({ packageBytes, registryEntry: entry, trust });
+      if (!publicationFilesMatch(files, verified.packageObject.payload.files, version)) {
+        return { status: 'verification_failed', reason: 'package_content_mismatch' };
+      }
+      return { status: 'published' };
+    } catch (error: any) {
+      // Signature/content failures are terminal verification errors, not a reason
+      // to publish again. Network/auth/not-ready responses prove neither outcome.
+      if (error?.name === 'SkillHubVerificationError' || error?.code === 'skillhub.registry_entry_mismatch') {
+        return { status: 'verification_failed', reason: 'package_verification_failed' };
+      }
+      return { status: 'unverified', reason: 'public_read_unavailable' };
+    }
   }
 
   getPresentation(skillId: string, version: string): Promise<any> {

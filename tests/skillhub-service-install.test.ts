@@ -13,6 +13,7 @@ import { collectBotSkillPackageFiles } from '../src/bot-skills/local-manifest';
 import type { SkillHubTrustedRootKey } from '../src/skillhub/trusted-keys';
 import { CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS } from '../src/skillhub/trusted-keys';
 import { SkillParser } from '../src/skills/skill-parser';
+import { applySkillHubLocalMetadata } from '../src/skillhub/local-skill-metadata';
 
 describe('SkillHub connected install service', () => {
   let testRoot: string;
@@ -652,6 +653,37 @@ describe('SkillHub connected install service', () => {
     assert.equal(marker.version, fixture.entry.latestVersion);
   });
 
+  test('publication verification proves the exact signed version without installing it', async () => {
+    const fixture = createFixture(true);
+    CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.push(fixture.rootTrust);
+    await startFixtureServer(fixture);
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+    const files = JSON.parse(fixture.packageBytes.toString()).payload.files.map((f: any) => ({
+      path: f.path, contentBase64: f.path === 'SKILL.md'
+        ? Buffer.from('---\nname: contract-review\ndescription: 审查合同条款并识别常见风险。\n---\n\n# 合同审查助手\n').toString('base64') : f.contentBase64,
+    }));
+    const service = new SkillHubService();
+    assert.deepEqual(await service.verifyPublication(fixture.entry.skillId, '1.0.0', files, 5000), { status: 'published' });
+    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'contract-review')), false);
+    const changed = files.map((f: any) => f.path === 'README.md' ? { ...f, contentBase64: Buffer.from('changed').toString('base64') } : f);
+    assert.equal((await service.verifyPublication(fixture.entry.skillId, '1.0.0', changed, 5000)).status, 'verification_failed');
+  });
+
+  test('publication verification distinguishes not-ready, wrong-target and corrupted signed packages', async () => {
+    const fixture = createFixture(true);
+    CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.push(fixture.rootTrust);
+    await startFixtureServer(fixture);
+    process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
+    const files = JSON.parse(fixture.packageBytes.toString()).payload.files;
+    const service = new SkillHubService();
+    assert.equal((await service.verifyPublication('lin/not-ready', '1.0.0', files, 5000)).status, 'unverified');
+    (fixture as any).allowMismatchedRequest = true;
+    assert.equal((await service.verifyPublication('lin/wrong', '1.0.0', files, 5000)).status, 'verification_failed');
+    fixture.packageBytes = Buffer.from(fixture.packageBytes.toString().replace('合同审查助手', '篡改后的 Skill'));
+    assert.equal((await service.verifyPublication(fixture.entry.skillId, '1.0.0', files, 5000)).status, 'verification_failed');
+    assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'contract-review')), false);
+  });
+
   test('does not write files when package checksum verification fails', async () => {
     const fixture = createFixture();
     fixture.packageBytes = Buffer.from(fixture.packageBytes.toString('utf8').replace('合同审查助手', '篡改后的 Skill'), 'utf8');
@@ -750,6 +782,7 @@ describe('SkillHub connected install service', () => {
       res.type('application/octet-stream').send(fixture.packageBytes);
     });
     app.get(/^\/api\/skills\/(.+)\/versions\/([^/]+)$/, (req, res) => {
+      if (req.params[0] === 'lin/not-ready') return res.status(404).json({ error: 'not_ready' });
       if (!(fixture as any).allowMismatchedRequest) assert.equal(req.params[0], fixture.entry.skillId);
       res.json({
         version: {
@@ -799,7 +832,7 @@ function installCatsCoSkillHubExchangeRoute(app: express.Express, onExchange?: (
   });
 }
 
-function createFixture() {
+function createFixture(withPublicationMetadata = false) {
   const rootKeys = crypto.generateKeyPairSync('ed25519');
   const signingKeys = crypto.generateKeyPairSync('ed25519');
   const rootPublicKeyPem = rootKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
@@ -831,7 +864,10 @@ function createFixture() {
       entrypoints: { skillFile: 'SKILL.md' },
     },
     files: [
-      file('SKILL.md', '---\nname: contract-review\ndescription: 审查合同条款并识别常见风险。\n---\n\n# 合同审查助手\n'),
+      file('SKILL.md', withPublicationMetadata ? applySkillHubLocalMetadata(
+        '---\nname: contract-review\ndescription: 审查合同条款并识别常见风险。\n---\n\n# 合同审查助手\n',
+        { author: 'lin', version: '1.0.0', uploadedAt: '2026-11-09T00:00:00.000Z' },
+      ) : '---\nname: contract-review\ndescription: 审查合同条款并识别常见风险。\n---\n\n# 合同审查助手\n'),
       file('README.md', '# 合同审查助手\n'),
       file('skill.json', JSON.stringify({
         id: 'lin/contract-review',

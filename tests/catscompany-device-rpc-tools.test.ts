@@ -709,4 +709,21 @@ describe('CatsCompany channel reply 的回合表态', () => {
     assert.equal(sent.length, 1);
     assert.equal(sent[0].options, undefined, '没有调用方在等结果，不该多背字段');
   });
+
+  test('延迟结果绑定原 reply_to，不冒充新一轮的完成回复', async () => {
+    const { bot, sent } = makeBot();
+    bot.botCallReplies.note('session:test', 'sess_original', 4321);
+    const followUp = bot.buildChannel('p2p_7_43', { sessionKey: 'session:test' }).createFollowUp();
+    bot.botCallReplies.note('session:test', 'sess_next', 9876);
+    await followUp('原来的 Skill 发布成功');
+    assert.deepEqual(sent, [{ topic: 'p2p_7_43', text: '原来的 Skill 发布成功', options: { replyTo: 4321 } }]);
+  });
+
+  test('会话停止后不发送旧发布结果通知', async () => {
+    const { bot, sent } = makeBot();
+    const followUp = bot.buildChannel('p2p_7_43', { sessionKey: 'session:test' }).createFollowUp();
+    bot.bumpSessionStopGeneration('session:test');
+    await assert.rejects(followUp('发布成功'), /cleared or stopped/);
+    assert.equal(sent.length, 0);
+  });
 });
