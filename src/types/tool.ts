@@ -199,6 +199,8 @@ export interface ChannelCallbacks {
   chatId: string;
   /** 发送文本消息 */
   reply: (chatId: string, text: string) => Promise<void>;
+  /** Capture a same-conversation follow-up route now; never attach a later turn's identity. */
+  createFollowUp?: () => (text: string) => Promise<void>;
   /** 发送文件 */
   sendFile: (chatId: string, filePath: string, fileName: string) => Promise<void>;
   /** 把已上传文件下载到当前运行体的托管工作区，并返回本地绝对路径。 */

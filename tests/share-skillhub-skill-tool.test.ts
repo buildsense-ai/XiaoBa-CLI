@@ -8,6 +8,63 @@ import { SYNTHETIC_USER_MESSAGE_FLAGS } from '../src/core/session-fork';
 import { normalizeDirectoryNameToSkillName } from '../src/skillhub/publication-candidate';
 import { makeZip } from './helpers/zip-fixture';
 
+test('ordinary publication waits for verification before reporting published and does not resend', async () => {
+  let shares = 0, probes = 0;
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: sample\ndescription: inert\n---\n').toString('base64') }];
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_args, options) => {
+      shares++; options?.onPackageCaptured?.(files);
+      return { skill: { id: 'alice/sample' }, latestVersion: '1.0.2', uploadId: 'upl_exact' };
+    },
+    verifyPublication: async (id, version, candidate, budget) => {
+      probes++; assert.equal(id, 'alice/sample'); assert.equal(version, '1.0.2');
+      assert.deepEqual(candidate, files); assert.ok(budget > 0 && budget <= 60_000);
+      return { status: 'published' };
+    },
+  }));
+  const result = await tool.execute({ skillName: 'sample' }, { conversationHistory: [] } as any);
+  assert.match(String(result.content), /发布成功/); assert.match(String(result.content), /Publication status: published/);
+  assert.doesNotMatch(String(result.content), /share submitted/); assert.equal(shares, 1); assert.equal(probes, 1);
+});
+
+test('verification setup failure never reports an accepted upload as failed or retries it', async () => {
+  let shares = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_args, options) => {
+      shares++; options?.onPackageCaptured?.([{ path: 'SKILL.md', contentBase64: 'eA==' }]);
+      return { skill: { id: 'alice/sample' }, latestVersion: '1.0.2' };
+    }, verifyPublication: async () => ({ status: 'published' }),
+  }));
+  const result = await tool.execute({ skillName: 'sample' }, { conversationHistory: [],
+    channel: { chatId: 'topic', createFollowUp: () => { throw new Error('not available'); } },
+  } as any);
+  assert.equal(result.ok, true); assert.match(String(result.content), /Publication status: submitted/);
+  assert.match(String(result.content), /follow-up: unavailable/); assert.equal(shares, 1);
+});
+
+test('cancelling while verification waits preserves accepted upload without scheduling a notification', async () => {
+  const controller = new AbortController();
+  let release!: () => void, started!: () => void, notices = 0, uploads = 0;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const probing = new Promise<void>(resolve => { started = resolve; });
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_args, options) => {
+      uploads++; options?.onPackageCaptured?.([{ path: 'SKILL.md', contentBase64: 'eA==' }]);
+      return { skill: { id: 'alice/sample' }, latestVersion: '1.0.2' };
+    },
+    verifyPublication: async () => { started(); await pending; return { status: 'unverified', reason: 'not_ready' }; },
+  }));
+  const resultPromise = tool.execute({ skillName: 'sample' }, { conversationHistory: [], abortSignal: controller.signal,
+    channel: { chatId: 'topic', createFollowUp: () => async () => { notices++; } },
+  } as any);
+  await probing; controller.abort(); release();
+  const result = await resultPromise;
+  assert.equal(result.ok, true); assert.equal(uploads, 1); assert.equal(notices, 0);
+  assert.match(String(result.content), /Publication status: submitted/);
+  assert.match(String(result.content), /follow-up: unavailable or stopped/);
+  assert.doesNotMatch(String(result.content), /发布成功|follow-up: active/);
+});
+
 test('publication receipt reports server version and upload ID separately from guide generation', async () => {
   const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async () => ({
     skill: { id: 'alice/sample', name: 'sample' }, latestVersion: '1.0.10',
