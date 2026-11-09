@@ -862,6 +862,31 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     }
   });
 
+  test('chat publication recovers a remotely committed ref after its verification reply is lost', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+    await fixture.sync();
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'published after lost reply');
+    const target = scanLocalBotSkill(path.join(fixture.skillsRoot, 'shared'));
+    const reference = addPublicPackage(fixture, target);
+    const beforePatches = fixture.patches;
+    fixture.onCloudRead = () => {
+      if (fixture.patches > beforePatches) {
+        fixture.onCloudRead = undefined;
+        throw new Error('lost cloud verification reply');
+      }
+    };
+    await assert.rejects(fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, { bindSelectedReference: true }), /lost cloud verification reply/);
+    assert.ok(fixture.cloud.skills.some(item => item.skillId === reference.skillId));
+    const journalDirectory = path.join(fixture.runtimeRoot, 'data', 'bot-skills', 'finalize-journal', fixture.botId);
+    assert.equal(fs.readdirSync(journalDirectory).length, 1);
+    await fixture.activate();
+    assert.match(fs.readFileSync(path.join(fixture.skillsRoot, 'shared', 'SKILL.md'), 'utf8'), /published after lost reply/);
+    assert.deepEqual(readBotSkillLocalMarker(path.join(fixture.skillsRoot, 'shared'))?.reference, reference);
+    assert.equal(fixture.uploads, 1);
+    assert.equal(fs.existsSync(journalDirectory), false);
+  });
+
   test('chat publication preserves unrelated cloud additions and the old Base revision', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
