@@ -66,6 +66,7 @@ export async function confirmPublicationResult(options: PublicationResultOptions
   while (!options.signal?.aborted && now() < deadline) {
     last = await probe(Math.max(1, deadline - now()));
     if (last.status !== 'unverified') return last;
+    if (options.signal?.aborted) break;
     if (now() < deadline) await delay(Math.min(2000, deadline - now()));
   }
   const bytes = options.retainedBytes ?? 0;

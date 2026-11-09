@@ -42,6 +42,29 @@ test('verification setup failure never reports an accepted upload as failed or r
   assert.match(String(result.content), /follow-up: unavailable/); assert.equal(shares, 1);
 });
 
+test('cancelling while verification waits preserves accepted upload without scheduling a notification', async () => {
+  const controller = new AbortController();
+  let release!: () => void, started!: () => void, notices = 0, uploads = 0;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const probing = new Promise<void>(resolve => { started = resolve; });
+  const tool = new ShareSkillHubSkillTool(() => ({
+    shareLocalSkill: async (_args, options) => {
+      uploads++; options?.onPackageCaptured?.([{ path: 'SKILL.md', contentBase64: 'eA==' }]);
+      return { skill: { id: 'alice/sample' }, latestVersion: '1.0.2' };
+    },
+    verifyPublication: async () => { started(); await pending; return { status: 'unverified', reason: 'not_ready' }; },
+  }));
+  const resultPromise = tool.execute({ skillName: 'sample' }, { conversationHistory: [], abortSignal: controller.signal,
+    channel: { chatId: 'topic', createFollowUp: () => async () => { notices++; } },
+  } as any);
+  await probing; controller.abort(); release();
+  const result = await resultPromise;
+  assert.equal(result.ok, true); assert.equal(uploads, 1); assert.equal(notices, 0);
+  assert.match(String(result.content), /Publication status: submitted/);
+  assert.match(String(result.content), /follow-up: unavailable or stopped/);
+  assert.doesNotMatch(String(result.content), /发布成功|follow-up: active/);
+});
+
 test('publication receipt reports server version and upload ID separately from guide generation', async () => {
   const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async () => ({
     skill: { id: 'alice/sample', name: 'sample' }, latestVersion: '1.0.10',

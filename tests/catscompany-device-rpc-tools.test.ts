@@ -715,8 +715,24 @@ describe('CatsCompany channel reply 的回合表态', () => {
     bot.botCallReplies.note('session:test', 'sess_original', 4321);
     const followUp = bot.buildChannel('p2p_7_43', { sessionKey: 'session:test' }).createFollowUp();
     bot.botCallReplies.note('session:test', 'sess_next', 9876);
+    assert.equal(bot.botCallReplies.size('session:test'), 2, 'capturing a route must not consume either queued task');
+    await bot.sender.reply('p2p_7_43', '本轮最终答复', bot.replyOptionsFor('session:test'));
     await followUp('原来的 Skill 发布成功');
-    assert.deepEqual(sent, [{ topic: 'p2p_7_43', text: '原来的 Skill 发布成功', options: { replyTo: 4321 } }]);
+    await bot.sender.reply('p2p_7_43', '下一轮最终答复', bot.replyOptionsFor('session:test'));
+    assert.deepEqual(sent, [
+      { topic: 'p2p_7_43', text: '本轮最终答复', options: { replyTo: 4321, turnDone: 'sess_original' } },
+      { topic: 'p2p_7_43', text: '原来的 Skill 发布成功', options: { replyTo: 4321 } },
+      { topic: 'p2p_7_43', text: '下一轮最终答复', options: { replyTo: 9876, turnDone: 'sess_next' } },
+    ]);
+    assert.equal(bot.botCallReplies.size('session:test'), 0);
+  });
+
+  test('单条平台派活在创建延迟通知后仍保留最终答复标记', async () => {
+    const { bot, sent } = makeBot();
+    bot.botCallReplies.note('session:test', 'sess_only', 4321);
+    bot.buildChannel('p2p_7_43', { sessionKey: 'session:test' }).createFollowUp();
+    await bot.sender.reply('p2p_7_43', '本轮最终答复', bot.replyOptionsFor('session:test'));
+    assert.deepEqual(sent[0].options, { replyTo: 4321, turnDone: 'sess_only' });
   });
 
   test('会话停止后不发送旧发布结果通知', async () => {

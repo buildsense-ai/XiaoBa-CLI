@@ -8,4 +8,6 @@ If still uncertain and a valid same-conversation follow-up callback exists, read
 
 CatsCo captures the original reply_to when creating the callback. It never consults a later turn's reply tracker or emits a completion marker for that later turn. The outbound scope gateway must approve the original conversation before the callback is used.
 
+Route capture uses the tracker's read-only progress lookup; it must leave the originating final reply's `replyTo`/`turnDone` entry intact, including when multiple tasks queue under one session key. Source-side verification tests collect files from an independent directory using the same collector as upload, rather than deriving the expected inventory from the public package. Quick-share's packager excludes root manifests from the signed payload and does not add REVIEW/SBOM files to this upload path; unexpected additional payload files still fail comparison.
+
 Validation covers delayed readiness, read outages and deadlines, verification failure, cancellation/capacity, exact signed version reads without installation, altered content, stale conversation routing, and accepted-upload preservation when follow-up setup fails.

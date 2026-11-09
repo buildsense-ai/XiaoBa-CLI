@@ -1827,7 +1827,7 @@ export class CatsCompanyBot {
       chatId: topic,
       get hasOutbound() { return _hasOutbound; },
       createFollowUp: () => {
-        const replyTo = this.replyOptionsFor(opts?.sessionKey)?.replyTo;
+        const replyTo = this.replyOptionsFor(opts?.sessionKey, { progress: true })?.replyTo;
         const clearGeneration = this.getSessionClearGeneration(opts?.sessionKey || '');
         const stopGeneration = this.getSessionStopGeneration(opts?.sessionKey || '');
         return async (text: string) => {

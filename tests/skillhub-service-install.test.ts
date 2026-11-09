@@ -658,10 +658,8 @@ describe('SkillHub connected install service', () => {
     CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.push(fixture.rootTrust);
     await startFixtureServer(fixture);
     process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
-    const files = JSON.parse(fixture.packageBytes.toString()).payload.files.map((f: any) => ({
-      path: f.path, contentBase64: f.path === 'SKILL.md'
-        ? Buffer.from('---\nname: contract-review\ndescription: 审查合同条款并识别常见风险。\n---\n\n# 合同审查助手\n').toString('base64') : f.contentBase64,
-    }));
+    const files = publicationSourceFiles();
+    assert.deepEqual(files.map(f => f.path).sort(), ['README.md', 'SKILL.md']);
     const service = new SkillHubService();
     assert.deepEqual(await service.verifyPublication(fixture.entry.skillId, '1.0.0', files, 5000), { status: 'published' });
     assert.equal(fs.existsSync(path.join(testRoot, 'skills', 'contract-review')), false);
@@ -674,7 +672,7 @@ describe('SkillHub connected install service', () => {
     CATSCO_SKILLHUB_ROOT_PUBLIC_KEYS.push(fixture.rootTrust);
     await startFixtureServer(fixture);
     process.env.CATSCO_SKILLHUB_BASE_URL = baseUrl;
-    const files = JSON.parse(fixture.packageBytes.toString()).payload.files;
+    const files = publicationSourceFiles();
     const service = new SkillHubService();
     assert.equal((await service.verifyPublication('lin/not-ready', '1.0.0', files, 5000)).status, 'unverified');
     (fixture as any).allowMismatchedRequest = true;
@@ -761,6 +759,17 @@ describe('SkillHub connected install service', () => {
       (error: any) => error?.code === 'skillhub.local_skill_file_too_large',
     );
   });
+
+  function publicationSourceFiles() {
+    const source = path.join(testRoot, 'upload-source');
+    fs.mkdirSync(source, { recursive: true });
+    fs.writeFileSync(path.join(source, 'SKILL.md'), '---\nname: contract-review\ndescription: 审查合同条款并识别常见风险。\n---\n# 合同审查助手\n');
+    fs.writeFileSync(path.join(source, 'README.md'), '# 合同审查助手\n');
+    for (const name of ['skill.json', 'REVIEW.json', 'SBOM.json', '.xiaoba-skillhub-install.json']) {
+      fs.writeFileSync(path.join(source, name), '{}');
+    }
+    return collectBotSkillPackageFiles(source);
+  }
 
   async function startFixtureServer(fixture: ReturnType<typeof createFixture>): Promise<void> {
     const app = express();
@@ -877,7 +886,7 @@ function createFixture(withPublicationMetadata = false) {
       }, null, 2)),
       file('REVIEW.json', JSON.stringify({ riskLevel: 'low' }, null, 2)),
       file('SBOM.json', JSON.stringify({ files: [] }, null, 2)),
-    ],
+    ].filter(f => !withPublicationMetadata || !['skill.json', 'REVIEW.json', 'SBOM.json'].includes(f.path)),
   };
   const signature = sign(payload, signingPrivateKeyPem, 'signing-test');
   const packageObject = {
