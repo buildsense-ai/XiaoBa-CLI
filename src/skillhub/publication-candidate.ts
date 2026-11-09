@@ -174,13 +174,29 @@ export function createDescriptionCandidate<T extends PublicationCandidateFile[]>
     && !(typeof before.data.description === 'string' && !before.data.description.trim())) return undefined;
 
   const frontmatter = text.match(/^(---[ \t]*(?:yaml[ \t]*)?\r?\n)([\s\S]*?)(\r?\n---(?=[ \t]*(?:\r?\n|$)))/);
-  if (!frontmatter || /^\s*description\s*:/m.test(frontmatter[2])) return undefined;
+  if (!frontmatter) return undefined;
   const lineEnding = text.includes('\r\n') ? '\r\n' : '\n';
-  const nextText = `${frontmatter[1]}${frontmatter[2]}${lineEnding}description: ${JSON.stringify(description)}${frontmatter[3]}${text.slice(frontmatter[0].length)}`;
+  let nextFrontmatter = frontmatter[2];
+  if (Object.prototype.hasOwnProperty.call(before.data, 'description')) {
+    // Replace only an unambiguous, empty, top-level scalar. Preserve comments,
+    // line endings, the body and every unrelated field byte for byte.
+    const lines = nextFrontmatter.split(/(\r?\n)/);
+    const indices = lines.flatMap((line, index) => index % 2 === 0 && /^description:/.test(line) ? [index] : []);
+    if (indices.length !== 1) return undefined;
+    const index = indices[0];
+    const scalar = lines[index].match(/^(description:[ \t]*)(?:"[ \t]*"|'[ \t]*'|null|Null|NULL|~)?([ \t]*(?:#.*)?)$/);
+    if (!scalar) return undefined;
+    lines[index] = `${scalar[1]}${/[ \t]$/.test(scalar[1]) ? '' : ' '}${JSON.stringify(description)}${scalar[2]}`;
+    nextFrontmatter = lines.join('');
+  } else {
+    nextFrontmatter += `${lineEnding}description: ${JSON.stringify(description)}`;
+  }
+  const nextText = `${frontmatter[1]}${nextFrontmatter}${frontmatter[3]}${text.slice(frontmatter[0].length)}`;
   try {
     const after = matter(nextText);
     if (after.data.description !== description || after.content !== before.content
-      || !isDeepStrictEqual(before.data, Object.fromEntries(Object.entries(after.data).filter(([key]) => key !== 'description')))) {
+      || !isDeepStrictEqual(Object.fromEntries(Object.entries(before.data).filter(([key]) => key !== 'description')),
+        Object.fromEntries(Object.entries(after.data).filter(([key]) => key !== 'description')))) {
       return undefined;
     }
   } catch {

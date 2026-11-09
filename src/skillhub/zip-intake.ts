@@ -13,6 +13,7 @@ const MAX_TOTAL_UNCOMPRESSED_BYTES = 25 * 1024 * 1024;
 export interface ExtractedSkillZip {
   directory: string;
   cleanupDirectory: string;
+  uncompressedBytes: number;
 }
 
 interface CheckedEntry {
@@ -47,7 +48,7 @@ export async function extractAuthorizedSkillZip(zipPath: string, sourceFileName:
       await extractEntry(zipPath, item, extractionRoot);
     }
     const directory = path.dirname(path.join(extractionRoot, skillEntry.relativePath));
-    return { directory, cleanupDirectory };
+    return { directory, cleanupDirectory, uncompressedBytes: entries.reduce((sum, item) => sum + (item.isDirectory ? 0 : item.entry.uncompressedSize), 0) };
   } catch (error) {
     await fs.promises.rm(cleanupDirectory, { recursive: true, force: true });
     throw error;
