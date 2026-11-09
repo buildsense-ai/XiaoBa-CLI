@@ -29,6 +29,7 @@ const MAX_DESCRIPTION_SOURCE_BYTES = 64 * 1024;
 interface PendingDescriptionConfirmation {
   sessionId: string;
   owner?: string;
+  zipTask?: ZipPublicationTask;
   reportId: string;
   skillName: string;
   localSkillPath: string;
@@ -379,6 +380,7 @@ export class ShareSkillHubSkillTool implements Tool {
         const draft = await this.createDescriptionDraft(
           context, skillName, localSkillPath, writeLocalMetadata, args, presentationFiles, publicationError.validation,
           retained.task ? undefined : zipCleanupDirectory,
+          retained.task,
         );
         if (draft) {
           zipCleanupRetained = Boolean(retained.task || zipCleanupDirectory
@@ -410,11 +412,14 @@ export class ShareSkillHubSkillTool implements Tool {
     files: SkillPresentationFile[],
     validation: any,
     zipCleanupDirectory?: string,
+    zipTask?: ZipPublicationTask,
   ): Promise<ToolExecutionResult | undefined> {
     const reportId = String(validation?.reportId || '').trim();
     const sessionId = String(context.sessionId || '').trim();
     const entry = files.find(file => file.path === 'SKILL.md');
     if (!reportId || !sessionId || !entry || !createDescriptionCandidate(files, validation, 'validation-only')) return undefined;
+    const candidateBytes = packageBytes(files);
+    if (candidateBytes > DESCRIPTION_CONFIRMATION_MAX_BYTES) return undefined;
     const resolvedSkillName = skillNameFromFiles(files) || normalizeDisplaySkillName(skillName) || '当前 Skill';
     const aiService = context.runtimeServices?.aiService;
     if (!aiService) return undefined;
@@ -447,6 +452,9 @@ export class ShareSkillHubSkillTool implements Tool {
       return undefined;
     }
     if (!createDescriptionCandidate(files, validation, description)) return undefined;
+    if (zipTask) {
+      try { this.zipTasks.verify(zipTask); } catch { return undefined; }
+    }
 
     const now = Date.now();
     this.prunePendingDescriptions(now);
@@ -457,8 +465,6 @@ export class ShareSkillHubSkillTool implements Tool {
         this.disposePendingDescription(pending);
       }
     }
-    const candidateBytes = packageBytes(files);
-    if (candidateBytes > DESCRIPTION_CONFIRMATION_MAX_BYTES) return undefined;
     while (this.pendingDescriptions.size >= DESCRIPTION_CONFIRMATION_MAX_PENDING
       || [...this.pendingDescriptions.values()].reduce((sum, pending) => sum + packageBytes(pending.files), 0)
         + candidateBytes > DESCRIPTION_CONFIRMATION_MAX_BYTES) {
@@ -469,21 +475,24 @@ export class ShareSkillHubSkillTool implements Tool {
       this.rememberDescriptionState(oldest, 'cleared');
     }
     const pending: PendingDescriptionConfirmation = {
-      sessionId, owner: publicationTaskOwner(context), reportId, skillName, localSkillPath, writeLocalMetadata, zipCleanupDirectory,
+      sessionId, owner: publicationTaskOwner(context), zipTask, reportId, skillName, localSkillPath, writeLocalMetadata, zipCleanupDirectory,
       notes: String(args?.notes || ''), files: files.map(file => ({ ...file })),
       validation: structuredClone(validation), description,
       initialUserMessage: latestUserMessageText(context),
-      expiresAt: now + DESCRIPTION_CONFIRMATION_TTL_MS,
+      expiresAt: Math.min(now + DESCRIPTION_CONFIRMATION_TTL_MS, zipTask?.expiresAt ?? Infinity),
     };
     this.pendingDescriptions.set(this.descriptionKey(sessionId, reportId), pending);
     this.schedulePendingCleanup(this.descriptionKey(sessionId, reportId), pending);
+    const validity = pending.expiresAt < now + DESCRIPTION_CONFIRMATION_TTL_MS
+      ? `草稿有效至 ${new Date(pending.expiresAt).toISOString()}，受 ZIP 发布任务保留时限限制，剩余不足 15 分钟`
+      : '草稿在当前对话中有效 15 分钟';
     const prompt = [
       `SkillHub 发现「${resolvedSkillName}」的 SKILL.md 缺少 description，因此暂未发布（报告 ${reportId}）。`,
       '如本次发布还自动修正了 name，该修正只会保留在待确认的上传副本中，不会改动本地文件。',
       '我根据 Skill 文件起草了该 Skill 的简介，供你确认：',
       '这段简介对应 SKILL.md 的 description 字段，用于模型判断何时调用，也会作为 SkillHub 的简短描述展示；它不是发布后生成的详细使用说明书。',
       `> ${description}`,
-      '这段简介尚未写入本地文件或上传。草稿在当前对话中有效 15 分钟；请在有效期内回复“确认使用这条简介并发布”。若已过期，请重新发起预检并确认新草稿；不合适的话，直接告诉我怎么修改。',
+      `这段简介尚未写入本地文件或上传。${validity}；请在有效期内回复“确认使用这条简介并发布”。若已过期，请重新发起预检并确认新草稿；不合适的话，直接告诉我怎么修改。`,
     ].join('\n\n');
     const target = resolveOutboundTarget(context, {
       operation: 'send_text',
@@ -498,7 +507,7 @@ export class ShareSkillHubSkillTool implements Tool {
             'Skill 简介草稿已发给用户等待确认；当前尚未发布，也未修改本地文件。',
             `报告：${reportId}`,
             `Skill 简介草稿：${description}`,
-            '只有后续真实用户输入在 15 分钟有效期内明确确认这段简介后，才可用本报告 ID 和相同原文调用一次确认发布；若已过期，必须重新预检并取得对新草稿的确认。',
+            `只有后续真实用户输入在 15 分钟有效期内（且不晚于 ${new Date(pending.expiresAt).toISOString()}）明确确认这段简介后，才可用本报告 ID 和相同原文调用一次确认发布；若已过期，必须重新预检并取得对新草稿的确认。`,
           ].join('\n'),
           controlSignal: 'pause_turn',
         };
@@ -538,8 +547,17 @@ export class ShareSkillHubSkillTool implements Tool {
       return {
         ok: false,
         errorCode: 'DESCRIPTION_CONFIRMATION_EXPIRED',
-        message: '这条 Skill 简介草稿已过期或不属于当前对话。本次没有发布，也没有改动本地文件。草稿有效期为 15 分钟；请回到生成草稿的对话，并在有效期内确认。若已过期，请重新发起一次预检，再确认新报告对应的简介；不要重试旧报告。',
+        message: '这条 Skill 简介草稿已过期。本次没有发布，也没有改动本地文件。草稿有效期最长为 15 分钟，且不会超过 ZIP 副本保留期限；请重新发起一次预检，再确认新报告对应的简介。若 ZIP 任务也已过期，请重新上传原始 ZIP；不要重试旧报告。',
       };
+    }
+    if (pending.zipTask) {
+      try { this.zipTasks.verify(pending.zipTask); } catch {
+        this.pendingDescriptions.delete(key);
+        this.rememberDescriptionState(key, 'cleared');
+        await this.disposePendingDescription(pending);
+        return { ok: false, errorCode: 'DESCRIPTION_SOURCE_UNAVAILABLE',
+          message: '这条简介对应的 ZIP 发布副本已被清理或发生改动，本次没有发布。请重新上传原始 ZIP 并预检，确认新草稿；不要重试旧报告。' };
+      }
     }
     if (description !== pending.description) {
       return { ok: false, errorCode: 'DESCRIPTION_CONFIRMATION_MISMATCH', message: 'The approved text must exactly match the description draft shown to the user. No files were changed or uploaded.' };
