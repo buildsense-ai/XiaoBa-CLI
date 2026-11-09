@@ -23,6 +23,7 @@ import {
 const MAX_AUTOMATIC_REPAIR_UPLOAD_ATTEMPTS = 3;
 const DESCRIPTION_CONFIRMATION_TTL_MS = 15 * 60_000;
 const DESCRIPTION_CONFIRMATION_MAX_PENDING = 64;
+const DESCRIPTION_CONFIRMATION_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_DESCRIPTION_SOURCE_BYTES = 64 * 1024;
 
 interface PendingDescriptionConfirmation {
@@ -51,7 +52,7 @@ export class ShareSkillHubSkillTool implements Tool {
   >> = () => new SkillHubService()) {}
 
   private readonly pendingDescriptions = new Map<string, PendingDescriptionConfirmation>();
-  private readonly descriptionHistory = new Map<string, 'expired' | 'replaced' | 'consumed'>();
+  private readonly descriptionHistory = new Map<string, 'expired' | 'replaced' | 'consumed' | 'cleared'>();
   private readonly zipTasks = new ZipPublicationTaskStore();
 
   definition: ToolDefinition = {
@@ -456,12 +457,16 @@ export class ShareSkillHubSkillTool implements Tool {
         this.disposePendingDescription(pending);
       }
     }
-    while (this.pendingDescriptions.size >= DESCRIPTION_CONFIRMATION_MAX_PENDING) {
+    const candidateBytes = packageBytes(files);
+    if (candidateBytes > DESCRIPTION_CONFIRMATION_MAX_BYTES) return undefined;
+    while (this.pendingDescriptions.size >= DESCRIPTION_CONFIRMATION_MAX_PENDING
+      || [...this.pendingDescriptions.values()].reduce((sum, pending) => sum + packageBytes(pending.files), 0)
+        + candidateBytes > DESCRIPTION_CONFIRMATION_MAX_BYTES) {
       const oldest = this.pendingDescriptions.keys().next().value;
       if (!oldest) break;
       this.disposePendingDescription(this.pendingDescriptions.get(oldest));
       this.pendingDescriptions.delete(oldest);
-      this.rememberDescriptionState(oldest, 'expired');
+      this.rememberDescriptionState(oldest, 'cleared');
     }
     const pending: PendingDescriptionConfirmation = {
       sessionId, owner: publicationTaskOwner(context), reportId, skillName, localSkillPath, writeLocalMetadata, zipCleanupDirectory,
@@ -522,9 +527,11 @@ export class ShareSkillHubSkillTool implements Tool {
       if (state !== 'expired') return {
         ok: false,
         errorCode: state === 'replaced' ? 'DESCRIPTION_DRAFT_REPLACED'
-          : state === 'consumed' ? 'DESCRIPTION_CONFIRMATION_ALREADY_USED' : 'DESCRIPTION_DRAFT_NOT_FOUND',
+          : state === 'consumed' ? 'DESCRIPTION_CONFIRMATION_ALREADY_USED'
+            : state === 'cleared' ? 'DESCRIPTION_DRAFT_UNAVAILABLE' : 'DESCRIPTION_DRAFT_NOT_FOUND',
         message: (state === 'replaced' ? '这条简介草稿已被本对话的新草稿替代，请确认最新草稿。'
           : state === 'consumed' ? '这条简介确认已经使用过，请先核查上一轮发布结果，不要重复提交。'
+          : state === 'cleared' ? '这条简介草稿因保留容量上限已被清理，请重新预检生成新草稿。'
           : '当前对话中没有找到工具保存的这条简介草稿。校验报告不等于待确认草稿，不能确认模型自行补写的文字；也可能是运行环境重启后草稿丢失。请重新预检，由工具生成新草稿后再确认。')
           + '本次没有发布，也没有改动本地文件。',
       };
@@ -618,7 +625,7 @@ export class ShareSkillHubSkillTool implements Tool {
     return `${sessionId}\u0000${reportId}`;
   }
 
-  private rememberDescriptionState(key: string, state: 'expired' | 'replaced' | 'consumed'): void {
+  private rememberDescriptionState(key: string, state: 'expired' | 'replaced' | 'consumed' | 'cleared'): void {
     this.descriptionHistory.delete(key);
     this.descriptionHistory.set(key, state);
     while (this.descriptionHistory.size > 128) this.descriptionHistory.delete(this.descriptionHistory.keys().next().value!);
@@ -791,6 +798,10 @@ function parseDescriptionDraft(raw: string): string {
     throw new Error('Invalid description draft.');
   }
   return description;
+}
+
+function packageBytes(files: SkillPresentationFile[]): number {
+  return files.reduce((sum, file) => sum + Buffer.byteLength(file.contentBase64, 'base64'), 0);
 }
 
 function invalidConfirmationArguments(): ToolExecutionResult {
