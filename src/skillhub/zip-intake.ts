@@ -22,37 +22,46 @@ interface CheckedEntry {
   isDirectory: boolean;
 }
 
+interface ExtractionBudget { entries: number; bytes: number }
+
 export async function extractAuthorizedSkillZip(zipPath: string, sourceFileName: string): Promise<ExtractedSkillZip> {
   const stat = await fs.promises.stat(zipPath);
   if (!stat.isFile() || stat.size > MAX_ARCHIVE_BYTES) {
     throw new Error(`ZIP must be a regular file no larger than ${MAX_ARCHIVE_BYTES} bytes.`);
   }
 
-  const entries = await readAndValidateEntries(zipPath);
-  const skillLikeEntries = entries.filter(item => !item.isDirectory
-    && (item.relativePath.toLowerCase().endsWith('/skill.md') || item.relativePath.toLowerCase() === 'skill.md'));
-  if (skillLikeEntries.length !== 1) {
-    throw new Error('ZIP must contain exactly one SKILL.md entry.');
-  }
-  const skillEntry = skillLikeEntries[0];
-  if (!skillEntry.relativePath.endsWith('/SKILL.md') && skillEntry.relativePath !== 'SKILL.md') {
-    throw new Error('The ZIP entry must use the exact filename SKILL.md.');
-  }
-
+  const budget: ExtractionBudget = { entries: 0, bytes: 0 };
+  const entries = await readAndValidateEntries(zipPath, budget);
   const cleanupDirectory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xiaoba-skillhub-zip-'));
   const extractionRoot = path.join(cleanupDirectory, safePackageDirectoryName(sourceFileName));
   try {
-    await fs.promises.mkdir(extractionRoot, { mode: 0o700 });
-    for (const item of entries) {
-      if (item.isDirectory) continue;
-      await extractEntry(zipPath, item, extractionRoot);
-    }
-    const directory = path.dirname(path.join(extractionRoot, skillEntry.relativePath));
-    return { directory, cleanupDirectory, uncompressedBytes: entries.reduce((sum, item) => sum + (item.isDirectory ? 0 : item.entry.uncompressedSize), 0) };
+    const directory = await extractSkillLayer(zipPath, entries, extractionRoot, budget, true);
+    return { directory, cleanupDirectory, uncompressedBytes: budget.bytes };
   } catch (error) {
     await fs.promises.rm(cleanupDirectory, { recursive: true, force: true });
     throw error;
   }
+}
+
+async function extractSkillLayer(
+  zipPath: string, entries: CheckedEntry[], root: string, budget: ExtractionBudget, allowWrapper: boolean,
+): Promise<string> {
+  const files = entries.filter(item => !item.isDirectory);
+  const skillEntries = files.filter(item => path.posix.basename(item.relativePath).toLowerCase() === 'skill.md');
+  if (skillEntries.length === 0 && allowWrapper && files.length === 1 && /\.(skill|zip)$/i.test(files[0].relativePath)) {
+    await fs.promises.mkdir(root, { mode: 0o700 });
+    await extractEntry(zipPath, files[0], root);
+    const nestedPath = path.join(root, files[0].relativePath);
+    const nestedEntries = await readAndValidateEntries(nestedPath, budget);
+    // A separate root prevents outer and inner paths from colliding. Never recurse again.
+    return extractSkillLayer(nestedPath, nestedEntries, path.join(path.dirname(root), 'inner', safePackageDirectoryName(files[0].relativePath)), budget, false);
+  }
+  if (skillEntries.length !== 1) throw new Error('ZIP must contain exactly one SKILL.md entry, or a single .skill/.zip wrapper (one nested layer only).');
+  const skillEntry = skillEntries[0];
+  if (path.posix.basename(skillEntry.relativePath) !== 'SKILL.md') throw new Error('The ZIP entry must use the exact filename SKILL.md.');
+  await fs.promises.mkdir(root, { recursive: true, mode: 0o700 });
+  for (const item of files) await extractEntry(zipPath, item, root);
+  return path.dirname(path.join(root, skillEntry.relativePath));
 }
 
 function safePackageDirectoryName(sourceFileName: string): string {
@@ -63,15 +72,14 @@ function safePackageDirectoryName(sourceFileName: string): string {
   return name && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(name) ? name : 'skill-package';
 }
 
-async function readAndValidateEntries(zipPath: string): Promise<CheckedEntry[]> {
+async function readAndValidateEntries(zipPath: string, budget: ExtractionBudget): Promise<CheckedEntry[]> {
   const zip = await openZip(zipPath);
   const entries: CheckedEntry[] = [];
   const paths = new Set<string>();
   const files = new Set<string>();
-  let totalBytes = 0;
   try {
     for (let entry = await readEntry(zip); entry; entry = await readEntry(zip)) {
-      if (entries.length >= MAX_ENTRIES) throw new Error(`ZIP contains more than ${MAX_ENTRIES} entries.`);
+      if (++budget.entries > MAX_ENTRIES) throw new Error(`ZIP contains more than ${MAX_ENTRIES} entries across all layers.`);
       if (entry.generalPurposeBitFlag & 0x1) throw new Error('Encrypted ZIP entries are not supported.');
       const relativePath = validateEntryPath(entry.fileName);
       const isDirectory = relativePath.endsWith('/');
@@ -82,8 +90,8 @@ async function readAndValidateEntries(zipPath: string): Promise<CheckedEntry[]> 
       validateEntryType(entry, isDirectory);
       if (!isDirectory) {
         if (entry.uncompressedSize > MAX_FILE_BYTES) throw new Error(`ZIP entry exceeds the per-file size limit: ${cleanPath}`);
-        totalBytes += entry.uncompressedSize;
-        if (totalBytes > MAX_TOTAL_UNCOMPRESSED_BYTES) throw new Error('ZIP exceeds the total uncompressed size limit.');
+        budget.bytes += entry.uncompressedSize;
+        if (budget.bytes > MAX_TOTAL_UNCOMPRESSED_BYTES) throw new Error('ZIP exceeds the total uncompressed size limit across all layers.');
         files.add(canonical);
       }
       entries.push({ entry, relativePath: cleanPath, isDirectory });

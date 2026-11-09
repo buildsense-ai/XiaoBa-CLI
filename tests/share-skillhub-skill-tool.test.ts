@@ -8,6 +8,43 @@ import { SYNTHETIC_USER_MESSAGE_FLAGS } from '../src/core/session-fork';
 import { normalizeDirectoryNameToSkillName } from '../src/skillhub/publication-candidate';
 import { makeZip } from './helpers/zip-fixture';
 
+test('publication receipt reports server version and upload ID separately from guide generation', async () => {
+  const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async () => ({
+    skill: { id: 'alice/sample', name: 'sample' }, latestVersion: '1.0.10',
+    submission: { upload: { id: 'upload-real-id', version: '1.0.10' } },
+  }) }));
+  const result = await tool.execute({ skillName: 'sample' }, { conversationHistory: [] } as any);
+  assert.equal(result.ok, true);
+  assert.match(String(result.content), /Skill ID: alice\/sample/);
+  assert.match(String(result.content), /Assigned version: 1\.0\.10/);
+  assert.match(String(result.content), /Upload ID: upload-real-id/);
+  assert.match(String(result.content), /Publication status: submitted/);
+  assert.match(String(result.content), /Chinese guide status: independent/);
+  assert.doesNotMatch(String(result.content), /Submission: unknown/);
+});
+
+test('automatically selects a direct .skill attachment and rejects non-ZIP .skill data', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skillhub-direct-skill-'));
+  const file = path.join(root, 'sample.skill');
+  let calls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async (_input, options) => {
+    calls++;
+    assert.equal(path.basename(options!.localSkillPath!), 'sample');
+    return { skill: { id: 'alice/sample' }, latestVersion: '1.0.0' };
+  } }));
+  try {
+    fs.writeFileSync(file, makeZip([{ name: 'sample/SKILL.md', content: Buffer.from('---\nname: sample\ndescription: test\n---\n') }]));
+    let result = await tool.execute({}, catscoZipContext([catscoZipGrant(file, 'sample.skill', 'catsco_attachment:direct')], 'direct-skill'));
+    assert.equal(result.ok, true);
+    assert.equal(calls, 1);
+    fs.writeFileSync(file, 'not a ZIP');
+    result = await tool.execute({}, catscoZipContext([catscoZipGrant(file, 'sample.skill', 'catsco_attachment:invalid')], 'invalid-skill'));
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'SKILLHUB_ZIP_REJECTED');
+    assert.equal(calls, 1);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('does not read or publish a ZIP attachment without a current CatsCo attachment grant', async () => {
   let serviceCalls = 0;
   const tool = new ShareSkillHubSkillTool(() => ({

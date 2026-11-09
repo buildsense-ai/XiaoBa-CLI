@@ -67,6 +67,7 @@ export interface BotSkillSyncBaseEntry {
   localSkillId: string;
   name: string;
   installName: string;
+  /** Local author-source hash; upload-only repairs may differ from reference.contentHash. */
   contentHash: string;
   reference: BotSkillRef;
   origin?: SkillHubPackageRef;

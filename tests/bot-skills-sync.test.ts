@@ -5,6 +5,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createBotDefinitionSyncService } from '../src/bot-definition/service';
+import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
+import { shareConversationSkill } from '../src/skillhub/conversation-share';
 import type { BotDefinition, BotSkillRef } from '../src/bot-definition/types';
 import { BotSkillBaseStore } from '../src/bot-skills/base-store';
 import {
@@ -769,6 +771,218 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     const repeated = await fixture.sync();
     assert.equal(repeated.direction, 'none');
     assert.equal(fixture.uploads, uploadsBeforeFinalize + 1);
+  });
+
+  test('chat publication binds only the selected ref and activation keeps the published content', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'old content');
+    writeSkill(fixture.skillsRoot, 'other', 'other', 'original other');
+    await fixture.sync();
+    const baseBefore = new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)!;
+    const otherRef = baseBefore.skills.find(entry => entry.name === 'other')!.reference;
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'new published content');
+    writeSkill(fixture.skillsRoot, 'other', 'other', 'unrelated unsubmitted edit');
+    const target = scanLocalBotSkill(path.join(fixture.skillsRoot, 'shared'));
+    const reference = addPublicPackage(fixture, target);
+    const uploads = fixture.uploads;
+    await fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, {
+      bindSelectedReference: true, expectedLocalContentHash: target.contentHash,
+    });
+    assert.equal(fixture.uploads, uploads);
+    assert.deepEqual(fixture.cloud.skills, [otherRef, reference].sort((a, b) => a.skillId.localeCompare(b.skillId)));
+    assert.match(fs.readFileSync(path.join(fixture.skillsRoot, 'other', 'SKILL.md'), 'utf8'), /unrelated unsubmitted edit/);
+    assert.deepEqual(new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)!.skills.find(entry => entry.name === 'other'), baseBefore.skills.find(entry => entry.name === 'other'));
+    await fixture.activate();
+    assert.match(fs.readFileSync(path.join(fixture.skillsRoot, 'shared', 'SKILL.md'), 'utf8'), /new published content/);
+    assert.deepEqual(readBotSkillLocalMarker(path.join(fixture.skillsRoot, 'shared'))?.reference, reference);
+  });
+
+  test('conversation publication binds the current owner workspace but never installs an external package', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'old');
+    await fixture.sync();
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'new');
+    const target = scanLocalBotSkill(path.join(fixture.skillsRoot, 'shared'));
+    const reference = addPublicPackage(fixture, target);
+    new BotSkillWorkspaceService(fixture.runtimeRoot, fixture.skillsRoot).activate(fixture.botId);
+    createCatsCoLocalConfigService({ runtimeRoot: fixture.runtimeRoot, env: {} }).save({
+      version: 1, runtimeMode: 'local_bot', currentBot: { uid: fixture.botId, apiKey: 'test-key', boundByUserUid: 'owner' },
+      endpoints: { httpBaseUrl: 'https://cats.test', serverUrl: 'wss://cats.test' },
+    });
+    const keys = ['XIAOBA_USER_DATA_DIR', 'XIAOBA_SKILLS_DIR', 'CATSCO_SKILLHUB_BASE_URL'];
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const authEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(CATSCO_|CATSCOMPANY_)/.test(key)));
+    const originalFetch = global.fetch;
+    let optionsUsed: any;
+    const service = { shareLocalSkill: async (_input: any, options: any) => {
+      optionsUsed = options;
+      return { skill: { id: reference.skillId }, latestVersion: reference.version, contentHash: reference.contentHash };
+    } };
+    const context: any = { surface: 'catscompany', executionScope: { source: 'catscompany', isTrusted: true,
+      identityTrust: 'server_canonical', actorUserId: 'owner', agentId: fixture.botId } };
+    try {
+      // The reviewer/server may itself be a logged-in Bot. This fixture must
+      // resolve only the temporary account and endpoints written above.
+      for (const key of Object.keys(authEnvironment)) delete process.env[key];
+      process.env.XIAOBA_USER_DATA_DIR = fixture.runtimeRoot;
+      process.env.XIAOBA_SKILLS_DIR = fixture.skillsRoot;
+      process.env.CATSCO_SKILLHUB_BASE_URL = 'https://hub.test';
+      global.fetch = fixture.fetchImpl;
+      const result = await shareConversationSkill(service, { skillName: target.name }, {}, context);
+      assert.equal(result.botReferenceSync?.status, 'updated', JSON.stringify(result));
+      assert.equal(optionsUsed.writeLocalMetadata, false);
+      const patches = fixture.patches;
+      await shareConversationSkill(service, {}, { localSkillPath: fixture.runtimeRoot, writeLocalMetadata: false }, context);
+      assert.equal(fixture.patches, patches);
+      await shareConversationSkill(service, { skillName: target.name }, {}, {
+        ...context, executionScope: { ...context.executionScope, actorUserId: 'other-owner' },
+      });
+      assert.equal(fixture.patches, patches);
+    } finally {
+      global.fetch = originalFetch;
+      for (const key of Object.keys(process.env).filter(key => /^(CATSCO_|CATSCOMPANY_)/.test(key))) delete process.env[key];
+      Object.assign(process.env, authEnvironment);
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+      }
+    }
+  });
+
+  test('chat publication refuses changed source, removed cloud refs, and stale CAS without replacing other refs', async () => {
+    for (const scenario of ['source', 'cloud', 'cas']) {
+      const fixture = createFixture(roots);
+      writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+      await fixture.sync();
+      writeSkill(fixture.skillsRoot, 'shared', 'shared', 'edited');
+      const target = scanLocalBotSkill(path.join(fixture.skillsRoot, 'shared'));
+      const reference = addPublicPackage(fixture, target);
+      if (scenario === 'source') writeSkill(fixture.skillsRoot, 'shared', 'shared', 'concurrent edit');
+      if (scenario === 'cloud') fixture.cloud = { revision: fixture.cloud.revision + 1, skills: [] };
+      if (scenario === 'cas') fixture.conflictNextPatch = true;
+      const before = fs.readFileSync(path.join(target.path, 'SKILL.md'), 'utf8');
+      await assert.rejects(fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, {
+        bindSelectedReference: true, expectedLocalContentHash: target.contentHash,
+      }));
+      assert.equal(fs.readFileSync(path.join(target.path, 'SKILL.md'), 'utf8'), before);
+      assert.ok(!fixture.cloud.skills.some(item => item.skillId === reference.skillId));
+    }
+  });
+
+  test('repaired upload copies retain the public ref across sync and activation without rewriting local source', async () => {
+    for (const change of ['description', 'name']) {
+      const fixture = createFixture(roots);
+      writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+      await fixture.sync();
+      const file = path.join(fixture.skillsRoot, 'shared', 'SKILL.md');
+      const source = skillText(change === 'name' ? '" shared "' : 'shared', 'latest body').replace(
+        'description: test\n', change === 'description' ? '' : 'description: test\n');
+      fs.writeFileSync(file, source);
+      const target = scanLocalBotSkill(path.dirname(file));
+      const candidate = target.files.map(f => f.path === 'SKILL.md' ? { ...f, contentBase64: Buffer.from(change === 'description'
+        ? source.replace('---\n\nlatest', 'description: approved summary\n---\n\nlatest')
+        : source.replace('name: " shared "', 'name: shared')).toString('base64') } : f);
+      const reference = addPublicPackage(fixture, { ...target, files: candidate });
+      const uploads = fixture.uploads;
+      await fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, {
+        bindSelectedReference: true, expectedLocalContentHash: target.contentHash, publicationFiles: candidate,
+      });
+      assert.equal(fs.readFileSync(file, 'utf8'), source);
+      const base = new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)!;
+      assert.equal(base.skills[0].contentHash, target.contentHash);
+      assert.deepEqual(base.skills[0].reference, reference);
+      await fixture.sync();
+      await fixture.activate();
+      assert.equal(fixture.uploads, uploads);
+      assert.deepEqual(fixture.cloud.skills, [reference]);
+      assert.equal(fs.readFileSync(file, 'utf8'), source);
+      // A later canonical restore downloads the repaired public package, not
+      // an old private copy, and still preserves the latest body.
+      fs.rmSync(path.dirname(file), { recursive: true });
+      await fixture.activate();
+      assert.match(fs.readFileSync(file, 'utf8'), /latest body/);
+      assert.match(fs.readFileSync(file, 'utf8'), change === 'description' ? /description: approved summary/ : /name: shared/);
+      assert.deepEqual(fixture.cloud.skills, [reference]);
+    }
+  });
+
+  test('repaired candidate finalization recovers its source/public mapping after a lost cloud reply', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+    await fixture.sync();
+    const file = path.join(fixture.skillsRoot, 'shared', 'SKILL.md');
+    fs.writeFileSync(file, skillText('" shared "', 'edited body'));
+    const target = scanLocalBotSkill(path.dirname(file));
+    const candidate = target.files.map(f => ({ ...f, contentBase64: Buffer.from(fs.readFileSync(file, 'utf8').replace('name: " shared "', 'name: shared')).toString('base64') }));
+    const reference = addPublicPackage(fixture, { ...target, files: candidate });
+    const uploads = fixture.uploads, patches = fixture.patches;
+    fixture.onCloudRead = () => { if (fixture.patches > patches) { fixture.onCloudRead = undefined; throw new Error('lost reply'); } };
+    await assert.rejects(fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, {
+      bindSelectedReference: true, publicationFiles: candidate,
+    }), /lost reply/);
+    await fixture.sync();
+    assert.equal(fixture.uploads, uploads);
+    assert.deepEqual(fixture.cloud.skills, [reference]);
+    assert.match(fs.readFileSync(file, 'utf8'), /name: " shared "/);
+  });
+
+  test('candidate verification rejects a public package with changes beyond the captured upload', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+    await fixture.sync();
+    const file = path.join(fixture.skillsRoot, 'shared', 'SKILL.md');
+    fs.writeFileSync(file, skillText('" shared "', 'latest source'));
+    const target = scanLocalBotSkill(path.dirname(file));
+    const candidate = target.files.map(f => ({ ...f, contentBase64: Buffer.from(fs.readFileSync(file, 'utf8').replace('name: " shared "', 'name: shared')).toString('base64') }));
+    const badFiles = candidate.map(f => ({ ...f, contentBase64: Buffer.from(Buffer.from(f.contentBase64, 'base64').toString().replace('latest source', 'unexpected instructions')).toString('base64') }));
+    const reference = addPublicPackage(fixture, { ...target, files: badFiles });
+    const before = fs.readFileSync(file, 'utf8'), refs = [...fixture.cloud.skills];
+    await assert.rejects(fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, {
+      bindSelectedReference: true, publicationFiles: candidate,
+    }), /does not match the validated publication candidate/);
+    assert.equal(fs.readFileSync(file, 'utf8'), before);
+    assert.deepEqual(fixture.cloud.skills, refs);
+  });
+
+  test('chat publication recovers a remotely committed ref after its verification reply is lost', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+    await fixture.sync();
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'published after lost reply');
+    const target = scanLocalBotSkill(path.join(fixture.skillsRoot, 'shared'));
+    const reference = addPublicPackage(fixture, target);
+    const beforePatches = fixture.patches;
+    fixture.onCloudRead = () => {
+      if (fixture.patches > beforePatches) {
+        fixture.onCloudRead = undefined;
+        throw new Error('lost cloud verification reply');
+      }
+    };
+    await assert.rejects(fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, { bindSelectedReference: true }), /lost cloud verification reply/);
+    assert.ok(fixture.cloud.skills.some(item => item.skillId === reference.skillId));
+    const journalDirectory = path.join(fixture.runtimeRoot, 'data', 'bot-skills', 'finalize-journal', fixture.botId);
+    assert.equal(fs.readdirSync(journalDirectory).length, 1);
+    await fixture.activate();
+    assert.match(fs.readFileSync(path.join(fixture.skillsRoot, 'shared', 'SKILL.md'), 'utf8'), /published after lost reply/);
+    assert.deepEqual(readBotSkillLocalMarker(path.join(fixture.skillsRoot, 'shared'))?.reference, reference);
+    assert.equal(fixture.uploads, 1);
+    assert.equal(fs.existsSync(journalDirectory), false);
+  });
+
+  test('chat publication preserves unrelated cloud additions and the old Base revision', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+    await fixture.sync();
+    const baseBefore = new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)!;
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'edited');
+    const target = scanLocalBotSkill(path.join(fixture.skillsRoot, 'shared'));
+    const reference = addPublicPackage(fixture, target);
+    const extra = { source: 'skillhub' as const, skillId: 'alice/unrelated', version: '1.0.0', contentHash: 'a'.repeat(64) };
+    fixture.cloud = { revision: fixture.cloud.revision + 1, skills: [...fixture.cloud.skills, extra] };
+    await fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, { bindSelectedReference: true });
+    assert.ok(fixture.cloud.skills.some(item => item.skillId === extra.skillId));
+    const baseAfter = new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)!;
+    assert.equal(baseAfter.definitionRevision, baseBefore.definitionRevision);
+    assert.equal(baseAfter.skills.length, 1);
   });
 
   test('finalizes a public Skill while preserving an unrelated rejected managed Skill', async () => {
@@ -3166,6 +3380,9 @@ function createFixture(
       skillName: string;
       reference: BotSkillRef;
     }, options: {
+      bindSelectedReference?: boolean;
+      expectedLocalContentHash?: string;
+      publicationFiles?: Array<{ path: string; contentBase64: string }>;
       validateScope?: () => Promise<void> | void;
       publicationWaitMs?: number;
       pollDelayMs?: number;
@@ -3314,6 +3531,19 @@ function createFixture(
   }
 
   return fixture;
+}
+
+function addPublicPackage(fixture: ReturnType<typeof createFixture>, target: LocalBotSkillManifestEntry): BotSkillRef {
+  const markdown = applySkillHubLocalMetadata(Buffer.from(target.files.find(file => file.path === 'SKILL.md')!.contentBase64, 'base64').toString('utf8'), {
+    author: 'alice', version: '1.0.1', uploadedAt: '2026-11-09T00:00:00.000Z',
+  });
+  const bytes = Buffer.from(markdown.replace(/\r\n/g, '\n'));
+  const files = target.files.map(file => file.path === 'SKILL.md' ? { path: file.path, size: bytes.length,
+    sha256: crypto.createHash('sha256').update(bytes).digest('hex'), contentBase64: bytes.toString('base64') } : file);
+  const reference = { source: 'skillhub' as const, skillId: `alice/${target.name}`, version: '1.0.1', contentHash: computeBotSkillPackageHash(files) };
+  fixture.packages.set(refKey(reference), { source: 'public', reference, localSkillId: target.localSkillId,
+    name: target.name, contentHash: reference.contentHash, createdAt: '2026-11-09T00:00:00.000Z', files } as BotSkillPackage);
+  return reference;
 }
 
 function readPendingSnapshot(runtimeRoot: string, botId: string): {
