@@ -811,6 +811,7 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     });
     const keys = ['XIAOBA_USER_DATA_DIR', 'XIAOBA_SKILLS_DIR', 'CATSCO_SKILLHUB_BASE_URL'];
     const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const authEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(CATSCO_|CATSCOMPANY_)/.test(key)));
     const originalFetch = global.fetch;
     let optionsUsed: any;
     const service = { shareLocalSkill: async (_input: any, options: any) => {
@@ -820,6 +821,9 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     const context: any = { surface: 'catscompany', executionScope: { source: 'catscompany', isTrusted: true,
       identityTrust: 'server_canonical', actorUserId: 'owner', agentId: fixture.botId } };
     try {
+      // The reviewer/server may itself be a logged-in Bot. This fixture must
+      // resolve only the temporary account and endpoints written above.
+      for (const key of Object.keys(authEnvironment)) delete process.env[key];
       process.env.XIAOBA_USER_DATA_DIR = fixture.runtimeRoot;
       process.env.XIAOBA_SKILLS_DIR = fixture.skillsRoot;
       process.env.CATSCO_SKILLHUB_BASE_URL = 'https://hub.test';
@@ -836,6 +840,8 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
       assert.equal(fixture.patches, patches);
     } finally {
       global.fetch = originalFetch;
+      for (const key of Object.keys(process.env).filter(key => /^(CATSCO_|CATSCOMPANY_)/.test(key))) delete process.env[key];
+      Object.assign(process.env, authEnvironment);
       for (const key of keys) {
         if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
       }
