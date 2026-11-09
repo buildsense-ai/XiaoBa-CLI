@@ -868,6 +868,81 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     }
   });
 
+  test('repaired upload copies retain the public ref across sync and activation without rewriting local source', async () => {
+    for (const change of ['description', 'name']) {
+      const fixture = createFixture(roots);
+      writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+      await fixture.sync();
+      const file = path.join(fixture.skillsRoot, 'shared', 'SKILL.md');
+      const source = skillText(change === 'name' ? '" shared "' : 'shared', 'latest body').replace(
+        'description: test\n', change === 'description' ? '' : 'description: test\n');
+      fs.writeFileSync(file, source);
+      const target = scanLocalBotSkill(path.dirname(file));
+      const candidate = target.files.map(f => f.path === 'SKILL.md' ? { ...f, contentBase64: Buffer.from(change === 'description'
+        ? source.replace('---\n\nlatest', 'description: approved summary\n---\n\nlatest')
+        : source.replace('name: " shared "', 'name: shared')).toString('base64') } : f);
+      const reference = addPublicPackage(fixture, { ...target, files: candidate });
+      const uploads = fixture.uploads;
+      await fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, {
+        bindSelectedReference: true, expectedLocalContentHash: target.contentHash, publicationFiles: candidate,
+      });
+      assert.equal(fs.readFileSync(file, 'utf8'), source);
+      const base = new BotSkillBaseStore(fixture.runtimeRoot).read(fixture.botId)!;
+      assert.equal(base.skills[0].contentHash, target.contentHash);
+      assert.deepEqual(base.skills[0].reference, reference);
+      await fixture.sync();
+      await fixture.activate();
+      assert.equal(fixture.uploads, uploads);
+      assert.deepEqual(fixture.cloud.skills, [reference]);
+      assert.equal(fs.readFileSync(file, 'utf8'), source);
+      // A later canonical restore downloads the repaired public package, not
+      // an old private copy, and still preserves the latest body.
+      fs.rmSync(path.dirname(file), { recursive: true });
+      await fixture.activate();
+      assert.match(fs.readFileSync(file, 'utf8'), /latest body/);
+      assert.match(fs.readFileSync(file, 'utf8'), change === 'description' ? /description: approved summary/ : /name: shared/);
+      assert.deepEqual(fixture.cloud.skills, [reference]);
+    }
+  });
+
+  test('repaired candidate finalization recovers its source/public mapping after a lost cloud reply', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+    await fixture.sync();
+    const file = path.join(fixture.skillsRoot, 'shared', 'SKILL.md');
+    fs.writeFileSync(file, skillText('" shared "', 'edited body'));
+    const target = scanLocalBotSkill(path.dirname(file));
+    const candidate = target.files.map(f => ({ ...f, contentBase64: Buffer.from(fs.readFileSync(file, 'utf8').replace('name: " shared "', 'name: shared')).toString('base64') }));
+    const reference = addPublicPackage(fixture, { ...target, files: candidate });
+    const uploads = fixture.uploads, patches = fixture.patches;
+    fixture.onCloudRead = () => { if (fixture.patches > patches) { fixture.onCloudRead = undefined; throw new Error('lost reply'); } };
+    await assert.rejects(fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, {
+      bindSelectedReference: true, publicationFiles: candidate,
+    }), /lost reply/);
+    await fixture.sync();
+    assert.equal(fixture.uploads, uploads);
+    assert.deepEqual(fixture.cloud.skills, [reference]);
+    assert.match(fs.readFileSync(file, 'utf8'), /name: " shared "/);
+  });
+
+  test('candidate verification rejects a public package with changes beyond the captured upload', async () => {
+    const fixture = createFixture(roots);
+    writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
+    await fixture.sync();
+    const file = path.join(fixture.skillsRoot, 'shared', 'SKILL.md');
+    fs.writeFileSync(file, skillText('" shared "', 'latest source'));
+    const target = scanLocalBotSkill(path.dirname(file));
+    const candidate = target.files.map(f => ({ ...f, contentBase64: Buffer.from(fs.readFileSync(file, 'utf8').replace('name: " shared "', 'name: shared')).toString('base64') }));
+    const badFiles = candidate.map(f => ({ ...f, contentBase64: Buffer.from(Buffer.from(f.contentBase64, 'base64').toString().replace('latest source', 'unexpected instructions')).toString('base64') }));
+    const reference = addPublicPackage(fixture, { ...target, files: badFiles });
+    const before = fs.readFileSync(file, 'utf8'), refs = [...fixture.cloud.skills];
+    await assert.rejects(fixture.finalize({ localSkillId: target.localSkillId, skillName: target.name, reference }, {
+      bindSelectedReference: true, publicationFiles: candidate,
+    }), /does not match the validated publication candidate/);
+    assert.equal(fs.readFileSync(file, 'utf8'), before);
+    assert.deepEqual(fixture.cloud.skills, refs);
+  });
+
   test('chat publication recovers a remotely committed ref after its verification reply is lost', async () => {
     const fixture = createFixture(roots);
     writeSkill(fixture.skillsRoot, 'shared', 'shared', 'initial');
@@ -3307,6 +3382,7 @@ function createFixture(
     }, options: {
       bindSelectedReference?: boolean;
       expectedLocalContentHash?: string;
+      publicationFiles?: Array<{ path: string; contentBase64: string }>;
       validateScope?: () => Promise<void> | void;
       publicationWaitMs?: number;
       pollDelayMs?: number;
@@ -3458,7 +3534,7 @@ function createFixture(
 }
 
 function addPublicPackage(fixture: ReturnType<typeof createFixture>, target: LocalBotSkillManifestEntry): BotSkillRef {
-  const markdown = applySkillHubLocalMetadata(fs.readFileSync(path.join(target.path, 'SKILL.md'), 'utf8'), {
+  const markdown = applySkillHubLocalMetadata(Buffer.from(target.files.find(file => file.path === 'SKILL.md')!.contentBase64, 'base64').toString('utf8'), {
     author: 'alice', version: '1.0.1', uploadedAt: '2026-11-09T00:00:00.000Z',
   });
   const bytes = Buffer.from(markdown.replace(/\r\n/g, '\n'));

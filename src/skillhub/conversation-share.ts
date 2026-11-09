@@ -54,7 +54,13 @@ export async function shareConversationSkill(
     const base = new BotSkillBaseStore(workspace.runtimeRoot).read(workspace.botId);
     if (!selected || !base?.skills.some(entry => entry.localSkillId === selected.localSkillId)) return service.shareLocalSkill(input, options);
     validateScope();
-    const result = await service.shareLocalSkill(input, { ...options, writeLocalMetadata: false });
+    let publicationFiles: Array<{ path: string; contentBase64: string }> | undefined;
+    const result = await service.shareLocalSkill(input, { ...options, writeLocalMetadata: false,
+      onPackageCaptured: (files, directoryName) => {
+        publicationFiles = files.map(file => ({ ...file }));
+        options.onPackageCaptured?.(files, directoryName);
+      },
+    });
     if (result.requiresConfirmation) return result;
     acceptedResult = result;
     // Publication has already been accepted. A linkage failure must never be
@@ -66,7 +72,7 @@ export async function shareConversationSkill(
       await new BotSkillSyncService({ runtimeRoot: workspace.runtimeRoot, botId: workspace.botId,
         auth, skillsRoot: workspace.skillsRoot, workspaceExisted: true,
       }).finalizePublicSkill({ localSkillId: selected.localSkillId, skillName: selected.name, reference }, {
-        bindSelectedReference: true, expectedLocalContentHash: selected.contentHash, validateScope,
+        bindSelectedReference: true, expectedLocalContentHash: selected.contentHash, publicationFiles, validateScope,
       });
       return { ...result, publicationStatus: 'published', botReferenceSync: { status: 'updated', botId: workspace.botId } };
     } catch (error: any) {
