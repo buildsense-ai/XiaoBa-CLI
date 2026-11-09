@@ -382,12 +382,14 @@ export class SkillHubService {
         path: localPath,
       },
       submission: submission?.submission || submission,
+      uploadId: submission?.upload?.id || submission?.submission?.id || submission?.submissionId,
+      publicationStatus: submission?.existing ? 'published' : 'submitted',
       existing: submission?.existing,
       requiresConfirmation: submission?.requiresConfirmation,
-      latestVersion: submission?.latestVersion
+      latestVersion: submission?.upload?.version
+        || submission?.latestVersion
         || submission?.skill?.latestVersion
         || submission?.skill?.version
-        || submission?.upload?.version
         || submission?.packageVersion?.latestVersion
         || submission?.packageVersion?.version
         || skillHubMetadata?.version,

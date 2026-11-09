@@ -94,6 +94,42 @@ function entry(name: string, content = Buffer.from('---\nname: sample\n---\n')):
   return { name, content };
 }
 
+test('accepts ZIP-format .skill files and a single wrapped .skill with shared budgets', async () => {
+  const inner = makeZip([entry('caveman/SKILL.md'), entry('caveman/README.md', Buffer.from('readme'))]);
+  for (const wrapped of [false, true]) {
+    const fixture = await createFixture(wrapped ? [entry('caveman.skill', inner)] : [entry('caveman/SKILL.md')], wrapped ? 'caveman.zip' : 'caveman.skill');
+    let result: Awaited<ReturnType<typeof extractAuthorizedSkillZip>> | undefined;
+    try {
+      result = await extractAuthorizedSkillZip(fixture.zipPath, path.basename(fixture.zipPath));
+      assert.equal(path.basename(result.directory), 'caveman');
+      assert.match(fs.readFileSync(path.join(result.directory, 'SKILL.md'), 'utf8'), /name: sample/);
+      if (wrapped) assert.ok(result.uncompressedBytes > inner.length);
+    } finally {
+      if (result) await fs.promises.rm(result.cleanupDirectory, { recursive: true, force: true });
+      await fs.promises.rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('rejects ambiguous wrappers, unsafe inner paths, deeper wrappers, and aggregate entry overflow', async () => {
+  const good = makeZip([entry('SKILL.md')]);
+  const cases = [
+    [entry('a.skill', good), entry('b.skill', good)],
+    [entry('a.skill', good), entry('README.md')],
+    [entry('a.skill', makeZip([entry('../SKILL.md')]))],
+    [entry('a.skill', makeZip([entry('b.zip', good)]))],
+    [entry('a.skill', makeZip([entry('SKILL.md'), ...Array.from({ length: 99 }, (_, i) => entry(`file${i}`))]))],
+    [entry('a.skill', Buffer.from('not a zip'))],
+    [entry('a.skill', makeZip([entry('SKILL.md'), { name: 'link', content: Buffer.from('target'), mode: 0o120777 }]))],
+    [entry('a.skill', makeZip([entry('SKILL.md'), ...Array.from({ length: 5 }, (_, i) => entry(`large${i}`, Buffer.alloc(5 * 1024 * 1024)))]))],
+  ];
+  for (const entries of cases) {
+    const fixture = await createFixture(entries);
+    try { await assert.rejects(extractAuthorizedSkillZip(fixture.zipPath, 'fixture.zip')); }
+    finally { await fs.promises.rm(fixture.root, { recursive: true, force: true }); }
+  }
+});
+
 async function createFixture(entries: ZipFixtureEntry[], fileName = 'fixture.zip'): Promise<{ root: string; zipPath: string }> {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-test-'));
   const zipPath = path.join(root, fileName);
