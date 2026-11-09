@@ -58,6 +58,8 @@ test('publication content comparison permits tracking metadata, rejects changed 
   const text = applySkillHubLocalMetadata(raw, { author: 'alice', version: '1.0.2', uploadedAt: '2026-11-09T00:00:00.000Z' });
   const file = (value: string) => ({ path: 'SKILL.md', contentBase64: Buffer.from(value).toString('base64'), size: Buffer.byteLength(value), sha256: '' });
   assert.equal(publicationFilesMatch(source, [file(text)], '1.0.2'), true);
+  const withoutSeparator = [{ ...source[0], contentBase64: Buffer.from(raw.replace('---\n\nBody', '---\nBody')).toString('base64') }];
+  assert.equal(publicationFilesMatch(withoutSeparator, [file(text)], '1.0.2'), true);
   assert.equal(publicationFilesMatch(source, [file(text.replace('Body', 'Changed'))], '1.0.2'), false);
   assert.equal(publicationFilesMatch(source, [file(text)], '1.0.3'), false);
   assert.equal(publicationFilesMatch(source, [file(text), { ...file('extra'), path: 'extra.txt' }], '1.0.2'), false);

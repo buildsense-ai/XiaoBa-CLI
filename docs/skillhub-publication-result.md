@@ -1,6 +1,6 @@
 # Conversation publication results
 
-After an accepted share, `share_skillhub_skill` reads the exact assigned public version, downloads its package, verifies its certificate/signature/checksum, and compares every file with the validated upload copy. Only Hub tracking metadata may differ in SKILL.md. No package is installed by this check. Ordinary, automatic-repair, and confirmed-description shares use the same wrapper; already verified Bot-reference finalization retains its published result.
+After an accepted share, `share_skillhub_skill` reads the exact assigned public version, downloads its package, verifies its certificate/signature/checksum, and compares every file with the validated upload copy. SKILL.md comparison mirrors quick-share's tracking-metadata injection and its fixed frontmatter/body separator; it does not trim or rewrite arbitrary body text. No package is installed by this check. Ordinary, automatic-repair, and confirmed-description shares use the same wrapper; already verified Bot-reference finalization retains its published result.
 
 The tool waits up to 60 seconds for public verification. A verified package returns `published`; signature, identity, or content mismatch returns `verification_failed`. Missing/not-ready versions and network errors remain uncertain (`submitted`); none of these read outcomes retries the upload. Chinese guide generation remains separate.
 

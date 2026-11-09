@@ -1,5 +1,4 @@
 import matter from 'gray-matter';
-import { applySkillHubLocalMetadata } from './local-skill-metadata';
 import type { SkillHubPackageFile } from './package-verifier';
 import { Logger } from '../utils/logger';
 
@@ -20,12 +19,24 @@ export function publicationFilesMatch(expected: PublicationFile[], actual: Skill
     if (file.path === 'SKILL.md') {
       const metadata = matter(publishedBytes.toString('utf8')).data;
       if (!metadata.skillhub_author || metadata.skillhub_version !== version || !metadata.skillhub_uploaded_at) return false;
-      bytes = Buffer.from(applySkillHubLocalMetadata(bytes.toString('utf8'), {
-        author: String(metadata.skillhub_author), version, uploadedAt: String(metadata.skillhub_uploaded_at),
-      }).replace(/\r\n/g, '\n'));
+      bytes = Buffer.from(publishedMarkdown(bytes.toString('utf8'), {
+        skillhub_author: String(metadata.skillhub_author), skillhub_version: version,
+        skillhub_uploaded_at: String(metadata.skillhub_uploaded_at),
+      }));
     }
     return bytes.equals(publishedBytes);
   });
+}
+
+/** Mirrors quick-share's applySkillHubFrontmatter, including its one separator line. */
+function publishedMarkdown(markdown: string, fields: Record<string, string>): string {
+  const text = markdown.replace(/\r\n/g, '\n');
+  const metadata = Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}\n`).join('');
+  const match = text.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (!match) return `---\n${metadata}---\n\n${text}`;
+  const head = match[1].split('\n').filter(line => !/^skillhub_(author|version|uploaded_at)\s*:/.test(line));
+  const body = text.slice(match[0].length).replace(/^\n/, '');
+  return `---\n${[...head, ...metadata.trimEnd().split('\n')].filter(Boolean).join('\n')}\n---\n\n${body}`;
 }
 
 export interface PublicationResultOptions {
