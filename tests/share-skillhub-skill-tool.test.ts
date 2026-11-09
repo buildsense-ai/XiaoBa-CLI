@@ -1157,10 +1157,177 @@ test('description confirmation cannot be replayed or used from another session',
   const result = await tool.execute({ confirmDescription: true, descriptionReportId: 'unknown-report',
     confirmedDescription: 'A description.' }, { sessionId: 'other-session' } as any);
   assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'DESCRIPTION_CONFIRMATION_EXPIRED');
-  assert.match(String(result.message), /有效期为 15 分钟/);
-  assert.match(String(result.message), /不要重试旧报告/);
-  assert.match(String(result.message), /重新发起一次预检/);
+  assert.equal(result.errorCode, 'DESCRIPTION_DRAFT_NOT_FOUND');
+  assert.match(String(result.message), /校验报告不等于待确认草稿/);
+  assert.doesNotMatch(String(result.message), /草稿已过期/);
+});
+
+test('ZIP publication survives later turns, redrafts after expiry, and preserves user and source boundaries', async (t) => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-zip-later-turn-'));
+  const zipPath = path.join(root, 'fixture.zip');
+  const source = '---\nname: zip-later-turn\ndescription:\n---\n# Inert fixture\n';
+  const zip = makeZip([{ name: 'zip-later-turn/SKILL.md', content: Buffer.from(source) }]);
+  await fs.promises.writeFile(zipPath, zip);
+  let calls = 0;
+  let extracted = '';
+  let modelFails = true;
+  const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async (_input, options) => {
+    calls++;
+    extracted = String(options?.localSkillPath || '');
+    const files = (options as any)?.packageFiles || [{ path: 'SKILL.md', contentBase64: fs.readFileSync(path.join(extracted, 'SKILL.md')).toString('base64') }];
+    options?.onPackageCaptured?.(files, 'zip-later-turn');
+    if (!(options as any)?.confirmedDescription) throw validationError(`later-turn-${calls}`, {
+      code: 'metadata.description_missing', repairPolicy: 'confirmation_required',
+      location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' },
+    });
+    assert.match(Buffer.from(files[0].contentBase64, 'base64').toString(), /description: "惰性 ZIP 测试夹具。"/);
+    return { submission: { id: 'published-later-turn' }, skill: { name: 'zip-later-turn' } };
+  } }));
+  const context = catscoZipContext([catscoZipGrant(zipPath, 'fixture.zip', 'catsco_attachment:later-turn')], 'later-turn');
+  context.runtimeServices = { aiService: { chat: async () => {
+    if (modelFails) throw new Error('model temporarily unavailable');
+    return { content: '{"description":"惰性 ZIP 测试夹具。"}' };
+  } } };
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  try {
+    const first = await tool.execute({}, context);
+    assert.equal(first.ok, false);
+    const id = String(first.message).match(/publicationTaskId: ([a-f0-9-]+)/)?.[1];
+    assert.ok(id);
+    const imaginary = await tool.execute({ confirmDescription: true, descriptionReportId: 'later-turn-1', confirmedDescription: 'Invented description' }, context);
+    assert.equal(imaginary.errorCode, 'DESCRIPTION_DRAFT_NOT_FOUND');
+    context.localFileGrants = [];
+    context.currentUserInput = '请重新预检刚才的 ZIP';
+    modelFails = false;
+    const second = await tool.execute({ zipAttachmentName: 'fixture.zip' }, context);
+    assert.equal(second.ok, true);
+    assert.match(String(second.content), /later-turn-2/);
+    assert.equal(fs.readFileSync(path.join(extracted, 'SKILL.md'), 'utf8'), source);
+
+    for (const changed of [
+      { ...context, sessionId: 'another-session' },
+      { ...context, executionScope: { ...context.executionScope, actorUserId: 'another-user' } },
+      { ...context, executionScope: { ...context.executionScope, agentBodyId: 'another-body' } },
+      { ...context, executionScope: { ...context.executionScope, isTrusted: false } },
+    ]) {
+      const denied = await tool.execute({ publicationTaskId: id }, changed);
+      assert.equal(denied.errorCode, 'SKILLHUB_ZIP_TASK_UNAVAILABLE');
+    }
+    assert.equal(calls, 2);
+    t.mock.timers.tick(15 * 60_000 + 1);
+    context.currentUserInput = '确认使用这条简介并发布';
+    const expired = await tool.execute({ confirmDescription: true, descriptionReportId: 'later-turn-2', confirmedDescription: '惰性 ZIP 测试夹具。' }, context);
+    assert.equal(expired.errorCode, 'DESCRIPTION_CONFIRMATION_EXPIRED');
+    assert.equal(fs.existsSync(path.join(extracted, 'SKILL.md')), true);
+    context.currentUserInput = '重新预检';
+    const third = await tool.execute({ publicationTaskId: id }, context);
+    assert.equal(third.ok, true);
+    assert.match(String(third.content), /later-turn-3/);
+    const fourth = await tool.execute({ publicationTaskId: id }, context);
+    assert.equal(fourth.ok, true);
+    const replaced = await tool.execute({ confirmDescription: true, descriptionReportId: 'later-turn-3', confirmedDescription: '惰性 ZIP 测试夹具。' }, context);
+    assert.equal(replaced.errorCode, 'DESCRIPTION_DRAFT_REPLACED');
+    context.currentUserInput = '确认使用这条简介并发布';
+    const confirmed = await tool.execute({ confirmDescription: true, descriptionReportId: 'later-turn-4', confirmedDescription: '惰性 ZIP 测试夹具。' }, context);
+    assert.equal(confirmed.ok, true);
+    assert.match(String(confirmed.content), /published-later-turn/);
+    const replay = await tool.execute({ confirmDescription: true, descriptionReportId: 'later-turn-4', confirmedDescription: '惰性 ZIP 测试夹具。' }, context);
+    assert.equal(replay.errorCode, 'DESCRIPTION_CONFIRMATION_ALREADY_USED');
+    assert.equal(calls, 5);
+    assert.deepEqual(fs.readFileSync(zipPath), zip);
+    assert.equal(fs.readFileSync(path.join(extracted, 'SKILL.md'), 'utf8'), source);
+    fs.writeFileSync(path.join(extracted, 'extra.txt'), 'unexpected backup');
+    const tampered = await tool.execute({ publicationTaskId: id }, context);
+    assert.equal(tampered.errorCode, 'SKILLHUB_ZIP_TASK_INVALID');
+    assert.equal(calls, 5);
+    t.mock.timers.tick(45 * 60_000);
+    const gone = await tool.execute({ publicationTaskId: id }, context);
+    assert.equal(gone.errorCode, 'SKILLHUB_ZIP_TASK_UNAVAILABLE');
+  } finally {
+    t.mock.timers.reset();
+    if (extracted) await fs.promises.rm(path.dirname(path.dirname(extracted)), { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a late ZIP redraft expires with its source and cleaned sources fail before consuming approval', async (t) => {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'skillhub-late-redraft-'));
+  const zipPath = path.join(root, 'fixture.zip');
+  const text = '---\nname: fixture\ndescription:\n---\n# Inert fixture\n';
+  fs.writeFileSync(zipPath, makeZip([{ name: 'SKILL.md', content: Buffer.from(text) }]));
+  let calls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async (_input, options) => {
+    calls++;
+    options?.onPackageCaptured?.([{ path: 'SKILL.md', contentBase64: Buffer.from(text).toString('base64') }], 'fixture');
+    throw validationError(`late-${calls}`, { code: 'metadata.description_missing', repairPolicy: 'confirmation_required',
+      location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' } });
+  } }));
+  const context = catscoZipContext([catscoZipGrant(zipPath, 'fixture.zip', 'catsco_attachment:late')], 'late-redraft');
+  const messages: string[] = [];
+  context.channel = { chatId: 'p2p_1_2', reply: async (_id: string, message: string) => { messages.push(message); } };
+  context.runtimeServices = { aiService: { chat: async () => ({ content: '{"description":"惰性测试夹具。"}' }) } };
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now });
+  try {
+    const first = await tool.execute({}, context);
+    const taskId = String(first.content).match(/publicationTaskId: ([a-f0-9-]+)/)![1];
+    t.mock.timers.tick(59 * 60_000);
+    context.localFileGrants = [];
+    context.currentUserInput = '重新预检';
+    const late = await tool.execute({ publicationTaskId: taskId }, context);
+    assert.equal(late.ok, true);
+    const prompt = messages.at(-1) || String(late.content);
+    assert.match(prompt, /剩余不足 15 分钟/);
+    assert.match(prompt, new RegExp(new Date(now + 60 * 60_000).toISOString().replace(/[.]/g, '\\.')));
+    t.mock.timers.tick(2 * 60_000);
+    context.currentUserInput = '确认使用这条简介并发布';
+    const expired = await tool.execute({ confirmDescription: true, descriptionReportId: 'late-2', confirmedDescription: '惰性测试夹具。' }, context);
+    assert.equal(expired.errorCode, 'DESCRIPTION_CONFIRMATION_EXPIRED');
+    assert.equal(calls, 2);
+    assert.match(String(expired.message), /本次没有发布/);
+
+    // Capacity eviction can happen before the nominal TTL. Never consume a
+    // valid-looking draft and let the service produce a misleading not-found.
+    context.localFileGrants = [catscoZipGrant(zipPath, 'fixture.zip', 'catsco_attachment:late-new')];
+    context.currentUserInput = '发布新任务';
+    await tool.execute({}, context);
+    for (let i = 0; i < 8; i++) {
+      await tool.execute({}, { ...context, sessionId: `other-task-${i}` });
+    }
+    context.currentUserInput = '确认使用这条简介并发布';
+    const evicted = await tool.execute({ confirmDescription: true, descriptionReportId: 'late-3', confirmedDescription: '惰性测试夹具。' }, context);
+    assert.equal(evicted.errorCode, 'DESCRIPTION_SOURCE_UNAVAILABLE');
+    assert.match(String(evicted.message), /本次没有发布/);
+    const retry = await tool.execute({ confirmDescription: true, descriptionReportId: 'late-3', confirmedDescription: '惰性测试夹具。' }, context);
+    assert.equal(retry.errorCode, 'DESCRIPTION_DRAFT_UNAVAILABLE');
+    assert.equal(calls, 11);
+    t.mock.timers.tick(60 * 60_000);
+  } finally {
+    t.mock.timers.reset();
+    await fs.promises.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('an oversized draft does not replace an existing confirmable draft', async () => {
+  const files = [{ path: 'SKILL.md', contentBase64: Buffer.from('---\nname: fixture\n---\n# Inert fixture\n').toString('base64') }];
+  let calls = 0;
+  let sourceFiles = files;
+  const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async (_input, options) => {
+    calls++;
+    if ((options as any)?.confirmedDescription) return { submission: { id: 'original-draft-published' } };
+    options?.onPackageCaptured?.(sourceFiles, 'fixture');
+    throw validationError(`capacity-${calls}`, { code: 'metadata.description_missing', repairPolicy: 'confirmation_required',
+      location: { entryIndex: 0, relativePath: 'SKILL.md', field: 'description' } });
+  } }));
+  const context: any = { sessionId: 'capacity-draft', currentUserInput: '发布',
+    runtimeServices: { aiService: { chat: async () => ({ content: '{"description":"惰性夹具。"}' }) } } };
+  assert.equal((await tool.execute({ skillName: 'fixture' }, context)).ok, true);
+  sourceFiles = [...files, { path: 'large.bin', contentBase64: 'AAAA'.repeat(Math.ceil(64 * 1024 * 1024 / 3)) }];
+  assert.equal((await tool.execute({ skillName: 'fixture' }, context)).ok, false);
+  context.currentUserInput = '确认使用这条简介并发布';
+  const result = await tool.execute({ confirmDescription: true, descriptionReportId: 'capacity-1', confirmedDescription: '惰性夹具。' }, context);
+  assert.equal(result.ok, true);
+  assert.match(String(result.content), /original-draft-published/);
 });
 
 test('an imprecise automatic issue location does not create a candidate', async () => {

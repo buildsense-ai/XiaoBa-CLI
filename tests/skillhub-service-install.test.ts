@@ -287,7 +287,8 @@ describe('SkillHub connected install service', () => {
     assert.throws(() => SkillParser.parse(skillFile, { allowMissingName: true }), /Missing required fields/);
   });
 
-  test('publishes a name-normalized candidate after the user confirms its missing-description draft', async () => {
+  for (const emptyDescription of ['', 'description:\n', 'description: "" # keep empty comment\n']) {
+  test(`publishes a name-normalized candidate after confirming missing/empty description ${JSON.stringify(emptyDescription)}`, async () => {
     const uploaded: any[] = [];
     const app = express();
     app.use(express.json());
@@ -318,7 +319,7 @@ describe('SkillHub connected install service', () => {
     const skillRoot = path.join(testRoot, 'skills', 'format-and-description');
     fs.mkdirSync(skillRoot, { recursive: true });
     const skillPath = path.join(skillRoot, 'SKILL.md');
-    const originalText = '---\nname: " demo " # keep\n---\n# Original instructions\n';
+    const originalText = `---\nname: " demo " # keep\n${emptyDescription}---\n# Original instructions\n`;
     fs.writeFileSync(skillPath, originalText);
     const realService = new SkillHubService();
     const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: realService.shareLocalSkill.bind(realService) }));
@@ -354,6 +355,7 @@ describe('SkillHub connected install service', () => {
     assert.match(submittedText, /# Original instructions/);
     assert.equal(fs.readFileSync(skillPath, 'utf8'), originalText);
   });
+  }
 
   test('publishes an explicitly supplied Skill path outside the configured workspace without changing the source', async () => {
     let uploaded: any;
