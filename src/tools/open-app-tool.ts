@@ -60,7 +60,16 @@ export class OpenAppTool implements Tool {
     if (action !== undefined && action !== 'list' && action !== 'initialize' && action !== 'run') throw new Error('不支持的 action');
     const allowed = action === 'list' ? ['action'] : action === undefined ? ['app_id', 'note'] : ['action', 'app_id', 'note', 'request_id', 'parameters', 'user_requested_run'];
     if (Object.keys(args).some(k => !allowed.includes(k))) throw new Error('不允许的 open_app 字段');
-    if (action === 'list') return {ok: true, content: JSON.stringify(await channel.listApps())};
+    const assertLiveContext = (): void => {
+      const liveTarget = resolveOutboundTarget(context, {operation: 'send_text', missingChannelMessage: '缺少通道'});
+      if (context.abortSignal?.aborted || context.executionScope?.identityTrust === 'untrusted'
+        || !liveTarget.ok || liveTarget.chatId !== target.chatId) throw new Error('执行上下文已陈旧，停止发送或返回目录');
+    };
+    if (action === 'list') {
+      const apps = await channel.listApps();
+      assertLiveContext();
+      return {ok: true, content: JSON.stringify(apps)};
+    }
     if (!channel.replyWithMetadata) return {ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: '当前通道不支持 metadata，未发送打开请求'};
     const appId = typeof args.app_id === 'string' ? args.app_id.trim() : '';
     if (!appId || Array.from(appId).length > 128) throw new Error('app_id 无效');
@@ -88,9 +97,8 @@ export class OpenAppTool implements Tool {
     let attemptedSend = false;
     const emit = async (): Promise<ToolExecutionResult> => {
       const apps = await channel.listApps!();
+      assertLiveContext();
       if (!apps.some(app => app.id === appId)) throw new Error('app_id 不在当前 Agent 可信目录中');
-      const liveTarget = resolveOutboundTarget(context, {operation:'send_text', missingChannelMessage:'缺少通道'});
-      if (context.abortSignal?.aborted || !liveTarget.ok || liveTarget.chatId !== target.chatId) throw new Error('执行上下文已陈旧，停止发送');
       if (record(appOpen.handoff)) appOpen.handoff.expires_at = Date.now() + 60_000;
       attemptedSend = true;
       await channel.replyWithMetadata!(target.chatId, note, {app_open: appOpen});
