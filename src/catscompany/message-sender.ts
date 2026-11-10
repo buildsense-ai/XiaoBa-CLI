@@ -1,10 +1,15 @@
 import { CatsClient, CatsSendError } from './client';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { Logger } from '../utils/logger';
 import { RuntimePlanSnapshot } from '../core/plan-runtime';
 
 const MAX_MSG_LENGTH = 4000;
+const MAX_ATTACHMENT_DOWNLOAD_BYTES = 300 * 1024 * 1024;
+const ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 120_000;
 
 /**
  * A topic that rejects sends this many times in a row (without any successful
@@ -475,7 +480,7 @@ export class MessageSender {
       Logger.info(`开始上传文件: ${fileName} (${fileSize} bytes, type: ${uploadType})`);
 
       const uploadResult = await this.bot.uploadFile(filePath, uploadType);
-      Logger.info(`文件上传成功: ${uploadResult.url}`);
+      Logger.info('文件上传成功');
 
       await this.send(topic, uploadType, {
         type: uploadType,
@@ -494,7 +499,7 @@ export class MessageSender {
     }
   }
 
-  async downloadFile(url: string, fileName: string, options: { targetPath?: string } = {}): Promise<string | null> {
+  async downloadFile(url: string, fileName: string, options: { targetPath?: string; messageId?: number } = {}): Promise<string | null> {
     let partPath: string | undefined;
     try {
 
@@ -503,18 +508,38 @@ export class MessageSender {
         ? path.resolve(options.targetPath)
         : path.join(process.cwd(), 'tmp', 'downloads', `${Date.now()}_${path.basename(fileName)}`);
       fs.mkdirSync(path.dirname(localPath), { recursive: true });
-      partPath = `${localPath}.part-${process.pid}-${Date.now()}`;
-      const res = await fetch(fullUrl);
+      partPath = `${localPath}.part-${randomUUID()}`;
+      const signal = AbortSignal.timeout(ATTACHMENT_DOWNLOAD_TIMEOUT_MS);
+      const res = await this.bot.fetchAttachment(fullUrl, signal, options.messageId);
       if (!res.ok) {
-        Logger.error(`文件下载失败: HTTP ${res.status} - ${url}`);
+        await res.body?.cancel();
+        Logger.error(`文件下载失败: HTTP ${res.status}`);
         return null;
       }
-
-      const buffer = Buffer.from(await res.arrayBuffer());
-      fs.writeFileSync(partPath, buffer);
+      const declaredSize = Number(res.headers.get('content-length'));
+      if (declaredSize > MAX_ATTACHMENT_DOWNLOAD_BYTES) {
+        await res.body?.cancel();
+        throw new Error('Attachment exceeds 300 MiB download limit');
+      }
+      if (!res.body) throw new Error('Attachment response has no body');
+      let bytes = 0;
+      const limiter = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          bytes += chunk.length;
+          callback(bytes > MAX_ATTACHMENT_DOWNLOAD_BYTES
+            ? new Error('Attachment exceeds 300 MiB download limit')
+            : null, chunk);
+        },
+      });
+      await pipeline(
+        Readable.fromWeb(res.body),
+        limiter,
+        fs.createWriteStream(partPath, { flags: 'wx', mode: 0o600 }),
+        { signal },
+      );
       fs.renameSync(partPath, localPath);
       partPath = undefined;
-      Logger.info(`文件已下载: ${fileName} -> ${localPath} (${buffer.length} bytes)`);
+      Logger.info(`文件已下载: ${fileName} -> ${localPath} (${bytes} bytes)`);
       return localPath;
     } catch (err: any) {
       if (partPath) {
@@ -524,7 +549,8 @@ export class MessageSender {
           // ignore partial cleanup failure
         }
       }
-      Logger.error(`文件下载失败: ${err.message}`);
+      // Fetch and filesystem errors can embed signed URLs; log only the error kind.
+      Logger.error(`文件下载失败: ${err?.name || 'Error'}`);
       return null;
     }
   }
