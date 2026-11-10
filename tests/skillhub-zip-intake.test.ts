@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { test } from 'node:test';
+import { PassThrough } from 'node:stream';
+import * as yauzl from 'yauzl';
 import { extractAuthorizedSkillZip } from '../src/skillhub/zip-intake';
 import { makeZip, type ZipFixtureEntry } from './helpers/zip-fixture';
 
@@ -88,6 +90,60 @@ test('rejects a non-canonical SKILL.md case before the SkillHub service can miss
   } finally {
     await fs.promises.rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test('rejects incorrect decompressed byte counts promptly and removes partial extraction', { timeout: 3000 }, async t => {
+  const content = Buffer.from('---\nname: sample\n---\n# 中文夹具\n');
+  const fixture = await createFixture([{ name: 'sample/SKILL.md', content, declaredSize: content.toString().length }]);
+  const extracted = path.join(fixture.root, 'extraction');
+  t.mock.method(fs.promises, 'mkdtemp', async () => { await fs.promises.mkdir(extracted); return extracted; });
+  try {
+    await assert.rejects(extractAuthorizedSkillZip(fixture.zipPath, 'fixture.zip'), /declared or allowed size|directory record/);
+    assert.equal(fs.existsSync(extracted), false);
+  } finally { await fs.promises.rm(fixture.root, { recursive: true, force: true }); }
+});
+
+test('rejects wrong CRC even when the archive sizes are correct', async t => {
+  const fixture = await createFixture([entry('SKILL.md')]);
+  const zip = await fs.promises.readFile(fixture.zipPath);
+  const centralOffset = zip.readUInt32LE(zip.length - 6);
+  zip.writeUInt32LE(0, 14);
+  zip.writeUInt32LE(0, centralOffset + 16);
+  await fs.promises.writeFile(fixture.zipPath, zip);
+  const extracted = path.join(fixture.root, 'extraction');
+  t.mock.method(fs.promises, 'mkdtemp', async () => { await fs.promises.mkdir(extracted); return extracted; });
+  try {
+    await assert.rejects(extractAuthorizedSkillZip(fixture.zipPath, 'fixture.zip'), /checksum.*damaged/);
+    assert.equal(fs.existsSync(extracted), false);
+  } finally { await fs.promises.rm(fixture.root, { recursive: true, force: true }); }
+});
+
+for (const mode of ['deadline', 'user cancellation'] as const) {
+  test(`destroys a stalled entry stream and cleans partial files on ${mode}`, { timeout: 3000 }, async t => {
+    const fixture = await createFixture([entry('SKILL.md')]);
+    const extracted = path.join(fixture.root, 'extraction');
+    t.mock.method(fs.promises, 'mkdtemp', async () => { await fs.promises.mkdir(extracted); return extracted; });
+    const stream = new PassThrough();
+    const controller = new AbortController();
+    let opened = false;
+    t.mock.method(yauzl.ZipFile.prototype, 'openReadStream', (_entry: unknown, _options: unknown, callback: any) => {
+      opened = true;
+      callback(null, stream);
+      if (mode === 'user cancellation') setImmediate(() => controller.abort());
+    });
+    try {
+      await assert.rejects(extractAuthorizedSkillZip(fixture.zipPath, 'fixture.zip', {
+        signal: controller.signal, timeoutMs: mode === 'deadline' ? 200 : 2000,
+      }), mode === 'deadline' ? /timed out/ : /cancelled/);
+      assert.equal(opened, true);
+      assert.equal(stream.destroyed, true);
+      assert.equal(fs.existsSync(extracted), false);
+    } finally { stream.destroy(); await fs.promises.rm(fixture.root, { recursive: true, force: true }); }
+  });
+}
+
+test('rejects an already cancelled intake before opening the archive', async () => {
+  await assert.rejects(extractAuthorizedSkillZip('not-opened.zip', 'fixture.zip', { signal: AbortSignal.abort() }), /cancelled/);
 });
 
 function entry(name: string, content = Buffer.from('---\nname: sample\n---\n')): ZipFixtureEntry {
