@@ -64,6 +64,14 @@ export interface MachineResourceSnapshot {
   serviceMemoryUsedBytes?: number;
   /** Headroom inside the service memory limit, capped by host availability. */
   serviceMemoryAvailableBytes?: number;
+  /** Cores this service actually burned, averaged over the sample window. */
+  serviceCpuUsageCores?: number;
+  /** That usage as a share of the quota (100 = saturating its cores). */
+  serviceCpuUsagePercentOfQuota?: number;
+  /** CPU milliseconds per second lost to the quota during the sample window. */
+  serviceCpuThrottledMsPerSecond?: number;
+  /** Length of the usage sample window, so callers can label it honestly. */
+  serviceCpuSampleWindowMs?: number;
   /** Scheduler-reported disk quota; `unknown` means "do not guess with df". */
   sharedDisk?: SharedDiskView;
 }
@@ -509,6 +517,72 @@ export function parseCgroupV2SelfPath(text: string): string | undefined {
   return undefined;
 }
 
+/**
+ * `cpu.stat` carries only monotonically growing counters, so a single read says
+ * nothing about "how busy is it right now". Two reads with a gap between them do.
+ */
+export interface CgroupCpuCounters {
+  usageUsec: number;
+  throttledUsec: number;
+}
+
+export function parseCgroupCpuStat(text: string): CgroupCpuCounters | undefined {
+  let usageUsec: number | undefined;
+  let throttledUsec: number | undefined;
+  for (const line of text.split('\n')) {
+    const [key, raw] = line.trim().split(/\s+/);
+    if (!key || raw === undefined) continue;
+    if (!/^\d+$/.test(raw)) continue;
+    if (key === 'usage_usec') usageUsec = Number.parseInt(raw, 10);
+    else if (key === 'throttled_usec') throttledUsec = Number.parseInt(raw, 10);
+  }
+  if (usageUsec === undefined || throttledUsec === undefined) return undefined;
+  return { usageUsec, throttledUsec };
+}
+
+/** Blocking sleep without timers: this runs at most once per cache window. */
+function sleepSyncMs(ms: number): void {
+  const buffer = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
+}
+
+export const CPU_USAGE_SAMPLE_WINDOW_MS = 150;
+
+/**
+ * Samples the service cgroup twice and derives what it actually burned.
+ * Returns undefined instead of zeros when the counters are unreadable or the
+ * window is too short to be meaningful — a fake 0% is worse than "unknown".
+ */
+export function sampleServiceCpuUsage(
+  io: MachineResourceIo,
+  cgroupRoot: string,
+  windowMs: number = CPU_USAGE_SAMPLE_WINDOW_MS,
+): { usageCores: number; throttledMsPerSecond: number; windowMs: number } | undefined {
+  const read = (): CgroupCpuCounters | undefined => {
+    try {
+      return parseCgroupCpuStat(io.readFileSync(`${cgroupRoot}/cpu.stat`, 'utf8'));
+    } catch {
+      return undefined;
+    }
+  };
+  const first = read();
+  if (!first) return undefined;
+  const startedAt = Date.now();
+  sleepSyncMs(windowMs);
+  const second = read();
+  const elapsedMs = Date.now() - startedAt;
+  if (!second || elapsedMs < 20) return undefined;
+  const usedUsec = second.usageUsec - first.usageUsec;
+  const throttledUsec = second.throttledUsec - first.throttledUsec;
+  if (!Number.isFinite(usedUsec) || usedUsec < 0) return undefined;
+  if (!Number.isFinite(throttledUsec) || throttledUsec < 0) return undefined;
+  return {
+    usageCores: usedUsec / 1000 / elapsedMs,
+    throttledMsPerSecond: (throttledUsec / 1000) * (1000 / elapsedMs),
+    windowMs: elapsedMs,
+  };
+}
+
 // ─── Snapshot collection ────────────────────────────────
 
 export function collectMachineResourceSnapshot(io: MachineResourceIo = defaultIo): MachineResourceSnapshot {
@@ -571,6 +645,18 @@ export function collectMachineResourceSnapshot(io: MachineResourceIo = defaultIo
         snapshot.serviceCpuCores = limits.cpuCores;
         snapshot.serviceCpuQuotaText = limits.cpuQuotaText;
         snapshot.serviceCpuUnlimited = limits.cpuUnlimited;
+        // Live load, not just the ceiling: "2 核上限" alone can't answer
+        // "现在忙不忙、是不是被配额卡住了".
+        const usageRoot = cgroupAncestorDirs(cgroupPath)[0];
+        const cpuUsage = usageRoot ? sampleServiceCpuUsage(io, usageRoot) : undefined;
+        if (cpuUsage) {
+          snapshot.serviceCpuUsageCores = Number(cpuUsage.usageCores.toFixed(2));
+          snapshot.serviceCpuSampleWindowMs = cpuUsage.windowMs;
+          snapshot.serviceCpuThrottledMsPerSecond = Math.round(cpuUsage.throttledMsPerSecond);
+          if (typeof limits.cpuCores === 'number' && limits.cpuCores > 0) {
+            snapshot.serviceCpuUsagePercentOfQuota = Math.round((cpuUsage.usageCores / limits.cpuCores) * 100);
+          }
+        }
         snapshot.serviceMemoryLimitBytes = limits.memoryLimitBytes;
         snapshot.serviceMemoryHighBytes = limits.memoryHighBytes;
         snapshot.serviceMemoryUnlimited = limits.memoryUnlimited;
@@ -733,12 +819,22 @@ function formatCoreCount(cores: number): string {
 
 function formatSharedCpuLine(snapshot: MachineResourceSnapshot): string {
   const cores = snapshot.serviceCpuCores;
+  // Live load: the quota alone cannot tell "idle" from "pinned at the cap".
+  let live = '';
+  const usage = snapshot.serviceCpuUsageCores;
+  if (typeof usage === 'number' && Number.isFinite(usage)) {
+    live = `；当前约 ${formatCoreCount(usage)} 核在跑`;
+    const pct = snapshot.serviceCpuUsagePercentOfQuota;
+    if (typeof pct === 'number' && Number.isFinite(pct)) live += `（占配额 ${pct}%）`;
+    const throttled = snapshot.serviceCpuThrottledMsPerSecond;
+    if (typeof throttled === 'number' && throttled > 0) live += `，因配额限流 ${throttled}ms/s`;
+  }
   if (typeof cores === 'number' && Number.isFinite(cores) && cores > 0) {
     const quota = snapshot.serviceCpuQuotaText ? `cpu.max ${snapshot.serviceCpuQuotaText}` : 'cpu.max 配额';
-    return `CPU 有效 ${formatCoreCount(cores)} 核（${quota}，服务配额上限，不是宿主 nproc）`;
+    return `CPU 有效 ${formatCoreCount(cores)} 核（${quota}，服务配额上限，不是宿主 nproc）${live}`;
   }
   if (snapshot.serviceCpuUnlimited === true) {
-    return 'CPU 未设 cpu.max 配额；可用核数未知';
+    return `CPU 未设 cpu.max 配额；可用核数未知${live}`;
   }
   return 'CPU 有效核数未知（未读到 cpu.max）';
 }
@@ -761,6 +857,10 @@ function formatSharedMemoryLine(snapshot: MachineResourceSnapshot): string {
   const facts = [`内存 上限 ${limit}`];
   if (high) facts.push(`压力阈值 ${high}（memory.high）`);
   if (used) facts.push(`已用 ${used}（含页缓存）`);
+  // 页缓存随时可回收，"用了多少"容易被它撑到接近上限；给出不含可回收缓存的
+  // 实际常驻量，才答得上"现在真占了多少"。
+  const workingSet = formatBytesCompact(snapshot.cgroupCurrentBytes);
+  if (workingSet) facts.push(`实际常驻 ${workingSet}（不含可回收缓存）`);
   facts.push(available ? `可用约 ${available}` : '可用未知');
   facts.push('服务硬上限取 memory.max 祖先最紧值，可用按各级硬上限与占用估算');
   return facts.join('、');
