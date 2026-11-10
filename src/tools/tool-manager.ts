@@ -12,6 +12,7 @@ import { SkillTool } from './skill-tool';
 import { SendFileTool } from './send-file-tool';
 import { ImportFileTool } from './import-file-tool';
 import { SendTextTool } from './send-text-tool';
+import { OpenAppTool } from './open-app-tool';
 import { SpawnSubagentTool } from './spawn-subagent-tool';
 import { CheckSubagentTool } from './check-subagent-tool';
 import { WaitSubagentsTool } from './wait-subagents-tool';
@@ -81,6 +82,7 @@ export class ToolManager implements ToolExecutor {
       new CommonDirectoryTool(),
       new ShellTool(),
       new SendTextTool(),
+      new OpenAppTool(),
       new SendFileTool(),
       new ImportFileTool(),
       new SpawnSubagentTool(),

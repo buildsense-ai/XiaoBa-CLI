@@ -7,6 +7,7 @@ export const DEFAULT_TOOL_NAMES = [
   'resolve_common_directory',
   'execute_shell',
   'send_text',
+  'open_app',
   'send_file',
   'import_file',
   'spawn_subagent',

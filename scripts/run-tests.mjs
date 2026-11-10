@@ -72,6 +72,8 @@ const runtimeTests = allTests.filter(file => !legacySet.has(file));
 const suites = {
   runtime: runtimeTests,
   'skillhub-phase1': skillHubPhase1Tests,
+  'app-handoff': ['tests/open-app-tool.test.ts', 'tests/catscompany-message-sender.test.ts', 'tests/outbound-gateway.test.ts'],
+  'app-handoff-regression': ['tests/catscompany-client-body-id.test.ts', 'tests/catscompany-client-endpoint-failover.test.ts', 'tests/catscompany-content-blocks.test.ts', 'tests/catscompany-execution-scope-flow.test.ts', 'tests/tool-manager.test.ts', 'tests/tool-result-tool-manager.test.ts'],
   legacy: legacyTests,
   all: allTests,
 };

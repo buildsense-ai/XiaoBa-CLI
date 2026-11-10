@@ -1192,6 +1192,28 @@ export class CatsClient extends EventEmitter {
     });
   }
 
+  async listOwnApps(): Promise<Array<{ id: string; title?: string; description?: string }>> {
+    if (!this.config.apiKey || this.config.connectorToken) throw new Error('Application catalogue requires an authenticated Agent connection');
+    const res = await fetch(`${this.httpBaseUrl()}/api/artifacts/apps`, {
+      headers: { Authorization: `ApiKey ${this.config.apiKey}` },
+      signal: AbortSignal.timeout(10000),
+      redirect: 'error',
+    });
+    if (!res.ok) throw new Error(`Application catalogue unavailable (${res.status})`);
+    const text = await res.text();
+    if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('Application catalogue response too large');
+    const payload: unknown = JSON.parse(text);
+    if (!payload || typeof payload !== 'object' || !('apps' in payload) || !Array.isArray(payload.apps) || payload.apps.length > 1000) throw new Error('Invalid application catalogue');
+    return payload.apps.map((item: unknown) => {
+      if (!item || typeof item !== 'object' || !('id' in item) || typeof item.id !== 'string' || !item.id.trim() || Array.from(item.id).length > 128) throw new Error('Invalid catalogue application');
+      return {
+        id: item.id,
+        ...('title' in item && typeof item.title === 'string' ? {title: item.title.slice(0, 512)} : {}),
+        ...('description' in item && typeof item.description === 'string' ? {description: item.description.slice(0, 2048)} : {}),
+      };
+    });
+  }
+
   async registerDevice(registration: CatsDeviceRegistration): Promise<unknown> {
     const endpoint = this.config.connectorToken
       ? '/api/device-connectors/register'

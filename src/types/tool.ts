@@ -196,6 +196,14 @@ export interface ChannelCallbacks {
   chatId: string;
   /** 发送文本消息 */
   reply: (chatId: string, text: string) => Promise<void>;
+  /**
+   * Send one text message carrying structured metadata. Only surfaces that can
+   * publish metadata implement it; callers must check for presence and must not
+   * assume delivery when it is missing.
+   */
+  replyWithMetadata?: (chatId: string, text: string, metadata: Record<string, unknown>) => Promise<void>;
+  /** Read-only authenticated catalogue; no caller-selected owner or URL. */
+  listApps?: () => Promise<Array<{ id: string; title?: string; description?: string }>>;
   /** 发送文件 */
   sendFile: (chatId: string, filePath: string, fileName: string) => Promise<void>;
   /** 把已上传文件下载到当前运行体的托管工作区，并返回本地绝对路径。 */

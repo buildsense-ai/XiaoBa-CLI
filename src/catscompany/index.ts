@@ -1785,6 +1785,18 @@ export class CatsCompanyBot {
           throw err;
         }
       },
+      listApps: async () => this.bot.listOwnApps(),
+      replyWithMetadata: async (targetTopic: string, text: string, metadata: Record<string, unknown>) => {
+        if (targetTopic !== topic) throw new Error('结构化发送目标与当前通道不一致');
+        try {
+          const seqs = await this.sender.reply(topic, text, metadata);
+          if (seqs.length === 0) throw new Error('结构化请求未获得消息发送确认');
+          _hasOutbound = true;
+        } catch (err: unknown) {
+          Logger.warning('结构化消息发送失败 (replyWithMetadata)');
+          throw err;
+        }
+      },
       sendFile: async (_targetTopic: string, filePath: string, fileName: string) => {
         try {
           await this.sender.sendFile(topic, filePath, fileName);

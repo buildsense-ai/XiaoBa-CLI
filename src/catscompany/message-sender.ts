@@ -317,8 +317,8 @@ export class MessageSender {
     Logger.info(`Task status 已发送: topic=${topic}, state=${status.state}, run=${status.run_id}`);
   }
 
-  async sendText(topic: string, text: string): Promise<number> {
-    const { seq_id } = await this.send(topic, 'text', text);
+  async sendText(topic: string, text: string, metadata?: Record<string, unknown>): Promise<number> {
+    const { seq_id } = await this.send(topic, 'text', text, metadata);
     Logger.info(`Text 已发送: ${text.slice(0, 50)}...`);
     return seq_id;
   }
@@ -329,17 +329,22 @@ export class MessageSender {
    * 记账不在这里做：每段经 `sendText` → `send`，`send` 成功即按持久类型回调，
    * 所以中途失败时已发出的分段也已经记过账。
    */
-  async reply(topic: string, text: string): Promise<number[]> {
+  async reply(topic: string, text: string, metadata?: Record<string, unknown>): Promise<number[]> {
     const normalized = typeof text === 'string' ? text.trim() : '';
+    const hasAppOpen = metadata !== undefined && Object.prototype.hasOwnProperty.call(metadata, 'app_open');
     if (!normalized) {
+      if (hasAppOpen) throw new Error('app_open requires non-empty display text');
       Logger.info(`Reply skipped: empty or whitespace-only text (topic=${topic})`);
       return [];
     }
     const segments = this.splitText(normalized, MAX_MSG_LENGTH);
     const seqs: number[] = [];
-    for (const seg of segments) {
-      const seq = await this.sendText(topic, seg);
+    for (const [index, seg] of segments.entries()) {
+      const segmentMetadata = metadata ? { ...metadata } : undefined;
+      if (index > 0 && segmentMetadata) delete segmentMetadata.app_open;
+      const seq = await this.sendText(topic, seg, segmentMetadata);
       if (Number.isFinite(seq) && seq > 0) seqs.push(seq);
+      else if (hasAppOpen) throw new Error('app_open message was not acknowledged');
     }
     return seqs;
   }
