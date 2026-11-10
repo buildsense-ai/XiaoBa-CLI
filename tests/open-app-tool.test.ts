@@ -104,3 +104,26 @@ test('preflight recovery reuses the same identity while null parameters and zero
 test('open_app remains registered and visible by default',()=>{
  assert.ok(DEFAULT_TOOL_NAMES.includes('open_app')); const m=new ToolManager(process.cwd());assert.ok(m.getTool('open_app'));assert.ok(m.getToolDefinitions().some(d=>d.name==='open_app'));
 });
+
+for (const action of ['list', 'initialize'] as const) {
+ for (const mutation of ['untrusted', 'abort', 'scope topic'] as const) {
+  test(`pending catalog ${action} refuses live ${mutation} without returning directory or sending`, async () => {
+   const f = fixture();
+   f.context.executionScope = {source:'catscompany', sessionKey:'session', topicId:'p2p_7_9', topicType:'p2p', identityTrust:'server_canonical', isTrusted:true} as NonNullable<ToolExecutionContext['executionScope']>;
+   const controller = new AbortController();
+   f.context.abortSignal = controller.signal;
+   let release!: (apps: {id:string}[]) => void;
+   f.bot.bot.listOwnApps = () => new Promise(resolve => { release = resolve; });
+   const pending = new OpenAppTool().execute(action === 'list' ? {action} : init, f.context);
+   if (mutation === 'untrusted') f.context.executionScope.identityTrust = 'untrusted';
+   else if (mutation === 'abort') controller.abort();
+   else f.context.executionScope.topicId = 'p2p_changed';
+   release([{id:'board'}]);
+   let returned: unknown;
+   await assert.rejects(async () => { returned = await pending; }, /执行上下文已陈旧/);
+   assert.equal(returned, undefined);
+   assert.equal(f.wires.length, 0);
+   assert.equal(f.channel.hasOutbound, false);
+  });
+ }
+}
