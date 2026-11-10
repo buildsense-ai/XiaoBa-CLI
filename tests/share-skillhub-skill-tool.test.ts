@@ -117,6 +117,27 @@ test('does not read or publish a ZIP attachment without a current CatsCo attachm
   assert.equal(serviceCalls, 0);
 });
 
+test('a damaged or cancelled attachment is rejected without contacting the publishing service', { timeout: 3000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'skillhub-corrupt-skill-'));
+  const file = path.join(root, 'sample.skill');
+  let calls = 0;
+  const tool = new ShareSkillHubSkillTool(() => ({ shareLocalSkill: async () => { calls++; return {}; } }));
+  try {
+    const content = Buffer.from('---\nname: sample\ndescription: 中文长度\n---\n');
+    fs.writeFileSync(file, makeZip([{ name: 'sample/SKILL.md', content, declaredSize: content.toString().length }]));
+    let result = await tool.execute({}, catscoZipContext([catscoZipGrant(file, 'sample.skill', 'catsco_attachment:damaged')], 'damaged-skill'));
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'SKILLHUB_ZIP_REJECTED');
+    assert.match(String(result.message), /declared or allowed size|directory record/);
+    fs.writeFileSync(file, makeZip([{ name: 'sample/SKILL.md', content }]));
+    result = await tool.execute({}, { ...catscoZipContext([catscoZipGrant(file, 'sample.skill', 'catsco_attachment:cancelled')], 'cancelled-skill'), abortSignal: AbortSignal.abort() });
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'SKILLHUB_ZIP_REJECTED');
+    assert.match(String(result.message), /cancelled/);
+    assert.equal(calls, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 function validationError(
   reportId: string,
   options: { coverage?: string; location?: unknown; code?: string; repairPolicy?: string } = {},

@@ -268,7 +268,7 @@ export class ShareSkillHubSkillTool implements Tool {
         return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'The authorized attachment must be a .zip or .skill file containing ZIP data.' };
       }
       try {
-        const extracted = await extractAuthorizedSkillZip(attachment.absolutePath, attachment.grant.fileName);
+        const extracted = await extractAuthorizedSkillZip(attachment.absolutePath, attachment.grant.fileName, { signal: context.abortSignal });
         localSkillPath = extracted.directory;
         zipCleanupDirectory = extracted.cleanupDirectory;
         retained.task = this.zipTasks.retain(context, attachment.grant.fileName, extracted.directory, extracted.cleanupDirectory, extracted.uncompressedBytes);
