@@ -873,10 +873,7 @@ export class CatsClient extends EventEmitter {
     topic: string,
     options: { beforeId?: number; limit?: number; signal?: AbortSignal } = {},
   ): Promise<CatsAgentContextPage> {
-    const base = this.httpBaseUrl();
-    const sibling = siblingCatsCoUrl(base);
-    const bases = sibling && sibling !== base ? [base, sibling] : [base];
-    const urls = bases.map(candidateBase => {
+    const urls = this.httpBaseCandidates().map(candidateBase => {
       const candidate = new URL(`${candidateBase}/api/messages`);
       candidate.searchParams.set('topic_id', topic);
       candidate.searchParams.set('agent_context', '1');
@@ -1330,14 +1327,20 @@ export class CatsClient extends EventEmitter {
       ? '/api/device-connectors/register'
       : '/api/devices/register';
     const authorization = this.fileAuthorization();
-    const res = await fetch(`${this.httpBaseUrl()}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': authorization,
+    // POST, so one attempt per family: the same device id registers twice at
+    // worst, but a poisoned .cc answer must not cost the refresh.
+    const res = await fetchWithRetry(
+      this.httpBaseCandidates().map(base => `${base}${endpoint}`),
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorization,
+        },
+        body: JSON.stringify(registration),
       },
-      body: JSON.stringify(registration),
-    });
+      { attempts: 1 },
+    );
     if (!res.ok) {
       throw new Error(`CatsCompany device registration failed: ${res.status}`);
     }
@@ -1603,6 +1606,18 @@ export class CatsClient extends EventEmitter {
     const configured = this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl) || 'https://app.catsco.cn';
     const activeFamily = catsCoDomainFamily(this.activeServerUrl || this.currentServerUrl());
     return catsCoUrlForFamily(configured, activeFamily) ?? configured;
+  }
+
+  /**
+   * The active HTTP base followed by its cc/cn sibling. A resolver that has been
+   * poisoned (or a VPC DNS that answers differently every few seconds) makes one
+   * family fail at the TLS handshake while the other is fine, so callers try
+   * both instead of assuming the WebSocket's current family is usable.
+   */
+  private httpBaseCandidates(): string[] {
+    const base = this.httpBaseUrl();
+    const sibling = siblingCatsCoUrl(base);
+    return sibling && sibling !== base ? [base, sibling] : [base];
   }
 
   disconnect(): void {
