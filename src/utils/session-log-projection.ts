@@ -108,9 +108,57 @@ export function projectSessionLog(entries: ParsedSessionLogEntry[]): SessionLogP
           break;
       }
     }
+    if (summary) supplementFromSummary(entry, summary, run, lines);
     projections.push({ ref: `run:${runId}`, entry, searchable: true, transcript: `RUN_STATUS: ${status}\n\n${lines.join('\n\n')}` });
   }
-  return projections;
+  return projections.sort((a, b) => a.entry.timestamp.localeCompare(b.entry.timestamp));
+}
+
+/** Preserve summary-only facts when event writes are absent or damaged. */
+function supplementFromSummary(
+  entry: SessionTurnLogEntry,
+  summary: SessionTurnLogEntry,
+  run: SessionTranscriptLogEntry[],
+  lines: string[],
+): void {
+  const events = run.map(record => record.event);
+  const hasRoot = events.some(event => event.type === 'input_consumed' && event.kind !== 'pending');
+  const observedUserText = entry.user.text;
+  entry.user = { ...summary.user, ...entry.user };
+  if (!hasRoot && summary.user.text) {
+    entry.user.text = [summary.user.text, observedUserText].filter(Boolean).join('\n');
+    lines.push(`[COMPATIBLE_SUMMARY ${summary.user.runtime_observation_source ? 'RUNTIME_OBSERVATION' : 'USER_INPUT'}]\n${summary.user.text}`);
+  }
+  if (summary.user.images?.length || summary.user.runtime_feedback?.length) {
+    lines.push(`[COMPATIBLE_SUMMARY USER_METADATA]\n${JSON.stringify({
+      ...(summary.user.images?.length && { images: summary.user.images }),
+      ...(summary.user.runtime_feedback?.length && { runtime_feedback: summary.user.runtime_feedback }),
+    })}`);
+  }
+  const hasFinal = events.some(event => event.type === 'assistant_message'
+    && (event.phase === 'reply' || event.phase === 'runtime_reply') && event.text === summary.assistant.text);
+  if (!hasFinal && summary.assistant.text) {
+    entry.assistant.text += (entry.assistant.text ? '\n' : '') + summary.assistant.text;
+    lines.push(`[COMPATIBLE_SUMMARY ASSISTANT_FINAL; delivery_unconfirmed]\n${summary.assistant.text}`);
+  }
+  for (const call of summary.assistant.tool_calls) {
+    const observed = entry.assistant.tool_calls.find(item => item.id === call.id);
+    if (!observed) {
+      entry.assistant.tool_calls.push({ ...call });
+      lines.push(`[COMPATIBLE_SUMMARY TOOL_CALL]\n${JSON.stringify(call)}`);
+      continue;
+    }
+    const missingStart = !events.some(event => event.type === 'tool_started' && event.call_id === call.id);
+    const missingResult = !events.some(event => event.type === 'tool_finished' && event.call_id === call.id);
+    if (missingStart) observed.arguments = call.arguments;
+    if (missingResult) { observed.result = call.result; observed.duration_ms = call.duration_ms; }
+    if (missingStart || missingResult) lines.push(`[COMPATIBLE_SUMMARY TOOL_FIELDS]\n${JSON.stringify({
+      id: call.id, name: call.name,
+      ...(missingStart && { arguments: call.arguments }),
+      ...(missingResult && { result: call.result, duration_ms: call.duration_ms }),
+    })}`);
+  }
+  if (!entry.agent_identity && summary.agent_identity) entry.agent_identity = summary.agent_identity;
 }
 
 function emptyTurn(entry: SessionTranscriptLogEntry): SessionTurnLogEntry {
