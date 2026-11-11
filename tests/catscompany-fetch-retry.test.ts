@@ -72,4 +72,24 @@ describe('catscompany fetch retry', () => {
     );
     assert.equal(calls, 1);
   });
+
+  test('falls over to the sibling domain family when TLS keeps failing', async () => {
+    // A poisoned resolver answers app.catsco.cc with a host serving a
+    // self-signed certificate; the .cn sibling is fine.
+    const cc = new URL('https://app.catsco.cc/api/messages');
+    const cn = new URL('https://app.catsco.cn/api/messages');
+    const seen: string[] = [];
+    (global as any).fetch = async (target: URL) => {
+      seen.push(target.hostname);
+      if (target.hostname.endsWith('.cc')) {
+        const error = new TypeError('fetch failed');
+        (error as any).cause = { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' };
+        throw error;
+      }
+      return new Response('{}', { status: 200 });
+    };
+    const response = await fetchWithRetry([cc, cn], {}, { baseDelayMs: 1 });
+    assert.equal(response.status, 200);
+    assert.deepEqual(seen, ['app.catsco.cc', 'app.catsco.cc', 'app.catsco.cn']);
+  });
 });

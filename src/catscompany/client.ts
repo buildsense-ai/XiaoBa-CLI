@@ -7,7 +7,7 @@ export { CatsSendError, type CatsSendErrorKind } from './send-error';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { Logger } from '../utils/logger';
-import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, type CatsCoDomainFamily } from '../utils/catsco-domains';
+import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, siblingCatsCoUrl, type CatsCoDomainFamily } from '../utils/catsco-domains';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
 import type { CatsGroupRosterMember } from './types';
 import { normalizeSessionForkControl, type CatsSessionForkCompletion, type CatsSessionForkStatus } from './session-fork';
@@ -46,24 +46,31 @@ export interface FetchRetryOptions {
 
 /**
  * Retry an idempotent request when the transport failed before a response was
- * read. Only use it for GETs: a retried POST can duplicate a side effect.
+ * read. Pass several URLs to fail over between the cc/cn domain families: a
+ * poisoned resolver sends `app.catsco.cc` to a host serving a self-signed
+ * certificate, which undici reports as a bare "fetch failed" every time.
+ * Only use it for GETs: a retried POST can duplicate a side effect.
  */
 export async function fetchWithRetry(
-  url: URL | string,
+  url: URL | string | Array<URL | string>,
   init: RequestInit,
   options: FetchRetryOptions = {},
 ): Promise<Response> {
+  const targets = Array.isArray(url) ? url : [url];
   const attempts = Math.max(1, options.attempts ?? 2);
   const baseDelayMs = Math.max(0, options.baseDelayMs ?? 200);
   let lastError: unknown;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await fetch(url, init);
-    } catch (error) {
-      lastError = error;
-      const aborted = Boolean(init.signal?.aborted);
-      if (attempt === attempts - 1 || aborted || !isTransientFetchError(error)) throw error;
-      await new Promise(resolve => setTimeout(resolve, baseDelayMs * (attempt + 1)));
+  for (const target of targets) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await fetch(target, init);
+      } catch (error) {
+        lastError = error;
+        const aborted = Boolean(init.signal?.aborted);
+        if (aborted || !isTransientFetchError(error)) throw error;
+        if (attempt === attempts - 1) break; // next domain family
+        await new Promise(resolve => setTimeout(resolve, baseDelayMs * (attempt + 1)));
+      }
     }
   }
   throw lastError;
@@ -866,16 +873,22 @@ export class CatsClient extends EventEmitter {
     topic: string,
     options: { beforeId?: number; limit?: number; signal?: AbortSignal } = {},
   ): Promise<CatsAgentContextPage> {
-    const url = new URL(`${this.httpBaseUrl()}/api/messages`);
-    url.searchParams.set('topic_id', topic);
-    url.searchParams.set('agent_context', '1');
-    url.searchParams.set('latest', '1');
-    url.searchParams.set('limit', String(options.limit || 100));
-    if (options.beforeId && options.beforeId > 0) {
-      url.searchParams.set('before_id', String(options.beforeId));
-    }
+    const base = this.httpBaseUrl();
+    const sibling = siblingCatsCoUrl(base);
+    const bases = sibling && sibling !== base ? [base, sibling] : [base];
+    const urls = bases.map(candidateBase => {
+      const candidate = new URL(`${candidateBase}/api/messages`);
+      candidate.searchParams.set('topic_id', topic);
+      candidate.searchParams.set('agent_context', '1');
+      candidate.searchParams.set('latest', '1');
+      candidate.searchParams.set('limit', String(options.limit || 100));
+      if (options.beforeId && options.beforeId > 0) {
+        candidate.searchParams.set('before_id', String(options.beforeId));
+      }
+      return candidate;
+    });
 
-    const res = await fetchWithRetry(url, {
+    const res = await fetchWithRetry(urls, {
       headers: {
         Authorization: `ApiKey ${this.config.apiKey}`,
         'User-Agent': CATSCOMPANY_CLIENT_UA,
