@@ -7,13 +7,74 @@ export { CatsSendError, type CatsSendErrorKind } from './send-error';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { Logger } from '../utils/logger';
-import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, type CatsCoDomainFamily } from '../utils/catsco-domains';
+import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, siblingCatsCoUrl, type CatsCoDomainFamily } from '../utils/catsco-domains';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
 import type { CatsGroupRosterMember } from './types';
 import { normalizeSessionForkControl, type CatsSessionForkCompletion, type CatsSessionForkStatus } from './session-fork';
 export type { CatsSessionForkControl, CatsSessionForkCompletion, CatsSessionForkStatus } from './session-fork';
 
 export type { UploadResult } from './upload';
+
+/**
+ * undici surfaces a closed pooled socket, a reset, or a refused connection as a
+ * bare `TypeError: fetch failed`. A single blip used to abort a whole cloud
+ * session restore, which then answered the user with "这台设备暂时没能恢复…"
+ * and dropped their message even though the very next attempt worked.
+ */
+const TRANSIENT_FETCH_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CLOSED',
+]);
+
+export function isTransientFetchError(error: unknown): boolean {
+  const err = error as { name?: string; message?: string; cause?: { code?: string } };
+  const code = String(err?.cause?.code ?? '').toUpperCase();
+  if (code && TRANSIENT_FETCH_CODES.has(code)) return true;
+  return err?.name === 'TypeError' && /fetch failed/i.test(String(err?.message ?? ''));
+}
+
+export interface FetchRetryOptions {
+  attempts?: number;
+  baseDelayMs?: number;
+}
+
+/**
+ * Retry an idempotent request when the transport failed before a response was
+ * read. Pass several URLs to fail over between the cc/cn domain families: a
+ * poisoned resolver sends `app.catsco.cc` to a host serving a self-signed
+ * certificate, which undici reports as a bare "fetch failed" every time.
+ * Only use it for GETs: a retried POST can duplicate a side effect.
+ */
+export async function fetchWithRetry(
+  url: URL | string | Array<URL | string>,
+  init: RequestInit,
+  options: FetchRetryOptions = {},
+): Promise<Response> {
+  const targets = Array.isArray(url) ? url : [url];
+  const attempts = Math.max(1, options.attempts ?? 2);
+  const baseDelayMs = Math.max(0, options.baseDelayMs ?? 200);
+  let lastError: unknown;
+  for (const target of targets) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await fetch(target, init);
+      } catch (error) {
+        lastError = error;
+        const aborted = Boolean(init.signal?.aborted);
+        if (aborted || !isTransientFetchError(error)) throw error;
+        if (attempt === attempts - 1) break; // next domain family
+        await new Promise(resolve => setTimeout(resolve, baseDelayMs * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
 
 export interface CatsClientConfig {
   serverUrl: string;
@@ -812,16 +873,19 @@ export class CatsClient extends EventEmitter {
     topic: string,
     options: { beforeId?: number; limit?: number; signal?: AbortSignal } = {},
   ): Promise<CatsAgentContextPage> {
-    const url = new URL(`${this.httpBaseUrl()}/api/messages`);
-    url.searchParams.set('topic_id', topic);
-    url.searchParams.set('agent_context', '1');
-    url.searchParams.set('latest', '1');
-    url.searchParams.set('limit', String(options.limit || 100));
-    if (options.beforeId && options.beforeId > 0) {
-      url.searchParams.set('before_id', String(options.beforeId));
-    }
+    const urls = this.httpBaseCandidates().map(candidateBase => {
+      const candidate = new URL(`${candidateBase}/api/messages`);
+      candidate.searchParams.set('topic_id', topic);
+      candidate.searchParams.set('agent_context', '1');
+      candidate.searchParams.set('latest', '1');
+      candidate.searchParams.set('limit', String(options.limit || 100));
+      if (options.beforeId && options.beforeId > 0) {
+        candidate.searchParams.set('before_id', String(options.beforeId));
+      }
+      return candidate;
+    });
 
-    const res = await fetch(url, {
+    const res = await fetchWithRetry(urls, {
       headers: {
         Authorization: `ApiKey ${this.config.apiKey}`,
         'User-Agent': CATSCOMPANY_CLIENT_UA,
@@ -1263,14 +1327,20 @@ export class CatsClient extends EventEmitter {
       ? '/api/device-connectors/register'
       : '/api/devices/register';
     const authorization = this.fileAuthorization();
-    const res = await fetch(`${this.httpBaseUrl()}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': authorization,
+    // POST, so one attempt per family: the same device id registers twice at
+    // worst, but a poisoned .cc answer must not cost the refresh.
+    const res = await fetchWithRetry(
+      this.httpBaseCandidates().map(base => `${base}${endpoint}`),
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authorization,
+        },
+        body: JSON.stringify(registration),
       },
-      body: JSON.stringify(registration),
-    });
+      { attempts: 1 },
+    );
     if (!res.ok) {
       throw new Error(`CatsCompany device registration failed: ${res.status}`);
     }
@@ -1536,6 +1606,23 @@ export class CatsClient extends EventEmitter {
     const configured = this.config.httpBaseUrl || inferHttpBaseUrl(this.config.serverUrl) || 'https://app.catsco.cn';
     const activeFamily = catsCoDomainFamily(this.activeServerUrl || this.currentServerUrl());
     return catsCoUrlForFamily(configured, activeFamily) ?? configured;
+  }
+
+  /**
+   * HTTP bases to try, best first. A VPC resolver answering `.catsco.cc` with a
+   * parked address (177.5.48.x, self-signed "redirect-cnzz") is a live failure
+   * mode, so once the cc/cn pair is known, `.cn` goes first: it is the migration
+   * target and it answers correctly on the resolvers that hijack `.cc`. The
+   * sibling stays as the fallback for networks that block `.cn`.
+   */
+  private httpBaseCandidates(): string[] {
+    const base = this.httpBaseUrl();
+    const sibling = siblingCatsCoUrl(base);
+    if (!sibling || sibling === base) return [base];
+    const cnFirst = [base, sibling].sort(
+      (left, right) => Number(!left.includes('.catsco.cn')) - Number(!right.includes('.catsco.cn')),
+    );
+    return cnFirst;
   }
 
   disconnect(): void {
