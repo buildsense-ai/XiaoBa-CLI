@@ -15,6 +15,60 @@ export type { CatsSessionForkControl, CatsSessionForkCompletion, CatsSessionFork
 
 export type { UploadResult } from './upload';
 
+/**
+ * undici surfaces a closed pooled socket, a reset, or a refused connection as a
+ * bare `TypeError: fetch failed`. A single blip used to abort a whole cloud
+ * session restore, which then answered the user with "这台设备暂时没能恢复…"
+ * and dropped their message even though the very next attempt worked.
+ */
+const TRANSIENT_FETCH_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CLOSED',
+]);
+
+export function isTransientFetchError(error: unknown): boolean {
+  const err = error as { name?: string; message?: string; cause?: { code?: string } };
+  const code = String(err?.cause?.code ?? '').toUpperCase();
+  if (code && TRANSIENT_FETCH_CODES.has(code)) return true;
+  return err?.name === 'TypeError' && /fetch failed/i.test(String(err?.message ?? ''));
+}
+
+export interface FetchRetryOptions {
+  attempts?: number;
+  baseDelayMs?: number;
+}
+
+/**
+ * Retry an idempotent request when the transport failed before a response was
+ * read. Only use it for GETs: a retried POST can duplicate a side effect.
+ */
+export async function fetchWithRetry(
+  url: URL | string,
+  init: RequestInit,
+  options: FetchRetryOptions = {},
+): Promise<Response> {
+  const attempts = Math.max(1, options.attempts ?? 2);
+  const baseDelayMs = Math.max(0, options.baseDelayMs ?? 200);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      const aborted = Boolean(init.signal?.aborted);
+      if (attempt === attempts - 1 || aborted || !isTransientFetchError(error)) throw error;
+      await new Promise(resolve => setTimeout(resolve, baseDelayMs * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 export interface CatsClientConfig {
   serverUrl: string;
   apiKey?: string;
@@ -821,7 +875,7 @@ export class CatsClient extends EventEmitter {
       url.searchParams.set('before_id', String(options.beforeId));
     }
 
-    const res = await fetch(url, {
+    const res = await fetchWithRetry(url, {
       headers: {
         Authorization: `ApiKey ${this.config.apiKey}`,
         'User-Agent': CATSCOMPANY_CLIENT_UA,
