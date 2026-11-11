@@ -130,3 +130,38 @@ export function catsCoEndpointCandidates(
     ? [sibling, text]
     : [text, sibling];
 }
+
+/**
+ * 一个域族在什么时间点之前不要优先使用。
+ *
+ * 键是 `.catsco.cc` / `.catsco.cn`，值是 `Date.now()` 意义上的时间戳。调用方
+ * 持有它，这里只读，方便测试。
+ */
+export type CatsCoFamilyCoolOff = Map<CatsCoDomainFamily, number>;
+
+/**
+ * 把还在冷却期内的域族排到最后。
+ *
+ * 解析器投毒的表现是"解析到自签证书主机"，TLS 会立刻失败（实测 0.3s 左右，
+ * 不是 15s 超时）。所以每次请求都先撞一次被投毒的域族纯属浪费，还会往日志里
+ * 刷一条 warn。冷却只是重排顺序而不是删除候选：万一两个域族同时不可用，仍然
+ * 要有一条能走的路。
+ */
+export function orderCatsCoCandidatesWithCoolOff<T extends string>(
+  candidates: readonly T[],
+  coolOff: CatsCoFamilyCoolOff,
+  now: number,
+): T[] {
+  const live: T[] = [];
+  const cooling: T[] = [];
+  for (const candidate of candidates) {
+    const family = catsCoDomainFamily(candidate);
+    const until = family ? coolOff.get(family) ?? 0 : 0;
+    if (until > now) {
+      cooling.push(candidate);
+    } else {
+      live.push(candidate);
+    }
+  }
+  return [...live, ...cooling];
+}
