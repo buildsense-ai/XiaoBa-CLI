@@ -1609,15 +1609,20 @@ export class CatsClient extends EventEmitter {
   }
 
   /**
-   * The active HTTP base followed by its cc/cn sibling. A resolver that has been
-   * poisoned (or a VPC DNS that answers differently every few seconds) makes one
-   * family fail at the TLS handshake while the other is fine, so callers try
-   * both instead of assuming the WebSocket's current family is usable.
+   * HTTP bases to try, best first. A VPC resolver answering `.catsco.cc` with a
+   * parked address (177.5.48.x, self-signed "redirect-cnzz") is a live failure
+   * mode, so once the cc/cn pair is known, `.cn` goes first: it is the migration
+   * target and it answers correctly on the resolvers that hijack `.cc`. The
+   * sibling stays as the fallback for networks that block `.cn`.
    */
   private httpBaseCandidates(): string[] {
     const base = this.httpBaseUrl();
     const sibling = siblingCatsCoUrl(base);
-    return sibling && sibling !== base ? [base, sibling] : [base];
+    if (!sibling || sibling === base) return [base];
+    const cnFirst = [base, sibling].sort(
+      (left, right) => Number(!left.includes('.catsco.cn')) - Number(!right.includes('.catsco.cn')),
+    );
+    return cnFirst;
   }
 
   disconnect(): void {
