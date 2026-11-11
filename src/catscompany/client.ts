@@ -7,7 +7,7 @@ export { CatsSendError, type CatsSendErrorKind } from './send-error';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { Logger } from '../utils/logger';
-import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, siblingCatsCoUrl, type CatsCoDomainFamily } from '../utils/catsco-domains';
+import { catsCoDomainFamily, catsCoEndpointCandidates, catsCoUrlForFamily, orderCatsCoCandidatesWithCoolOff, siblingCatsCoUrl, type CatsCoDomainFamily, type CatsCoFamilyCoolOff } from '../utils/catsco-domains';
 import { uploadCatsLocalFile, type UploadResult } from './upload';
 import type { CatsGroupRosterMember } from './types';
 import { normalizeSessionForkControl, type CatsSessionForkCompletion, type CatsSessionForkStatus } from './session-fork';
@@ -39,9 +39,24 @@ export function isTransientFetchError(error: unknown): boolean {
   return err?.name === 'TypeError' && /fetch failed/i.test(String(err?.message ?? ''));
 }
 
+/**
+ * 域族冷却窗口。解析器投毒是按分钟的波动（同一解析器实测 20 次里 10 次正确、
+ * 10 次被投毒），5 分钟足够跨过一轮，又不至于在真的切换了出口之后卡太久。
+ */
+const DOMAIN_FAMILY_COOL_OFF_MS = 5 * 60_000;
+
 export interface FetchRetryOptions {
   attempts?: number;
   baseDelayMs?: number;
+  /**
+   * Called once a target has burned every attempt it had. The client uses it to
+   * mark that domain family unhealthy: a poisoned resolver hands out an address
+   * whose TLS certificate fails immediately (~0.3s), so without this the client
+   * would keep paying that cost and logging a warn on every single request.
+   */
+  onTargetFailure?: (target: URL | string) => void;
+  /** Called as soon as a target produced a response, even a 4xx one. */
+  onTargetReachable?: (target: URL | string) => void;
 }
 
 /**
@@ -63,12 +78,17 @@ export async function fetchWithRetry(
   for (const target of targets) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        return await fetch(target, init);
+        const response = await fetch(target, init);
+        options.onTargetReachable?.(target);
+        return response;
       } catch (error) {
         lastError = error;
         const aborted = Boolean(init.signal?.aborted);
         if (aborted || !isTransientFetchError(error)) throw error;
-        if (attempt === attempts - 1) break; // next domain family
+        if (attempt === attempts - 1) {
+          options.onTargetFailure?.(target);
+          break; // next domain family
+        }
         await new Promise(resolve => setTimeout(resolve, baseDelayMs * (attempt + 1)));
       }
     }
@@ -891,7 +911,7 @@ export class CatsClient extends EventEmitter {
         'User-Agent': CATSCOMPANY_CLIENT_UA,
       },
       signal: options.signal ?? AbortSignal.timeout(15_000),
-    });
+    }, this.domainFamilyCallbacks());
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       throw new Error(`CatsCompany agent context history failed: ${res.status}${body ? ` ${body.slice(0, 200)}` : ''}`);
@@ -1339,7 +1359,7 @@ export class CatsClient extends EventEmitter {
         },
         body: JSON.stringify(registration),
       },
-      { attempts: 1 },
+      { attempts: 1, ...this.domainFamilyCallbacks() },
     );
     if (!res.ok) {
       throw new Error(`CatsCompany device registration failed: ${res.status}`);
@@ -1609,11 +1629,25 @@ export class CatsClient extends EventEmitter {
   }
 
   /**
+   * 域族（`.catsco.cc` / `.catsco.cn`）在什么时间点之前不要优先使用。
+   *
+   * 解析器投毒把 `app.catsco.cc` 解到自签证书主机时，TLS 会立刻失败（实测
+   * 0.3s 左右），但这不等于该域族此刻可用：它会在下一次请求里再次失败。记住
+   * 这个窗口，后续请求就直接把这一族排到最后，省掉每次的无谓握手和 warn。
+   */
+  private readonly domainFamilyCoolOff: CatsCoFamilyCoolOff = new Map();
+
+  /** 冷却日志只在"可用 → 冷却"翻面时打一条，避免每请求一条。 */
+  private domainFamilyCoolOffLogged = new Set<CatsCoDomainFamily>();
+
+  /**
    * HTTP bases to try, best first. A VPC resolver answering `.catsco.cc` with a
    * parked address (177.5.48.x, self-signed "redirect-cnzz") is a live failure
    * mode, so once the cc/cn pair is known, `.cn` goes first: it is the migration
    * target and it answers correctly on the resolvers that hijack `.cc`. The
-   * sibling stays as the fallback for networks that block `.cn`.
+   * sibling stays as the fallback for networks that block `.cn`. Families that
+   * just failed move to the back instead of being dropped: with both families
+   * poisoned, there still has to be one road to try.
    */
   private httpBaseCandidates(): string[] {
     const base = this.httpBaseUrl();
@@ -1622,7 +1656,37 @@ export class CatsClient extends EventEmitter {
     const cnFirst = [base, sibling].sort(
       (left, right) => Number(!left.includes('.catsco.cn')) - Number(!right.includes('.catsco.cn')),
     );
-    return cnFirst;
+    return orderCatsCoCandidatesWithCoolOff(cnFirst, this.domainFamilyCoolOff, Date.now());
+  }
+
+  /** 把"某个域族刚刚失败/刚刚通"翻译成冷却状态，两个调用点共用。 */
+  private domainFamilyCallbacks(): Pick<FetchRetryOptions, 'onTargetFailure' | 'onTargetReachable'> {
+    return {
+      onTargetFailure: target => this.coolDownDomainFamily(target),
+      onTargetReachable: target => this.warmUpDomainFamily(target),
+    };
+  }
+
+  /** 记下某个域族当前不可用；只重排候选，不阻断请求。 */
+  private coolDownDomainFamily(target: URL | string): void {
+    const family = catsCoDomainFamily(String(target));
+    if (!family) return;
+    this.domainFamilyCoolOff.set(family, Date.now() + DOMAIN_FAMILY_COOL_OFF_MS);
+    if (!this.domainFamilyCoolOffLogged.has(family)) {
+      this.domainFamilyCoolOffLogged.add(family);
+      Logger.warning(
+        `域族 .catsco.${family} 当前解析到不可用的主机（TLS 握手失败），`
+        + `${Math.round(DOMAIN_FAMILY_COOL_OFF_MS / 60000)} 分钟内不再优先尝试`,
+      );
+    }
+  }
+
+  /** 请求成功说明该域族是通的，解除冷却。 */
+  private warmUpDomainFamily(target: URL | string): void {
+    const family = catsCoDomainFamily(String(target));
+    if (!family) return;
+    this.domainFamilyCoolOff.delete(family);
+    this.domainFamilyCoolOffLogged.delete(family);
   }
 
   disconnect(): void {
