@@ -1,3 +1,4 @@
+import type { SessionTranscriptEvent } from '../utils/session-log-schema';
 import { ContentBlock, Message } from '../types';
 import { randomUUID } from 'crypto';
 import type {
@@ -193,6 +194,7 @@ export interface AgentTurnCallbacks {
 
 export interface RunAgentTurnParams {
   input: string | ContentBlock[];
+  transcriptInputIds?: string[];
   messages: Message[];
   runtimeFeedback: string[];
   runtimeObservationSource?: string;
@@ -301,24 +303,29 @@ export class AgentTurnController {
       turnStartedAt,
     });
     const episodeId = this.createEpisodeId(turnNumber);
-    // CatsCo Agent 工具桥：本轮的工具清单只在回合开始时快照一次，而桥接首次同步是异步的
-    // ——不等待会出现「首发消息整轮看不到远端工具」。ensureReady 只在从未成功同步时
-    // 有界等待（≤3s，通常 ~1s），之后立即返回；远端清单更新仍是后台 fire-and-forget。
-    const mcpToolBridge = this.options.services.mcpToolBridge;
-    if (mcpToolBridge) {
-      await mcpToolBridge.ensureReady();
-      mcpToolBridge.refreshInBackground();
-    }
-    const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
-    const branchAgentsEnabled = this.isMemoryBranchEnabled();
-    const carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
-    this.memoryBranchCarryover = null;
-    if (!branchAgentsEnabled) {
-      this.expireMemoryBranch(previousCarryoverMemoryBranch, 'branch_agents_disabled');
-    }
-
-    const turnSkills = await this.prepareTurnSkills();
+    let turnSkills: Awaited<ReturnType<AgentTurnController['prepareTurnSkills']>> | undefined;
+    let outcome: 'completed' | 'failed' | 'cancelled' = 'failed';
+    let errorName: string | undefined;
+    this.options.turnLogRecorder.startRun(episodeId, params.input, params.transcriptInputIds, params.runtimeObservationSource);
     try {
+      for (const feedback of params.runtimeFeedback) {
+        this.options.turnLogRecorder.recordEvent(episodeId, { type: 'runtime_observation', source: 'runtime_feedback', text: feedback });
+      }
+      // Wait for the first bounded bridge sync so the initial tool snapshot is ready.
+      const mcpToolBridge = this.options.services.mcpToolBridge;
+      if (mcpToolBridge) {
+        await mcpToolBridge.ensureReady();
+        mcpToolBridge.refreshInBackground();
+      }
+      const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
+      const branchAgentsEnabled = this.isMemoryBranchEnabled();
+      const carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
+      this.memoryBranchCarryover = null;
+      if (!branchAgentsEnabled) {
+        this.expireMemoryBranch(previousCarryoverMemoryBranch, 'branch_agents_disabled');
+      }
+
+      turnSkills = await this.prepareTurnSkills();
       params.messages.push({
         role: 'user',
         content: params.input,
@@ -395,6 +402,7 @@ export class AgentTurnController {
         shouldContinue: params.shouldContinue,
         skillManager: turnSkills.skillManager,
         turnSkillSnapshot: turnSkills.snapshotLease,
+        onTranscript: event => this.options.turnLogRecorder.recordEvent(episodeId, event),
       });
 
       let result;
@@ -451,6 +459,7 @@ export class AgentTurnController {
       this.replaceBase64Images(nextMessages);
 
       this.options.turnLogRecorder.recordTurn({
+        runId: episodeId,
         userInput: params.input,
         result,
         tokens: { prompt: metrics.totalPromptTokens, completion: metrics.totalCompletionTokens },
@@ -464,18 +473,30 @@ export class AgentTurnController {
       }
 
       if (finalResponseVisible) {
+        if (!result.response) this.options.turnLogRecorder.recordEvent(episodeId, {
+          type: 'assistant_message', text: EMPTY_FINAL_RESPONSE_MESSAGE, phase: 'runtime_reply', model_call: 0,
+        });
         this.recordPetTurnCompletion('message_completed');
         this.recordPetTurnCompletion('task_completed');
       }
 
+      outcome = params.abortSignal?.aborted || !params.shouldContinue() ? 'cancelled' : 'completed';
       return {
         text: finalResponseVisible ? (result.response || EMPTY_FINAL_RESPONSE_MESSAGE) : '',
         visibleToUser: finalResponseVisible,
         newMessages: result.newMessages,
         messages: nextMessages,
       };
+    } catch (error) {
+      outcome = params.abortSignal?.aborted || (error instanceof Error && error.name === 'AbortError') ? 'cancelled' : 'failed';
+      errorName = error instanceof Error ? error.name : 'Error';
+      throw error;
     } finally {
-      if (turnSkills.snapshotLease) {
+      this.options.turnLogRecorder.recordEvent(episodeId, {
+        type: 'run_finished', status: outcome,
+        ...(errorName && { error_name: errorName }),
+      });
+      if (turnSkills?.snapshotLease) {
         try {
           await turnSkills.snapshotLease.release();
         } catch (error: any) {
@@ -567,6 +588,7 @@ export class AgentTurnController {
     shouldContinue: () => boolean;
     skillManager: SkillManager;
     turnSkillSnapshot?: TurnSkillSnapshotLease;
+    onTranscript?: (event: SessionTranscriptEvent) => void;
   }): ConversationRunner {
     const surface = resolveSessionSurface(this.options.sessionKey, this.options.sessionType);
     return new ConversationRunner(
@@ -575,6 +597,7 @@ export class AgentTurnController {
       {
         shouldContinue: options.shouldContinue,
         pendingUserInputProvider: options.pendingUserInputProvider,
+        onTranscript: options.onTranscript,
         syntheticObservationProvider: options.syntheticObservationProvider,
         episodeId: options.episodeId,
         maxContextTokens: this.options.maxPromptTokens,

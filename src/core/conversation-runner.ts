@@ -1,3 +1,6 @@
+import { randomUUID } from 'crypto';
+import type { SessionTranscriptEvent } from '../utils/session-log-schema';
+import { sessionTranscriptContent, sessionToolTranscriptContent } from '../utils/session-transcript-content';
 import { setTimeout as abortableDelay } from 'node:timers/promises';
 import { DeviceGrantLease, DEVICE_GRANT_HEARTBEAT_MS } from './device-grant-lease';
 import { Message, ContentBlock, ChatConfig, ChatResponse } from '../types';
@@ -150,6 +153,9 @@ export interface RunResult {
 
 export interface PendingUserInput {
   content: string | ContentBlock[];
+  transcriptInputIds?: string[];
+  /** Restore a dequeued batch when cancellation wins the asynchronous handoff. */
+  onRejected?: () => void;
   currentUserApprovalInputs?: CurrentUserApprovalInput[] | null;
   /** Replaces the current turn's short-lived Artifact context ref when present, including explicit undefined. */
   artifactContextRef?: string;
@@ -197,6 +203,7 @@ interface ToolExecutionOutcome {
 
 /** ConversationRunner 构造选项 */
 export interface RunnerOptions {
+  onTranscript?: (event: SessionTranscriptEvent) => void;
   /** Optional safety cap for autonomous tool loops. Undefined means no runner-level cap. */
   maxTurns?: number;
   maxContextTokens?: number;
@@ -306,6 +313,7 @@ export class ConversationRunner {
   private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
+  private readonly onTranscript?: (event: SessionTranscriptEvent) => void;
   private promptTraceLogger: PromptTraceLogger;
   private cacheTraceSink?: CacheTraceSink;
   private syntheticObservationProvider?: SyntheticObservationProvider;
@@ -346,6 +354,7 @@ export class ConversationRunner {
   ) {
     this.stream = options?.stream ?? true;
     this.shouldContinue = options?.shouldContinue;
+    this.onTranscript = options?.onTranscript;
     this.toolExecutionContext = options?.toolExecutionContext;
     this.inheritedTargetResolutionState = options?.toolExecutionContext?.targetResolutionState;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
@@ -384,6 +393,10 @@ export class ConversationRunner {
     } catch {
       this.cacheTraceSink = undefined;
     }
+  }
+
+  private observeTranscript(event: SessionTranscriptEvent): void {
+    this.runObservation(() => this.onTranscript?.(event));
   }
 
   private runObservation(action: () => void): void {
@@ -453,6 +466,9 @@ export class ConversationRunner {
       }
       if (this.maxTurns && turns > this.maxTurns) {
         Logger.warning(`[${this.sessionLabel}] 已达到最大推理轮次 ${this.maxTurns}，正在收束`);
+        this.observeTranscript({ type: 'assistant_message',
+          text: `已达到本次后台任务的轮次预算（${this.maxTurns} 轮），我先基于已完成的信息收束。`,
+          phase: 'runtime_reply', model_call: turns });
         return {
           response: `已达到本次后台任务的轮次预算（${this.maxTurns} 轮），我先基于已完成的信息收束。`,
           finalResponseVisible: true,
@@ -585,8 +601,11 @@ export class ConversationRunner {
       try {
         response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
       } catch (error: any) {
+        this.observeTranscript({ type: 'model_failed', model_call: turns, error_name: error?.name || 'Error' });
         this.runObservation(() => this.promptTraceLogger.recordError(turns, error));
         if (this.isMessageSurface() && isModelImageSafetyError(error)) {
+          this.observeTranscript({ type: 'assistant_message', text: MODEL_IMAGE_SAFETY_MESSAGE,
+            phase: 'runtime_reply', model_call: turns });
           if (!this.suppressFinalResponse && this.toolExecutionContext?.channel && this.toolExecutionContext?.surface !== 'catscompany') {
             try {
               await this.toolExecutionContext.channel.reply(
@@ -623,6 +642,12 @@ export class ConversationRunner {
         }
         throw error;
       }
+
+      const transcriptText = stripAssistantTranscriptArtifacts(response.content || '');
+      if (transcriptText) this.observeTranscript({
+        type: 'assistant_message', text: transcriptText,
+        phase: response.toolCalls?.length ? 'tool_prelude' : 'reply', model_call: turns,
+      });
 
       // Providers may resolve successfully after cancellation (including reset/clear).
       // Never turn a late response into another tool execution or final reply.
@@ -696,6 +721,10 @@ export class ConversationRunner {
         }
         if ((response.content || '') && !visibleContent) {
           visibleContent = REPLAY_ARTIFACT_ONLY_MESSAGE;
+        }
+        if (visibleContent && visibleContent !== transcriptText) {
+          this.observeTranscript({ type: 'assistant_message', text: visibleContent,
+            phase: 'runtime_reply', model_call: turns });
         }
 
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI最终回复: ${ConversationRunner.truncateForLog(visibleContent, 300)}`);
@@ -935,12 +964,23 @@ export class ConversationRunner {
 
     const pending = await this.pendingUserInputProvider();
     if (!pending) return false;
-    // The provider may await queue/IPC state. Re-check cancellation before
-    // mutating the episode so a stop cannot be followed by a synthetic turn.
-    if (this.shouldContinue && !this.shouldContinue()) return false;
-    if (this.toolExecutionContext?.abortSignal?.aborted) return false;
-
+    const inputIds = isPendingUserInput(pending) ? pending.transcriptInputIds || [] : [];
     const content = isPendingUserInput(pending) ? pending.content : pending;
+    if (!inputIds.length) {
+      const inputId = randomUUID();
+      inputIds.push(inputId);
+      this.observeTranscript({ type: 'input_received', input_id: inputId, ...sessionTranscriptContent(content) });
+    }
+    if (this.shouldContinue?.() === false || this.toolExecutionContext?.abortSignal?.aborted) {
+      this.observeTranscript({ type: 'input_deferred', input_ids: inputIds, reason: 'cancelled_during_handoff' });
+      if (isPendingUserInput(pending)) pending.onRejected?.();
+      return false;
+    }
+
+    this.observeTranscript({
+      type: 'input_consumed', kind: 'pending', input_ids: inputIds,
+      ...sessionTranscriptContent(content),
+    });
     this.toolExecutionContext = {
       ...(this.toolExecutionContext || {}),
       currentUserInput: content,
@@ -1137,6 +1177,11 @@ export class ConversationRunner {
 
     const syntheticMessages = buildSyntheticObservationMessages(observations);
     messages.push(...syntheticMessages);
+    for (const message of syntheticMessages) {
+      if (message.role === 'tool') this.observeTranscript({
+        type: 'runtime_observation', source: 'synthetic_observation', text: contentToString(message.content),
+      });
+    }
     Logger.info(
       `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s): `
       + observations.map(describeSyntheticObservationForLog).join(' | ')
@@ -1732,6 +1777,15 @@ export class ConversationRunner {
     episodeNumber: number,
     callbacks?: RunnerCallbacks,
   ) {
+    let streamedText = '';
+    const onTextObserved = (text: string) => { streamedText += text; };
+    const onRetry: NonNullable<StreamCallbacks['onRetry']> = (attempt, maxRetries, info) => {
+      if (streamedText) {
+        this.observeTranscript({ type: 'assistant_message', text: streamedText, phase: 'partial', model_call: episodeNumber });
+        streamedText = '';
+      }
+      return callbacks?.onRetry?.(attempt, maxRetries, info);
+    };
     const requestOptions: AIRequestOptions = {
       signal: this.toolExecutionContext?.abortSignal,
       ...(this.cacheTraceSink ? {
@@ -1754,13 +1808,18 @@ export class ConversationRunner {
     try {
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
-          onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
+          onRetry,
+          onTextObserved,
           ...(callbacks?.onText ? { onText: callbacks.onText } : {}),
         };
         return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
       }
       return await this.aiService.chat(messages, activeTools, requestOptions);
     } catch (error: any) {
+      if (streamedText) {
+        this.observeTranscript({ type: 'assistant_message', text: streamedText, phase: 'partial', model_call: episodeNumber });
+        streamedText = '';
+      }
       if (!this.isPromptTooLongError(error)) {
         throw error;
       }
@@ -1779,10 +1838,16 @@ export class ConversationRunner {
 
       if (this.stream) {
         const streamCallbacks: StreamCallbacks = {
-          onRetry: (attempt, maxRetries, info) => callbacks?.onRetry?.(attempt, maxRetries, info),
+          onRetry,
+          onTextObserved,
           ...(callbacks?.onText ? { onText: callbacks.onText } : {}),
         };
-        return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
+        try {
+          return await this.aiService.chatStream(messages, activeTools, streamCallbacks, requestOptions);
+        } catch (retryError) {
+          if (streamedText) this.observeTranscript({ type: 'assistant_message', text: streamedText, phase: 'partial', model_call: episodeNumber });
+          throw retryError;
+        }
       }
       return await this.aiService.chat(messages, activeTools, requestOptions);
     }
@@ -2078,6 +2143,7 @@ export class ConversationRunner {
     let toolInput: unknown;
     try { toolInput = JSON.parse(toolCall.function.arguments); } catch { toolInput = toolCall.function.arguments; }
     const transcriptMode = this.getToolTranscriptMode(toolName, toolDefinitions);
+    this.observeTranscript({ type: 'tool_started', call_id: toolUseId, name: toolName, arguments: toolCall.function.arguments });
     callbacks?.onToolStart?.(toolName, toolUseId, toolInput);
     Logger.info(`[${this.sessionLabel}Turn ${turns}] 执行工具: ${toolName} | 参数: ${ConversationRunner.truncateForLog(toolCall.function.arguments, 500)}`);
     const toolStart = Date.now();
@@ -2086,9 +2152,14 @@ export class ConversationRunner {
       toolCall, messages, this.toolExecutionContext || {}, turns,
     );
     const toolDuration = Date.now() - toolStart;
+    if (this.onTranscript) this.runObservation(() => {
+      const transcriptResult = sessionToolTranscriptContent(result.content);
+      this.observeTranscript({ type: 'tool_finished', call_id: toolUseId, name: toolName,
+        result: transcriptResult.text, ...(transcriptResult.attachments && { attachments: transcriptResult.attachments }), duration_ms: toolDuration });
+    });
     this.metrics.recordToolCall(toolName, toolDuration);
     this.promptTraceLogger.recordToolResult(turns, toolCall, result, toolDuration);
-    Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(result.content, 300)}`);
+    Logger.info(`[${this.sessionLabel}Turn ${turns}] 工具完成: ${toolName} | 耗时: ${toolDuration}ms | 结果: ${ConversationRunner.truncateForLog(contentToString(result.content), 300)}`);
     callbacks?.onToolEnd?.(toolName, toolUseId, contentToString(result.content));
 
     const deliveredOutbound = (

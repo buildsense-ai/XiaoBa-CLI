@@ -19,7 +19,7 @@ export type MemorySearchFinishHandler = (payload: MemorySearchFinishPayload) => 
 
 export const MEMORY_FINISH_MAX_INVALID_ATTEMPTS = 3;
 
-const CANONICAL_REF_PATTERN = /^[^/\\#]+\/\d{4}-\d{2}-\d{2}\/[^/\\#]+\.jsonl#\d+$/;
+const CANONICAL_REF_PATTERN = /^[^/\\#]+\/\d{4}-\d{2}-\d{2}\/[^/\\#]+\.jsonl#(?:\d+|(?:run|input|legacy):[a-zA-Z0-9:_-]+)$/;
 
 export class MemorySearchTool implements Tool {
   definition: ToolDefinition = {

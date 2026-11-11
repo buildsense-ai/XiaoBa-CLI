@@ -233,9 +233,11 @@ test('AIService retries buffered stream failures without publishing abandoned te
   (service as any).sleepWithAbort = async () => {};
 
   const chunks: string[] = [];
+  const observed: string[] = [];
   const retries: number[] = [];
   const result = await service.chatStream([], undefined, {
     onText: text => chunks.push(text),
+    onTextObserved: text => observed.push(text),
     onRetry: attempt => retries.push(attempt),
   }, {
     streamOutputMode: 'buffered',
@@ -244,6 +246,7 @@ test('AIService retries buffered stream failures without publishing abandoned te
   assert.equal(result, finalResponse);
   assert.equal(attempts, 2);
   assert.deepStrictEqual(chunks, ['recovered']);
+  assert.deepStrictEqual(observed, ['abandoned draft', 'recovered']);
   assert.deepStrictEqual(retries, [1]);
 });
 
@@ -716,6 +719,22 @@ test('AIService records when stream output prevents an otherwise retryable reque
   assert.equal(diagnostics?.retry?.attempt_count, 1);
   assert.equal(diagnostics?.retry?.retry_count, 0);
   assert.equal(diagnostics?.retry?.stop_reason, 'stream_output_started');
+});
+
+test('raw text observer errors cannot fail a buffered provider response', async () => {
+  const service = createTestService();
+  (service as any).config.openaiApiMode = 'responses';
+  (service as any).provider = { chatStream: async (_messages: unknown, _tools: unknown, callbacks?: StreamCallbacks) => {
+    callbacks?.onText?.('safe result');
+    return { content: 'safe result' };
+  } };
+  const chunks: string[] = [];
+  const result = await service.chatStream([], undefined, {
+    onTextObserved: () => { throw new Error('observer failed'); },
+    onText: text => chunks.push(text),
+  }, { streamOutputMode: 'buffered' });
+  assert.equal(result.content, 'safe result');
+  assert.deepStrictEqual(chunks, ['safe result']);
 });
 
 function createTestService(): AIService {

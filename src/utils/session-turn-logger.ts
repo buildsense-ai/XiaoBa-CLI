@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
+import { sessionAttachmentReference, sessionTranscriptContent } from './session-transcript-content';
 import { Message, ContentBlock } from '../types';
 import type {
   SessionLogEntry,
@@ -11,6 +13,9 @@ import type {
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
   SessionTurnLogEntry,
+  SessionInputMetadata,
+  SessionTranscriptEvent,
+  SessionTranscriptLogEntry,
 } from './session-log-schema';
 import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
 import type { SubAgentInfo } from '../core/sub-agent-session';
@@ -43,15 +48,15 @@ function parseOptionalLimit(raw: string | undefined): number | null {
 }
 
 export interface LogTurnOptions {
+  runId?: string;
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
   prompt?: SessionPromptTurnLog;
 }
 
 /**
- * SessionTurnLogger - 记录每轮对话的完整交互
- *
- * 默认开启，永久保留，用于分析、日报生成、skill 提取
+ * Append-only session events and compatible successful-turn summaries.
+ * Best effort on filesystem failure; not a transactionally durable work queue.
  */
 export class SessionTurnLogger {
   private sessionType: string;
@@ -60,6 +65,9 @@ export class SessionTurnLogger {
   private turnCounter = 0;
   private agentIdentity?: SessionLogAgentIdentity;
   private fileLoggingDisabled = false;
+  private readonly streamId = randomUUID();
+  private eventSequence = 0;
+  private checkedLogTail = false;
 
   constructor(sessionType: string, sessionId: string, agentIdentity?: SessionLogAgentIdentity) {
     this.sessionType = sessionType;
@@ -105,6 +113,39 @@ export class SessionTurnLogger {
     return this.logFilePath;
   }
 
+  recordInputReceipt(content: string | ContentBlock[], metadata: SessionInputMetadata = {}): string {
+    const inputId = randomUUID();
+    const body = sessionTranscriptContent(content);
+    this.logTranscript({
+      type: 'input_received',
+      input_id: inputId,
+      ...body,
+      ...(metadata.source && { source: metadata.source }),
+      ...(metadata.messageId && { message_id: metadata.messageId }),
+      ...(metadata.senderId && { sender_id: metadata.senderId }),
+      ...(metadata.attachments?.length && {
+        attachments: [...(body.attachments || []), ...metadata.attachments.map(sessionAttachmentReference)],
+      }),
+    });
+    return inputId;
+  }
+
+  logTranscript(event: SessionTranscriptEvent, runId?: string): void {
+    const seq = ++this.eventSequence;
+    const entry: SessionTranscriptLogEntry = {
+      entry_type: 'transcript', schema_version: 1,
+      event_id: `${this.streamId}:${seq}`, stream_id: this.streamId, seq,
+      timestamp: new Date().toISOString(),
+      session_id: this.sessionId, session_type: this.sessionType,
+      ...this.agentIdentityFields(),
+      ...(runId && { run_id: runId }),
+      event: event.type === 'tool_finished'
+        ? { ...event, result: this.truncate(event.result, MAX_TOOL_RESULT_LENGTH) }
+        : event,
+    };
+    this.appendLog(entry);
+  }
+
   /**
    * 记录一轮对话
    */
@@ -125,6 +166,7 @@ export class SessionTurnLogger {
 
     const turnLog: SessionTurnLogEntry = {
       entry_type: 'turn',
+      ...(options.runId && { run_id: options.runId }),
       turn: this.turnCounter,
       timestamp: new Date().toISOString(),
       session_id: this.sessionId,
@@ -225,6 +267,22 @@ export class SessionTurnLogger {
       return;
     }
     try {
+      // A previous process may have stopped mid-line. Isolate its damaged tail
+      // before writing the first new record; readers can then recover the rest.
+      if (!this.checkedLogTail) {
+        this.checkedLogTail = true;
+        if (fs.existsSync(this.logFilePath)) {
+          const fd = fs.openSync(this.logFilePath, 'r');
+          try {
+            const size = fs.fstatSync(fd).size;
+            if (size > 0) {
+              const tail = Buffer.alloc(1);
+              fs.readSync(fd, tail, 0, 1, size - 1);
+              if (tail[0] !== 10) fs.appendFileSync(this.logFilePath, '\n');
+            }
+          } finally { fs.closeSync(fd); }
+        }
+      }
       fs.appendFileSync(this.logFilePath, JSON.stringify(entry) + '\n');
     } catch (error) {
       // Diagnostic logging must never break a conversation turn.

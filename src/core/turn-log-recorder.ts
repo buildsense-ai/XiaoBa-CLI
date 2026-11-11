@@ -1,3 +1,5 @@
+import type { SessionTranscriptEvent } from '../utils/session-log-schema';
+import { sessionTranscriptContent } from '../utils/session-transcript-content';
 import type { ContentBlock, Message } from '../types';
 import {
   SessionPromptTurnLog,
@@ -7,6 +9,7 @@ import {
 import type { RunResult } from './conversation-runner';
 
 export interface RecordTurnParams {
+  runId?: string;
   userInput: string | ContentBlock[];
   result: RunResult;
   tokens: {
@@ -18,7 +21,7 @@ export interface RecordTurnParams {
 }
 
 /**
- * Converts a completed turn into the stable session JSONL schema.
+ * Connects ordered execution events with compatible successful-turn summaries.
  */
 export class TurnLogRecorder {
   private prompt?: SessionPromptTurnLog;
@@ -29,6 +32,21 @@ export class TurnLogRecorder {
     this.prompt = prompt;
   }
 
+  startRun(runId: string, input: string | ContentBlock[], inputIds: string[] = [], source?: string): void {
+    const ids = source ? [] : inputIds.length ? inputIds : [this.logger.recordInputReceipt(input)];
+    this.recordEvent(runId, { type: 'run_started' });
+    this.recordEvent(runId, {
+      type: 'input_consumed', input_ids: ids,
+      kind: source ? 'runtime_observation' : 'root',
+      ...(source && { source }),
+      ...sessionTranscriptContent(input),
+    });
+  }
+
+  recordEvent(runId: string, event: SessionTranscriptEvent): void {
+    this.logger.logTranscript(event, runId);
+  }
+
   recordTurn(params: RecordTurnParams): void {
     this.logger.logTurn(
       params.userInput,
@@ -36,6 +54,7 @@ export class TurnLogRecorder {
       this.extractToolCalls(params.result.newMessages),
       params.tokens,
       {
+        runId: params.runId,
         runtimeFeedback: params.runtimeFeedback,
         runtimeObservationSource: params.runtimeObservationSource,
         prompt: this.prompt,

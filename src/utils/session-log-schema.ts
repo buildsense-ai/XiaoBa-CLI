@@ -42,7 +42,55 @@ export interface SessionPromptTurnLog {
   bundle_file_count: number;
 }
 
+export interface SessionAttachmentLog {
+  name: string;
+  type?: string;
+  url?: string;
+  reference?: string;
+  sha256?: string;
+  media_type?: string;
+}
+
+export interface SessionInputMetadata {
+  source?: string;
+  messageId?: string;
+  senderId?: string;
+  attachments?: SessionAttachmentLog[];
+}
+
+export interface SessionTranscriptContent {
+  text: string;
+  attachments?: SessionAttachmentLog[];
+}
+
+/** Explicit payloads only: never serialize a Message, provider state or execution grants. */
+export type SessionTranscriptEvent =
+  | ({ type: 'input_received'; input_id: string; source?: string; message_id?: string; sender_id?: string } & SessionTranscriptContent)
+  | { type: 'run_started' }
+  | ({ type: 'input_consumed'; input_ids: string[]; kind: 'root' | 'pending' | 'runtime_observation'; source?: string } & SessionTranscriptContent)
+  | { type: 'input_deferred'; input_ids: string[]; reason: 'cancelled_during_handoff' }
+  | { type: 'assistant_message'; text: string; phase: 'reply' | 'tool_prelude' | 'partial' | 'runtime_reply'; model_call: number }
+  | { type: 'runtime_observation'; source: string; text: string }
+  | { type: 'model_failed'; model_call: number; error_name: string }
+  | { type: 'tool_started'; call_id: string; name: string; arguments: string }
+  | { type: 'tool_finished'; call_id: string; name: string; result: string; attachments?: SessionAttachmentLog[]; duration_ms: number }
+  | { type: 'run_finished'; status: 'completed' | 'failed' | 'cancelled'; error_name?: string };
+
+export interface SessionTranscriptLogEntry extends SessionLogIdentityFields {
+  entry_type: 'transcript';
+  schema_version: 1;
+  event_id: string;
+  stream_id: string;
+  seq: number;
+  run_id?: string;
+  timestamp: string;
+  session_id: string;
+  session_type: string;
+  event: SessionTranscriptEvent;
+}
+
 export interface SessionTurnLogEntry extends SessionLogIdentityFields {
+  run_id?: string;
   entry_type: 'turn';
   turn: number;
   timestamp: string;
@@ -169,19 +217,43 @@ export type SessionLogEntry =
   | SessionTurnLogEntry
   | SessionRuntimeLogEntry
   | SessionSubAgentEventLogEntry
-  | SessionPromptTraceLogEntry;
+  | SessionPromptTraceLogEntry
+  | SessionTranscriptLogEntry;
 export type ParsedSessionLogEntry = SessionLogEntry | LegacySessionTurnLogEntry;
 
-export function parseSessionLogContent(content: string): ParsedSessionLogEntry[] {
-  return content
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => JSON.parse(line));
+export interface SessionLogParseIssue {
+  line: number;
+  kind: 'invalid_json' | 'invalid_entry';
 }
 
-export function readSessionLogFile(filePath: string): ParsedSessionLogEntry[] {
-  return parseSessionLogContent(fs.readFileSync(filePath, 'utf-8'));
+/** Strict by default; local retrieval may recover valid lines with explicit diagnostics. */
+export function parseSessionLogContent(
+  content: string,
+  options: { tolerant?: boolean; onIssue?: (issue: SessionLogParseIssue) => void } = {},
+): ParsedSessionLogEntry[] {
+  const entries: ParsedSessionLogEntry[] = [];
+  content.split(/\r?\n/).forEach((line, index) => {
+    if (!line.trim()) return;
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch (error) {
+      if (!options.tolerant) throw error;
+      options.onIssue?.({ line: index + 1, kind: 'invalid_json' });
+      return;
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      if (!options.tolerant) throw new Error(`Invalid session log entry at line ${index + 1}`);
+      options.onIssue?.({ line: index + 1, kind: 'invalid_entry' });
+      return;
+    }
+    entries.push(value as ParsedSessionLogEntry);
+  });
+  return entries;
+}
+
+export function readSessionLogFile(filePath: string, options: Parameters<typeof parseSessionLogContent>[1] = {}): ParsedSessionLogEntry[] {
+  return parseSessionLogContent(fs.readFileSync(filePath, 'utf-8'), options);
 }
 
 export function isSessionTurnEntry(entry: ParsedSessionLogEntry): entry is SessionTurnLogEntry | LegacySessionTurnLogEntry {

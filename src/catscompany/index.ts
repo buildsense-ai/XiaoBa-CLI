@@ -43,6 +43,7 @@ import {
   SessionCallbacks,
 } from '../core/agent-session';
 import { Logger } from '../utils/logger';
+import { SessionTurnLogger } from '../utils/session-turn-logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import type { SubAgentInfo } from '../core/sub-agent-session';
@@ -141,6 +142,7 @@ interface NativeFeishuContextHydration {
 
 interface QueuedMessage {
   userMessage: string | ContentBlock[];
+  transcriptInputIds?: string[];
   approvalInput?: CurrentUserApprovalInput;
   topic: string;
   senderId: string;
@@ -2198,6 +2200,15 @@ export class CatsCompanyBot {
     } as any);
   }
 
+  private createInputReceiptLogger(
+    sessionKey: string,
+    route?: ReturnType<typeof createCatsCoSessionRoute>,
+  ): Pick<SessionTurnLogger, 'recordInputReceipt'> {
+    return this.sessionManager.getInputReceiptRecorder(
+      route?.sessionKey === sessionKey ? route : sessionKey,
+    );
+  }
+
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
     // Any real user message supersedes an interrupted turn: they either
     // already retried by hand or moved on. Dropping the marker here also keeps
@@ -2227,6 +2238,24 @@ export class CatsCompanyBot {
     const entryStopGeneration = this.getSessionStopGeneration(key);
     const nativeFeishuTrigger = shouldHydrateCatsCompanyGroupContext(msg);
     const sessionRoute = msg.envelope ? createCatsCoSessionRoute(msg.envelope) : undefined;
+    const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
+    const hasPendingAttachments = (this.pendingAttachments.get(key)?.length || 0) > 0;
+    if (isCatsCompanyPassiveAcknowledgement(msg.text) && messageFiles.length === 0 && !hasPendingAttachments) {
+      Logger.info(`[${key}] 收到纯确认/感谢消息，已静默跳过推理`);
+      return;
+    }
+
+    // Receipts must survive failed/cancelled restores without materializing an
+    // empty AgentSession that would bypass the cloud/fork recovery guards.
+    const transcriptInputIds = /^\/(?:clear|compact|resume|skills|history|exit)(?:\s|$)/i.test(msg.text)
+      ? []
+      : [this.createInputReceiptLogger(key, sessionRoute).recordInputReceipt(msg.text, {
+        source: msg.executionScope?.channelSource || 'catscompany',
+        messageId: String(msg.seq),
+        senderId: msg.senderId,
+        attachments: messageFiles.map(file => ({ name: file.fileName, type: file.type, url: file.url })),
+      })];
+
     let cloudRestoreResult: CloudSessionRestoreResult | undefined;
     if (sessionRoute && isClearCommand(msg.text)) {
       // Fence older work before the provenance lookup can yield to it.
@@ -2309,13 +2338,6 @@ export class CatsCompanyBot {
         }
       }
       if (result.handled) return;
-    }
-
-    const messageFiles = msg.files && msg.files.length > 0 ? msg.files : (msg.file ? [msg.file] : []);
-    const hasPendingAttachments = (this.pendingAttachments.get(key)?.length || 0) > 0;
-    if (isCatsCompanyPassiveAcknowledgement(msg.text) && messageFiles.length === 0 && !hasPendingAttachments) {
-      Logger.info(`[${key}] 收到纯确认/感谢消息，已静默跳过推理`);
-      return;
     }
 
     Logger.info(`[${key}] 收到消息: ${msg.text.slice(0, 50)}...`);
@@ -2406,6 +2428,7 @@ export class CatsCompanyBot {
       const queue = this.messageQueue.get(key) ?? [];
       queue.push({
         userMessage,
+        transcriptInputIds,
         approvalInput: currentUserApprovalInputFromCatsMessage(msg),
         topic: msg.topic,
         senderId: msg.senderId,
@@ -2467,6 +2490,7 @@ export class CatsCompanyBot {
           return;
         }
         const result = await session.handleMessage(userMessage, {
+          transcriptInputIds,
           channel,
           sessionRoute,
           executionScope: msg.executionScope,
@@ -4318,7 +4342,7 @@ export class CatsCompanyBot {
           );
           if (!task) return;
         }
-        const result = msg.source === 'subagent_feedback'
+        const result = msg.source !== 'user'
           ? await session.handleRuntimeObservation(msg.userMessage as string, {
             channel,
             callbacks: suppressSubAgentFinalResponse ? undefined : this.buildSessionCallbacks(msg.topic, {
@@ -4327,7 +4351,7 @@ export class CatsCompanyBot {
               channelSource: msg.executionScope?.channelSource,
               clearGeneration,
             }),
-            source: 'subagent_result',
+            source: msg.source === 'service_run_receipt' ? 'service_run_receipt' : 'subagent_result',
             suppressFinalResponse: suppressSubAgentFinalResponse,
             executionScope: msg.executionScope,
             localDeviceGrant: this.localDeviceGrant,
@@ -4337,6 +4361,7 @@ export class CatsCompanyBot {
             thinToolRpc: this.maybeBuildThinToolRpcTransport(),
           })
           : await session.handleMessage(msg.userMessage, {
+            transcriptInputIds: msg.transcriptInputIds,
             channel,
             executionScope: msg.executionScope,
             currentUserApprovalInputs: msg.approvalInput ? [msg.approvalInput] : null,
@@ -4455,12 +4480,13 @@ export class CatsCompanyBot {
     expectedClearGeneration = this.getSessionClearGeneration(sessionKey),
     currentArtifactTaskRef?: string,
     expectedStopGeneration = this.getSessionStopGeneration(sessionKey),
-  ): string | ContentBlock[] | PendingUserInput | null {
+  ): PendingUserInput | null {
     const queue = this.messageQueue.get(sessionKey);
     if (!queue || queue.length === 0) return null;
 
     if (expectedClearGeneration !== this.getSessionClearGeneration(sessionKey)) return null;
     if (expectedStopGeneration !== this.getSessionStopGeneration(sessionKey)) return null;
+    if (this.shuttingDown) return null;
     // Artifact tasks own a one-shot ToolExecutionContext. Ordinary input must
     // remain queued until that task turn releases its run/task correlation.
     if (currentArtifactTaskRef) return null;
@@ -4470,7 +4496,7 @@ export class CatsCompanyBot {
       const item = queue[firstRemainingIndex];
       if ((item.clearGeneration ?? expectedClearGeneration) !== expectedClearGeneration) break;
       if ((item.stopGeneration ?? expectedStopGeneration) !== expectedStopGeneration) break;
-      if (item.source === 'subagent_feedback') break;
+      if (item.source !== 'user') break;
       // A one-user/one-bot web task has no external group history to hydrate.
       // Keep its follow-ups in the active episode, while native/large groups
       // still wait for the separate durable-context hydration boundary.
@@ -4522,9 +4548,24 @@ export class CatsCompanyBot {
     const artifactContextMessage = [...messages]
       .reverse()
       .find(item => Object.prototype.hasOwnProperty.call(item, 'artifactContextRef'));
-    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection && !targetRoutes && !artifactContextMessage && !skillConnectorGrants?.length && currentUserApprovalInputs.length === 0) return content;
-    return {
+    let rejected = false;
+    const pending: PendingUserInput = {
       content,
+      transcriptInputIds: messages.flatMap(item => item.transcriptInputIds || []),
+      onRejected: () => {
+        if (rejected) return;
+        rejected = true;
+        if (this.shuttingDown
+          || expectedClearGeneration !== this.getSessionClearGeneration(sessionKey)
+          || expectedStopGeneration !== this.getSessionStopGeneration(sessionKey)) return;
+        // Restore the original arrival order, before any inputs that arrived
+        // after this batch was handed to the runner.
+        this.messageQueue.set(sessionKey, [...userMessages, ...(this.messageQueue.get(sessionKey) || [])]);
+      },
+    };
+    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection && !targetRoutes && !artifactContextMessage && !skillConnectorGrants?.length && currentUserApprovalInputs.length === 0) return pending;
+    return {
+      ...pending,
       currentUserApprovalInputs,
       localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
       deviceGrants: deviceGrants.length > 0 ? deviceGrants : undefined,

@@ -135,4 +135,29 @@ describe('DailyReportGenerator', () => {
       total_tokens: 10,
     });
   });
+
+  test('projects transcript runs once, recovers damaged tails, and groups CLI and Weixin reports', () => {
+    const { DailyReportGenerator } = require('../src/utils/daily-report-generator');
+    const generator = new DailyReportGenerator({} as any);
+    const envelope = { entry_type: 'transcript', schema_version: 1, stream_id: 'stream', seq: 1,
+      timestamp: '2026-11-11T08:00:00Z', session_id: 'cli-session', session_type: 'cli' };
+    const filePath = path.join(testRoot, 'transcript.jsonl');
+    const entries = [
+      { ...envelope, event_id: 'receipt', event: { type: 'input_received', input_id: 'input', text: 'actual user topic' } },
+      { ...envelope, event_id: 'consumed', run_id: 'run', event: { type: 'input_consumed', input_ids: ['input'], kind: 'root', text: 'merged model input' } },
+      { ...envelope, event_id: 'tool', run_id: 'run', event: { type: 'tool_finished', call_id: 'call', name: 'read_file', result: 'done', duration_ms: 1 } },
+      { entry_type: 'turn', run_id: 'run', turn: 1, timestamp: envelope.timestamp, session_id: 'cli-session', session_type: 'cli',
+        user: { text: 'merged model input' }, assistant: { text: 'answer', tool_calls: [] }, tokens: { prompt: 2, completion: 3 } },
+    ];
+    fs.writeFileSync(filePath, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n{"damaged":');
+    const summary = (generator as any).parseSessionLog(filePath, 'cli');
+    assert.strictEqual(summary.turn_count, 1);
+    assert.deepStrictEqual(summary.topics, ['actual user topic']);
+    assert.deepStrictEqual(summary.tool_calls, ['read_file']);
+    assert.strictEqual(summary.total_tokens, 5);
+    const grouped = (generator as any).groupByType([summary, { ...summary, session_type: 'weixin' }]);
+    const report = (generator as any).fallbackTemplate('2026-11-11', grouped, { total_sessions: 2, chat_sessions: 2, team_sessions: 0, total_turns: 2, total_tokens: 10 });
+    assert.match(report, /CLI \/ Weixin/);
+    assert.match(report, /actual user topic/);
+  });
 });

@@ -199,6 +199,7 @@ export class AIService {
           const bufferedChunks: string[] = [];
           const providerCallbacks = this.createProviderStreamCallbacks(text => {
             hasObservedText = true;
+            try { callbacks?.onTextObserved?.(text); } catch { /* Observation cannot affect retries or delivery. */ }
             if (streamOutputMode === 'buffered') {
               bufferedChunks.push(text);
               return;
