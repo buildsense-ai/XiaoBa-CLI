@@ -168,7 +168,7 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
       skillRuntime: { reloadSkills: async () => undefined, buildSkillsListMessage: () => null } as any,
       planRuntime: undefined as any,
       turnContextBuilder: new context.TurnContextBuilder(),
-      turnLogRecorder: { recordTurn: () => undefined } as any,
+      turnLogRecorder: { recordTurn: () => undefined, startRun: () => undefined, recordEvent: () => undefined } as any,
       workspaceRoot: root,
       getCurrentDirectory: () => root,
       updateCurrentDirectory: () => undefined,

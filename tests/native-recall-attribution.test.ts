@@ -224,7 +224,7 @@ test('controller persists source-specific local JSONL event through existing ses
     services: { aiService: ai, toolManager: tools, skillManager: {} as any, memoryBranch: { enabled: false },
       catslogMemory: { reportBranchCitations: async () => { throw new Error('must not report native refs'); } } } as any,
     skillRuntime: { reloadSkills: async () => {}, buildSkillsListMessage: () => null } as any,
-    planRuntime: undefined as any, turnContextBuilder: new TurnContextBuilder(), turnLogRecorder: { recordTurn: () => {} } as any,
+    planRuntime: undefined as any, turnContextBuilder: new TurnContextBuilder(), turnLogRecorder: { recordTurn: () => {}, startRun: () => {}, recordEvent: () => {} } as any,
     workspaceRoot: process.cwd(), getCurrentDirectory: () => process.cwd(), updateCurrentDirectory: () => {},
   });
   try {
