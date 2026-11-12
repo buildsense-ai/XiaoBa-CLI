@@ -61,6 +61,7 @@ function createProcessHarness() {
   const taskStatuses: Array<{ topic: string; status: any }> = [];
 
   const session = {
+    recordInputReceipt: () => 'receipt-test',
     isBusy: () => false,
     handleMessage: async (userMessage: any, options: any) => {
       handledTurns.push({ userMessage, options });
@@ -73,6 +74,7 @@ function createProcessHarness() {
   };
 
   bot.sessionManager = {
+    getInputReceiptRecorder: () => session,
     getOrCreate: () => session,
     get: () => session,
   };
@@ -519,7 +521,7 @@ describe('CatsCo content blocks', () => {
       await downloadGate;
       return 'C:\\tmp\\catsco-test\\a.png';
     };
-    bot.sessionManager = { getOrCreate: () => session, get: () => session };
+    bot.sessionManager = { getInputReceiptRecorder: () => session, getOrCreate: () => session, get: () => session };
 
     const turnPromise = (bot as any).processParsedMessage({
       topic: 'p2p_1_2',

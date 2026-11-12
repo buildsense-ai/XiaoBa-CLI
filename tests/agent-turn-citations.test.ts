@@ -87,6 +87,8 @@ function createCitationController(options: {
     planRuntime: undefined as any,
     turnContextBuilder: new TurnContextBuilder(),
     turnLogRecorder: {
+      startRun: () => undefined,
+      recordEvent: () => undefined,
       recordTurn: () => undefined,
     } as any,
     workspaceRoot: process.cwd(),

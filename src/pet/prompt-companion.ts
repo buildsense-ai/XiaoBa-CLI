@@ -865,7 +865,9 @@ function readPartialSessionLog(filePath: string): ParsedSessionLogEntry[] {
       fs.readSync(fd, buffer, 0, buffer.length, start);
       const text = buffer.toString('utf8');
       const normalized = start > 0 ? text.replace(/^[^\n]*(\n|$)/, '') : text;
-      return parseSessionLogContent(normalized).slice(-80);
+      return parseSessionLogContent(normalized, { tolerant: true })
+        .filter(entry => isSessionTurnEntry(entry) || entry.entry_type === 'runtime' || entry.entry_type === 'prompt_trace')
+        .slice(-80);
     } finally {
       fs.closeSync(fd);
     }

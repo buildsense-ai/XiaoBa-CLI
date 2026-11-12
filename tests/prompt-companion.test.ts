@@ -58,6 +58,23 @@ describe('prompt companion advisor', { concurrency: false }, () => {
     assert.equal(fs.readFileSync(path.join(testRoot, 'prompts', 'system-prompt.md'), 'utf8'), '# CatsCo\n\n你是 CatsCo。');
   });
 
+  for (const damagedTail of [false, true]) {
+    test(`transcript rows do not displace compatible quality signals (${damagedTail ? 'damaged tail' : 'valid tail'})`, async () => {
+      const { getCachedPromptCompanionProposal } = loadModule('../src/pet/prompt-companion');
+      writeSessionTurnLog('[处理失败: API错误 (500): synthetic failure]');
+      appendRuntimeLog('error', 'API调用失败: synthetic upstream 502');
+      const file = path.join(testRoot, 'logs', 'sessions', 'catscompany', '2026-06-18', 'session.jsonl');
+      const events = Array.from({ length: 100 }, (_, index) => JSON.stringify({
+        entry_type: 'transcript', schema_version: 1, event_id: `event-${index}`,
+        event: { type: 'assistant_message', phase: 'partial', model_call: 1, text: 'synthetic fragment' },
+      })).join('\n');
+      fs.appendFileSync(file, events + (damagedTail ? '\n{"partial":' : '\n'));
+      const result = await getCachedPromptCompanionProposal();
+      assert.equal(result.signals.recent_runtime_errors, 1);
+      assert.equal(result.signals.recent_session_turns, 1);
+    });
+  }
+
   test('requires a cached proposal id before applying', async () => {
     const {
       applyPromptCompanionProposal,

@@ -1,3 +1,4 @@
+import type { SessionInputMetadata } from '../utils/session-log-schema';
 import { Message } from '../types';
 import type {
   ExecutionScope,
@@ -217,6 +218,7 @@ export interface HandleMessageOptions {
   runtimeFeedback?: RuntimeFeedbackInput[];
   /** Pulls user messages that arrived while this session was busy. */
   pendingUserInputProvider?: PendingUserInputProvider;
+  transcriptInputIds?: string[];
 }
 
 export interface HandleRuntimeObservationOptions extends HandleMessageOptions {
@@ -305,9 +307,11 @@ export class AgentSession {
     private services: AgentServices,
     private sessionType?: string,
     private readonly sessionRoute?: SessionRoute,
+    sessionTurnLogger?: SessionTurnLogger,
   ) {
     const type = sessionType || this.extractSessionType(key);
-    this.sessionTurnLogger = new SessionTurnLogger(type, key, sessionLogAgentIdentity(sessionRoute));
+    this.sessionTurnLogger = sessionTurnLogger ?? new SessionTurnLogger(type, key, sessionLogAgentIdentity(sessionRoute));
+    if (sessionTurnLogger) this.sessionTurnLogger.setAgentIdentity(sessionLogAgentIdentity(sessionRoute));
     this.turnLogRecorder = new TurnLogRecorder(this.sessionTurnLogger);
     const modelConfig = typeof (services.aiService as any).getConfig === 'function'
       ? (services.aiService as any).getConfig()
@@ -696,6 +700,10 @@ export class AgentSession {
    * @param text 用户消息文本
    * @param callbacksOrOptions 旧签名兼容 SessionCallbacks，新签名用 HandleMessageOptions
    */
+  recordInputReceipt(content: string | import('../types').ContentBlock[], metadata?: SessionInputMetadata): string {
+    return this.sessionTurnLogger.recordInputReceipt(content, metadata);
+  }
+
   async handleMessage(
     text: string | import('../types').ContentBlock[],
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
@@ -744,6 +752,7 @@ export class AgentSession {
       let localFileGrants: ScopedLocalFileGrant[] | undefined;
       let runtimeFeedbackInputs: RuntimeFeedbackInput[] = [];
       let pendingUserInputProvider: PendingUserInputProvider | undefined;
+      let transcriptInputIds: string[] | undefined;
 
       if (callbacksOrOptions) {
         if (
@@ -764,6 +773,7 @@ export class AgentSession {
           || 'callbacks' in callbacksOrOptions
           || 'runtimeFeedback' in callbacksOrOptions
           || 'pendingUserInputProvider' in callbacksOrOptions
+          || 'transcriptInputIds' in callbacksOrOptions
         ) {
           // 新签名 HandleMessageOptions
           const opts = callbacksOrOptions as HandleMessageOptions;
@@ -786,6 +796,7 @@ export class AgentSession {
           localFileGrants = opts.localFileGrants;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
           pendingUserInputProvider = opts.pendingUserInputProvider;
+          transcriptInputIds = opts.transcriptInputIds;
         } else {
           // 旧签名 SessionCallbacks
           callbacks = callbacksOrOptions as SessionCallbacks;
@@ -802,6 +813,10 @@ export class AgentSession {
         if (!accepted) {
           Logger.warning(`[会话 ${this.key}] 忽略与既有日志流冲突的 Agent identity`);
         }
+      }
+
+      if (!runtimeObservationSource && !transcriptInputIds?.length) {
+        transcriptInputIds = [this.recordInputReceipt(text)];
       }
 
       if (this.busy || this.manualCompactionInFlight) {
@@ -896,6 +911,7 @@ export class AgentSession {
           runtimeFeedback,
           runtimeObservationSource,
           suppressFinalResponse,
+          transcriptInputIds,
           callbacks,
           channel,
           sessionRoute,
@@ -2225,7 +2241,7 @@ export class AgentSession {
 
 }
 
-function sessionLogAgentIdentity(route: SessionRoute | undefined): SessionLogAgentIdentity | undefined {
+export function sessionLogAgentIdentity(route: SessionRoute | undefined): SessionLogAgentIdentity | undefined {
   if (!route) return undefined;
   const rawAgentId = route.agentId?.trim();
   const agentId = rawAgentId && route.source === 'catscompany' && /^\d+$/.test(rawAgentId)

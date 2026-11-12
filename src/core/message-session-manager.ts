@@ -1,9 +1,10 @@
-import { AgentSession, AgentServices, SystemPromptProvider } from './agent-session';
+import { AgentSession, AgentServices, SystemPromptProvider, sessionLogAgentIdentity } from './agent-session';
 import { Logger } from '../utils/logger';
 import { composeSessionSystemPromptProvider } from './session-system-prompt';
 import { SubAgentManager } from './sub-agent-manager';
 import type { SessionRoute } from '../types/session-identity';
 import { isSessionRoute } from './session-router';
+import { SessionTurnLogger } from '../utils/session-turn-logger';
 
 /** 默认会话过期时间：60 分钟 */
 const DEFAULT_SESSION_TTL = 60 * 60 * 1000;
@@ -28,6 +29,7 @@ export type SessionKeyInput = string | SessionRoute;
 export class MessageSessionManager {
   private static managers = new Map<string, MessageSessionManager>();
   private sessions = new Map<string, AgentSession>();
+  private receiptLoggers = new Map<string, { logger: SessionTurnLogger; lastActiveAt: number }>();
   private destroying = new Set<string>();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private ttl: number;
@@ -66,6 +68,24 @@ export class MessageSessionManager {
     return session;
   }
 
+  /** Record before asynchronous restoration without materializing an empty session. */
+  getInputReceiptRecorder(input: SessionKeyInput): Pick<SessionTurnLogger, 'recordInputReceipt'> {
+    const { key, route } = this.normalizeSessionInput(input);
+    const session = this.get(input);
+    if (session) return session;
+    let pending = this.receiptLoggers.get(key);
+    if (!pending) {
+      pending = {
+        logger: new SessionTurnLogger(this.sessionType, key, sessionLogAgentIdentity(route)),
+        lastActiveAt: Date.now(),
+      };
+      this.receiptLoggers.set(key, pending);
+    }
+    pending.logger.setAgentIdentity(sessionLogAgentIdentity(route));
+    pending.lastActiveAt = Date.now();
+    return pending.logger;
+  }
+
   /** 设置上下文注入器，新建 session 时自动调用 */
   setContextInjector(injector: (session: AgentSession) => void): void {
     this.contextInjector = injector;
@@ -79,7 +99,7 @@ export class MessageSessionManager {
     const { key, route } = this.normalizeSessionInput(input);
     let session = this.sessions.get(key);
     if (!session) {
-      session = new AgentSession(key, this.agentServices, this.sessionType, route);
+      session = new AgentSession(key, this.agentServices, this.sessionType, route, this.receiptLoggers.get(key)?.logger);
       if (this.systemPromptProviderFactory) {
         session.setSystemPromptProvider(composeSessionSystemPromptProvider(
           this.systemPromptProviderFactory(key),
@@ -94,6 +114,7 @@ export class MessageSessionManager {
         this.contextInjector(session);
       }
       this.sessions.set(key, session);
+      this.receiptLoggers.delete(key);
       session.runWithLogContext(() => Logger.info(`新建会话: ${key}`));
     }
 
@@ -130,6 +151,9 @@ export class MessageSessionManager {
   }
 
   private async cleanupExpiredSessions(now: number): Promise<void> {
+    for (const [key, pending] of this.receiptLoggers) {
+      if (now - pending.lastActiveAt > this.ttl) this.receiptLoggers.delete(key);
+    }
     const cleanupPromises: Promise<void>[] = [];
     for (const [key, session] of this.sessions) {
       if (this.destroying.has(key)) continue;
@@ -174,6 +198,7 @@ export class MessageSessionManager {
     await Promise.all(cleanupPromises);
 
     this.sessions.clear();
+    this.receiptLoggers.clear();
     MessageSessionManager.managers.delete(this.sessionType);
   }
 

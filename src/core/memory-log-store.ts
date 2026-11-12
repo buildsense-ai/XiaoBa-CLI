@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { SessionToolCallLog, SessionTurnLogEntry } from '../utils/session-log-schema';
+import { parseSessionLogContent } from '../utils/session-log-schema';
+import { projectSessionLog } from '../utils/session-log-projection';
 import { stripAssistantTranscriptArtifacts } from '../utils/transcript-artifacts';
 import { PathResolver } from '../utils/path-resolver';
 
@@ -15,6 +17,8 @@ export interface MemoryTurnRecord {
   entry: SessionTurnLogEntry;
   ordinal: number;
   filePath: string;
+  transcript?: string;
+  searchable?: boolean;
 }
 
 export interface MemorySearchParams {
@@ -47,7 +51,7 @@ interface ParsedRef {
   sessionType: string;
   date: string;
   fileName: string;
-  ordinal: number;
+  key: string;
 }
 
 const DEFAULT_SEARCH_LIMIT = 80;
@@ -90,11 +94,12 @@ export class MemoryLogStore {
         const records = await this.readTurnsFromFile(root.root, file, signal);
         for (const record of records) {
           throwIfAborted(signal);
+          if (record.searchable === false) continue;
           const timestampMs = timestampForRecord(record);
           if (start !== null && timestampMs < start) continue;
           if (end !== null && timestampMs > end) continue;
 
-          const text = searchableText(record.entry);
+          const text = record.transcript || searchableText(record.entry);
           const lower = text.toLowerCase();
           const hits = keywords.filter(keyword => lower.includes(keyword.toLowerCase()));
           if (hits.length === 0) continue;
@@ -130,8 +135,9 @@ export class MemoryLogStore {
     const parsed = parseCanonicalRef(ref);
     const filePath = this.resolveFilePath(parsed);
     const root = this.rootForFile(filePath);
-    const records = await this.readTurnsFromFile(root, filePath, signal);
-    const targetIndex = records.findIndex(record => record.ordinal === parsed.ordinal);
+    const records = (await this.readTurnsFromFile(root, filePath, signal))
+      .filter(record => record.searchable !== false || record.ref === ref);
+    const targetIndex = records.findIndex(record => record.ref === ref);
     if (targetIndex < 0) {
       throw createToolInputError(`memory ref not found: ${ref}`);
     }
@@ -185,7 +191,7 @@ export class MemoryLogStore {
     const filePath = this.resolveFilePath(parsed);
     const root = this.rootForFile(filePath);
     const records = await this.readTurnsFromFile(root, filePath, signal);
-    const record = records.find(item => item.ordinal === parsed.ordinal);
+    const record = records.find(item => item.ref === ref);
     if (!record) {
       throw createToolInputError(`memory ref not found: ${ref}`);
     }
@@ -223,28 +229,16 @@ export class MemoryLogStore {
     const parts = relative.split('/');
     if (parts.length !== 3) return [];
     const [sessionType, date, fileName] = parts;
-    const records: MemoryTurnRecord[] = [];
-    let ordinal = 0;
-    for (const line of content.split(/\r?\n/)) {
-      throwIfAborted(signal);
-      if (!line.trim()) continue;
-      let parsed: any;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (parsed?.entry_type !== 'turn') continue;
-      if (!hasTurnShape(parsed)) continue;
-      ordinal++;
-      records.push({
-        ref: `${sessionType}/${date}/${fileName}#${ordinal}`,
-        entry: parsed,
-        ordinal,
+    return projectSessionLog(parseSessionLogContent(content, { tolerant: true }))
+      .sort((a, b) => a.entry.timestamp.localeCompare(b.entry.timestamp))
+      .map((projection, index) => ({
+        ref: `${sessionType}/${date}/${fileName}#${projection.ref}`,
+        entry: projection.entry,
+        ordinal: index + 1,
         filePath,
-      });
-    }
-    return records;
+        transcript: projection.transcript,
+        searchable: projection.searchable,
+      }));
   }
 }
 
@@ -319,24 +313,22 @@ async function walk(dir: string, files: Array<{ file: string; mtimeMs: number }>
 }
 
 function parseCanonicalRef(ref: string): ParsedRef {
-  const match = String(ref || '').trim().match(/^([^/\\#]+)\/(\d{4}-\d{2}-\d{2})\/([^/\\#]+\.jsonl)#(\d+)$/);
+  const match = String(ref || '').trim().match(/^([^/\\#]+)\/(\d{4}-\d{2}-\d{2})\/([^/\\#]+\.jsonl)#(\d+|(?:run|input|legacy):[a-zA-Z0-9:_-]+)$/);
   if (!match) {
-    throw createToolInputError('ref must look like <session_type>/<yyyy-mm-dd>/<jsonl-file-name>#<episodeOrdinal>');
+    throw createToolInputError('ref must look like <session_type>/<yyyy-mm-dd>/<jsonl-file-name>#<ordinal-or-event-id>');
   }
-  const ordinal = Number(match[4]);
-  if (!Number.isInteger(ordinal) || ordinal <= 0) {
-    throw createToolInputError('ref episode ordinal must be a positive integer');
-  }
+  const key = match[4];
+  if (/^\d+$/.test(key) && Number(key) <= 0) throw createToolInputError('memory ref ordinal must be positive');
   return {
     sessionType: match[1],
     date: match[2],
     fileName: match[3],
-    ordinal,
+    key,
   };
 }
 
 function formatRef(ref: ParsedRef): string {
-  return `${ref.sessionType}/${ref.date}/${ref.fileName}#${ref.ordinal}`;
+  return `${ref.sessionType}/${ref.date}/${ref.fileName}#${ref.key}`;
 }
 
 function searchableText(entry: SessionTurnLogEntry): string {
@@ -363,6 +355,10 @@ function normalizeToolArgument(value: unknown): string {
 function formatTurnRecord(record: MemoryTurnRecord, budgetChars: number): MemoryReadResult {
   const builder = new BudgetTextBuilder(budgetChars);
   builder.appendLine(`REF: ${record.ref}`);
+  if (record.transcript) {
+    builder.appendSection('SESSION_TRANSCRIPT', record.transcript);
+    return { ref: record.ref, text: builder.toString(), ...(builder.truncated && { truncated: true }) };
+  }
   builder.appendSection('USER', record.entry.user?.text || '');
   builder.appendSection(
     'ASSISTANT_FINAL',
@@ -467,15 +463,6 @@ function clampNonNegativeInteger(value: unknown, defaultValue: number, maxValue:
   return Math.min(parsed, maxValue);
 }
 
-function hasTurnShape(value: any): value is SessionTurnLogEntry {
-  return value?.entry_type === 'turn'
-    && typeof value.timestamp === 'string'
-    && typeof value.session_id === 'string'
-    && typeof value.session_type === 'string'
-    && typeof value.user?.text === 'string'
-    && typeof value.assistant?.text === 'string'
-    && Array.isArray(value.assistant?.tool_calls);
-}
 
 function createToolInputError(message: string): Error {
   const error = new Error(message);

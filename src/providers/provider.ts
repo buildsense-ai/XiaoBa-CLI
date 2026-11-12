@@ -8,6 +8,8 @@ import type { ProviderRequestPreflightSummary } from './request-preflight';
 export interface StreamCallbacks {
   /** 收到文本片段 */
   onText?: (text: string) => void;
+  /** Best-effort raw provider text observation before delivery buffering; not proof of delivery. */
+  onTextObserved?: (text: string) => void;
   /** 收到完整响应 */
   onComplete?: (response: ChatResponse) => void;
   /** 发生错误 */

@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const { readTurnSummaries } = require('./session-log-compat.cjs');
 
 const DIARY_HOME = path.join(os.homedir(), '.xiaoba-diary');
 const AGENTS_FILE = path.join(DIARY_HOME, 'agents.json');
@@ -145,7 +146,7 @@ function readAgentSessions(agentPath, agentId, date) {
     for (const file of files) {
       const content = fs.readFileSync(path.join(dateDir, file), 'utf-8').trim();
       if (!content) continue;
-      const turns = content.split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      const turns = readTurnSummaries(content);
       if (turns.length === 0) continue;
       sessions.push({
         agent_id: agentId,

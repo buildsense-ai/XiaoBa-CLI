@@ -24,6 +24,61 @@ describe('MessageSessionManager', () => {
     }
   });
 
+  for (const createBeforeMidnight of [false, true]) {
+    test(`keeps receipts in the execution log across midnight (${createBeforeMidnight ? 'existing session' : 'restoration pending'})`, async t => {
+      t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 0, 1, 23, 59).getTime() });
+      const { MessageSessionManager, createSessionRoute } = loadSessionManagerModules();
+      const manager = new MessageSessionManager(buildMockServices(), 'catscompany');
+      const route = createSessionRoute({
+        source: 'catscompany', topicType: 'p2p', topicId: `midnight-${createBeforeMidnight}`,
+        actorUserId: 'usr7', agentId: '43', identityTrust: 'server_canonical',
+      });
+      let logger: any;
+      try {
+        const earlySession = createBeforeMidnight ? manager.getOrCreate(route) : null;
+        const recorder = manager.getInputReceiptRecorder(route);
+        const firstId = recorder.recordInputReceipt('before midnight');
+        logger = earlySession ? (earlySession as any).sessionTurnLogger : recorder;
+        const file = logger.getLogFilePath();
+        assert.equal(manager.get(route), earlySession, 'receipt must not create a session');
+        assert.match(file, /2026-01-01/);
+
+        t.mock.timers.setTime(new Date(2026, 0, 2, 0, 1).getTime());
+        const session = manager.getOrCreate(route);
+        const secondId = manager.getInputReceiptRecorder(route).recordInputReceipt('after midnight');
+        assert.strictEqual((session as any).sessionTurnLogger, logger);
+        assert.equal((manager as any).receiptLoggers.size, 0);
+        const entries = fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+          .filter(entry => entry.event?.type === 'input_received');
+        assert.deepEqual(entries.map(entry => entry.event.input_id), [firstId, secondId]);
+        assert.deepEqual(entries.map(entry => entry.event.text), ['before midnight', 'after midnight']);
+        assert.ok(entries.every(entry => entry.agent_identity.agent_id === 'usr43'));
+        assert.ok(entries.every(entry => entry.agent_identity.trust === 'server_canonical'));
+        assert.equal(entries[1].timestamp, new Date(2026, 0, 2, 0, 1).toISOString());
+      } finally {
+        await manager.destroy();
+        if (logger) fs.rmSync(logger.getLogFilePath(), { force: true });
+      }
+    });
+  }
+
+  test('expires receipt-only writers without deleting accepted input', async () => {
+    const { MessageSessionManager } = loadSessionManagerModules();
+    const manager = new MessageSessionManager(buildMockServices(), 'receipt-ttl-test', { ttl: 10 });
+    const recorder = manager.getInputReceiptRecorder('user:pending-recovery') as any;
+    const inputId = recorder.recordInputReceipt('accepted but recovery failed');
+    try {
+      const pending = (manager as any).receiptLoggers.get('user:pending-recovery');
+      await (manager as any).cleanupExpiredSessions(pending.lastActiveAt + 11);
+      assert.equal((manager as any).receiptLoggers.size, 0);
+      assert.equal(manager.get('user:pending-recovery'), null);
+      assert.match(fs.readFileSync(recorder.getLogFilePath(), 'utf8'), new RegExp(inputId));
+    } finally {
+      await manager.destroy();
+      fs.rmSync(recorder.getLogFilePath(), { force: true });
+    }
+  });
+
   test('injects system prompt providers into newly created sessions', async () => {
     const { MessageSessionManager } = loadSessionManagerModules();
     const manager = new MessageSessionManager(buildMockServices(), 'feishu-test', {

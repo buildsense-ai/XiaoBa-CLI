@@ -387,22 +387,37 @@ export class CatscoLogUploadScheduler {
     client: CatscoLogAgentClient,
     token: string,
   ): Promise<void> {
-    const result = await client.uploadLog({
-      filePath: item.absolutePath,
-      token,
-      logDate: item.logDate,
-    });
-    if (result.status && !['created', 'appended', 'duplicate'].includes(result.status.toLowerCase())) {
-      throw new Error(`CatsLog v1 fallback was not accepted (${String(result.status || 'unknown')})`);
+    // The client reads filePath itself, so freeze the bytes before handing it
+    // over. Keep the basename because v1 uses it as the multipart filename.
+    const sourceStats = fs.statSync(item.absolutePath);
+    const snapshotDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'catslog-upload-'));
+    const snapshotPath = path.join(snapshotDirectory, path.basename(item.absolutePath));
+    try {
+      fs.copyFileSync(item.absolutePath, snapshotPath);
+      const size = fs.statSync(snapshotPath).size;
+      const snapshotSha256 = sha256FilePrefix(snapshotPath, size);
+      const result = await client.uploadLog({
+        filePath: snapshotPath,
+        token,
+        logDate: item.logDate,
+      });
+      if (result.status && !['created', 'appended', 'duplicate'].includes(result.status.toLowerCase())) {
+        throw new Error(`CatsLog v1 fallback was not accepted (${String(result.status || 'unknown')})`);
+      }
+      if (result.sha256 && result.sha256.toLowerCase() !== snapshotSha256) {
+        throw new Error('CatsLog v1 upload returned a mismatched SHA-256');
+      }
+      state.uploaded[item.stateKey] = {
+        size,
+        // Capture the source mtime before copying so later writes remain pending.
+        mtimeMs: sourceStats.mtimeMs,
+        uploadedAt: new Date().toISOString(),
+        uploadId: result.upload_id || result.record_id,
+        sha256: snapshotSha256,
+      };
+    } finally {
+      fs.rmSync(snapshotDirectory, { recursive: true, force: true });
     }
-    const stats = fs.statSync(item.absolutePath);
-    state.uploaded[item.stateKey] = {
-      size: stats.size,
-      mtimeMs: stats.mtimeMs,
-      uploadedAt: new Date().toISOString(),
-      uploadId: result.upload_id || result.record_id,
-      sha256: result.sha256 || sha256FilePrefix(item.absolutePath, stats.size),
-    };
   }
 
   private async appendV2(
@@ -419,7 +434,9 @@ export class CatscoLogUploadScheduler {
     while (true) {
       const append = record.append;
       const expectedOffset = append?.acceptedOffset || 0;
-      if (expectedOffset > stats.size || (expectedOffset > 0 && !matchesKnownPrefix(item.absolutePath, expectedOffset, record))) {
+      if (expectedOffset > stats.size) return false;
+      const prefixHash = hashFilePrefix(item.absolutePath, expectedOffset);
+      if (expectedOffset > 0 && !matchesKnownPrefix(prefixHash.copy().digest('hex'), expectedOffset, record)) {
         return false;
       }
       const chunk = readCompleteJSONLChunk(item.absolutePath, expectedOffset, MAX_APPEND_CHUNK_BYTES);
@@ -438,6 +455,9 @@ export class CatscoLogUploadScheduler {
 
       let pending = append?.pending;
       const contentSha256 = sha256(chunk);
+      // Extend the verified prefix with the exact outgoing bytes before awaiting
+      // the server; the live file may be rewritten while the request is in flight.
+      const expectedPrefixSha256 = prefixHash.update(chunk).digest('hex');
       if (
         !pending
         || pending.expectedOffset !== expectedOffset
@@ -486,7 +506,7 @@ export class CatscoLogUploadScheduler {
           append: {
             acceptedOffset,
             revision: result.revision,
-            prefixSha256: sha256FilePrefix(item.absolutePath, acceptedOffset),
+            prefixSha256: expectedPrefixSha256,
           },
         };
         state.uploaded[item.stateKey] = record;
@@ -689,6 +709,10 @@ function sha256(contents: Buffer): string {
 }
 
 function sha256FilePrefix(filePath: string, length: number): string {
+  return hashFilePrefix(filePath, length).digest('hex');
+}
+
+function hashFilePrefix(filePath: string, length: number): crypto.Hash {
   const hash = crypto.createHash('sha256');
   const descriptor = fs.openSync(filePath, 'r');
   try {
@@ -703,16 +727,16 @@ function sha256FilePrefix(filePath: string, length: number): string {
   } finally {
     fs.closeSync(descriptor);
   }
-  return hash.digest('hex');
+  return hash;
 }
 
-function matchesKnownPrefix(filePath: string, offset: number, record: CatscoLogAgentState['uploaded'][string]): boolean {
+function matchesKnownPrefix(actualHash: string, offset: number, record: CatscoLogAgentState['uploaded'][string]): boolean {
   const expectedHash = record.append?.acceptedOffset === offset
     ? record.append.prefixSha256
     : record.size === offset
       ? record.sha256
       : undefined;
-  return Boolean(expectedHash && sha256FilePrefix(filePath, offset) === expectedHash);
+  return Boolean(expectedHash && actualHash === expectedHash);
 }
 
 function isSafeServerPath(value: string | undefined): value is string {

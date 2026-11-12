@@ -24,6 +24,7 @@ const DEFAULT_LONGPOLL_MS = 30000;
 
 interface QueuedMessage {
   userText: string;
+  transcriptInputIds?: string[];
   chatId: string;
   userId: string;
   sessionRoute: SessionRoute;
@@ -183,16 +184,18 @@ export class WeixinBot {
           return;
         }
 
-        if (get_updates_buf) {
-          this.getUpdatesBuf = get_updates_buf;
-          await this.saveState();
-        }
-
         if (msgs.length > 0) {
           Logger.info(`[微信] 收到 ${msgs.length} 条消息`);
           for (const msg of msgs) {
             await this.handleMessage(msg);
           }
+        }
+
+        // Keep the previous cursor during dispatch (including context-token
+        // saves). Advance only after accepted messages have their receipts.
+        if (get_updates_buf) {
+          this.getUpdatesBuf = get_updates_buf;
+          await this.saveState();
         }
 
         backoff = 1000;
@@ -218,13 +221,27 @@ export class WeixinBot {
     const route = createWeixinSessionRoute(parsed);
     const sessionKey = route.sessionKey;
     const userId = route.actorUserId;
+    const session = this.sessionManager.getOrCreate(route);
+    const transcriptInputIds = [session.recordInputReceipt(parsed.text || '', {
+      source: 'weixin',
+      messageId: parsed.message_id,
+      senderId: parsed.from.id,
+      attachments: (parsed.item_list || []).flatMap(item => {
+        if (item.type === 2 && item.image_item) {
+          return [{ name: 'image', type: 'image', url: item.image_item.url }];
+        }
+        if (item.type === 4 && item.file_item) {
+          return [{ name: item.file_item.file_name || 'unknown', type: 'file' }];
+        }
+        return [];
+      }),
+    })];
     if (msg.context_token) {
       this.contextTokens.set(sessionKey, msg.context_token);
       this.contextTokens.set(route.legacySessionKey || `user:${userId}`, msg.context_token);
       await this.saveState();
     }
 
-    const session = this.sessionManager.getOrCreate(route);
     const channel = this.buildChannel(route.topicId, sessionKey, userId, parsed.chat?.id);
     SubAgentManager.getInstance().registerPlatformCallbacks(sessionKey, {
       injectMessage: async (text: string) => {
@@ -269,6 +286,7 @@ export class WeixinBot {
       const queue = this.messageQueue.get(sessionKey) ?? [];
       queue.push({
         userText,
+        transcriptInputIds,
         chatId: route.topicId,
         userId,
         sessionRoute: route,
@@ -281,6 +299,7 @@ export class WeixinBot {
     }
 
     const result = await session.handleMessage(userText, {
+      transcriptInputIds,
       channel,
       sessionRoute: route,
       executionScope: createExecutionScopeFromRoute(route),
@@ -372,6 +391,7 @@ export class WeixinBot {
         suppressFinalResponse: shouldSuppressSubAgentObservationReply(msg.userText),
       })
       : await session.handleMessage(msg.userText, {
+        transcriptInputIds: msg.transcriptInputIds,
         channel,
         sessionRoute: msg.sessionRoute,
         executionScope,

@@ -1,9 +1,9 @@
+import { projectSessionLog } from './session-log-projection';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from './ai-service';
 import { readRequiredDefaultPromptFile } from './prompt-template';
 import {
-  isSessionTurnEntry,
   readSessionLogFile,
 } from './session-log-schema';
 import type {
@@ -57,7 +57,7 @@ export class DailyReportGenerator {
   private scanLogs(date: string): SessionSummary[] {
     const sessions: SessionSummary[] = [];
 
-    for (const sessionType of ['chat', 'catscompany', 'feishu']) {
+    for (const sessionType of ['chat', 'cli', 'catscompany', 'feishu', 'weixin']) {
       const dir = path.join(SESSION_LOG_DIR, sessionType, date);
 
       if (!fs.existsSync(dir)) continue;
@@ -79,10 +79,13 @@ export class DailyReportGenerator {
    */
   private parseSessionLog(filePath: string, sessionType: string): SessionSummary | null {
     try {
-      const entries = readSessionLogFile(filePath);
+      const entries = readSessionLogFile(filePath, {
+        tolerant: true,
+        onIssue: issue => console.error(`Damaged session log line ${filePath}:${issue.line} (${issue.kind})`),
+      });
       if (entries.length === 0) return null;
 
-      const turns = entries.filter((entry): entry is TurnLog => isSessionTurnEntry(entry));
+      const turns = projectSessionLog(entries).filter(record => record.searchable).map(record => record.entry);
 
       if (turns.length === 0) return null;
 
@@ -114,7 +117,7 @@ export class DailyReportGenerator {
    * 提取会话主题（从用户输入中）
    */
   private extractTopics(turns: TurnLog[]): string[] {
-    return turns.slice(0, 3).map(t => t.user.text.slice(0, 50));
+    return turns.filter(turn => !turn.user.runtime_observation_source).slice(0, 3).map(t => t.user.text.slice(0, 50));
   }
 
   /**
@@ -123,6 +126,8 @@ export class DailyReportGenerator {
   private groupByType(sessions: SessionSummary[]): Record<string, SessionSummary[]> {
     const grouped: Record<string, SessionSummary[]> = {
       chat: [],
+      cli: [],
+      weixin: [],
       catscompany: [],
       feishu: [],
     };
@@ -145,7 +150,7 @@ export class DailyReportGenerator {
       total_sessions: Object.values(grouped).flat().length,
       total_turns: Object.values(grouped).flat().reduce((sum, s) => sum + s.turn_count, 0),
       total_tokens: Object.values(grouped).flat().reduce((sum, s) => sum + s.total_tokens, 0),
-      chat_sessions: grouped.chat.length,
+      chat_sessions: grouped.chat.length + grouped.cli.length + grouped.weixin.length,
       team_sessions: grouped.catscompany.length + grouped.feishu.length,
     };
 
@@ -178,9 +183,9 @@ export class DailyReportGenerator {
     prompt += `- 总交互轮次：${stats.total_turns}\n`;
     prompt += `- 总 tokens：${stats.total_tokens}\n\n`;
 
-    if (grouped.chat.length > 0) {
-      prompt += `## 个人工作（Chat）\n`;
-      for (const session of grouped.chat) {
+    if (grouped.chat.length + grouped.cli.length + grouped.weixin.length > 0) {
+      prompt += `## 个人工作（Chat / CLI / Weixin）\n`;
+      for (const session of [...grouped.chat, ...grouped.cli, ...grouped.weixin]) {
         prompt += `- 会话 ${session.session_id.slice(0, 8)}（${session.turn_count} 轮）\n`;
         prompt += `  主题：${session.topics.join(', ')}\n`;
         prompt += `  工具：${session.tool_calls.join(', ') || '无'}\n`;
@@ -188,9 +193,9 @@ export class DailyReportGenerator {
       prompt += '\n';
     }
 
-    if (grouped.catscompany.length > 0) {
-      prompt += `## 团队工作（CatsCo）\n`;
-      for (const session of grouped.catscompany) {
+    if (grouped.catscompany.length + grouped.feishu.length > 0) {
+      prompt += `## 团队工作（CatsCo / Feishu）\n`;
+      for (const session of [...grouped.catscompany, ...grouped.feishu]) {
         prompt += `- 会话 ${session.session_id.slice(0, 8)}（${session.turn_count} 轮）\n`;
         prompt += `  主题：${session.topics.join(', ')}\n`;
       }
@@ -220,9 +225,9 @@ export class DailyReportGenerator {
     report += `- 总交互轮次：${stats.total_turns}\n`;
     report += `- 总 tokens：${stats.total_tokens}\n\n`;
 
-    if (grouped.chat.length > 0) {
-      report += `## 💼 个人工作（Chat）\n`;
-      for (const session of grouped.chat) {
+    if (grouped.chat.length + grouped.cli.length + grouped.weixin.length > 0) {
+      report += `## 💼 个人工作（Chat / CLI / Weixin）\n`;
+      for (const session of [...grouped.chat, ...grouped.cli, ...grouped.weixin]) {
         report += `### 会话 ${session.session_id.slice(0, 8)}\n`;
         report += `- 轮次：${session.turn_count}\n`;
         report += `- 主题：${session.topics.join(', ')}\n`;

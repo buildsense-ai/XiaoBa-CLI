@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const { readTurnSummaries } = require('./session-log-compat.cjs');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const LOGS_DIR = path.join(__dirname, '../logs/sessions');
@@ -85,9 +86,7 @@ function readSessionLogs(date, platform) {
       const content = fs.readFileSync(filePath, 'utf-8').trim();
       if (!content) continue;
 
-      const turns = content.split('\n').map(line => {
-        try { return JSON.parse(line); } catch { return null; }
-      }).filter(Boolean);
+      const turns = readTurnSummaries(content);
 
       if (turns.length === 0) continue;
 

@@ -1,7 +1,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import * as fs from 'fs';
 import * as path from 'path';
-import { FeishuConfig } from './types';
+import { FeishuConfig, ParsedFeishuMessage } from './types';
 import { MessageHandler } from './message-handler';
 import { MessageSender } from './message-sender';
 import { MessageSessionManager } from '../core/message-session-manager';
@@ -42,6 +42,7 @@ interface PendingAnswer {
 
 interface QueuedMessage {
   userText: string;
+  transcriptInputIds?: string[];
   chatId: string;
   senderId: string;
   sessionRoute: SessionRoute;
@@ -280,6 +281,7 @@ export class FeishuBot {
       if (!pending) {
         this.pendingAnswerBySession.delete(key);
       } else if (msg.senderId === pending.expectedSenderId) {
+        this.recordMessageReceipt(this.sessionManager.getOrCreate(route), msg, data, 'feishu.ask_question.answer');
         this.clearPendingAnswerById(pending.id);
         Logger.info(`[${key}] 收到用户对提问的回复: ${msg.text.slice(0, 50)}...`);
         pending.resolve(msg.text);
@@ -318,6 +320,8 @@ export class FeishuBot {
       }
       if (result.handled) return;
     }
+
+    const transcriptInputIds = [this.recordMessageReceipt(session, msg, data, 'feishu')];
 
     Logger.info(`[${key}] 收到消息: ${msg.text.slice(0, 50)}...`);
 
@@ -370,7 +374,7 @@ export class FeishuBot {
         Logger.warning(`[${key}] 检测到用户中断请求，已请求中止当前回合`);
       }
       const queue = this.messageQueue.get(key) ?? [];
-      queue.push({ userText, chatId: msg.chatId, senderId: msg.senderId, sessionRoute: route, source: 'user', runtimeFeedback });
+      queue.push({ userText, transcriptInputIds, chatId: msg.chatId, senderId: msg.senderId, sessionRoute: route, source: 'user', runtimeFeedback });
       this.messageQueue.set(key, queue);
       Logger.info(`[${key}] 主会话忙，消息已入队 (队列长度: ${queue.length})`);
       return;
@@ -385,6 +389,7 @@ export class FeishuBot {
 
     try {
       const result = await session.handleMessage(userText, {
+        transcriptInputIds,
         channel,
         sessionRoute: route,
         executionScope: createExecutionScopeFromRoute(route),
@@ -399,6 +404,29 @@ export class FeishuBot {
 
     // 处理忙时排队的消息
     await this.drainMessageQueue(key);
+  }
+
+  private recordMessageReceipt(
+    session: ReturnType<MessageSessionManager['getOrCreate']>,
+    msg: ParsedFeishuMessage,
+    data: any,
+    source: string,
+  ): string {
+    let text = msg.text;
+    try {
+      const content = JSON.parse(data?.message?.content || '{}');
+      if (typeof content.text === 'string') text = content.text;
+    } catch {
+      // Parsed messages remain usable when the original event has no JSON text.
+    }
+    return session.recordInputReceipt(text, {
+      source,
+      messageId: msg.messageId,
+      senderId: msg.senderId,
+      attachments: msg.file
+        ? [{ name: msg.file.fileName, type: msg.file.type, reference: msg.file.fileKey }]
+        : msg.mergeForwardIds?.map(id => ({ name: id, type: 'message', reference: id })),
+    });
   }
 
   /**
@@ -497,6 +525,7 @@ export class FeishuBot {
           suppressFinalResponse: shouldSuppressSubAgentObservationReply(msg.userText),
         })
         : await session.handleMessage(msg.userText, {
+          transcriptInputIds: msg.transcriptInputIds,
           channel,
           sessionRoute: msg.sessionRoute,
           executionScope,

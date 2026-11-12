@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
+import * as fs from 'node:fs';
 import {
   CatsCompanyBot,
   DEFAULT_CLOUD_RESTORE_TIMEOUT_MS,
@@ -8,6 +9,7 @@ import {
 import { createCatsCoMessageEnvelope, createExecutionScope } from '../src/catscompany/message-envelope';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
 import { AgentSession } from '../src/core/agent-session';
+import { MessageSessionManager } from '../src/core/message-session-manager';
 
 function canonicalMetadata(actorUserId: string, topicId: string, agentId = 'usr43', bodyId = 'body-main') {
   return {
@@ -122,6 +124,8 @@ function createHarness(options: {
 } = {}) {
   const bot = Object.create(CatsCompanyBot.prototype) as any;
   const handledTurns: Array<{ userMessage: unknown; options: any }> = [];
+  const receipts: Array<{ content: unknown; metadata: any }> = [];
+  const runtimeTurns: Array<{ observation: string; options: any }> = [];
   const sessionKeys: string[] = [];
   const sessionInputs: any[] = [];
   const replies: string[] = [];
@@ -134,7 +138,12 @@ function createHarness(options: {
   let remoteContextCursor = 0;
 
   const session = {
+    recordInputReceipt: (content: unknown, metadata: any) => {
+      receipts.push({ content, metadata });
+      return `receipt-${receipts.length}`;
+    },
     isBusy: () => busy,
+    requestInterrupt: () => undefined,
     setBusy: (next: boolean) => {
       busy = next;
     },
@@ -146,7 +155,10 @@ function createHarness(options: {
     handleCommand: async (command: string) => command.toLowerCase() === 'clear'
       ? { handled: true, reply: '历史已清空' }
       : { handled: false },
-    handleRuntimeObservation: async () => ({ visibleToUser: false, text: '' }),
+    handleRuntimeObservation: async (observation: string, handleOptions: any) => {
+      runtimeTurns.push({ observation, options: handleOptions });
+      return { visibleToUser: false, text: '' };
+    },
     injectContext: (text: string) => {
       contextEvents.push('inject');
       injectedContext.push(text);
@@ -167,6 +179,7 @@ function createHarness(options: {
       return true;
     },
   };
+  bot.createInputReceiptLogger = () => session;
 
   bot.sessionManager = {
     getOrCreate: (input: any) => {
@@ -220,6 +233,8 @@ function createHarness(options: {
   return {
     bot,
     handledTurns,
+    receipts,
+    runtimeTurns,
     sessionKeys,
     sessionInputs,
     session,
@@ -547,6 +562,8 @@ describe('CatsCompany execution scope flow', () => {
       await oldTrigger;
 
       assert.equal(restoreSignal?.aborted, true, clearCommand);
+      assert.equal(harness.receipts.length, 1, 'clear must preserve the older input receipt');
+      assert.equal(harness.receipts[0].content, '@usr43 old trigger');
       assert.equal(harness.handledTurns.length, 0, clearCommand);
     }
   });
@@ -1795,7 +1812,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(bot.messageQueue.get(bobScope.sessionKey)?.length, 1);
 
     const pendingForBob = (bot as any).consumeQueuedUserInput(bobScope.sessionKey, bobScope);
-    assert.equal(pendingForBob, 'bob follow-up');
+    assert.equal(pendingForBob.content, 'bob follow-up');
     assert.equal(bot.messageQueue.has(bobScope.sessionKey), false);
   });
 
@@ -2031,5 +2048,213 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns.length, 1);
     assert.equal(Object.prototype.hasOwnProperty.call(handledTurns[0].options, 'artifactContext'), false);
     assert.equal(JSON.stringify(handledTurns[0].options).includes(sentinel), false);
+  });
+});
+
+describe('CatsCo input receipts', () => {
+  const message = (text: string, seq: number) => ({
+    topic: 'p2p_7_43', senderId: 'usr7', text, content: text, isGroup: false, seq,
+    metadata: canonicalMetadata('usr7', 'p2p_7_43'),
+  });
+
+  for (const status of ['failed', 'skipped']) {
+    test(`records accepted input before a ${status} restore without creating a session`, async () => {
+      const h = createHarness({ existingSession: false });
+      h.bot.ensureCloudSessionRestored = async () => {
+        assert.equal(h.receipts.length, 1, 'receipt must precede the restore await');
+        assert.deepEqual(h.sessionKeys, []);
+        return { status, restoredMessages: 0, fetchedMessages: 0, compressed: false };
+      };
+      await h.bot.onMessage(message('  preserve original input\nplease  ', 51));
+      assert.deepEqual(h.receipts, [{ content: '  preserve original input\nplease  ', metadata: {
+        source: 'catscompany', messageId: '51', senderId: 'usr7', attachments: [],
+      } }]);
+      assert.deepEqual(h.sessionKeys, []);
+      assert.deepEqual(h.handledTurns, []);
+    });
+  }
+
+  test('receipt-only logging retains the route key and Agent identity on failed recovery', async () => {
+    const h = createHarness({ existingSession: false, restoreStatus: 'failed' });
+    const loggers: any[] = [];
+    const manager = new MessageSessionManager({} as any, 'catscompany');
+    h.bot.sessionManager = manager;
+    h.bot.createInputReceiptLogger = (key: string, route: any) => {
+      const logger = (CatsCompanyBot.prototype as any).createInputReceiptLogger.call(h.bot, key, route);
+      loggers.push(logger);
+      return logger;
+    };
+    const text = `failed restore receipt ${Date.now()}`;
+    try {
+      await h.bot.onMessage({ ...message(text, 52),
+        metadata: canonicalMetadata('usr7', 'p2p_7_43', '43', 'receipt-body'),
+      });
+    } finally {
+      await manager.destroy();
+    }
+    const entries = fs.readFileSync(loggers[0].getLogFilePath(), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const receipt = entries.find(entry => entry.event?.type === 'input_received' && entry.event.text === text);
+    assert.ok(receipt);
+    assert.equal(receipt.session_id, expectedCatsCoHistorySessionKey('usr7', 'p2p_7_43'));
+    assert.equal(receipt.session_type, 'catscompany');
+    assert.deepEqual(receipt.agent_identity, {
+      agent_id: 'usr43', agent_body_id: 'receipt-body', trust: 'server_canonical', source: 'metadata.catsco_identity',
+    });
+    assert.deepEqual(h.sessionKeys, []);
+  });
+
+  test('retains accepted input when stop interrupts a pending restore', async () => {
+    const h = createHarness({ existingSession: false });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    h.bot.ensureCloudSessionRestored = async () => {
+      assert.equal(h.receipts.length, 1);
+      await gate;
+      return { status: 'restored', restoredMessages: 1, fetchedMessages: 1, compressed: false };
+    };
+    const pending = h.bot.onMessage(message('accepted before stop', 53));
+    assert.equal(h.receipts.length, 1);
+    await h.bot.onMessage(message('/stop', 54));
+    release();
+    await pending;
+    assert.equal(h.receipts.length, 1);
+    assert.equal(h.receipts[0].content, 'accepted before stop');
+    assert.deepEqual(h.sessionKeys, []);
+    assert.deepEqual(h.handledTurns, []);
+  });
+
+  test('records unknown slash input while filtering built-in commands and passive acknowledgements', async () => {
+    const h = createHarness({ busy: true });
+    await h.bot.onMessage(message('/unknown do the task', 55));
+    await h.bot.onMessage(message('/clear', 56));
+    await h.bot.onMessage(message('谢谢', 57));
+    assert.equal(h.receipts.length, 1);
+    assert.equal(h.receipts[0].content, '/unknown do the task');
+  });
+
+  for (const source of ['service_run_receipt', 'subagent_feedback']) {
+    test(`drains ${source} as a runtime observation with distinct attribution`, async () => {
+      const h = createHarness({ busy: true });
+      const key = expectedCatsCoHistorySessionKey('usr7', 'p2p_7_43');
+      if (source === 'service_run_receipt') {
+        h.bot.enqueueServiceRunReceiptTurn(key, 'p2p_7_43', 'usr7', 'service completed');
+      } else {
+        h.bot.enqueueSubAgentFeedback(key, 'p2p_7_43', 'usr7', 'child completed');
+      }
+      h.session.setBusy(false);
+      try {
+        await h.bot.drainMessageQueue(key);
+        assert.equal(h.handledTurns.length, 0);
+        assert.equal(h.runtimeTurns.length, 1);
+        assert.equal(h.runtimeTurns[0].options.source,
+          source === 'service_run_receipt' ? 'service_run_receipt' : 'subagent_result');
+        assert.equal(h.runtimeTurns[0].observation, source === 'service_run_receipt' ? 'service completed' : 'child completed');
+        assert.deepEqual(h.receipts, []);
+      } finally {
+        SubAgentManager.getInstance().unregisterPlatformCallbacks(key);
+      }
+    });
+
+    test(`stops user batching at ${source} and leaves later user input queued`, async () => {
+      const h = createHarness({ busy: true });
+      await h.bot.onMessage(message('before runtime', 60));
+      const key = h.sessionKeys[0];
+      const scope = h.bot.messageQueue.get(key)[0].executionScope;
+      if (source === 'service_run_receipt') {
+        h.bot.enqueueServiceRunReceiptTurn(key, 'p2p_7_43', 'usr7', 'service completed');
+      } else {
+        h.bot.enqueueSubAgentFeedback(key, 'p2p_7_43', 'usr7', 'child completed', scope);
+      }
+      await h.bot.onMessage(message('after runtime', 61));
+      const first = h.bot.consumeQueuedUserInput(key, scope);
+      assert.deepEqual(first.transcriptInputIds, ['receipt-1']);
+      assert.match(first.content, /before runtime/);
+      assert.doesNotMatch(first.content, /completed|after runtime/);
+      assert.deepEqual(h.bot.messageQueue.get(key).map((item: any) => item.source), [source, 'user']);
+      assert.equal(h.bot.consumeQueuedUserInput(key, scope), null);
+      h.session.setBusy(false);
+      try {
+        await h.bot.drainMessageQueue(key);
+        assert.equal(h.runtimeTurns.length, 1);
+        assert.equal(h.handledTurns.length, 1);
+        assert.deepEqual(h.handledTurns[0].options.transcriptInputIds, ['receipt-2']);
+        assert.match(String(h.handledTurns[0].userMessage), /after runtime/);
+        assert.equal(h.receipts.length, 2);
+      } finally {
+        SubAgentManager.getInstance().unregisterPlatformCallbacks(key);
+      }
+    });
+  }
+
+  test('records complete text and attachment references before a failed download', async () => {
+    const h = createHarness();
+    const text = `  original task\n${'detail '.repeat(2000)}  `;
+    h.bot.sender.downloadFile = async () => {
+      assert.equal(h.receipts.length, 1, 'receipt must precede download');
+      return null;
+    };
+    try {
+      await h.bot.onMessage({ ...message(text, 41), content_blocks: [
+        { type: 'text', text },
+        { type: 'file', payload: { name: 'source.txt', url: '/uploads/source.txt' } },
+      ] });
+      assert.deepEqual(h.receipts, [{ content: text, metadata: {
+        source: 'catscompany', messageId: '41', senderId: 'usr7',
+        attachments: [{ name: 'source.txt', type: 'file', url: '/uploads/source.txt' }],
+      } }]);
+      assert.deepEqual(h.handledTurns[0].options.transcriptInputIds, ['receipt-1']);
+      assert.match(String(h.handledTurns[0].userMessage), /未能下载/);
+    } finally {
+      SubAgentManager.getInstance().unregisterPlatformCallbacks(h.sessionKeys[0]);
+    }
+  });
+
+  test('keeps every receipt through merge and restores original entries once at the queue head', async () => {
+    const h = createHarness({ busy: true });
+    await h.bot.onMessage(message('second in source order', 22));
+    await h.bot.onMessage(message('first in source order', 21));
+    const key = h.sessionKeys[0];
+    const original = [...h.bot.messageQueue.get(key)];
+    const pending = h.bot.consumeQueuedUserInput(key, original[0].executionScope);
+    assert.deepEqual(pending.transcriptInputIds, ['receipt-2', 'receipt-1']);
+    assert.ok(pending.content.indexOf('first in source order') < pending.content.indexOf('second in source order'));
+    assert.equal(h.bot.messageQueue.has(key), false);
+    await h.bot.onMessage(message('later arrival', 23));
+    const later = h.bot.messageQueue.get(key)[0];
+    pending.onRejected();
+    pending.onRejected();
+    assert.deepEqual(h.bot.messageQueue.get(key), [...original, later]);
+    assert.strictEqual(h.bot.messageQueue.get(key)[0], original[0]);
+    h.session.setBusy(false);
+    try {
+      await h.bot.drainMessageQueue(key);
+      assert.deepEqual(h.handledTurns.map(turn => turn.options.transcriptInputIds), [
+        ['receipt-1'], ['receipt-2'], ['receipt-3'],
+      ]);
+      assert.equal(h.receipts.length, 3, 'restoring and draining must reuse arrival receipts');
+    } finally {
+      SubAgentManager.getInstance().unregisterPlatformCallbacks(key);
+    }
+  });
+
+  for (const boundary of ['stop', 'clear', 'shutdown']) {
+    test(`does not restore rejected pending input after ${boundary}`, async () => {
+      const h = createHarness({ busy: true });
+      await h.bot.onMessage(message('accepted follow-up', 20));
+      const key = h.sessionKeys[0];
+      const pending = h.bot.consumeQueuedUserInput(key, h.bot.messageQueue.get(key)[0].executionScope);
+      assert.deepEqual(pending.transcriptInputIds, ['receipt-1']);
+      if (boundary === 'shutdown') h.bot.shuttingDown = true;
+      else await h.bot.onMessage(message(`/${boundary}`, 21));
+      pending.onRejected();
+      assert.equal(h.bot.messageQueue.has(key), false);
+      assert.equal(h.receipts.length, 1, 'control boundaries must retain the arrival receipt');
+    });
+  }
+
+  test('leaves synthetic subagent feedback outside user receipts', async () => {
+    const h = createHarness({ busy: true });
+    await h.bot.handleSubAgentFeedback('cc_user:usr7', 'p2p_7_43', 'usr7', '[子agent1 已完成]\n结果摘要：done');
+    assert.deepEqual(h.receipts, []);
   });
 });

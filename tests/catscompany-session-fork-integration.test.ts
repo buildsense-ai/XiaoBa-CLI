@@ -31,6 +31,7 @@ function harness(t: TestContext) {
   t.mock.method(SessionStore, 'getInstance', () => store as any);
   t.mock.method(SubAgentManager, 'getInstance', () => ({ hasActiveForParent: () => childActive }) as any);
   const session = {
+    recordInputReceipt: () => 'receipt-test',
     isBusy: () => false,
     handleMessage: async () => ({ text: 'finished', visibleToUser: true, taskOutcome: 'completed' }),
     handleCommand: async () => ({ handled: true, reply: 'cleared' }),
@@ -41,6 +42,7 @@ function harness(t: TestContext) {
   bot.shuttingDown = false;
   bot.activeMessageHandlers = 0;
   bot.sessionManager = {
+    getInputReceiptRecorder: () => session,
     get: (route: any) => hasLocal && (typeof route === 'string' ? route : route.sessionKey) === source.sessionKey ? session : null,
     getOrCreate: () => { creates++; return session; },
   };
