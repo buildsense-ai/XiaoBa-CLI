@@ -75,7 +75,7 @@ test('fixture config rejects unknown roles and malformed anchors', () => {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('compiled fixture runs A before source publication, then reads and consumes an exact typed node in B', async () => {
+test('compiled fixture runs A before source publication, then the Branch reads the Diary-cited node and B consumes it late', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'execution-fixture-e2e-'));
   const sessionAPath = path.join(directory, 'session-a-runtime.jsonl');
   const sessionAId = `fixture-session-a-${Date.now()}`;
@@ -107,7 +107,8 @@ test('compiled fixture runs A before source publication, then reads and consumes
     receivedAuthorization = request.headers.authorization === `Bearer ${fixtureToken}`;
     assert.equal(request.method, 'POST');
     assert.equal(request.url, '/catsco/agent/knowledge/source/read');
-    assert.deepEqual(body.anchor, anchor);
+    assert.deepEqual(body.anchor, anchor, 'the Branch reads the exact Diary-cited node');
+    assert.equal(body.projection_ref, undefined, 'no whole-projection read');
     assert.equal(body.max_bytes, undefined, 'fixture uses the source/read API default budget');
     response.writeHead(200, { 'content-type': 'application/json' });
     const sourceText = 'This exact source text stays out of additive metadata.';
@@ -170,7 +171,9 @@ test('compiled fixture runs A before source publication, then reads and consumes
     assert.equal(consumingCall.memory_node_inputs.length, 1);
     const binding = consumingCall.memory_node_inputs[0];
     assert.deepEqual(binding.anchor, anchor);
-    assert.equal(binding.input_node_ref, 'provider-result:fixture-exact-source-read');
+    assert.match(binding.input_node_ref, /^runtime-observation:[A-Za-z0-9._-]+:result$/);
+    assert.equal(binding.identity_state, 'programmatic_observation');
+    assert.deepEqual(bCalls[0].memory_node_inputs ?? [], [], 'late Branch evidence is not bound to the preceding call');
     assert.equal(consumingCall.input_manifest.items.find((item: any) => item.ref === binding.input_node_ref).sha256, binding.input_sha256);
     assert.equal(typeof consumingCall.model_call_id, 'string');
     assert.ok(fs.existsSync(`${sessionBPath}.graph-summary.sha256`));

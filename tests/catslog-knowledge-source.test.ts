@@ -6,7 +6,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { CatscoLogAgentClient } from '../src/utils/catsco-log-agent-client';
 import { CatsLogMemoryProvider } from '../src/utils/catslog-memory-provider';
-import { CatsLogKnowledgeRecallTool } from '../src/tools/catslog-knowledge-recall-tool';
 import { collectExecutionMemoryInputs } from '../src/core/execution-memory-bindings';
 import type { CatsLogKnowledgeAnchor, CatsLogKnowledgeSourceContent, CatsLogKnowledgeSourcePage } from '../src/utils/catslog-knowledge-types';
 
@@ -32,7 +31,7 @@ const page = (source = content()): CatsLogKnowledgeSourcePage => ({ source, befo
 
 function toolContext(): any { return { workingDirectory: process.cwd(), workspaceRoot: process.cwd(), conversationHistory: [] }; }
 
-describe('source v1 wire and native action', () => {
+describe('source v1 wire', () => {
   const previousFetch = globalThis.fetch;
   let requests: Array<{ url: string; init: RequestInit }>;
   beforeEach(() => {
@@ -102,133 +101,6 @@ describe('source v1 wire and native action', () => {
     assert.equal(requests.length, 0);
   });
 
-  test('source-memory projection anchors are model-visible and survive native read normalization', async () => {
-    const anchor = { kind: 'source_memory_projection_node' as const, id: 'a'.repeat(64), revision: HASH,
-      source_projection_ref: `ref_${'b'.repeat(64)}` };
-    let receivedAnchor: unknown;
-    const nodeId = anchor.id;
-    const conditionId = 'c'.repeat(64);
-    const omissionId = 'd'.repeat(64);
-    const selectedText = 'Pinned projection node.';
-    const sourceSessionId = 'source-session-1';
-    const sourceEpisodeId = 'source-episode-1';
-    const sourceModelCallId = 'model-call-1';
-    const sourceRevision = 'e'.repeat(64);
-    const sourceBasis = 'f'.repeat(64);
-    const contextId = `ctx_${createHash('sha256').update(`memory-graph/3/context\0${sourceSessionId}\0${sourceEpisodeId}\0${sourceModelCallId}\0${sourceRevision}\0${sourceBasis}`).digest('hex')}`;
-    const proofRef = 'scoped-output-ref-1';
-    const projectionContext = {
-      contract_version: 'memory-graph/3',
-      output_identity_status: 'supported',
-      selected_node_id: nodeId,
-      nodes: [
-        { id: nodeId, kind: 'message' as const, text: selectedText, output_proof_refs: [proofRef] },
-        { id: conditionId, kind: 'condition' as const, text: 'Only after the health check succeeds.' },
-        { id: omissionId, kind: 'omission' as const, text: 'Rollback behavior was not observed.' },
-      ],
-      edges: [
-        { from: conditionId, to: nodeId, kind: 'qualifies' as const },
-        { from: omissionId, to: nodeId, kind: 'omits' as const },
-      ],
-      mappings: [
-        { node_id: nodeId, anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
-        { node_id: nodeId, anchor: { ...TURN_ANCHOR, id: 'another-parent' }, source_anchors: [TURN_ANCHOR] },
-        { node_id: conditionId, anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
-        { node_id: omissionId, anchor: TURN_ANCHOR, source_anchors: [TURN_ANCHOR] },
-      ],
-      qualifiers: {
-        conditions: [{ node_id: conditionId }],
-        omissions: [{ text: 'The withheld rollback metric is unknown.' }],
-      },
-      generation_contexts: {
-        [contextId]: { source_session_id: sourceSessionId, source_episode_id: sourceEpisodeId,
-          source_model_call_id: sourceModelCallId, source_revision: sourceRevision, source_basis: sourceBasis,
-          input_refs: ['input-1'], query_refs: ['query-1'], turn_result_refs: ['turn-result-1'],
-          hyperedge_output_refs: [proofRef, 'offered-but-not-cleaned'] },
-      },
-      output_proofs: [{ ref: proofRef, source_ref: 'provider-result:raw-output-1', kind: 'message',
-        body_sha256: 'a'.repeat(64), context_id: contextId, output_position: 0,
-        body_path: 'assistant.outputs[2].body' }],
-    };
-    const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async query => {
-      receivedAnchor = query.anchor;
-      return page(content({ anchor, text: selectedText, content_hash: `sha256:${createHash('sha256').update(selectedText).digest('hex')}`,
-        coverage: 'complete', truncated: false, projection_context: projectionContext }));
-    } });
-    const anchorSchema = tool.definition.parameters.properties.anchor;
-    assert.ok(anchorSchema.properties.kind.enum.includes('source_memory_projection_node'));
-    assert.equal(anchorSchema.properties.source_projection_ref.type, 'string');
-    const result = await tool.execute({ action: 'read_source', anchor }, toolContext());
-    assert.equal(result.ok, true);
-    assert.deepEqual(receivedAnchor, anchor);
-    const body = JSON.parse(String(result.content));
-    assert.deepEqual(body.source.anchor, anchor);
-    assert.equal(body.source.text, undefined, 'selected text is not duplicated outside v3 nodes');
-    assert.equal(body.source.conditions, undefined);
-    assert.equal(body.source.omissions, undefined);
-    assert.equal(body.source.projection_context.nodes.find((node: any) => node.id === nodeId).text, selectedText);
-    assert.deepEqual(body.source.projection_context.qualifiers.omissions, [{ text: 'The withheld rollback metric is unknown.' }]);
-    assert.equal(body.source.projection_context.mappings.filter((mapping: any) => mapping.node_id === nodeId).length, 2,
-      'all distinct parent mappings survive many-to-one aggregation');
-    assert.deepEqual(body.source.projection_context, projectionContext);
-    const { sourceRecallRef, recallTextHash, canonicalRecallJSON } = await import('../src/core/native-recall-attribution');
-    assert.equal(body.source.ref, sourceRecallRef(anchor, body.source.content_hash, projectionContext));
-    assert.deepEqual(body.recall_attribution.sources[0], {
-      ref: body.source.ref, anchor,
-      ref_content_hash: body.source.content_hash,
-      disclosed_context_hash: recallTextHash(canonicalRecallJSON(projectionContext)),
-      disclosure: 'text', coverage: 'complete', role: 'organic', truncated: false, redacted: true,
-      disclosed_text_hash: recallTextHash(selectedText),
-    });
-    assert.equal(body.recall_attribution.sources[0].disclosure, 'text');
-    assert.equal(body.recall_attribution.sources[0].disclosed_text_hash, recallTextHash(selectedText));
-    assert.equal(body.recall_attribution.sources[0].disclosed_context_hash, recallTextHash(canonicalRecallJSON(projectionContext)));
-    assert.equal(body.source.coverage, 'complete');
-    assert.equal(body.source.truncated, false);
-    const bindings = collectExecutionMemoryInputs([{ role: 'tool', tool_call_id: 'source-read', content: result.content } as any]);
-    assert.deepEqual(bindings.map(binding => binding.anchor), [anchor]);
-
-    const client = new CatscoLogAgentClient('https://logs.example.test');
-    const { text: _wireText, ...wireSource } = page(content({ anchor, text: selectedText,
-      content_hash: `sha256:${createHash('sha256').update(selectedText).digest('hex')}`, coverage: 'complete',
-      truncated: false, projection_context: projectionContext })).source;
-    let wireResponse: any = { ...page(), source: wireSource };
-    globalThis.fetch = (async () => Response.json(wireResponse)) as any;
-    const decoded = await client.readKnowledgeSource({ anchor, token: 'read' });
-    assert.equal(decoded.source.text, selectedText, 'decoder materializes only after validating v3 selected-node hash');
-    const validContext = wireResponse.source.projection_context;
-    for (const mutate of [
-      (value: any) => { value.source.anchor = { ...anchor, revision: '0'.repeat(64) }; },
-      (value: any) => { value.source.projection_context.nodes = value.source.projection_context.nodes.filter((node: any) => node.id !== anchor.id); },
-      (value: any) => { value.source.projection_context.nodes.push({ ...value.source.projection_context.nodes[0] }); },
-      (value: any) => { value.source.projection_context.output_proofs.push({ ...value.source.projection_context.output_proofs[0] }); },
-      (value: any) => { value.source.projection_context.edges.push({ ...value.source.projection_context.edges[0] }); },
-      (value: any) => { value.source.content_hash = `sha256:${'0'.repeat(64)}`; },
-      (value: any) => { value.source.projection_context.output_nodes = []; },
-    ]) {
-      wireResponse = structuredClone({ ...page(), source: wireSource });
-      wireResponse.source.projection_context = structuredClone(validContext);
-      mutate(wireResponse);
-      await assert.rejects(client.readKnowledgeSource({ anchor, token: 'read' }));
-    }
-    assert.equal(typeof body.source.ref, 'string', 'existing attribution ref remains additive');
-  });
-
-  test('Go response omitted raw offset zero hashes to the same ref as the explicit request without changing transport', async () => {
-    const explicit = { ...RAW, byte_offset: 0, byte_length: 0 };
-    const { byte_offset, byte_length, ...canonical } = explicit;
-    const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async query => {
-      assert.equal(query.anchor.byte_offset, 0);
-      return page(content({ anchor: { ...canonical, revision: HASH } }));
-    } });
-    const result = await tool.execute({ action: 'source', anchor: explicit }, toolContext());
-    if (!result.ok) assert.fail();
-    const body = JSON.parse(String(result.content));
-    const { hashedRecallRef } = await import('../src/core/native-recall-attribution');
-    assert.equal(body.source.ref, hashedRecallRef('source', [explicit, body.source.content_hash]));
-    assert.equal(body.source.anchor.byte_offset, undefined, 'wire canonical anchor remains the real Go shape');
-  });
-
   test('knowledge entry requires exact holding document and immutable akr revision', async () => {
     const client = new CatscoLogAgentClient('https://logs.example.test');
     const anchor = { kind: 'knowledge_entry' as const, document_id: DOC, id: ENTRY, revision: REV };
@@ -252,33 +124,6 @@ describe('source v1 wire and native action', () => {
       await assert.rejects(client.readKnowledgeSource({ anchor: RAW, ...options, token: 'read' }));
     }
     assert.equal(requests.length, 0);
-  });
-
-  test('source/read_source share exact reader, preserve roles/hash/coverage and never fall back to history', async () => {
-    let reads = 0;
-    const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async (query, signal) => {
-      reads++; assert.deepEqual(query, { anchor: RAW, before: 1, after: 0, max_bytes: 512 });
-      assert.ok(signal); return page();
-    }, querySessions: async () => { throw new Error('history must not be used'); } });
-    for (const action of ['source', 'read_source']) {
-      const result = await tool.execute({ action, anchor: RAW, before: 1, after: 0, max_bytes: 512 }, { ...toolContext(), abortSignal: new AbortController().signal });
-      assert.equal(result.ok, true);
-      if (!result.ok) assert.fail();
-      const body = JSON.parse(String(result.content));
-      assert.equal(body.source.text, page().source.text);
-      assert.equal(body.source.coverage, 'partial');
-      assert.equal(body.source.redacted, true);
-      assert.equal(body.source.role, 'organic');
-      assert.equal(body.source.anchor.revision, HASH);
-      assert.equal(body.source.content_hash, page().source.content_hash);
-      assert.equal(body.before_exhausted, false);
-      assert.equal(body.context_truncated, true);
-      assert.equal(body.incomplete, true);
-      assert.match(body.source.ref, /^catslog:source:[a-f0-9]{64}$/);
-      assert.equal(body.recall_attribution.sources[0].ref, body.source.ref);
-      assert.equal(body.recall_attribution.server_feedback, 'not_connected');
-    }
-    assert.equal(reads, 2);
   });
 
   test('skill lineage anchors dispatch exact version/digest pins and node_sources stay verbatim', async () => {
@@ -307,61 +152,6 @@ describe('source v1 wire and native action', () => {
     assert.equal(requests.length, 0);
   });
 
-  test('skill program node read carries canonical anchor envelope, node body hash and per-node mappings', async () => {
-    const nodeBody = 'use the bounded workflow';
-    const nodeContent = content({ anchor: { ...NODE_ANCHOR }, role: 'learning', speaker: 'assistant',
-      text: nodeBody, content_hash: `sha256:${'e'.repeat(64)}`, coverage: 'complete', truncated: false, redacted: false });
-    const programContent = content({ anchor: { ...PROGRAM_ANCHOR }, role: 'learning', speaker: 'structure',
-      text: '', content_hash: undefined, coverage: 'structural_only', reason: 'program_node_mapping',
-      node_sources: [{ anchor: { ...NODE_ANCHOR }, source_anchors: [{ ...TURN_ANCHOR }] }] });
-    const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async query => {
-      assert.equal(query.anchor.skill_version_id, VERSION);
-      return query.anchor.kind === 'skill_node' ? page(nodeContent) : page(programContent);
-    } });
-    const node = await tool.execute({ action: 'read_source', anchor: NODE_ANCHOR }, toolContext());
-    if (!node.ok) assert.fail();
-    const nodeBodyJson = JSON.parse(String(node.content));
-    assert.equal(nodeBodyJson.source.text, nodeBody);
-    assert.equal(nodeBodyJson.source.disclosure, undefined, 'source contents are raw wire; ref is the only added field');
-    assert.match(nodeBodyJson.source.ref, /^catslog:source:[a-f0-9]{64}$/);
-    const { hashedRecallRef, canonicalKnowledgeSourceAnchor } = await import('../src/core/native-recall-attribution');
-    const canonicalNode = canonicalKnowledgeSourceAnchor(NODE_ANCHOR);
-    assert.equal(nodeBodyJson.source.ref, hashedRecallRef('source', [canonicalNode, nodeContent.content_hash]));
-    assert.deepEqual(nodeBodyJson.recall_attribution.sources[0], {
-      ref: nodeBodyJson.source.ref, anchor: canonicalNode,
-      ref_content_hash: `sha256:${'e'.repeat(64)}`,
-      disclosure: 'text', coverage: 'complete', role: 'learning', truncated: false, redacted: false,
-      disclosed_text_hash: nodeBodyJson.recall_attribution.sources[0].disclosed_text_hash,
-    });
-    assert.ok(/^[a-f0-9]{64}$/.test(nodeBodyJson.recall_attribution.sources[0].disclosed_text_hash));
-    // Program read: metadata only, per-node compressed mappings preserved exactly.
-    const program = await tool.execute({ action: 'read_source', anchor: PROGRAM_ANCHOR }, toolContext());
-    if (!program.ok) assert.fail();
-    const programJson = JSON.parse(String(program.content));
-    assert.equal(programJson.source.status, 'read');
-    assert.equal(programJson.source.text, '');
-    assert.deepEqual(programJson.source.node_sources, [{ anchor: canonicalKnowledgeSourceAnchor(NODE_ANCHOR), source_anchors: [TURN_ANCHOR] }]);
-    // Pinned structural program metadata stays citable as metadata; no body is claimed.
-    const programSources = programJson.recall_attribution.sources;
-    assert.equal(programSources.length, 1);
-    assert.equal(programSources[0].disclosure, 'metadata');
-    assert.equal(programSources[0].coverage, 'structural_only');
-    assert.equal(programSources[0].anchor.skill_version_id, VERSION);
-    // Absent historical mappings stay an explicit truthful gap.
-    const absent = await tool.execute({ action: 'read_source', anchor: NODE_ANCHOR }, toolContext());
-    void absent;
-    const unsupported = content({ anchor: { ...NODE_ANCHOR }, text: '', content_hash: undefined,
-      coverage: 'structural_only', status: 'unsupported' as any, reason: 'node_source_mapping_not_captured' });
-    const gapTool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async () => page(unsupported) });
-    const gap = await gapTool.execute({ action: 'read_source', anchor: NODE_ANCHOR }, toolContext());
-    if (!gap.ok) assert.fail();
-    const gapJson = JSON.parse(String(gap.content));
-    assert.equal(gapJson.source.status, 'unsupported');
-    assert.equal(gapJson.source.reason, 'node_source_mapping_not_captured');
-    assert.equal(gapJson.source.ref, undefined);
-    assert.deepEqual(gapJson.recall_attribution.sources, []);
-  });
-
   test('skill source envelopes pass the feedback outbox whole-event gate with skill_version_id intact', async () => {
     const { feedbackEvent } = await import('../src/core/native-recall-feedback-outbox');
     const { hashedRecallRef, canonicalKnowledgeSourceAnchor } = await import('../src/core/native-recall-attribution');
@@ -380,70 +170,6 @@ describe('source v1 wire and native action', () => {
     assert.equal(event!.observed[0].anchor.kind, 'skill_node');
   });
 
-  test('status gaps and unsupported rich result/graph have no invented source ref or text', async () => {
-    for (const status of ['missing', 'revoked', 'stale', 'unsupported'] as const) {
-      const gap = content({ status, text: '', content_hash: undefined, coverage: 'structural_only' });
-      const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async () => page(gap) });
-      const result = await tool.execute({ action: 'source', anchor: RAW }, toolContext());
-      assert.ok(result.ok);
-      if (!result.ok) assert.fail();
-      const body = JSON.parse(String(result.content));
-      assert.equal(body.source.status, status);
-      assert.equal(body.source.ref, undefined);
-      assert.deepEqual(body.recall_attribution.sources, []);
-    }
-    const client = new CatscoLogAgentClient('https://logs.example.test');
-    await client.readKnowledgeSource({ anchor: { kind: 'graph_node', id: 'gn-1', session_id: 's-1' }, token: 'read' });
-    await client.readKnowledgeSource({ anchor: { ...RAW, kind: 'session_result', byte_length: 42 }, token: 'read' });
-    assert.equal(requests.length, 2, 'unsupported is an explicit server status, never alias to raw');
-  });
-
-  test('learning structural metadata and knowledge pinned source stay distinct', async () => {
-    const learning = content({ anchor: { kind: 'learning_node', id: 'ln-1', session_id: 'learning-1', revision: HASH },
-      role: 'learning', speaker: 'structure', text: '', content_hash: undefined, coverage: 'structural_only', node_kind: 'action',
-      source_anchors: [RAW], selected_anchors: [{ ...RAW, byte_offset: 456 }] });
-    const knowledge = content({ anchor: { kind: 'knowledge_entry', id: ENTRY, document_id: DOC, revision: REV },
-      role: 'knowledge', speaker: 'knowledge', occurred_at: null });
-    const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async () => ({ ...page(knowledge), before: [learning] }) });
-    const result = await tool.execute({ action: 'source', anchor: knowledge.anchor }, toolContext());
-    if (!result.ok) assert.fail();
-    const body = JSON.parse(String(result.content));
-    assert.equal(body.source.ref, `catslog:knowledge:${DOC}:${REV}:${ENTRY}`);
-    assert.equal(body.source.occurred_at, null);
-    assert.equal(body.before[0].node_kind, 'action');
-    assert.equal(body.before[0].text, '');
-    assert.deepEqual(body.before[0].source_anchors, [RAW]);
-    assert.deepEqual(body.before[0].selected_anchors, [{ ...RAW, byte_offset: 456 }]);
-    assert.deepEqual(body.recall_attribution.sources.map((source: any) => source.disclosure), ['text', 'metadata']);
-  });
-
-  test('resolved expand endpoints are citable metadata, without claiming source body was read', async () => {
-    const anchor = { kind: 'knowledge_entry' as const, id: ENTRY, document_id: DOC, revision: REV };
-    const edge: any = { remote: anchor, remote_status: 'resolved', link: { id: 'link-1', kind: 'related', source: anchor, target: anchor } };
-    const tool = new CatsLogKnowledgeRecallTool({ expandKnowledge: async () => ({ edges: [edge], exhausted: true }) });
-    const result = await tool.execute({ action: 'expand', anchor }, toolContext());
-    if (!result.ok) assert.fail();
-    const body = JSON.parse(String(result.content));
-    assert.equal(body.edges[0].remote_ref, `catslog:knowledge:${DOC}:${REV}:${ENTRY}`);
-    assert.equal(body.recall_attribution.sources[0].disclosure, 'metadata');
-    assert.equal(body.recall_attribution.sources[0].coverage, 'structural_only');
-  });
-
-  test('malformed pin and negative byte offset stay invalid on native seam; unavailable never returns empty success', async () => {
-    let reads = 0;
-    const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async () => { reads++; return page(); } });
-    for (const anchor of [{ ...RAW, revision: 12 }, { ...RAW, byte_offset: -1 }]) {
-      const result = await tool.execute({ action: 'source', anchor }, toolContext());
-      assert.equal(result.ok, false);
-      if (result.ok) assert.fail();
-      assert.equal(result.errorCode, 'INVALID_TOOL_ARGUMENTS');
-    }
-    assert.equal(reads, 0);
-    const result = await new CatsLogKnowledgeRecallTool({}).execute({ action: 'source', anchor: RAW }, toolContext());
-    assert.equal(result.ok, false);
-    if (result.ok) assert.fail();
-    assert.equal(result.errorCode, 'CATSLOG_MEMORY_UNAVAILABLE');
-  });
 });
 
 describe('source provider capability lifecycle', () => {

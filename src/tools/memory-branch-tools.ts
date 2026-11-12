@@ -205,6 +205,40 @@ export class MemorySourceReadTool implements Tool {
 }
 
 /**
+ * Exact read of one Memory node cited by a Diary entry the main agent read.
+ * Only seeded `memory-node:` handles resolve; the node arrives as its
+ * canonical memory-graph/3 view, whole or not at all.
+ */
+export class MemoryNodeReadTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_node_read',
+    description: [
+      '读取一个 document_cited_memory_nodes 中的 memory-node 句柄：主 agent 已读日记所引用的精确记忆节点及其条件/省略。',
+      '与 memory_source_read 共享整轮调用与视图预算；只交付完整节点，否则返回 reference_only。成功结果中的 ref（catslog:source:…）可写入 finish evidence。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        node: { type: 'string', description: 'document_cited_memory_nodes 中原样给出的 memory-node:… 句柄。' },
+      },
+      required: ['node'],
+    },
+  };
+
+  constructor(
+    private readonly read: (node: string, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      return { ok: true, content: jsonToolResult(await this.read(String(args?.node || ''), context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
  * Model-driven remote recall over the device-bound agent_memory branch lane.
  * One model-selected literal term (<=64 code points) per search. Empty-query
  * prefetch enumerates bounded candidates in server source-native order;
@@ -361,10 +395,10 @@ function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => bool
   const evidence: string[] = args.evidence.map((ref: string) => ref.trim()).filter(Boolean);
   const uniqueRefs: string[] = Array.from(new Set(evidence));
   for (const ref of uniqueRefs) {
-    // The active local grammar remains unchanged. Pool refs are an explicit
-    // run-local extension, admitted only after complete delivery.
+    // The active local grammar remains unchanged. Pool and Memory node refs are
+    // explicit run-local extensions, admitted only after complete delivery.
     if (!CANONICAL_REF_PATTERN.test(ref)
-      && !((CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || isCatsLogKnowledgeCitationRef(ref)) && isDeliveredPoolRef(ref))) {
+      && !((CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) && isDeliveredPoolRef(ref))) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }

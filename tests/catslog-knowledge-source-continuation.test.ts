@@ -26,12 +26,3 @@ test('source continuation: typed transport sends exact token and preserves retur
   assert.equal(page.after_cursor, cursor);
  } finally { globalThis.fetch = original; }
 });
-
-test('source continuation: native read_source action forwards exact token to backend', async () => {
- let sent: any;
- const tool = new CatsLogKnowledgeRecallTool({ readKnowledgeSource: async query => { sent = query; return response as any; } });
- const result = await tool.execute({ action: 'read_source', anchor, cursor, after: 1, max_bytes: 256 }, { workingDirectory: process.cwd(), workspaceRoot: process.cwd(), conversationHistory: [] } as any);
- assert.equal(result.ok, true);
- assert.equal(sent.cursor, cursor, 'native tool must not drop a valid server-issued continuation token');
- assert.equal(JSON.parse(String(result.content)).after_cursor, cursor);
-});

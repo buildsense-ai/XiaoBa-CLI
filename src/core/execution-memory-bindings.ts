@@ -98,6 +98,9 @@ export function collectExecutionMemoryInputs(
       && (directView.contract_version !== 'memory-graph/3' || validateCanonicalSemanticProjectionView(directView))) {
       for(const node of directView.nodes) addNode(node,body.ref,directRead);
     }
+    // Branch-delivered Diary-cited nodes carry the same canonical source body as a direct read.
+    const nodes=Array.isArray(body.retained_memory_nodes)?body.retained_memory_nodes.slice(0,8):[];
+    for(const node of nodes) if(validateCanonicalSourceToolBody({source:node?.source})) add(node.source.anchor);
     const bundles=Array.isArray(body.retained_remote_evidence)?body.retained_remote_evidence.slice(0,8):[];
     for(const bundle of bundles){
       const view=bundle?.semantic_view;

@@ -92,44 +92,6 @@ describe('catslog_knowledge_recall tool', () => {
     assert.equal(okf.okf, '# OKF');
   });
 
-  test('expand forwards typed anchors; missing anchor is a structured argument error', async () => {
-    const backend = fakeBackend();
-    const tool = new CatsLogKnowledgeRecallTool(backend);
-    const ok = await tool.execute({
-      action: 'expand',
-      anchor: { kind: 'knowledge_entry', id: ENTRY, document_id: DOC, revision: REV },
-      direction: 'in',
-    }, context());
-    assert.equal(ok.ok, true);
-    assert.ok(backend.calls[0].startsWith('expand:'));
-
-    const missing = await tool.execute({ action: 'expand' }, context());
-    assert.equal(missing.ok, false);
-    assert.equal(missing.errorCode, 'INVALID_TOOL_ARGUMENTS');
-    assert.equal(backend.calls.length, 1);
-  });
-
-  test('history is explicit-only and delegates to the session query route', async () => {
-    const backend = fakeBackend();
-    const tool = new CatsLogKnowledgeRecallTool(backend);
-    const missing = await tool.execute({ action: 'history' }, context());
-    assert.equal(missing.ok, false);
-    assert.equal(missing.errorCode, 'INVALID_TOOL_ARGUMENTS');
-
-    const tooMany = await tool.execute({ action: 'history', search_any: ['1', '2', '3', '4', '5', '6', '7', '8', '9'] }, context());
-    assert.equal(tooMany.ok, false);
-
-    const ok = await tool.execute({ action: 'history', search_any: ['kw'], cursor: 'c1', limit: 10 }, context());
-    assert.equal(ok.ok, true);
-    const parsed = JSON.parse(String(ok.content));
-    assert.equal(parsed.next_cursor, 'hist-cursor');
-    const sent = JSON.parse(backend.calls[0].slice('history:'.length));
-    assert.deepEqual(sent.searchAny, ['kw']);
-    assert.equal(sent.latest, false);
-    assert.equal(sent.cursor, 'c1');
-    assert.equal(sent.limit, 10);
-  });
-
   test('unavailable backend surfaces a typed error — never a fake-empty page', async () => {
     const tool = new CatsLogKnowledgeRecallTool({} as CatsLogMemoryBackend);
     const result = await tool.execute({ action: 'search', query: 'q' }, context());
@@ -158,10 +120,8 @@ describe('catslog_knowledge_recall tool', () => {
     assert.equal(notFound.errorCode, 'CATSLOG_HTTP_404');
 
     const unavailable = await new CatsLogKnowledgeRecallTool(fakeBackend({
-      expandKnowledge: async () => { throw new CatsLogMemoryUnavailableError('capability paused'); },
-    })).execute({
-      action: 'expand', anchor: { kind: 'graph_node', id: 'gn-1', session_id: 's-1' },
-    }, context());
+      readKnowledge: async () => { throw new CatsLogMemoryUnavailableError('capability paused'); },
+    })).execute({ action: 'read', document_id: DOC, revision: REV }, context());
     assert.equal(unavailable.errorCode, 'CATSLOG_MEMORY_UNAVAILABLE');
 
     const retryable = await new CatsLogKnowledgeRecallTool(fakeBackend({
@@ -200,28 +160,24 @@ describe('catslog_knowledge_recall tool', () => {
     assert.ok(!String(result.message).includes('skill-token'));
   });
 
-  test('legacy backend without recall discovery keeps all four methods compatible and ignores the Branch switch', async () => {
+  test('legacy backend without recall discovery keeps document methods compatible and ignores the Branch switch', async () => {
     const backend = fakeBackend({ isKnowledgeRecallAvailable: undefined, isAvailable: () => false });
     const tool = new CatsLogKnowledgeRecallTool(backend);
     for (const args of [
       { action: 'search', query: 'q' },
       { action: 'read', document_id: DOC, revision: REV },
-      { action: 'expand', anchor: { kind: 'knowledge_entry', id: ENTRY, document_id: DOC, revision: REV } },
-      { action: 'history', search_any: ['kw'] },
     ]) assert.equal((await tool.execute(args, context())).ok, true);
-    assert.equal(backend.calls.length, 4);
+    assert.equal(backend.calls.length, 2);
   });
 
   test('nonexhausted knowledge pages without cursor remain explicit incomplete responses', async () => {
     const tool = new CatsLogKnowledgeRecallTool(fakeBackend({
       searchKnowledge: async () => ({ hits: [], exhausted: false }),
       readKnowledge: async () => ({ format: 'json', page: { document_id: DOC, revision: REV, day: '2026-10-07', generated_at: '', generated_by: 'w', entries: [], exhausted: false } }),
-      expandKnowledge: async () => ({ edges: [], exhausted: false }),
     }));
     for (const args of [
       { action: 'search', query: 'q' },
       { action: 'read', document_id: DOC, revision: REV },
-      { action: 'expand', anchor: { kind: 'knowledge_entry', id: ENTRY, document_id: DOC, revision: REV } },
     ]) {
       const page = JSON.parse(String((await tool.execute(args, context())).content));
       assert.equal(page.exhausted, false);

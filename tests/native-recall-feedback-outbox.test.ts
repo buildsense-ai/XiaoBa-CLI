@@ -168,43 +168,6 @@ test('branch_source events enqueue and flush through the same durable path', asy
   assert.deepEqual(res.acknowledged, [(ev as any).event_id]);
 });
 
-test('current Branch graph feedback retains read-time identity and only selected exact knowledge envelopes', async () => {
-  const { MemorySearchBranchSession } = await import('../src/core/memory-search-branch-session');
-  const { InMemorySyntheticObservationQueue } = await import('../src/core/synthetic-observation');
-  const anchor = { kind: 'knowledge_entry', document_id: DOC, revision: REV, id: ENTRY };
-  const graph: any = { contract: 'memory-graph/1', closure_complete: true, seeds: [anchor], edges: [], nodes: [{ anchor,
-    day: '2026-10-08', head_revision: REV, current_status: 'draft', entry: { id: ENTRY, title: 'T', text: 'required condition', status: 'draft' } }] };
-  const backend: any = { isAvailable: () => true, isKnowledgeRecallAvailable: () => true, readKnowledgeGraph: async () => graph };
-  const base = { sessionKey: 'fb-branch', input: 'x', recentMessages: [], aiService: {} as any,
-    queue: new InMemorySyntheticObservationQueue(), logEnabled: false, catslogMemory: backend };
-  const working = dir(); state(working);
-  const previous: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(env('https://example.test'))) { previous[key] = process.env[key]; process.env[key] = value as string; }
-  try {
-    const session: any = new MemorySearchBranchSession({ ...base, workingDirectory: working });
-    session.knowledgeCandidates.set(KNOWLEDGE_REF, anchor);
-    const read = await session.readKnowledgeInLoop(KNOWLEDGE_REF);
-    assert.equal(read.status, 'expanded');
-    const readScope = new NativeRecallFeedbackOutbox(working, { env: env('https://example.test') }).captureScope()!;
-    state(working, 'replacement-token');
-    const observation = session.buildObservation({ summary: 's', refs: [KNOWLEDGE_REF], inject: true });
-    assert.equal(observation.metadata.feedback_scope, readScope, 'finish cannot rebind old evidence to the replacement identity');
-    assert.deepEqual(observation.metadata.feedback_sources, [{ ref: KNOWLEDGE_REF, anchor, disclosure: 'metadata' }]);
-    const outbox = new NativeRecallFeedbackOutbox(working, { env: env('https://example.test') });
-    const event = { event_id: 'feedback-branch-obs', trace_id: 'recall-branch-obs', kind: 'branch_source', outcome: 'completed',
-      occurred_at_ms: 1, observed: observation.metadata.feedback_sources, delivered: [{ ref: KNOWLEDGE_REF, disclosure: 'metadata' }],
-      cited: [], retained: [], citation_semantics: 'explicit_ref_match_not_causal_use', delivery_semantics: 'branch_summary_with_refs_not_source_body',
-      retained_semantics: 'final_explicit_ref_match_not_semantic_adoption', lifecycle: 'turn_local_no_carryover' };
-    assert.equal(outbox.enqueue([event], readScope), 0, 'rotated identity rejects old graph feedback');
-    state(working);
-    assert.equal(outbox.enqueue([event], readScope), 1, 'exact envelope passes the outbox whole-event gate');
-    const unknown = session.buildObservation({ summary: 's', refs: [hashedRecallRef('history', [{ x: 1 }])], inject: true });
-    assert.equal(unknown.metadata.feedback_sources, undefined);
-  } finally {
-    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-  }
-});
-
 test('silent drops are observable: oversize and overflow emit metadata-only drop logs', async () => {
   const working = dir(); state(working);
   const outbox = new NativeRecallFeedbackOutbox(working, { env: env('https://example.test') });

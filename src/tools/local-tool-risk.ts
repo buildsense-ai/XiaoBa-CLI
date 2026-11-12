@@ -23,15 +23,14 @@ const LOW_RISK_TOOLS = new Set([
   'ask_parent',
   'send_text',
   'skill',
-  // Read-only daily recall and branch-local reads share scoped capabilities.
+  // Read-only Diary recall and branch-local reads share scoped capabilities.
   CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME,
-  'memory_knowledge_search',
-  'memory_knowledge_graph',
   'memory_search',
   'memory_read_turn',
   'memory_neighbors',
   'memory_remote_search',
   'memory_source_read',
+  'memory_node_read',
   // The device-bound CatsLog read capability is authenticated and scoped by
   // the provider; it does not mutate the local machine or send an external
   // side effect.

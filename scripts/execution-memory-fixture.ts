@@ -4,12 +4,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { CheckpointCompactionCoordinator } from '../src/core/checkpoint-compaction';
 import { ConversationRunner } from '../src/core/conversation-runner';
 import { resolveExecutionFixtureConfig, type ExecutionFixtureConfig } from '../src/core/execution-memory-fixture-config';
-import { CatsLogKnowledgeRecallTool } from '../src/tools/catslog-knowledge-recall-tool';
+import { CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from '../src/tools/catslog-knowledge-recall-tool';
+import { MemorySearchBranchSession } from '../src/core/memory-search-branch-session';
+import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observation';
 import { CatscoLogAgentClient } from '../src/utils/catsco-log-agent-client';
 import { Logger } from '../src/utils/logger';
 import { SessionTurnLogger } from '../src/utils/session-turn-logger';
 import type { Message } from '../src/types';
 import type { ToolCall, ToolDefinition, ToolExecutor, ToolResult } from '../src/types/tool';
+import type { CatsLogKnowledgeSourceQuery } from '../src/utils/catslog-knowledge-types';
 
 const usage = { promptTokens: 40, completionTokens: 12, totalTokens: 52 };
 const episode = 'execution-fixture-episode';
@@ -67,83 +70,107 @@ async function runSessionA(sessionId: string, runtimePath: string): Promise<Reco
   return { sessionId, runtimePath, runtime, turns: entries.filter(entry => entry.entry_type === 'turn'), checkpointPath };
 }
 
+/**
+ * Session B follows the recall layering (docs/catslog-recall-layering.md): the
+ * main agent's earlier Diary read cites the Memory node; the Memory Branch reads
+ * that exact node through the authenticated source route; the runtime injects the
+ * Branch result late, into the second main-agent call. The fixture's Diary
+ * citation stands in for a Diary written after Session A.
+ */
 async function runSessionB(config: ExecutionFixtureConfig, runtimePath: string): Promise<Record<string, unknown>> {
   if (!config.baseUrl || !config.token || !config.anchor) throw new Error('Session B requires source read URL, token, and anchor.');
   const sessionId = config.sessionId;
   const logger = new SessionTurnLogger('cli', sessionId);
   const client = new CatscoLogAgentClient(config.baseUrl);
+  const anchor = config.anchor;
   let authenticatedReadMatchesAnchor = false;
-  let authenticatedSource: any;
-  const recallTool = new CatsLogKnowledgeRecallTool({
-    readKnowledgeSource: async (query, signal) => {
+  const backend = {
+    isAvailable: () => true,
+    // No discovery: the Branch reaches the node only through the Diary citation.
+    branch: async () => ({ schema_version: 1, request_id: 'fixture-no-discovery', status: 'ok', branches: [] }),
+    readKnowledgeSource: async (query: CatsLogKnowledgeSourceQuery, signal?: AbortSignal) => {
       const page = await client.readKnowledgeSource({ ...query, token: config.token, signal });
       const source = page.source;
       authenticatedReadMatchesAnchor = source.status === 'read' && source.coverage === 'complete' && !source.truncated
-        && source.anchor.kind === config.anchor!.kind
-        && source.anchor.source_projection_ref === config.anchor!.source_projection_ref
-        && source.anchor.revision === config.anchor!.revision && source.anchor.id === config.anchor!.id;
+        && source.anchor.kind === anchor.kind && source.anchor.source_projection_ref === anchor.source_projection_ref
+        && source.anchor.revision === anchor.revision && source.anchor.id === anchor.id;
       if (!authenticatedReadMatchesAnchor) throw new Error('Authenticated source read did not return the exact complete typed anchor.');
-      authenticatedSource = source;
       return page;
     },
-  } as any);
-  const definition = recallTool.definition as ToolDefinition;
-  const executor: ToolExecutor = {
-    getToolDefinitions: () => [definition],
-    executeTool: async (call: ToolCall, context?: any): Promise<ToolResult> => {
-      let result: any;
-      try {
-        result = await recallTool.execute(JSON.parse(call.function.arguments), context);
-      } catch (error: any) {
-        throw new Error(`read_source execution failed: ${error?.message || String(error)}`);
+  };
+  const diaryEntry = { id: 'ake-fixture-diary', title: 'Fixture Diary entry', text: 'Diary entry citing the Session A Memory node.', status: 'draft', source_anchors: [anchor] };
+  const diaryRead: Message[] = [
+    { role: 'user', content: 'Recall the Diary entry for this work.', __episodeId: episode },
+    { role: 'assistant', content: null, __episodeId: episode, tool_calls: [{ id: 'fixture-diary-read', type: 'function',
+      function: { name: CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME, arguments: JSON.stringify({ action: 'read', document_id: 'akd-fixture-diary' }) } }] },
+    { role: 'tool', tool_call_id: 'fixture-diary-read', name: CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME, __episodeId: episode,
+      content: JSON.stringify({ document_id: 'akd-fixture-diary', revision: 'akr-fixture-diary', entries: [diaryEntry], exhausted: true }) },
+    { role: 'assistant', content: 'The Diary entry cites one Memory node.', __episodeId: episode },
+  ];
+
+  const queue = new InMemorySyntheticObservationQueue();
+  const seedHandle = `memory-node:${anchor.source_projection_ref}:${anchor.revision}:${anchor.id}`;
+  let branchCalls = 0;
+  let seededNodes: unknown;
+  let deliveredRef: string | undefined;
+  const branchAi = {
+    isToolCallingSupported: () => true,
+    chat: async (messages: Message[]) => {
+      branchCalls++;
+      if (branchCalls === 1) {
+        seededNodes = messages.flatMap(message => {
+          try { const body = JSON.parse(String(message.content)); return body?.retrieval_mode === 'document_cited_memory_nodes' ? body.document_cited_memory_nodes : []; } catch { return []; }
+        });
+      } else {
+        try { deliveredRef = JSON.parse(String(messages.at(-1)?.content)).ref; } catch { deliveredRef = undefined; }
       }
-      if (!result.ok) throw new Error(result.message || result.errorCode || 'read_source tool failed');
-      return { role: 'tool', tool_call_id: call.id, name: call.function.name, content: result.content ?? '', ok: result.ok };
+      const call = branchCalls === 1
+        ? { name: 'memory_node_read', arguments: { node: seedHandle } }
+        : { name: 'finish_memory_search', arguments: { summary: 'The Diary-cited Memory node was read completely.', evidence: deliveredRef ? [deliveredRef] : [], inject: Boolean(deliveredRef) } };
+      return { content: null, usage, toolCalls: [{ id: `fixture-branch-${branchCalls}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] };
     },
+  };
+  await new MemorySearchBranchSession({ sessionKey: sessionId, input: 'Continue the lock review.', recentMessages: diaryRead,
+    workingDirectory: path.dirname(runtimePath), aiService: branchAi as any, queue, catslogMemory: backend as any, logEnabled: false }).run();
+  if (JSON.stringify(seededNodes) !== JSON.stringify([{ node: seedHandle }])) throw new Error('Branch was not seeded by the Diary citation.');
+  if (!authenticatedReadMatchesAnchor || queue.size() !== 1) throw new Error('Branch did not complete the authenticated exact-node read.');
+
+  const continueTool: ToolDefinition = { name: 'continue_work', description: 'Continue the fixture work.', parameters: { type: 'object', properties: {} } };
+  const executor: ToolExecutor = {
+    getToolDefinitions: () => [continueTool],
+    executeTool: async (call: ToolCall): Promise<ToolResult> => ({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: 'continued', ok: true }),
   };
   const coordinator = new CheckpointCompactionCoordinator({
     chatStream: async () => ({ content: 'Earlier work summarized before continuation.', usage }),
   } as any, { maxContextTokens: 12000 });
   const checkpointPath = `${runtimePath}.checkpoint.state.json`;
   let providerCalls = 0;
+  let observationsDrained = 0;
   const runner = new ConversationRunner({
     chat: async (messages: Message[]) => {
       providerCalls++;
-      if (providerCalls === 1) return {
-        content: null, usage,
-        toolCalls: [{ id: 'fixture-exact-source-read', type: 'function', function: {
-          name: definition.name,
-          arguments: JSON.stringify({ action: 'read_source', anchor: config.anchor, before: 0, after: 0 }),
-        } }],
-      };
-      const submittedReadResult = messages.find(message => message.role === 'tool' && message.tool_call_id === 'fixture-exact-source-read');
-      if (providerCalls === 2 && submittedReadResult) {
-        const submittedBody = (() => { try { return JSON.parse(String(submittedReadResult.content ?? '')); } catch { return undefined; } })();
-        const submittedSource = submittedBody?.source;
-        const sourceFields = (value: any) => value && ({ anchor: value.anchor,
-          ...(value.projection_context?.contract_version === 'memory-graph/3'
-            ? { projection_context: value.projection_context, content_hash: value.content_hash }
-            : { text: value.text, conditions: value.conditions, omissions: value.omissions }),
-          coverage: value.coverage, truncated: value.truncated, status: value.status });
-        if (JSON.stringify(sourceFields(submittedSource)) !== JSON.stringify(sourceFields(authenticatedSource))) {
-          throw new Error('Session B provider input changed source anchor, text, conditions, omissions, or coverage.');
-        }
-        return { content: 'Session B consumed the exact returned source node.', toolCalls: [], usage };
-      }
-      throw new Error(`Unexpected deterministic provider request sequence: ${JSON.stringify(messages.map(message => ({ role: message.role,
-        tool_call_id: message.tool_call_id ?? null, content_type: typeof message.content,
-        content_bytes: typeof message.content === 'string' ? Buffer.byteLength(message.content) : null,
-        content_is_json: typeof message.content === 'string' && (() => { try { JSON.parse(message.content); return true; } catch { return false; } })() })))}`);
+      const injected = messages.some(message => message.__syntheticObservation === true);
+      if (providerCalls === 1 && !injected) return { content: null, usage,
+        toolCalls: [{ id: 'fixture-continue', type: 'function', function: { name: continueTool.name, arguments: '{}' } }] };
+      if (providerCalls === 2 && injected) return { content: 'Session B consumed the Diary-cited Memory node.', toolCalls: [], usage };
+      throw new Error(`Unexpected deterministic provider request sequence: call=${providerCalls} injected=${injected}`);
     },
   } as any, executor, {
     stream: false, episodeId: episode, toolExecutionContext: { sessionId }, checkpointCompactionCoordinator: coordinator,
     onCompactionCheckpoint: async messages => fs.writeFileSync(checkpointPath, JSON.stringify(messages), { mode: 0o600 }),
+    // A late Branch result: absent from call 1, delivered before the next call.
+    syntheticObservationProvider: progress => {
+      if (!progress.some(message => message.role === 'tool' && message.tool_call_id === 'fixture-continue')) return [];
+      observationsDrained++;
+      return queue.drain();
+    },
   });
   let finalText = '';
   await Logger.withSessionContext(sessionId, logger, async () => {
     const runResult = await runner.run([
       ...historyBeforeRoot(2000),
-      { role: 'user', content: 'Read the exact typed source anchor, then continue.', __episodeId: episode, __episodeInputKind: 'root' },
+      ...diaryRead,
+      { role: 'user', content: 'Continue the lock review.', __episodeId: episode, __episodeInputKind: 'root' },
     ], {
       onExecutionGraphEvent: event => Logger.runtimeEvent('INFO', 'execution graph model call', { type: 'execution_graph', payload: event }),
       onToolExecutionResult: (result, _messages, origin) => Logger.runtimeEvent('INFO', 'execution graph function result', { type: 'execution_graph', payload: {
@@ -156,33 +183,34 @@ async function runSessionB(config: ExecutionFixtureConfig, runtimePath: string):
     });
     finalText = runResult.response;
   });
-  logger.logTurn('Read the exact typed source anchor, then continue.', finalText, [], { prompt: usage.promptTokens, completion: usage.completionTokens });
+  logger.logTurn('Continue the lock review.', finalText, [], { prompt: usage.promptTokens, completion: usage.completionTokens });
   const entries = readSessionEntries(logger);
   const runtime = runtimeEvents(entries);
   const calls = decodeSharedRuntime(runtime).filter(entry => entry.event.payload?.type === 'successful_model_call').map(entry => entry.event.payload);
   const functionResults = runtime.filter(entry => entry.event.payload?.type === 'function_result').map(entry => entry.event.payload);
-  const producer = calls.find((call: any) => call.outputs.some((output: any) => output.node_ref === 'provider-call:fixture-exact-source-read'));
+  const producer = calls.find((call: any) => call.outputs.some((output: any) => output.node_ref === 'provider-call:fixture-continue'));
   if (functionResults.length !== 1 || !producer || functionResults[0].identity_contract !== 'execution-identity/1'
     || functionResults[0].model_call_id !== producer.model_call_id || functionResults[0].session_id !== producer.session_id
     || functionResults[0].episode_id !== producer.episode_id) {
     throw new Error('Session B function-result event lacks the exact successful producer identity.');
   }
-  if (!authenticatedReadMatchesAnchor) throw new Error('Session B did not complete the authenticated exact-node read.');
-  if (!fs.existsSync(checkpointPath) || calls.length !== 2) throw new Error('Session B checkpoint or two-call request sequence is incomplete.');
+  if (!fs.existsSync(checkpointPath) || calls.length !== 2 || observationsDrained !== 1) {
+    throw new Error('Session B checkpoint, late Branch delivery, or two-call request sequence is incomplete.');
+  }
+  if ((calls[0].memory_node_inputs ?? []).length !== 0) throw new Error('Late Branch evidence was bound to the call that preceded it.');
   const readBinding = calls[1].memory_node_inputs?.filter((binding: any) =>
-    binding.anchor.kind === config.anchor!.kind
-    && binding.anchor.source_projection_ref === config.anchor!.source_projection_ref
-    && binding.anchor.revision === config.anchor!.revision && binding.anchor.id === config.anchor!.id
-    && binding.input_node_ref === 'provider-result:fixture-exact-source-read'
+    binding.anchor.kind === anchor.kind
+    && binding.anchor.source_projection_ref === anchor.source_projection_ref
+    && binding.anchor.revision === anchor.revision && binding.anchor.id === anchor.id
+    && binding.identity_state === 'programmatic_observation'
+    && /^runtime-observation:[A-Za-z0-9._-]+:result$/.test(binding.input_node_ref)
     && calls[1].input_manifest.items.some((item: any) => item.ref === binding.input_node_ref && item.sha256 === binding.input_sha256));
   if (!Array.isArray(readBinding) || readBinding.length !== 1) {
-    const submittedTool = calls[1]?.input_manifest?.items?.find((item: any) => item.kind === 'turn_result');
-    throw new Error(`Session B successful model call lacks exactly one typed anchor binding to the submitted manifest wrapper SHA: ${JSON.stringify({
-      tool_item: submittedTool && { ref: submittedTool.ref, sha256: submittedTool.sha256, content_sha256: submittedTool.content_sha256 },
+    throw new Error(`Session B successful model call lacks exactly one Branch-delivered typed anchor binding: ${JSON.stringify({
       memory_node_inputs: calls[1]?.memory_node_inputs ?? [],
     })}`);
   }
-  return { sessionId, runtimePath, runtime, turns: entries.filter(entry => entry.entry_type === 'turn'), calls, anchor: config.anchor, binding: readBinding[0], checkpointPath };
+  return { sessionId, runtimePath, runtime, turns: entries.filter(entry => entry.entry_type === 'turn'), calls, anchor, binding: readBinding[0], checkpointPath };
 }
 
 export function decodeSharedRuntime(entries: any[]): any[] {
