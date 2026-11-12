@@ -2359,7 +2359,7 @@ export class CatsCompanyBot {
       const attachments: PendingAttachment[] = [];
       for (const file of messageFiles) {
         const targetPath = buildCatsCoAttachmentCachePath(key, file.fileName);
-        const localPath = await this.sender.downloadFile(file.url, file.fileName, { targetPath, messageId: msg.seq });
+        const localPath = await this.sender.downloadFile(file.url, file.fileName, { targetPath });
         if (!localPath) {
           runtimeFeedback.push({
             source: 'catscompany.file_download',
