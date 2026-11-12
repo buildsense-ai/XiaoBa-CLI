@@ -131,7 +131,7 @@ async function sendSingleMessage(
   session: AgentSession,
   message: string,
 ): Promise<void> {
-  const spinner = ora(styles.text('思考中...')).start();
+  const spinner = ora({ text: styles.text('思考中...'), discardStdin: false }).start();
 
   const { callbacks, didStream } = createStreamingCallbacks(spinner);
   const result = await session.handleMessage(message, callbacks);
@@ -238,11 +238,13 @@ async function interactiveChat(session: AgentSession): Promise<void> {
       }
 
       // 可能涉及 AI 的命令（skill 等）
-      const spinner = ora({ text: styles.text('思考中...'), color: 'yellow' }).start();
+      const spinner = ora({ text: styles.text('思考中...'), color: 'yellow', discardStdin: false }).start();
       const { callbacks, didStream } = createStreamingCallbacks(spinner);
 
       const result = await session.handleCommand(command, args, callbacks);
       spinner.stop();
+      process.stdin.resume();
+      if (process.stdin.isTTY) process.stdin.setRawMode(true);
 
       if (result.handled) {
         if (didStream()) {
@@ -268,12 +270,14 @@ async function interactiveChat(session: AgentSession): Promise<void> {
     }
 
     // 普通消息
-    const spinner = ora({ text: styles.text('思考中...'), color: 'yellow' }).start();
+    const spinner = ora({ text: styles.text('思考中...'), color: 'yellow', discardStdin: false }).start();
     const { callbacks, didStream } = createStreamingCallbacks(spinner);
 
     const result = await session.handleMessage(message, callbacks);
 
     spinner.stop();
+    process.stdin.resume();
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
     if (didStream()) {
       process.stdout.write('\n\n');
     } else {
