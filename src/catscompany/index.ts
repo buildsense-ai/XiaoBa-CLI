@@ -631,6 +631,9 @@ export class CatsCompanyBot {
   private sessionExecutionReservations = new Set<string>();
   /** Serializes auxiliary status events so a terminal state cannot overtake its running state. */
   private taskStatusTasks = new Map<string, Promise<void>>();
+  // A terminal task status is the only signal that ends the conversation's
+  // running indicator, so it is retried briefly after a socket blip.
+  private taskStatusRetryDelaysMs = [1_000, 3_000];
   /** Tracks the visible user turn for cancellation and retry handling. */
   private activeConversationTasks = new Map<string, ActiveConversationTask>();
   /** Bounds one-shot Artifact task receipts so server recovery can safely replay a turn. */
@@ -2546,6 +2549,16 @@ export class CatsCompanyBot {
           }
           this.finishConversationTask(key, task, this.taskStatusForResult(result, replyDelivered));
         } else {
+          // The turn was superseded by /clear or /stop. Those paths publish a
+          // terminal for the run they interrupt, but a clear that lands between
+          // beginConversationTask() and here outruns it, and then nothing else
+          // ever ends the run: the platform keeps the conversation "running"
+          // until the six-hour lease expires. finishConversationTask() is a
+          // no-op once the run is retired, so this cannot double-publish.
+          this.finishConversationTask(key, task, {
+            state: 'cancelled',
+            summary: '任务已停止',
+          });
           Logger.info(`[${key}] clear/stop 后忽略旧 turn 的返回`);
         }
       }
@@ -2560,6 +2573,10 @@ export class CatsCompanyBot {
         throw err;
       }
       Logger.info(`[${key}] clear/stop 后忽略旧 turn 的异常`);
+      this.finishConversationTask(key, task, {
+        state: 'cancelled',
+        summary: '任务已停止',
+      });
     } finally {
       this.releaseSessionExecution(key);
       stopTypingHeartbeat();
@@ -3064,7 +3081,7 @@ export class CatsCompanyBot {
     const previous = statusTasks.get(task.topic) ?? Promise.resolve();
     const next = previous
       .catch(() => undefined)
-      .then(() => this.sender.sendTaskStatus(task.topic, payload))
+      .then(() => this.sendConversationTaskStatus(task.topic, payload))
       .catch((error: any) => {
         // Task status is supplementary. A connectivity problem must not affect the reply path.
         Logger.warning(`[${task.topic}] 任务状态上报失败: ${error?.message || error}`);
@@ -3076,6 +3093,33 @@ export class CatsCompanyBot {
         statusTasks.delete(task.topic);
       }
     }).catch(() => undefined);
+  }
+
+  /**
+   * Publishes one task status, retrying a terminal one a couple of times.
+   *
+   * The terminal status is the only signal that ends the platform's running
+   * indicator for the run, and it used to be sent exactly once: a socket blip
+   * lost it for good, the warning was logged, and the conversation stayed
+   * "running" until the six-hour lease expired. Retries stay inside the same
+   * per-topic queue, so running → terminal is never reordered. A long outage
+   * is still handled by the platform's disconnected-bot recovery.
+   */
+  private async sendConversationTaskStatus(
+    topic: string,
+    status: ConversationTaskStatusInput,
+  ): Promise<void> {
+    const terminal = ['completed', 'failed', 'cancelled', 'stale'].includes(status.state);
+    const delays = terminal ? this.taskStatusRetryDelaysMs : [];
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.sender.sendTaskStatus(topic, status);
+        return;
+      } catch (error) {
+        if (attempt >= delays.length) throw error;
+        await new Promise(resolve => setTimeout(resolve, delays[attempt]));
+      }
+    }
   }
 
   private taskStatusForResult(
@@ -4395,6 +4439,10 @@ export class CatsCompanyBot {
         if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
           || stopGeneration !== this.getSessionStopGeneration(sessionKey)) {
           Logger.info(`[${sessionKey}] clear/stop 后忽略已出队旧消息的返回`);
+          this.finishConversationTask(sessionKey, task, {
+            state: 'cancelled',
+            summary: '任务已停止',
+          });
         } else if (this.shuttingDown) {
           // Shutdown fence: destroy() may have timed out its quiesce wait and
           // returned while this queued model turn was still in flight. Do not
@@ -4434,6 +4482,10 @@ export class CatsCompanyBot {
       if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
         || stopGeneration !== this.getSessionStopGeneration(sessionKey)) {
         Logger.info(`[${sessionKey}] clear/stop 后不再重试已出队的旧消息`);
+        this.finishConversationTask(sessionKey, task, {
+          state: 'cancelled',
+          summary: '任务已停止',
+        });
       } else if (this.shuttingDown) {
         // Shutdown fence: destroy() 已开始时不再重试或发送错误提示，避免越过
         // 销毁边界继续产生副作用。

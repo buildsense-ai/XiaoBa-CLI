@@ -401,6 +401,78 @@ describe('CatsCo content blocks', () => {
     assert.strictEqual(taskStatuses[1].status.artifact_task_ref, artifactTaskRef);
   });
 
+  test('still publishes a terminal status when a clear discards the turn', async () => {
+    const { bot, session, taskStatuses, replies } = createProcessHarness();
+    session.handleMessage = async () => {
+      // /clear arrives while the model turn is in flight: the result is dropped
+      // and, before this fix, no terminal was ever published for the run.
+      bot.bumpSessionClearGeneration('cc_user:usr1');
+      return { visibleToUser: true, text: '这轮不该再发出去' };
+    };
+
+    await (bot as any).processParsedMessage({
+      topic: 'p2p_1_2',
+      chatType: 'p2p',
+      senderId: 'usr1',
+      seq: 11,
+      text: '请完成这个任务',
+      rawContent: '请完成这个任务',
+    }, 'cc_user:usr1');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.deepStrictEqual(taskStatuses.map(({ status }) => status.state), ['running', 'cancelled']);
+    assert.strictEqual(taskStatuses[1].status.run_id, taskStatuses[0].status.run_id);
+    assert.deepStrictEqual(replies, []);
+  });
+
+  test('still publishes a terminal status when a stop discards a failed turn', async () => {
+    const { bot, session, taskStatuses } = createProcessHarness();
+    session.handleMessage = async () => {
+      bot.bumpSessionStopGeneration('cc_user:usr1');
+      throw new Error('interrupted by the user');
+    };
+
+    await (bot as any).processParsedMessage({
+      topic: 'p2p_1_2',
+      chatType: 'p2p',
+      senderId: 'usr1',
+      seq: 12,
+      text: '请完成这个任务',
+      rawContent: '请完成这个任务',
+    }, 'cc_user:usr1');
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.deepStrictEqual(taskStatuses.map(({ status }) => status.state), ['running', 'cancelled']);
+  });
+
+  test('retries a terminal task status that failed to send', async () => {
+    const { bot, session, taskStatuses } = createProcessHarness();
+    bot.taskStatusRetryDelaysMs = [0, 0];
+    let remainingFailures = 1;
+    const deliver = bot.sender.sendTaskStatus;
+    bot.sender.sendTaskStatus = async (topic: string, status: any) => {
+      if (status.state === 'completed' && remainingFailures > 0) {
+        remainingFailures -= 1;
+        throw new Error('socket closed');
+      }
+      await deliver(topic, status);
+    };
+    session.handleMessage = async () => ({ visibleToUser: true, text: '处理完成' });
+
+    await (bot as any).processParsedMessage({
+      topic: 'p2p_1_2',
+      chatType: 'p2p',
+      senderId: 'usr1',
+      seq: 13,
+      text: '请完成这个任务',
+      rawContent: '请完成这个任务',
+    }, 'cc_user:usr1');
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    assert.deepStrictEqual(taskStatuses.map(({ status }) => status.state), ['running', 'completed']);
+    assert.strictEqual(remainingFailures, 0);
+  });
+
   test('finishes active task status before disconnecting during shutdown', async () => {
     const { bot, taskStatuses } = createProcessHarness();
     const order: string[] = [];
