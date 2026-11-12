@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { buildIsolatedTestEnvironment } from './test-environment.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const root = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 if (!process.env.CATSCOMPANY_REPO) throw new Error('Set CATSCOMPANY_REPO to the paired local checkout');
-const cats = path.resolve(process.env.CATSCOMPANY_REPO);
+const cats = fs.realpathSync(path.resolve(process.env.CATSCOMPANY_REPO));
 for (const file of ['go.mod', 'server/device_selection_test.go']) {
   if (!fs.existsSync(path.join(cats, file))) throw new Error(`Missing paired server file: ${file}`);
 }

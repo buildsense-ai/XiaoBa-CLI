@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as assert from 'node:assert/strict';
-import { runActualFlow, assertPositiveFlow, hash } from '../tests/helpers/catslog-projection-harness';
+import { runActualFlow, assertPositiveFlow, hash, qualifierTexts } from '../tests/helpers/catslog-projection-harness';
 
 // Runtime logger writes are private stderr. Exactly one stdout JSON verdict.
 for (const name of ['log', 'info', 'warn', 'debug'] as const) console[name] = (...args: any[]) => console.error(...args);
@@ -47,7 +47,8 @@ async function main() {
     artifact.retained_evidence_bytes = viewBytes;
     assert.ok(viewBytes <= 16_000, 'shared whole-view budget exceeded');
     const view = run.retained[0].semantic_view;
-    artifact.projection_counts = { node_count: view.nodes.length, edge_count: view.edges.length, condition_count: view.conditions.length, omission_count: view.omissions.length };
+    artifact.projection_counts = { node_count: view.nodes.length, edge_count: view.edges.length,
+      condition_count: qualifierTexts(view, 'conditions').length, omission_count: qualifierTexts(view, 'omissions').length };
     for (const [key, expected] of Object.entries(manifest.oracle)) {
       if (key !== 'page_gaps') assert.equal(artifact.projection_counts[key], expected, `oracle ${key}`);
     }
