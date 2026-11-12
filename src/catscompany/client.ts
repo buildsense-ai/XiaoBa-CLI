@@ -1291,54 +1291,14 @@ export class CatsClient extends EventEmitter {
     Logger.info('[CatsCompany] 等待好友请求通知...');
   }
 
-  private fileAuthorization(): string {
-    return this.config.connectorToken
-      ? `DeviceConnector ${this.config.connectorToken}`
-      : `ApiKey ${this.config.apiKey || ''}`;
-  }
-
-  /** Download only authenticates /uploads on the current platform origin.
-   * Redirects are explicit so credentials never follow an untrusted URL.
-   * Once a chain leaves that scope it stays anonymous, even if it returns.
-   * The caller must keep the signal active while consuming the response body.
-   */
-  async fetchAttachment(url: string, signal: AbortSignal, messageId?: number): Promise<Response> {
-    const platformOrigin = new URL(this.httpBaseUrl()).origin;
-    let current = new URL(url);
-    const isTrustedUpload = (target: URL): boolean =>
-      target.origin === platformOrigin
-      && (target.pathname === '/uploads' || target.pathname.startsWith('/uploads/'))
-      && !/%(?:2f|5c|25)/i.test(target.pathname);
-    let authenticated = isTrustedUpload(current);
-    if (authenticated && Number.isSafeInteger(messageId) && messageId! > 0) {
-      current.searchParams.set('message_id', String(messageId));
-    }
-    for (let redirects = 0; ; redirects++) {
-      if (!['http:', 'https:'].includes(current.protocol) || current.username || current.password) {
-        throw new Error('Unsupported attachment URL');
-      }
-      authenticated = authenticated && isTrustedUpload(current);
-      const response = await fetch(current.href, {
-        headers: authenticated ? { Authorization: this.fileAuthorization() } : {},
-        redirect: 'manual',
-        credentials: 'omit',
-        signal,
-      });
-      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-      await response.body?.cancel();
-      if (redirects >= 5) throw new Error('Too many attachment redirects');
-      const location = response.headers.get('location');
-      if (!location) throw new Error('Attachment redirect has no location');
-      current = new URL(location, current);
-    }
-  }
-
   async uploadFile(filePath: string, type: 'image' | 'file' = 'file'): Promise<UploadResult> {
     return uploadCatsLocalFile({
       httpBaseUrl: this.httpBaseUrl(),
       filePath,
       type,
-      authHeader: this.fileAuthorization(),
+      authHeader: this.config.connectorToken
+        ? `DeviceConnector ${this.config.connectorToken}`
+        : `ApiKey ${this.config.apiKey || ''}`,
     });
   }
 
@@ -1346,7 +1306,9 @@ export class CatsClient extends EventEmitter {
     const endpoint = this.config.connectorToken
       ? '/api/device-connectors/register'
       : '/api/devices/register';
-    const authorization = this.fileAuthorization();
+    const authorization = this.config.connectorToken
+      ? `DeviceConnector ${this.config.connectorToken}`
+      : `ApiKey ${this.config.apiKey || ''}`;
     // POST, so one attempt per family: the same device id registers twice at
     // worst, but a poisoned .cc answer must not cost the refresh.
     const res = await fetchWithRetry(
