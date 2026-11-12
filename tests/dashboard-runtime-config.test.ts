@@ -90,6 +90,7 @@ describe('dashboard runtime config snapshot', () => {
       snapshot.tools.enabled.find(tool => tool.name === 'send_text')?.transcriptMode,
       'outbound_message',
     );
+    assert.equal(snapshot.logging.upload.enabled, true);
     assert.equal(
       snapshot.tools.enabled.find(tool => tool.name === 'send_file')?.transcriptMode,
       'outbound_file',
