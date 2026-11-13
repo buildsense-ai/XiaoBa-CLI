@@ -33,6 +33,12 @@ import {
   type CatsLogKnowledgeSearchQuery,
 } from './catslog-knowledge-types';
 
+/**
+ * Tells CatsLog this client re-bootstraps before `expires_at`, so the server
+ * issues a short fixed-lifetime upload token instead of a legacy sliding lease.
+ */
+export const CATSLOG_UPLOAD_TOKEN_REFRESH_CAPABILITY = 'upload_token_refresh_v1';
+
 export interface CatscoBootstrapInput {
   deviceId: string;
   deviceName?: string;
@@ -618,6 +624,7 @@ export class CatscoLogAgentClient {
         platform: input.platform,
         hostname: input.hostname,
         agent_version: input.agentVersion,
+        client_capabilities: [CATSLOG_UPLOAD_TOKEN_REFRESH_CAPABILITY],
       }),
     });
 

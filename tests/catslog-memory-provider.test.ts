@@ -76,6 +76,7 @@ describe('CatsLog memory provider', () => {
     assert.equal(state.token, 'upload-token-must-not-be-used-for-memory');
     assert.equal(state.tokenId, 'upload-token-id');
     assert.equal(state.tokenIssuedAt, '2026-08-28T00:00:00.000Z');
+    assert.equal(state.tokenExpiresAt, '2099-08-28T00:00:00.000Z');
   });
 
   test('keeps the existing upload token when bootstrap issues none', async () => {

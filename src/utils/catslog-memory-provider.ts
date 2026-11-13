@@ -609,6 +609,7 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       latest.tokenId = clean(response.token_id);
       latest.token = uploadToken;
       latest.tokenIssuedAt = clean(response.issued_at);
+      latest.tokenExpiresAt = clean(response.expires_at);
     }
 
     if (hasRead) {

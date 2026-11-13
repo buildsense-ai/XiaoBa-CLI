@@ -36,6 +36,7 @@ export interface CatscoLogAgentState {
   tokenId?: string;
   token?: string;
   tokenIssuedAt?: string;
+  tokenExpiresAt?: string;
   uploadProtocol?: 1 | 2;
   appendUrl?: string;
   /** Short-lived device-bound read capability returned by CatsLog bootstrap. */
@@ -122,6 +123,7 @@ export function clearCatscoLogToken(state: CatscoLogAgentState): void {
   delete state.tokenId;
   delete state.token;
   delete state.tokenIssuedAt;
+  delete state.tokenExpiresAt;
   delete state.uploadProtocol;
   delete state.appendUrl;
   delete state.skillTokenId;
