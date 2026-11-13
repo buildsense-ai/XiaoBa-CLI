@@ -1,3 +1,4 @@
+import { creditTaskHeaders } from '../core/credit-task-runtime';
 import axios from 'axios';
 import { createHash } from 'crypto';
 import { StringDecoder } from 'string_decoder';
@@ -251,6 +252,7 @@ export class OpenAIProvider implements AIProvider {
     return {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${this.apiKey}`,
+      ...creditTaskHeaders(this.apiUrl),
     };
   }
 

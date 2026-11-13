@@ -155,6 +155,7 @@ function serializeMessages(messages: Message[]): string {
 }
 
 export interface SessionRuntimeState {
+  creditTask?: import('../core/credit-task-runtime').CreditTaskSnapshot;
   currentDirectory?: string;
   remoteContextCursors?: Record<string, number>;
   /**

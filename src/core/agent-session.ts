@@ -1,3 +1,4 @@
+import { CreditTaskRuntime, CreditTaskPausedError, currentCreditTask, isCatsCoCreditProvider } from './credit-task-runtime';
 import type { SessionInputMetadata } from '../utils/session-log-schema';
 import { Message } from '../types';
 import type {
@@ -301,6 +302,9 @@ export class AgentSession {
   private readonly metrics = new MetricsCollector();
   private resumeInFlight = false;
   private currentDirectory: string;
+  private creditTask?: CreditTaskRuntime;
+  private creditTurnInFlight = false;
+  private creditResumeOptions?: HandleMessageOptions;
 
   constructor(
     public readonly key: string,
@@ -365,6 +369,12 @@ export class AgentSession {
       allowLegacySessionFallback: this.shouldAllowLegacySessionFallback(sessionRoute),
       runtimeFeedbackInbox: this.runtimeFeedbackInbox,
     });
+    const creditSnapshot = this.lifecycleManager.loadCreditTask();
+    if (creditSnapshot && creditSnapshot.enabled !== false
+      && (creditSnapshot.state !== 'completed' || creditSnapshot.finishPending) && isCatsCoCreditProvider(modelConfig)) {
+      this.creditTask = this.createCreditTask(modelConfig, creditSnapshot);
+      if (creditSnapshot.state === 'running') this.creditTask.pause('运行已中断，请手动恢复原任务');
+    }
     this.defaultDirectory = this.resolveDefaultDirectory();
     this.currentDirectory = this.loadInitialCurrentDirectory();
     this.turnController = new AgentTurnController({
@@ -725,7 +735,83 @@ export class AgentSession {
     return this.handleInput(text, handleOptions, source, options.suppressFinalResponse === true);
   }
 
+  private createCreditTask(
+    config: import('../types').ChatConfig,
+    snapshot?: import('./credit-task-runtime').CreditTaskSnapshot,
+  ): CreditTaskRuntime {
+    return new CreditTaskRuntime(config, snapshot, state => this.lifecycleManager.saveCreditTask(state));
+  }
+
   private async handleInput(
+    text: string | import('../types').ContentBlock[],
+    callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
+    runtimeObservationSource?: string,
+    suppressFinalResponse = false,
+    resumeTask?: CreditTaskRuntime,
+  ): Promise<HandleMessageResult> {
+    const config = this.services.aiService.getConfig?.() ?? {};
+    if (!isCatsCoCreditProvider(config)) {
+      return this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse);
+    }
+    if (this.busy || this.creditTurnInFlight || this.manualCompactionInFlight) {
+      return { text: BUSY_MESSAGE, visibleToUser: true };
+    }
+    if (this.creditTask?.snapshot.finishPending) {
+      return { text: this.creditTask.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
+    }
+    if (this.creditTask?.snapshot.state === 'paused' && !resumeTask) {
+      return { text: this.creditTask.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
+    }
+    const inherited = currentCreditTask();
+    if (runtimeObservationSource && !resumeTask
+      && (inherited?.snapshot.state === 'completed' || this.creditTask?.snapshot.state === 'completed')) {
+      return { text: '', visibleToUser: false, taskOutcome: 'completed' };
+    }
+    if (!resumeTask && !runtimeObservationSource && this.creditTask?.snapshot.state === 'running' && !inherited) {
+      return { text: '原任务的子步骤仍在执行，请等待结束后再启动新任务。', visibleToUser: true, taskOutcome: 'failed' };
+    }
+    const task = resumeTask ?? inherited
+      ?? (runtimeObservationSource && this.creditTask?.snapshot.state === 'running' ? this.creditTask : undefined)
+      ?? this.createCreditTask(config);
+    if (callbacksOrOptions && !resumeTask) this.creditResumeOptions = callbacksOrOptions as HandleMessageOptions;
+    this.creditTask = task;
+    this.creditTurnInFlight = true;
+    this.interruptRequested = false;
+    const admissionGeneration = this.lifecycleGeneration;
+    return task.run(async () => {
+      try {
+        if (resumeTask) {
+          await task.resume();
+          if (this.checkpointBlockedReason && !await this.resumeCheckpoint()) {
+            throw task.pause('检查点尚未恢复，请稍后手动执行 /resume');
+          }
+        }
+        else {
+          if (!task.snapshot.startSent) task.snapshot.pendingInput = text;
+          await task.start();
+          await task.status();
+        }
+        if (this.interruptRequested || admissionGeneration !== this.lifecycleGeneration) {
+          await task.complete();
+          return { text: '已停止当前请求。', visibleToUser: true, taskOutcome: 'cancelled' };
+        }
+        const result = await this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse);
+        if (task.snapshot.state === 'paused') return { text: task.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
+        if (result.taskOutcome === 'completed' || result.taskOutcome === 'cancelled' || task.snapshot.enabled === false) {
+          if (!inherited || resumeTask) await task.complete();
+        } else {
+          throw task.pause('执行已中断，请检查后手动恢复原任务');
+        }
+        return result;
+      } catch (error) {
+        if (this.messages.length) this.lifecycleManager.saveContext(this.messages);
+        return { text: error instanceof CreditTaskPausedError ? error.message : String((error as Error).message || error),
+          visibleToUser: true, taskOutcome: 'failed' };
+      } finally { this.creditTurnInFlight = false; }
+    });
+  }
+
+  private async executeInput(
     text: string | import('../types').ContentBlock[],
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
     runtimeObservationSource?: string,
@@ -795,7 +881,8 @@ export class AgentSession {
           dispatchedAsTool = opts.dispatchedAsTool;
           localFileGrants = opts.localFileGrants;
           runtimeFeedbackInputs = opts.runtimeFeedback || [];
-          pendingUserInputProvider = opts.pendingUserInputProvider;
+          // Queued user goals must reach their own start gate after this task ends.
+          pendingUserInputProvider = this.creditTask?.snapshot.enabled === true ? undefined : opts.pendingUserInputProvider;
           transcriptInputIds = opts.transcriptInputIds;
         } else {
           // 旧签名 SessionCallbacks
@@ -979,6 +1066,11 @@ export class AgentSession {
         if (recoveredMessages) {
           this.messages = recoveredMessages;
         }
+        if (this.creditTask?.snapshot.state === 'paused' || err instanceof CreditTaskPausedError) {
+          this.messages = stripAssistantArtifactsFromMessages(this.turnContextBuilder.removeTransientMessages(this.messages));
+          this.lifecycleManager.saveContext(this.messages);
+          return { text: this.creditTask?.pauseMessage || String(err.message), visibleToUser: true, taskOutcome: 'failed' };
+        }
 
         // 识别多模态相关错误
         const errorMsg = err.message || String(err);
@@ -1086,9 +1178,29 @@ export class AgentSession {
     command: string,
     args: string[],
     callbacks?: SessionCallbacks,
+    resumeOptions?: HandleMessageOptions,
   ): Promise<CommandResult> {
     return this.withLogContext(async () => {
       const commandName = command.toLowerCase();
+
+      const config = this.services.aiService.getConfig?.() ?? {};
+      if ((commandName === 'resume' || commandName === 'compact') && this.creditTask?.snapshot.finishPending) {
+        if (this.isBusy()) return { handled: true, reply: BUSY_MESSAGE };
+        if (commandName !== 'resume') return { handled: true, reply: this.creditTask.pauseMessage };
+        this.creditTurnInFlight = true;
+        try {
+          await this.creditTask.finish();
+          return { handled: true, reply: '原任务已完成，结束状态已同步。' };
+        } catch {
+          return { handled: true, reply: this.creditTask.pauseMessage };
+        } finally { this.creditTurnInFlight = false; }
+      }
+      if (!currentCreditTask() && isCatsCoCreditProvider(config)
+        && (commandName === 'compact' || (commandName === 'resume'
+          && (this.creditTask?.snapshot.pendingCommand
+            || (this.checkpointBlockedReason && this.creditTask?.snapshot.state !== 'paused'))))) {
+        return this.handleCreditCheckpointCommand(commandName as 'compact' | 'resume', args, callbacks, resumeOptions);
+      }
 
       // /stop - 中断当前正在运行的请求
       if (commandName === 'stop') {
@@ -1098,7 +1210,7 @@ export class AgentSession {
 
       // /compact - explicitly create one checkpoint without creating a user turn.
       if (commandName === 'compact') {
-        if (this.busy || this.manualCompactionInFlight) {
+        if (this.busy || (this.creditTurnInFlight && !currentCreditTask()) || this.manualCompactionInFlight) {
           return {
             handled: true,
             reply: '当前会话正在处理中，请等待本轮结束后再使用 /compact。',
@@ -1156,7 +1268,7 @@ export class AgentSession {
             handled: true,
             reply: stopped
               ? '压缩已停止，原上下文已保留。'
-              : CONTEXT_COMPACTION_ERROR_MESSAGE,
+              : this.creditTask?.snapshot.state === 'paused' ? this.creditTask.pauseMessage : CONTEXT_COMPACTION_ERROR_MESSAGE,
           };
         } finally {
           this.manualCompactionInFlight = false;
@@ -1168,6 +1280,23 @@ export class AgentSession {
       // /resume - retry a recoverable checkpoint without deleting history
       if (commandName === 'resume') {
         if (this.busy) return { handled: true, reply: BUSY_MESSAGE };
+        if (this.creditTask?.snapshot.state === 'paused') {
+          if (this.creditTurnInFlight) return { handled: true, reply: BUSY_MESSAGE };
+          const task = this.creditTask;
+          if (SubAgentManager.getInstance().hasActiveForParent(this.key)) {
+            return { handled: true, reply: '子步骤正在保存进度，请稍后手动执行 /resume。' };
+          }
+          const pending = task.snapshot.pendingInput;
+          const stored = this.messages.length ? this.messages : this.lifecycleManager.loadContextForResume();
+          const submitted = pending !== undefined && stored.some(message => message.role === 'user'
+            && JSON.stringify(message.content) === JSON.stringify(pending));
+          const childProgress = task.snapshot.subagentProgress;
+          const input = childProgress && Object.keys(childProgress).length
+            ? `请继续原任务，保留以下子步骤已完成的工作，避免重复执行已成功的操作。\n${JSON.stringify(childProgress)}`
+            : !submitted && pending != null ? pending : '请从已保存的进度继续完成原任务，不启动新目标。';
+          const result = await this.handleInput(input, { ...this.creditResumeOptions, ...resumeOptions, callbacks }, 'credit_resume', false, task);
+          return { handled: true, reply: result.text };
+        }
         const resumed = await this.resumeCheckpoint();
         return {
           handled: true,
@@ -1214,6 +1343,46 @@ export class AgentSession {
 
 
       return { handled: false };
+    });
+  }
+
+  private async handleCreditCheckpointCommand(
+    command: 'compact' | 'resume', args: string[], callbacks?: SessionCallbacks, options?: HandleMessageOptions,
+  ): Promise<CommandResult> {
+    if (this.isBusy() || this.manualCompactionInFlight) return { handled: true, reply: BUSY_MESSAGE };
+    const existing = this.creditTask;
+    if (existing?.snapshot.state === 'paused' && command !== 'resume') {
+      return { handled: true, reply: existing.pauseMessage };
+    }
+    if (existing?.snapshot.state === 'running') return { handled: true, reply: BUSY_MESSAGE };
+    const task = existing?.snapshot.state === 'paused'
+      ? existing : this.createCreditTask(this.services.aiService.getConfig());
+    this.creditTask = task;
+    const operation = task.snapshot.pendingCommand ?? command;
+    task.snapshot.pendingCommand = operation;
+    this.creditTurnInFlight = true;
+    this.interruptRequested = false;
+    const generation = this.lifecycleGeneration;
+    return task.run(async () => {
+      try {
+        if (task.snapshot.state === 'paused') await task.resume();
+        else await task.start();
+        await task.status();
+        if (this.interruptRequested || generation !== this.lifecycleGeneration) {
+          await task.complete();
+          return { handled: true, reply: '已停止当前请求。' };
+        }
+        const result = await this.handleCommand(operation, args, callbacks, options);
+        if (task.snapshot.state === 'paused') return { handled: true, reply: task.pauseMessage };
+        if (result.reply === CONTEXT_COMPACTION_ERROR_MESSAGE || result.reply === CONTEXT_CHECKPOINT_BLOCKED_MESSAGE) {
+          throw task.pause('检查点尚未完成，请稍后手动执行 /resume');
+        }
+        await task.complete();
+        return result;
+      } catch (error) {
+        return { handled: true, reply: error instanceof CreditTaskPausedError ? error.message
+          : task.pause(error instanceof Error ? error.message : String(error)).message };
+      } finally { this.creditTurnInFlight = false; }
     });
   }
 
@@ -1361,7 +1530,7 @@ export class AgentSession {
   // ─── 查询方法 ──────────────────────────────────────
 
   isBusy(): boolean {
-    return this.busy;
+    return this.busy || this.creditTurnInFlight;
   }
 
   /** Snapshot only: no init, compaction, tool execution, or source mutation. */
@@ -1384,7 +1553,7 @@ export class AgentSession {
     }
     this.stopSubAgents('用户请求中止');
     this.cancelCheckpointCandidate();
-    if (!this.busy) return;
+    if (!this.busy && !this.creditTurnInFlight) return;
     this.interruptRequested = true;
     this.activeAbortController?.abort();
   }
@@ -2009,6 +2178,11 @@ export class AgentSession {
     force = false,
     toolTokens = this.getToolDefinitionTokens(),
   ): Promise<{ messages: Message[]; compacted: boolean }> {
+    // Restore/history hydration is not a user goal. Defer paid compaction until admission.
+    if (phase === 'restore' && !currentCreditTask()
+      && isCatsCoCreditProvider(this.services.aiService.getConfig?.() ?? {})) {
+      return { messages, compacted: false };
+    }
     return this.checkpointCompactionCoordinator.compactIfNeeded(messages, {
       sessionKey: this.key,
       phase,
