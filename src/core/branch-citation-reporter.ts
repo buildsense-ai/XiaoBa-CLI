@@ -23,6 +23,8 @@ export interface BranchCitationReport {
 export interface BranchCitationMatch {
   reports: BranchCitationReport[];
   knowledgeRefs: string[];
+  /** Typed source refs stay local; never enter ref_-only reports. */
+  sourceRefs?: string[];
 }
 
 const MAX_REPORTED_REFS_PER_REQUEST = 64;
@@ -35,6 +37,7 @@ export function matchBranchCitations(
 ): BranchCitationMatch {
   const reports = new Map<string, Set<string>>();
   const knowledgeRefs = new Set<string>();
+  const sourceRefs = new Set<string>();
   const text = typeof replyText === 'string' ? replyText : '';
   if (!text || observations.length === 0) {
     return { reports: [], knowledgeRefs: [] };
@@ -56,8 +59,8 @@ export function matchBranchCitations(
       }
     }
     for (const ref of Array.isArray(metadata.refs) ? metadata.refs : []) {
-      if (knowledgeRefs.size >= MAX_KNOWLEDGE_CITED_REFS) break;
-      if (isKnowledgeLaneRef(ref) && knowledgeRefAppearsIn(ref, text)) knowledgeRefs.add(ref);
+      if (knowledgeRefs.size < MAX_KNOWLEDGE_CITED_REFS && isKnowledgeLaneRef(ref) && knowledgeRefAppearsIn(ref, text)) knowledgeRefs.add(ref);
+      if (typeof ref === 'string' && SOURCE_NODE_LANE_REF_PATTERN.test(ref) && text.includes(ref) && sourceRefs.size < MAX_LANED_REFS) sourceRefs.add(ref);
     }
   }
 
@@ -65,11 +68,12 @@ export function matchBranchCitations(
     reports: Array.from(reports.entries())
       .map(([requestId, refs]) => ({ requestId, refs: Array.from(refs) })),
     knowledgeRefs: Array.from(knowledgeRefs),
+    ...(sourceRefs.size ? { sourceRefs: Array.from(sourceRefs) } : {}),
   };
 }
 
 function isKnowledgeLaneRef(ref: unknown): ref is string {
-  return typeof ref === 'string' && (ref.startsWith('kb:') || ref.startsWith('file:'));
+  return typeof ref === 'string' && (ref.startsWith('kb:') || ref.startsWith('file:') || isDailyKnowledgeLaneRef(ref));
 }
 
 /**
@@ -163,6 +167,8 @@ export interface BranchLaneCounts {
   remote_pool: number;
   session: number;
   knowledge: number;
+  /** Exact typed source-node corpus refs (not independent distilled facts). */
+  source: number;
 }
 
 export interface BranchCitationUsage {
@@ -180,6 +186,8 @@ const MAX_LANED_REFS = 128;
 const MAX_USAGE_REQUEST_IDS = 16;
 const MAX_REF_LENGTH = 512;
 
+const SOURCE_NODE_LANE_REF_PATTERN = /^catslog:source:[a-f0-9]{64}$/;
+
 /** `catslog:session:<24hex>` — the session-hash citation namespace. */
 const SESSION_HASH_LANE_REF_PATTERN = /^catslog:session:[a-f0-9]{24}$/;
 /** `<stream>#<n|summary>` — session-lane stream citations (turn or summary). */
@@ -193,22 +201,28 @@ export function isSessionLaneRef(ref: unknown): ref is string {
   return Boolean(match && match[1].length > 0 && match[1].length <= MAX_REF_LENGTH);
 }
 
+export function isDailyKnowledgeLaneRef(ref: string): boolean {
+  return ref.length <= 512 && /^catslog:knowledge:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+$/.test(ref);
+}
+
 function isKnowledgeLaneShape(ref: string): boolean {
-  return ref.startsWith('kb:') || ref.startsWith('file:');
+  return ref.startsWith('kb:') || ref.startsWith('file:') || isDailyKnowledgeLaneRef(ref);
 }
 
 /**
  * Lane that produced `ref`, per the measurement taxonomy: remote pool refs
  * are `ref_`-prefixed AND members of the request's remote pool (an unpoolled
  * `ref_` string is not a pool ref); session refs are `stream#n`/`#summary` or
- * session-hash shaped; knowledge refs are `kb:`/`file:`; everything else
- * (skill citations, hashed refs, garbage) is `other`.
+ * session-hash shaped; knowledge refs are `kb:`/`file:` or daily corpus refs;
+ * exact `catslog:source:<64hex>` refs are typed source-node evidence. Everything
+ * else (skill citations, arbitrary hashed refs, garbage) is `other`.
  */
 export function deriveBranchRefLane(
   ref: unknown,
   remotePoolRefs?: ReadonlySet<string>,
 ): BranchCitationLane {
   if (typeof ref !== 'string' || !ref || ref.length > MAX_REF_LENGTH) return 'other';
+  if (SOURCE_NODE_LANE_REF_PATTERN.test(ref)) return 'source';
   if (isKnowledgeLaneShape(ref)) return 'knowledge';
   if (isSessionLaneRef(ref)) return 'session';
   if (isCatsLogPoolCitationRef(ref) && (!remotePoolRefs || remotePoolRefs.has(ref))) return 'remote_pool';
@@ -238,7 +252,7 @@ export function collectBranchRefLanes(
 
 /** Valid lane value of a tagged entry, or undefined. */
 function parseLane(value: unknown): BranchCitationLane | undefined {
-  return value === 'remote_pool' || value === 'session' || value === 'knowledge' || value === 'other'
+  return value === 'remote_pool' || value === 'session' || value === 'knowledge' || value === 'source' || value === 'other'
     ? value
     : undefined;
 }
@@ -283,12 +297,12 @@ function citationPoolRefs(observation: SyntheticObservation): Set<string> {
 function laneRefAppearsInCorpus(ref: string, lane: BranchCitationLane, corpus: string): boolean {
   if (!corpus) return false;
   if (lane === 'knowledge') return knowledgeRefAppearsIn(ref, corpus);
-  if (lane === 'session' || lane === 'remote_pool') return corpus.includes(ref);
+  if (lane === 'session' || lane === 'remote_pool' || lane === 'source') return corpus.includes(ref);
   return false;
 }
 
 function emptyLaneCounts(): BranchLaneCounts {
-  return { remote_pool: 0, session: 0, knowledge: 0 };
+  return { remote_pool: 0, session: 0, knowledge: 0, source: 0 };
 }
 
 /**
@@ -355,6 +369,9 @@ export function collectBranchCitationUsage(
     } else if (lane === 'knowledge') {
       injectedByLane.knowledge += 1;
       if (laneRefAppearsInCorpus(ref, lane, corpus)) citedByLane.knowledge += 1;
+    } else if (lane === 'source') {
+      injectedByLane.source += 1;
+      if (laneRefAppearsInCorpus(ref, lane, corpus)) citedByLane.source += 1;
     }
   }
 
