@@ -205,6 +205,40 @@ export class MemorySourceReadTool implements Tool {
 }
 
 /**
+ * Exact read of one Memory node cited by a Diary entry the main agent read.
+ * Only seeded `memory-node:` handles resolve; the node arrives as its
+ * canonical memory-graph/3 view, whole or not at all.
+ */
+export class MemoryNodeReadTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_node_read',
+    description: [
+      '读取一个 document_cited_memory_nodes 中的 memory-node 句柄：主 agent 已读日记所引用的精确记忆节点及其条件/省略。',
+      '与 memory_source_read 共享整轮调用与视图预算；只交付完整节点，否则返回 reference_only。成功结果中的 ref（catslog:source:…）可写入 finish evidence。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        node: { type: 'string', description: 'document_cited_memory_nodes 中原样给出的 memory-node:… 句柄。' },
+      },
+      required: ['node'],
+    },
+  };
+
+  constructor(
+    private readonly read: (node: string, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      return { ok: true, content: jsonToolResult(await this.read(String(args?.node || ''), context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
  * Model-driven remote recall over the device-bound agent_memory branch lane.
  * One model-selected literal term (<=64 code points) per search. Empty-query
  * prefetch enumerates bounded candidates in server source-native order;
@@ -361,10 +395,10 @@ function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => bool
   const evidence: string[] = args.evidence.map((ref: string) => ref.trim()).filter(Boolean);
   const uniqueRefs: string[] = Array.from(new Set(evidence));
   for (const ref of uniqueRefs) {
-    // The active local grammar remains unchanged. Pool refs are an explicit
-    // run-local extension, admitted only after complete delivery.
+    // The active local grammar remains unchanged. Pool and Memory node refs are
+    // explicit run-local extensions, admitted only after complete delivery.
     if (!CANONICAL_REF_PATTERN.test(ref)
-      && !(CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) && isDeliveredPoolRef(ref))) {
+      && !((CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) && isDeliveredPoolRef(ref))) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }
@@ -400,6 +434,7 @@ const CATSLOG_STREAM_REF_PATTERN = /^(.+)#(?:[1-9][0-9]*|summary)$/;
 const CATSLOG_SESSION_HASH_REF_PATTERN = /^catslog:session:[a-f0-9]{24}$/;
 const CATSLOG_SKILL_REF_PATTERN = /^catslog:skill:(.+)@([1-9][0-9]*)$/;
 const CATSLOG_REF_HASH_PATTERN = /^catslog:ref:[a-f0-9]{24}$/;
+const CATSLOG_SOURCE_REF_PATTERN = /^catslog:source:[a-f0-9]{64}$/;
 // Local distilled-knowledge citations: managed KB documents and raw source
 // Markdown under the KB store's documents/ tree (see xiaoba-knowledge). The
 // path grammar is deliberately narrower than the store accepts: ASCII
@@ -407,6 +442,30 @@ const CATSLOG_REF_HASH_PATTERN = /^catslog:ref:[a-f0-9]{24}$/;
 // never double as a traversal path or URL.
 const KNOWLEDGE_KB_REF_PATTERN = /^kb:KB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const KNOWLEDGE_FILE_REF_PATTERN = /^file:documents\/(?:[A-Za-z0-9][A-Za-z0-9 ._-]*\/)*[A-Za-z0-9][A-Za-z0-9 ._-]*\.[mM][dD]$/;
+
+/**
+ * Citable ref for one entry revision of the Agent-private daily knowledge
+ * corpus: `catslog:knowledge:<document_id>:<revision>:<entry_id>`. Segments
+ * use the shared package's opaque-ID charset, so branch refs and
+ * `stream#line` strings can never masquerade as corpus refs. This is a NEW,
+ * distinct identity domain — it does not widen the local-KB grammar.
+ */
+const CATSLOG_KNOWLEDGE_REF_PATTERN = /^catslog:knowledge:([A-Za-z0-9_-]{1,256}):([A-Za-z0-9_-]{1,128}):([A-Za-z0-9_-]{1,256})$/;
+
+/** Build the citable ref for an exact day/document/revision/entry anchor. */
+export function catslogKnowledgeCitationRef(
+  documentId: string,
+  revision: string,
+  entryId: string,
+): string | null {
+  const ref = `catslog:knowledge:${documentId}:${revision}:${entryId}`;
+  return CATSLOG_KNOWLEDGE_REF_PATTERN.test(ref) ? ref : null;
+}
+
+/** True when `ref` is a typed daily-knowledge corpus ref. */
+export function isCatsLogKnowledgeCitationRef(ref: string): boolean {
+  return CATSLOG_KNOWLEDGE_REF_PATTERN.test(ref);
+}
 
 /**
  * Citable ref form of a local distilled-knowledge document: `kb:<KB-ID>` for
@@ -425,6 +484,9 @@ export function isMemoryCitationRef(ref: string): boolean {
   // Server pool-citation refs pass through the branch projection unchanged;
   // the observed-refs tracker still gates any citation of them.
   if (CATSLOG_POOL_CITATION_REF_PATTERN.test(ref)) return true;
+  // Typed daily-knowledge corpus refs (knowledge/1). Identity domains stay
+  // disjoint: the ref carries document/revision/entry exactly as served.
+  if (isCatsLogKnowledgeCitationRef(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) return true;
   const stream = ref.match(CATSLOG_STREAM_REF_PATTERN);
   if (stream && isSafeCatsLogOpaqueIdentifier(stream[1], 256)) return true;
   const skill = ref.match(CATSLOG_SKILL_REF_PATTERN);
