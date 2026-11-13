@@ -239,6 +239,15 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           branchUrl: capability.branchUrl,
           signal,
         }).then(response => {
+          // A discovery that resolves after its capability was replaced must not
+          // register refs. The read path pins every ref to the token and base it
+          // was discovered under, so a stale registration both makes the ref look
+          // issued while every read of it fails, and overwrites the newer valid
+          // issuance of the same ref. Dropping it keeps the later issuance usable.
+          const latestConfig = this.currentConfig();
+          const latestState = loadCatscoLogAgentState(latestConfig.stateFilePath);
+          if (latestState.stateCorrupt || clean(latestState.skillToken) !== capability.token
+            || latestConfig.apiBaseUrl !== apiBaseUrl) return response;
           for (const branch of response.branches ?? []) {
             if (branch?.source !== 'agent_memory') continue;
             for (const item of Array.isArray(branch.items) ? branch.items.slice(0, 50) : []) {
