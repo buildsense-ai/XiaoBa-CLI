@@ -599,6 +599,18 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     latest.deviceId = responseDeviceId || deviceId;
     ensureCatscoDeviceId(latest, stateFilePath);
 
+    // CatsLog replaces every device capability on bootstrap, including the
+    // upload token the scheduler holds. Hand the replacement to the scheduler
+    // or its next upload fails with a revoked token and bootstraps again,
+    // revoking this read capability in turn. Only replace the upload token we
+    // started from; a concurrent scheduler bootstrap may already be newer.
+    const uploadToken = clean(response.token);
+    if (uploadToken && clean(latest.token) === clean(state.token)) {
+      latest.tokenId = clean(response.token_id);
+      latest.token = uploadToken;
+      latest.tokenIssuedAt = clean(response.issued_at);
+    }
+
     if (hasRead) {
       latest.skillTokenId = clean(response.skill_token_id);
       latest.skillToken = skillToken;

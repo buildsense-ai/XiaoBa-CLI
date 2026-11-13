@@ -9,6 +9,7 @@ import {
   CatsLogMemoryUnavailableError,
 } from '../src/utils/catslog-memory-provider';
 import { getCatscoLogAgentConfig } from '../src/utils/catsco-log-agent-config';
+import { loadCatscoLogAgentState, saveCatscoLogAgentState } from '../src/utils/catsco-log-agent-state';
 import { createCatsCoLocalConfigService } from '../src/catscompany/local-config';
 
 describe('CatsLog memory provider', () => {
@@ -55,7 +56,72 @@ describe('CatsLog memory provider', () => {
 
     const state = JSON.parse(fs.readFileSync(getCatscoLogAgentConfig(root, env).stateFilePath, 'utf8'));
     assert.equal(state.skillToken, 'skill-token-1');
-    assert.equal(state.token, undefined);
+    // Stored for the upload scheduler only; no memory call above used it.
+    assert.equal(state.token, 'upload-token-must-not-be-used-for-memory');
+  });
+
+  // CatsLog revokes the device's previous upload token on every bootstrap.
+  test('hands the replacement upload token to the scheduler instead of keeping a revoked one', async () => {
+    const stateFilePath = getCatscoLogAgentConfig(root, env).stateFilePath;
+    saveCatscoLogAgentState(stateFilePath, { deviceId: 'device-stable', tokenId: 'old-id', token: 'upload-revoked-by-bootstrap' });
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => fakeClient([], 'skill-token-2'),
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await provider.branch({ queryText: 'deploy rollback' });
+
+    const state = loadCatscoLogAgentState(stateFilePath);
+    assert.equal(state.token, 'upload-token-must-not-be-used-for-memory');
+    assert.equal(state.tokenId, 'upload-token-id');
+    assert.equal(state.tokenIssuedAt, '2026-08-28T00:00:00.000Z');
+  });
+
+  test('keeps the existing upload token when bootstrap issues none', async () => {
+    const stateFilePath = getCatscoLogAgentConfig(root, env).stateFilePath;
+    saveCatscoLogAgentState(stateFilePath, { deviceId: 'device-stable', tokenId: 'kept-id', token: 'upload-kept' });
+    const client = fakeClient([], 'skill-token-3');
+    client.bootstrap = async () => {
+      const { token: _token, token_id: _tokenId, ...response } = bootstrapResponse('skill-token-3');
+      return response as Awaited<ReturnType<CatscoLogAgentClient['bootstrap']>>;
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await provider.branch({ queryText: 'deploy rollback' });
+
+    const state = loadCatscoLogAgentState(stateFilePath);
+    assert.equal(state.token, 'upload-kept');
+    assert.equal(state.tokenId, 'kept-id');
+  });
+
+  test('never overwrites a newer upload token from a concurrent scheduler bootstrap', async () => {
+    const stateFilePath = getCatscoLogAgentConfig(root, env).stateFilePath;
+    saveCatscoLogAgentState(stateFilePath, { deviceId: 'device-stable', tokenId: 'old-id', token: 'upload-old' });
+    const client = fakeClient([], 'skill-token-4');
+    client.bootstrap = async () => {
+      // The scheduler finishes its own, later bootstrap while ours is in flight.
+      const concurrent = loadCatscoLogAgentState(stateFilePath);
+      concurrent.tokenId = 'scheduler-id';
+      concurrent.token = 'upload-from-scheduler';
+      saveCatscoLogAgentState(stateFilePath, concurrent);
+      return bootstrapResponse('skill-token-4');
+    };
+    const provider = new CatsLogMemoryProvider(root, {
+      env,
+      clientFactory: () => client,
+      now: () => Date.parse('2026-08-28T00:00:00.000Z'),
+    });
+
+    await provider.branch({ queryText: 'deploy rollback' });
+
+    const state = loadCatscoLogAgentState(stateFilePath);
+    assert.equal(state.token, 'upload-from-scheduler');
+    assert.equal(state.tokenId, 'scheduler-id');
   });
 
   test('refreshes once after a revoked capability and preserves device identity', async () => {
