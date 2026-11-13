@@ -538,6 +538,47 @@ function normalizeSearchAny(value: unknown): string[] | undefined {
   return keywords.length > 0 ? keywords : undefined;
 }
 
+/**
+ * Hard wire budget for one capability-scoped read. The branch envelope and the
+ * knowledge pages carry Memory projections; 2 MiB admits a real whole-view
+ * projection with headroom while bounding a hostile or runaway response.
+ */
+const CAPABILITY_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+/** An error body is never read for its text, only for a short machine code. */
+const CAPABILITY_ERROR_CODE_MAX_BYTES = 4 * 1024;
+
+/**
+ * Read at most CAPABILITY_ERROR_CODE_MAX_BYTES of a failed capability response
+ * and keep only a short machine error code. Free text is discarded so a server
+ * body can never reach a model-facing message or payload.
+ */
+async function readCapabilityErrorCode(response: Response): Promise<string | undefined> {
+  const reader = response.body?.getReader();
+  if (!reader) return undefined;
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > CAPABILITY_ERROR_CODE_MAX_BYTES) return undefined;
+      chunks.push(value);
+    }
+  } catch {
+    return undefined;
+  } finally {
+    reader.releaseLock();
+  }
+  try {
+    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const code = parsed?.error;
+    return typeof code === 'string' && code.length <= 64 && /^[a-z0-9_]+$/.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function requireCapabilityToken(value: unknown): string {
   const token = typeof value === 'string' ? value.trim() : '';
   if (!token) throw new Error('CatsLog capability token is missing');
@@ -1287,6 +1328,7 @@ export class CatscoLogAgentClient {
     fallbackMessage: string,
     signal?: AbortSignal,
     ifNoneMatch?: string,
+    maxResponseBytes: number = CAPABILITY_RESPONSE_MAX_BYTES,
   ): Promise<T> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -1295,11 +1337,79 @@ export class CatscoLogAgentClient {
     if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
     const response = await fetch(this.buildUrl(requestPath), {
       method: 'POST',
+      // A device-bound read must never follow a redirect: the capability is
+      // scoped to this origin and the target would receive the token.
+      redirect: 'error',
       headers,
       signal,
       body: JSON.stringify(body),
     });
-    return this.parseJsonResponse<T>(response, fallbackMessage);
+    return this.parseBoundedJsonResponse<T>(response, fallbackMessage, maxResponseBytes);
+  }
+
+  /**
+   * Bounded admission for every capability-scoped read.
+   *
+   * The branch envelope and the knowledge pages carry Memory projections, so an
+   * unbounded `response.text()` lets one oversized or hostile response take the
+   * whole runtime down, and echoing an upstream error body into `message` or
+   * `payload` copies arbitrary server text into the model-facing path. Both are
+   * refused here: bytes are capped while streaming, and an error keeps only its
+   * status plus a machine error code (never free text).
+   */
+  private async parseBoundedJsonResponse<T>(response: Response, fallbackMessage: string, maxBytes: number): Promise<T> {
+    const etag = response.headers.get('etag') || undefined;
+    if (response.status === 304) {
+      return {
+        not_modified: true,
+        ...(etag ? { etag } : {}),
+      } as T;
+    }
+    if (!response.ok) {
+      const code = await readCapabilityErrorCode(response);
+      throw Object.assign(
+        new Error(code
+          ? `${fallbackMessage}: ${code} (HTTP ${response.status})`
+          : `${fallbackMessage}: HTTP ${response.status}`),
+        { status: response.status, ...(code ? { payload: { error: code } } : {}) },
+      );
+    }
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      await response.body?.cancel();
+      throw new Error(`${fallbackMessage}: response exceeds byte budget`);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) return {} as T;
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > maxBytes) {
+          await reader.cancel();
+          throw new Error(`${fallbackMessage}: response exceeds byte budget`);
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const text = Buffer.concat(chunks).toString('utf8');
+    let data: any = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw Object.assign(new Error(`${fallbackMessage}: invalid JSON response`), { status: response.status });
+      }
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw Object.assign(new Error(`${fallbackMessage}: invalid response envelope`), { status: response.status });
+    }
+    return data as T;
   }
 
   private async parseJsonResponse<T>(response: Response, fallbackMessage: string): Promise<T> {
