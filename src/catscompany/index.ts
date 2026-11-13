@@ -45,6 +45,7 @@ import {
 import { Logger } from '../utils/logger';
 import { SessionTurnLogger } from '../utils/session-turn-logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
+import { currentCreditTask } from '../core/credit-task-runtime';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import type { SubAgentInfo } from '../core/sub-agent-session';
 import { ChannelCallbacks, CurrentUserApprovalInput, DeviceRpcTransport, GroupRosterEntry, TargetRoutes, ThinToolRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
@@ -2316,7 +2317,7 @@ export class CatsCompanyBot {
       // /compact follows the normal slash-command/reply path, with the
       // existing Working-style thinking callback for checkpoint progress. It
       // deliberately does not inherit /clear's destructive cleanup.
-      const commandCallbacks = isCompact
+      const commandCallbacks = isCompact || command.toLowerCase() === 'resume'
         ? this.buildSessionCallbacks(msg.topic, {
           sessionKey: key,
           senderId: msg.senderId,
@@ -2324,7 +2325,22 @@ export class CatsCompanyBot {
           clearGeneration: entryClearGeneration,
         })
         : undefined;
-      const result = await session.handleCommand(command, args, commandCallbacks);
+      const result = await session.handleCommand(command, args, commandCallbacks, command.toLowerCase() === 'resume' ? {
+        channel: this.buildChannel(msg.topic, { sessionKey: key, senderId: msg.senderId, channelSource: msg.executionScope?.channelSource }),
+        sessionRoute,
+        executionScope: msg.executionScope,
+        currentUserApprovalInputs: [currentUserApprovalInputFromCatsMessage(msg)],
+        artifactContextRef: msg.artifactContextRef,
+        artifactTaskRef: msg.artifactTaskRef,
+        skillConnectorGrants: msg.skillConnectorGrants,
+        localDeviceGrant: this.localDeviceGrant,
+        deviceGrants: msg.deviceGrants,
+        deviceSelection: msg.deviceSelection,
+        targetRoutes: msg.targetRoutes,
+        groupRoster: toGroupRosterEntries(msg.roster),
+        deviceRpc: this.buildDeviceRpcTransport(),
+        thinToolRpc: this.maybeBuildThinToolRpcTransport(),
+      } : undefined);
       let commandReply = result.reply;
       if (result.handled && isClear && !args.includes('--all')) {
         const clearPersisted = this.cloudSessionRestorer.markLocalSessionCleared(sessionRoute?.sessionKey || key);
@@ -3488,13 +3504,23 @@ export class CatsCompanyBot {
 
     const suppressFinalResponse = resultObservationHandling !== 'notify'
       && shouldSuppressSubAgentObservationReply(text);
-    if (suppressFinalResponse) {
+    const creditRoot = currentCreditTask();
+    const creditEnabled = creditRoot?.snapshot.enabled === true;
+    if (suppressFinalResponse && !creditEnabled) {
       this.scheduleSubAgentCompletionBatch(sessionKey, topic, senderId, text, executionScope);
       await this.drainMessageQueue(sessionKey);
       return;
     }
 
-    if (!this.tryReserveSessionExecution(sessionKey, session)) {
+    if (creditEnabled) {
+      // Await delivery in the child's root scope so finish cannot precede result processing.
+      while (!this.tryReserveSessionExecution(sessionKey, session)) {
+        if (this.shuttingDown || creditRoot.snapshot.state !== 'running'
+          || clearGeneration !== this.getSessionClearGeneration(sessionKey)
+          || stopGeneration !== this.getSessionStopGeneration(sessionKey)) return;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    } else if (!this.tryReserveSessionExecution(sessionKey, session)) {
       this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration, stopGeneration);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;

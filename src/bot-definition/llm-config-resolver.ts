@@ -18,7 +18,7 @@ export type BotLLMConfigSource = 'custom_definition' | 'catalog_runtime';
 export interface ResolvedBotLLMConfig {
   botId: string;
   source: BotLLMConfigSource;
-  config: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'model' | 'contextWindowTokens' | 'maxTokens' | 'temperature' | 'reasoningEffort' | 'openaiApiMode' | 'modelCapabilities'>;
+  config: Pick<ChatConfig, 'provider' | 'apiUrl' | 'apiKey' | 'catsCoRelay' | 'model' | 'contextWindowTokens' | 'maxTokens' | 'temperature' | 'reasoningEffort' | 'openaiApiMode' | 'modelCapabilities'>;
 }
 
 export interface ResolveBotLLMConfigOptions {
@@ -75,10 +75,13 @@ function catalogRuntimeToConfig(runtime: BotCatalogModelRuntime): ResolvedBotLLM
   const openaiApiMode = runtime.provider === 'openai'
     ? profile?.openaiApiMode ?? runtime.openaiApiMode
     : runtime.openaiApiMode;
-  return modelRuntimeToConfig({
-    ...runtime,
-    ...(openaiApiMode ? { openaiApiMode } : {}),
-  });
+  return {
+    ...modelRuntimeToConfig({
+      ...runtime,
+      ...(openaiApiMode ? { openaiApiMode } : {}),
+    }),
+    catsCoRelay: true,
+  };
 }
 
 /**

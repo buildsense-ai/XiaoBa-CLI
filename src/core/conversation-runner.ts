@@ -1,3 +1,4 @@
+import { checkCreditTask } from './credit-task-runtime';
 import { randomUUID } from 'crypto';
 import type { SessionTranscriptEvent } from '../utils/session-log-schema';
 import { sessionTranscriptContent, sessionToolTranscriptContent } from '../utils/session-transcript-content';
@@ -464,6 +465,7 @@ export class ConversationRunner {
       if (this.shouldContinue && !this.shouldContinue()) {
         break;
       }
+      await checkCreditTask(this.aiService.getConfig?.() ?? {});
       if (this.maxTurns && turns > this.maxTurns) {
         Logger.warning(`[${this.sessionLabel}] 已达到最大推理轮次 ${this.maxTurns}，正在收束`);
         this.observeTranscript({ type: 'assistant_message',
@@ -814,14 +816,16 @@ export class ConversationRunner {
       const executionRecords: ToolExecutionRecord[] = [];
       let shouldPauseTurn = false;
 
-      const dispatchOne = async (toolCall: ToolCall): Promise<ToolExecutionOutcome> =>
-        this.executeAndRecordToolCall({
+      const dispatchOne = async (toolCall: ToolCall): Promise<ToolExecutionOutcome> => {
+        await checkCreditTask(this.aiService.getConfig?.() ?? {});
+        return this.executeAndRecordToolCall({
           toolCall,
           messages,
           turns,
           callbacks,
           toolDefinitions,
         });
+      };
 
       if (this.parallelToolExecution && response.toolCalls.length > 1) {
         // Concurrent dispatch for autonomous branches (read-only, independent

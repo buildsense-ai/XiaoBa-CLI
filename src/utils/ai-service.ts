@@ -1,3 +1,4 @@
+import { checkCreditTask, currentCreditTask, CreditTaskPausedError, isCatsCoCreditProvider } from '../core/credit-task-runtime';
 import { Message, ChatConfig, ChatResponse } from '../types';
 import { ConfigManager } from './config';
 import { ToolDefinition } from '../types/tool';
@@ -281,6 +282,7 @@ export class AIService {
    * 统一错误处理
    */
   private wrapError(error: any): Error {
+    if (error instanceof CreditTaskPausedError) return error;
     if (this.isAbortError(error)) {
       return this.createAbortError();
     }
@@ -327,6 +329,7 @@ export class AIService {
    * 判断错误是否可重试
    */
   private isRetryable(error: any): boolean {
+    if (error instanceof CreditTaskPausedError) return false;
     if (this.isAbortError(error)) {
       return false;
     }
@@ -487,6 +490,7 @@ export class AIService {
         outcome: 'started',
       });
       try {
+        await checkCreditTask(this.config);
         const result = await fn();
         this.emitModelAttempt(attemptRun, attemptNumber, {
           outcome: 'succeeded',
@@ -495,6 +499,11 @@ export class AIService {
         });
         return result;
       } catch (error: any) {
+        const root = currentCreditTask();
+        if (root?.snapshot.enabled === true && isCatsCoCreditProvider(this.config)
+          && [402, 409].includes(this.extractStatus(error) ?? 0)) {
+          error = root.pause('额度或模型权限不足，需手动恢复');
+        }
         if (this.isAbortError(error) || signal?.aborted) {
           const policy = this.resolveRetryPolicy(error, retryProfile);
           this.emitModelAttempt(attemptRun, attemptNumber, {
