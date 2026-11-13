@@ -30,6 +30,7 @@ const LOW_RISK_TOOLS = new Set([
   'memory_neighbors',
   'memory_remote_search',
   'memory_source_read',
+  'memory_node_read',
   // The device-bound CatsLog read capability is authenticated and scoped by
   // the provider; it does not mutate the local machine or send an external
   // side effect.
