@@ -22,11 +22,17 @@ export function visibleExpansions(messages: any[]): any[] {
   return messageObjects(messages).flatMap(object => [object, ...recordsIn(object, 'source_reference_expansions').flat()])
     .filter((entry: any) => poolRef(entry?.ref) && entry.status === 'expanded' && entry.semantic_view);
 }
+export function qualifierTexts(view: any, key: 'conditions' | 'omissions'): string[] {
+  const nodes = new Map((view?.nodes ?? []).map((node: any) => [node.id, node.text]));
+  return (view?.qualifiers?.[key] ?? []).map((entry: any) => entry?.node_id ? nodes.get(entry.node_id) : entry?.text);
+}
 export function assertWhole(view: any, document: any) {
-  for (const key of ['goal', 'summary', 'overall_coverage', 'gap_acknowledgement', 'conditions', 'omissions', 'nodes', 'edges']) {
+  for (const key of ['goal', 'summary', 'overall_coverage', 'gap_acknowledgement', 'nodes', 'edges']) {
     assert.deepEqual(view[key], document[key], `whole-view preservation failed: ${key}`);
   }
   if (document.aggregate) assert.deepEqual(view.aggregate?.gaps, document.aggregate.gaps, 'page gap lost');
+  assert.deepEqual(qualifierTexts(view, 'conditions'), document.conditions, 'condition qualifiers lost');
+  assert.deepEqual(qualifierTexts(view, 'omissions'), document.omissions, 'omission qualifiers lost');
   const semanticMappings = (document.mappings ?? []).map((mapping: any) => ({
     node_id: mapping.node_id,
     ...(poolRef(mapping.source_ref) ? { source_ref: mapping.source_ref } : {}),

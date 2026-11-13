@@ -9,6 +9,7 @@ import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observa
 import { ConversationRunner } from '../src/core/conversation-runner';
 import { AgentToolExecutor } from '../src/agents/agent-tool-executor';
 import { fixtureBranch, fixtureRead, fixtureRef } from './helpers/catslog-projection-reference-fixture';
+import { qualifierTexts } from './helpers/catslog-projection-harness';
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 const question = 'What did we decide about the Meridian production retention rules and the missing page?';
 function call(name: string, args: any, index: number): any {
@@ -83,7 +84,9 @@ test('actual sidecar tools -> executor -> finish -> observation -> main request 
   assert.equal(run.observations.length, 1);
   const formatted = JSON.parse(run.observations[0].formattedContent!);
   const view = formatted.retained_remote_evidence[0].semantic_view;
-  for (const key of ['nodes', 'edges', 'conditions', 'omissions', 'gap_acknowledgement']) assert.deepEqual(view[key], (fixtureRead().projection.Document as any)[key]);
+  for (const key of ['nodes', 'edges', 'gap_acknowledgement']) assert.deepEqual(view[key], (fixtureRead().projection.Document as any)[key]);
+  assert.deepEqual(qualifierTexts(view, 'conditions'), (fixtureRead().projection.Document as any).conditions);
+  assert.deepEqual(qualifierTexts(view, 'omissions'), (fixtureRead().projection.Document as any).omissions);
   assert.ok(run.mainInput.some(m => m.role === 'tool' && String(m.content).includes(JSON.stringify(view))));
   assert.deepEqual(run.observations[0].metadata?.citation, { requestId: 'request-1', refs: [run.refs[0]] });
   assert.ok(!JSON.stringify(run.mainInput).includes('RAW_PAGE_REPROOF_ONLY'));

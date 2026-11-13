@@ -1,3 +1,4 @@
+import { attachCheckpointMetadata, checkpointMetadata } from './execution-graph-metadata';
 import { createHash } from 'node:crypto';
 import { Message, TokenUsage } from '../types';
 import { AIService } from '../utils/ai-service';
@@ -458,6 +459,32 @@ export class CheckpointCompactionCoordinator {
         ? { __remoteContextWatermarks: remoteContextWatermarks }
         : {}),
     };
+    const previousCheckpoint = [...sessionMessages].reverse().find(message => message.__checkpointSummary && message.__checkpointId);
+    const lastMessage = [...exactTail.summarySource].reverse().find(message => message.role === 'assistant')
+      ?? exactTail.summarySource[exactTail.summarySource.length - 1];
+    const completedCallIds = new Set(exactTail.summarySource.filter(message => message.role === 'tool').map(message => message.tool_call_id));
+    const openCallRefs = exactTail.summarySource.flatMap(message => message.role === 'assistant'
+      ? (message.tool_calls ?? []).filter(call => !completedCallIds.has(call.id)).map(call => `provider-call:${call.id}`)
+      : []);
+    const checkpoint = checkpointMetadata({
+      sessionId: request.sessionKey,
+      episodeId: activeEpisodeId,
+      summary: summaryMessage,
+      covered: exactTail.summarySource,
+      previous: previousCheckpoint,
+      lastMessage,
+      lastMessageRef: lastMessage?.__executionNodeRef
+        ?? (lastMessage?.tool_calls?.length ? `provider-call:${lastMessage.tool_calls[lastMessage.tool_calls.length - 1].id}` : undefined),
+      frontierRefs: [...new Set([
+        ...openCallRefs,
+        ...(lastMessage ? [lastMessage.__executionNodeRef
+          ?? `unknown-session-node:${request.sessionKey}:${activeEpisodeId ?? 'unknown'}:last:${createHash('sha256').update(JSON.stringify(lastMessage.content)).digest('hex').slice(0, 16)}`] : []),
+      ])],
+      coverageComplete: exactTail.summarySource.length <= 4096
+        && summaryResult.attempts === 1
+        && exactTail.summarySource.every(message => Boolean(message.__executionNodeRef)),
+    });
+    attachCheckpointMetadata(summaryMessage, checkpoint);
 
     return {
       messages: [
