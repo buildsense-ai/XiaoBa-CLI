@@ -239,6 +239,51 @@ export class MemoryNodeReadTool implements Tool {
 }
 
 /**
+ * Bounded closure of one assertion under a Collection/Delta root this run
+ * already expanded. The session owns locator membership and the shared
+ * two-read budget; the server revalidates capability, member and range.
+ */
+export class MemorySourceAssertionReadTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_assertion_read',
+    description: [
+      '只为当前问题中的一个明确断言，读取已展开 Collection/Delta 根下对应 member 的限定闭包。',
+      '必须先用 memory_source_read 展开同一 ref，并依据其 Delta relation/节点或 Collection 成员选定 member_ref 与 node_id。',
+      '每个 run 最多一次，与 memory_source_read 共享整轮调用预算；服务器限 12 KiB/16 nodes。',
+      'Collection 成员列表本身不是结论；只有 status 为 complete 的闭包才可写入 finish evidence。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: '本 run 已展开的 Collection/Delta ref_<64hex>。' },
+        member_ref: { type: 'string', description: '该根的成员 ref_<64hex>；Delta 自身的新断言使用根 ref。' },
+        node_id: { type: 'string', description: '64 位十六进制 assertion 节点 ID。' },
+      },
+      required: ['ref', 'member_ref', 'node_id'],
+    },
+  };
+
+  constructor(
+    private readonly read: (input: { ref: string; memberRef: string; nodeId: string }, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const ref = typeof args?.ref === 'string' ? args.ref.trim() : '';
+    const memberRef = typeof args?.member_ref === 'string' ? args.member_ref.trim() : '';
+    const nodeId = typeof args?.node_id === 'string' ? args.node_id.trim() : '';
+    if (!CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || !CATSLOG_POOL_CITATION_REF_PATTERN.test(memberRef)
+      || !/^[a-f0-9]{64}$/.test(nodeId)) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'An expanded root ref, an exact member ref and an assertion node ID are required.', retryable: true };
+    }
+    try {
+      return { ok: true, content: jsonToolResult(await this.read({ ref, memberRef, nodeId }, context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
  * Model-driven remote recall over the device-bound agent_memory branch lane.
  * One model-selected literal term (<=64 code points) per search. Empty-query
  * prefetch enumerates bounded candidates in server source-native order;

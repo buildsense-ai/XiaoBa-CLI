@@ -5,7 +5,7 @@ CatsLog keeps three layers: Session Graph (what happened), Memory Graph (cleaned
 | Agent | Layer | Purpose | Surface |
 | --- | --- | --- | --- |
 | Main agent | Wiki/Diary documents | Converge on maintained, revision-pinned knowledge | `catslog_knowledge_recall` with `search`, `read`, `graph` |
-| Memory Branch | Memory and sessions | Bounded divergence into surrounding context | local `memory_search`/`memory_read_turn`/`memory_neighbors`, remote `memory_remote_search`/`memory_source_read`, cited `memory_node_read` |
+| Memory Branch | Memory and sessions | Bounded divergence into surrounding context | local `memory_search`/`memory_read_turn`/`memory_neighbors`, remote `memory_remote_search`/`memory_source_read`/`memory_assertion_read`, cited `memory_node_read` |
 
 The layers meet through citations the server already stores: a Diary entry's `source_anchors` pin exact Memory nodes (`source_memory_projection_node`: projection ref, revision, node id). When the main agent has read Diary entries, the Branch receives those anchors as **seed candidates only**. It never receives the document bodies. `memory_node_read` reads one seeded node as its canonical `memory-graph/3` view (selected node, conditions, omissions, mappings), whole or not at all, sharing the two-read cap with discovered projections. Node views have their own 32 KiB whole-or-nothing allowance: a canonical view carries the node's closure, generation contexts and output proofs, and a real two-turn adapter node measured 15,908 bytes, at the edge of the 16,000-byte projection budget. Reading the cited node rather than its whole projection is what keeps real Memory deliverable at all.
 
@@ -31,3 +31,20 @@ Branch (memory):
 - **B6** Seed refs are attributed to a Branch request pool and reported as downstream citations.
 - **B7** A seeded Memory node reaches parent input without the `programmatic_observation` execution binding, or is bound to a model call that preceded its delivery.
 - **B8** The Branch reads a node other than an exact seeded anchor, or delivers a response that is not the canonical `memory-graph/3` view of that anchor.
+
+## Collection and Delta roots
+
+CatsLog can also publish two aggregate projections over a set of member results: `result_collection/v1` (a membership index, no semantic nodes) and `result_synthesis_delta/v1` (new assertions plus typed relations to existing members). Both arrive through the same `memory_source_read`. A Collection is a map, not a conclusion: it stays navigable but can never support `finish_memory_search`. A Delta root is delivered like any projection. `memory_assertion_read` then asks the server for one assertion's bounded qualifier closure under a member of a root the Branch already expanded. A complete closure is attached whole to that root (`assertion_closures` on a Delta root, its own `derived_assertion_closure` view for a Collection member); anything else stays reference-only.
+
+Branch (Collection / Delta):
+
+- **D1** A valid `result_synthesis_delta/v1` or `result_collection/v1` projection is rejected by the client, so metadata alone reaches the Branch.
+- **D2** A `synthesis-gap-table/v1` aggregate is rejected, or its decoded page gaps are lost from the view; a malformed table or pages that are not covered exactly once are accepted.
+- **D3** A Collection membership index is delivered as evidence or accepted by `finish_memory_search`.
+- **D4** An assertion read is dispatched for a ref the Branch never expanded, a member not listed in that root, or a node outside the delivered Delta graph.
+- **D5** Assertion reads bypass the shared two-read budget, run more than once per Branch run, or a failed read does not consume its slot.
+- **D6** A closure whose projection ref, member ref, assertion node, trust labels or byte/node counts disagree with the request is delivered; or a valid closure is rejected because the server omitted an empty array.
+- **D7** A `bounded` or `not_found` closure becomes final evidence.
+- **D8** The closure's `source_scope` or any other field outside the projected closure reaches a model.
+- **D9** An assertion read runs under a capability other than the one that issued the root, follows a redirect, or buffers an unbounded response.
+- **D10** A Delta closure is cut to fit the 16,000-byte budget instead of being delivered whole or not at all.

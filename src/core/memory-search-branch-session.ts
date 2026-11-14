@@ -11,7 +11,7 @@ import { AIService } from '../utils/ai-service';
 import { Tool } from '../types/tool';
 import {
   FinishMemorySearchTool, MemoryNeighborsTool, MemoryNodeReadTool, MemoryReadTurnTool, MemoryRemoteSearchTool,
-  MemorySearchFinishPayload, MemorySearchTool, MemorySourceReadTool, MEMORY_FINISH_MAX_INVALID_ATTEMPTS,
+  MemorySearchFinishPayload, MemorySearchTool, MemorySourceAssertionReadTool, MemorySourceReadTool, MEMORY_FINISH_MAX_INVALID_ATTEMPTS,
 } from '../tools/memory-branch-tools';
 import { SyntheticObservation, SyntheticObservationQueue } from './synthetic-observation';
 import { ObservationBranchDisposition, ObservationBranchSession } from './observation-branch-session';
@@ -56,6 +56,12 @@ const MAX_DOCUMENT_SEED_NODES = 8;
 // bytes, so cited nodes get their own whole-or-nothing allowance instead of
 // the 16,000-byte projection budget. Reads still share the two-read cap.
 export const MAX_MEMORY_NODE_VIEW_BYTES = 32_768;
+// One assertion closure per run, inside the same two-read budget.
+const MAX_ASSERTION_READS = 1;
+const MAX_ASSERTION_READ_BYTES = 12 * 1024;
+const MAX_ASSERTION_READ_NODES = 16;
+const COLLECTION_CONTRACT = 'result_collection/v1';
+const DELTA_CONTRACT = 'result_synthesis_delta/v1';
 const PROJECTION_PIN = /^ref_[a-f0-9]{64}$/;
 const REVISION_PIN = /^[a-f0-9]{64}$/;
 const NODE_ID = /^(?:output-)?[a-f0-9]{64}$/;
@@ -71,10 +77,13 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private readonly remoteAbort = new AbortController();
   private readonly candidates = new Map<string, string | undefined>(); // ref -> issuing request_id
   private readonly delivered = new Map<string, DeliveredProjectionEvidence>();
+  // Every expanded Collection/Delta root, including Collections that are never evidence.
+  private readonly navigableViews = new Map<string, Record<string, unknown>>();
   private readonly seededNodes = new Map<string, CatsLogKnowledgeAnchor>(); // memory-node handle -> exact anchor
   private readonly deliveredNodes = new Map<string, DeliveredMemoryNode>(); // catslog:source ref -> node view
   private readonly readNodes = new Set<string>();
   private readCalls = 0;
+  private assertionCalls = 0;
   private searchCalls = 0;
 
   constructor(private readonly memoryOptions: MemorySearchBranchSessionOptions) {
@@ -122,6 +131,9 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const backend = this.availableCatsLogMemory();
     if (backend?.branch) tools.push(new MemoryRemoteSearchTool((keywords, signal) => this.searchInLoop(keywords, signal)));
     if (backend?.readSourceMemoryProjection) tools.push(new MemorySourceReadTool((ref, signal) => this.expandInLoop(ref, signal)));
+    if (backend?.readSourceMemoryProjection && backend.readSourceAssertionClosure) {
+      tools.push(new MemorySourceAssertionReadTool((input, signal) => this.readAssertionInLoop(input, signal)));
+    }
     if (backend?.readKnowledgeSource && this.seededNodes.size) tools.push(new MemoryNodeReadTool((node, signal) => this.readNodeInLoop(node, signal)));
     tools.push(new FinishMemorySearchTool(payload => {
       if (payload.terminalReason === 'invalid_finalization_exhausted') this.logger.write('invalid_finalization_exhausted', {
@@ -244,7 +256,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const referenceOnly = (reason: string) => ({ ref, status: 'reference_only', expansion_error: reason });
     if (!isCatsLogPoolCitationRef(ref) || !this.candidates.has(ref)) return referenceOnly('not_a_candidate');
     // Repeat reads do not re-inject cached evidence or extend a stale proof window.
-    if (this.delivered.has(ref)) return referenceOnly('already_delivered');
+    if (this.delivered.has(ref) || this.navigableViews.has(ref)) return referenceOnly('already_delivered');
     if (this.readCalls >= MAX_SOURCE_REFERENCE_EXPANSIONS || !this.shouldContinue()) return referenceOnly('budget_exhausted');
     const backend = this.availableCatsLogMemory();
     if (!backend?.readSourceMemoryProjection) return referenceOnly('capability_unavailable');
@@ -258,6 +270,12 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       }), deadline.signal);
       if (!result || deadline.signal.aborted || !this.shouldContinue()) return referenceOnly('aborted');
       if (result.status !== 'expanded' || !result.semantic_view) return { ...result };
+      const contract = (result.semantic_view.aggregate as any)?.contract;
+      // A Collection is a membership map: navigable for assertion reads, never finish evidence.
+      if (result.semantic_view.content_trust === 'derived_membership_index') {
+        this.navigableViews.set(ref, result.semantic_view);
+        return { ref, status: 'expanded', semantic_view: result.semantic_view, content_trust: 'derived_membership_index', final_evidence: false };
+      }
       const retained = [...this.delivered].map(([r, evidence]) => ({ ref: r, ...evidence }));
       const item: DeliveredProjectionEvidence = {
         semantic_view: result.semantic_view,
@@ -266,7 +284,62 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       retained.push({ ref, ...item });
       if (this.contextBytes(retained) > MAX_TOTAL_PROJECTION_VIEW_CHARS) return referenceOnly('semantic_view_over_budget');
       this.delivered.set(ref, item);
+      if (contract === DELTA_CONTRACT) this.navigableViews.set(ref, result.semantic_view);
       return { ...result, content_trust: 'untrusted_branch_evidence' };
+    } catch (error) { return referenceOnly(classifyExpansionError(error, deadline.signal)); }
+    finally { deadline.dispose(); }
+  }
+
+  /**
+   * One assertion's qualifier closure under an expanded Collection/Delta root.
+   * The locator must come from the delivered root itself; a complete closure
+   * is attached whole (Delta: to the root view; Collection: as its own view).
+   */
+  private async readAssertionInLoop(input: { ref: string; memberRef: string; nodeId: string }, external?: AbortSignal): Promise<Record<string, unknown>> {
+    const ref = input.ref;
+    const referenceOnly = (reason: string) => ({ ref, status: 'reference_only', expansion_error: reason });
+    const view = this.navigableViews.get(ref);
+    if (!view || !isCatsLogPoolCitationRef(ref)) return referenceOnly('not_a_discovered_root');
+    const aggregate = view.aggregate as any;
+    const delta = aggregate?.contract === DELTA_CONTRACT;
+    if (!delta && aggregate?.contract !== COLLECTION_CONTRACT) return referenceOnly('assertion_root_unavailable');
+    const leaves: any[] = Array.isArray(aggregate.leaves) ? aggregate.leaves : [];
+    const memberListed = leaves.some(leaf => leaf.leaf_ref === input.memberRef);
+    const endpointMatches = (endpoint: any) => endpoint?.node_id === input.nodeId
+      && (endpoint.kind === 'new' ? input.memberRef === ref : endpoint.kind === 'existing' && endpoint.member_ref === input.memberRef);
+    const inDeltaGraph = delta && (input.memberRef === ref
+      && Array.isArray(view.nodes) && view.nodes.some((node: any) => node.id === input.nodeId && node.kind === 'assertion')
+      || Array.isArray(aggregate.delta_relations) && aggregate.delta_relations.some((r: any) => endpointMatches(r.from) || endpointMatches(r.to)));
+    if (delta ? !inDeltaGraph : !memberListed) return referenceOnly('assertion_locator_not_in_delivered_membership');
+    if (this.assertionCalls >= MAX_ASSERTION_READS || this.readCalls >= MAX_SOURCE_REFERENCE_EXPANSIONS || !this.shouldContinue()) {
+      return referenceOnly('budget_exhausted');
+    }
+    const backend = this.availableCatsLogMemory();
+    if (!backend?.readSourceAssertionClosure) return referenceOnly('capability_unavailable');
+    this.assertionCalls += 1;
+    this.readCalls += 1; // reserve BEFORE awaiting; every failed attempt consumes a slot
+    const deadline = boundedSignal(SOURCE_READ_TIMEOUT_MS, this.remoteAbort.signal, this.memoryOptions.signal, external);
+    try {
+      const response = await abortable(backend.readSourceAssertionClosure({
+        projectionRef: ref, memberRef: input.memberRef, nodeId: input.nodeId,
+        maxBytes: MAX_ASSERTION_READ_BYTES, maxNodes: MAX_ASSERTION_READ_NODES,
+      }, deadline.signal), deadline.signal);
+      if (deadline.signal.aborted || !this.shouldContinue()) return referenceOnly('aborted');
+      // Delta relations may point at any member of the root; a Collection closure stays inside its member.
+      const relationMembers = new Set<string>([input.memberRef, ...(delta ? leaves.map(leaf => leaf.leaf_ref) : [])]);
+      const closure = projectAssertionClosure(response, input, relationMembers);
+      if (!closure) return referenceOnly('invalid_assertion_closure');
+      if (closure.status !== 'complete') return { ref, ...closure, final_evidence: false };
+      const prior = this.delivered.get(ref);
+      const item: DeliveredProjectionEvidence = delta && prior
+        ? { ...prior, semantic_view: { ...prior.semantic_view, assertion_closures: [...((prior.semantic_view as any).assertion_closures ?? []), closure] } }
+        : { semantic_view: { schema_version: 1, content_trust: 'derived_assertion_closure', projection_ref: ref, ...closure } };
+      const next = new Map(this.delivered).set(ref, item);
+      if (this.contextBytes([...next].map(([r, evidence]) => ({ ref: r, ...evidence }))) > MAX_TOTAL_PROJECTION_VIEW_CHARS) {
+        return referenceOnly('semantic_view_over_budget');
+      }
+      this.delivered.set(ref, item);
+      return { ref, status: 'complete', content_trust: 'derived_assertion_closure', closure };
     } catch (error) { return referenceOnly(classifyExpansionError(error, deadline.signal)); }
     finally { deadline.dispose(); }
   }
@@ -325,6 +398,76 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       }),
     };
   }
+}
+
+/**
+ * Whole-or-nothing projection of a server closure onto the fields the Branch
+ * may see. `source_scope` and anything unlisted never cross. The server omits
+ * empty arrays, so an absent array is empty, not invalid.
+ */
+function projectAssertionClosure(
+  response: unknown,
+  input: { ref: string; memberRef: string; nodeId: string },
+  relationMembers: ReadonlySet<string>,
+): Record<string, any> | undefined {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) return undefined;
+  const raw = response as Record<string, any>;
+  const digest = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  if (!['complete', 'bounded', 'not_found'].includes(raw.status) || typeof raw.read_required !== 'boolean'
+    || raw.status === 'complete' && raw.read_required
+    || raw.projection_ref !== input.ref || raw.member_ref !== input.memberRef
+    || raw.content_trust !== 'derived_assertion_closure' || raw.source_completeness !== 'not_asserted'
+    || !Number.isSafeInteger(raw.bytes) || raw.bytes < 0 || raw.bytes > MAX_ASSERTION_READ_BYTES
+    || !Number.isSafeInteger(raw.nodes) || raw.nodes < 0 || raw.nodes > MAX_ASSERTION_READ_NODES) return undefined;
+  const identity = { status: raw.status, read_required: raw.read_required, content_trust: raw.content_trust,
+    source_completeness: raw.source_completeness, projection_ref: input.ref, member_ref: input.memberRef };
+  if (raw.status !== 'complete') return { ...identity, bytes: raw.bytes, nodes: raw.nodes };
+  const list = (value: unknown) => value === undefined ? [] : Array.isArray(value) ? value : undefined;
+  const coveredRanges = list(raw.covered_ranges);
+  const entries = list(raw.entries);
+  const relations = list(raw.relations);
+  const validNode = (node: any) => Boolean(node) && typeof node === 'object' && !Array.isArray(node) && digest(node.id)
+    && ['assertion', 'condition', 'omission'].includes(node.kind) && typeof node.text === 'string' && node.text.trim().length > 0;
+  const validRange = (range: any) => Boolean(range) && Number.isSafeInteger(range.first_page) && range.first_page >= 0
+    && Number.isSafeInteger(range.last_page) && range.last_page >= range.first_page && range.last_page < 4096;
+  const validEndpoint = (endpoint: any) => Boolean(endpoint) && digest(endpoint.node_id)
+    && (endpoint.kind === 'new' ? endpoint.member_ref === undefined
+      : endpoint.kind === 'existing' && relationMembers.has(endpoint.member_ref));
+  const validEntry = (entry: any) => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry)
+    && (entry.node === undefined || validNode(entry.node))
+    && (entry.path === undefined || Array.isArray(entry.path) && entry.path.length <= 32 && entry.path.every((edge: any) =>
+      Boolean(edge) && digest(edge.from) && digest(edge.to) && ['supports', 'qualifies', 'omits'].includes(edge.kind)))
+    && (entry.locator === undefined || Boolean(entry.locator) && ['condition', 'omission'].includes(entry.locator.kind)
+      && digest(entry.locator.digest) && entry.locator.member_ref === input.memberRef
+      && entry.locator.association === 'member_scope_unlinked' && typeof entry.locator.text === 'string');
+  const validRelation = (relation: any) => Boolean(relation) && digest(relation.relation_id)
+    && ['supports', 'qualifies', 'contradicts', 'depends_on', 'scoped_to'].includes(relation.kind)
+    && validEndpoint(relation.from) && validEndpoint(relation.to)
+    && typeof relation.scope === 'string' && relation.scope.trim().length > 0 && relation.scope.length <= 128;
+  const assertion = raw.assertion;
+  if (!validNode(assertion) || assertion.id !== input.nodeId || assertion.kind !== 'assertion'
+    || !coveredRanges || coveredRanges.length > 4096 || !coveredRanges.every(validRange)
+    || !entries || entries.length > MAX_ASSERTION_READ_NODES || !entries.every(validEntry)
+    || !relations || relations.length > 32 || !relations.every(validRelation)) return undefined;
+  const endpoint = (e: any) => ({ kind: e.kind, node_id: e.node_id, ...(e.member_ref === undefined ? {} : { member_ref: e.member_ref }) });
+  const projected = {
+    ...identity,
+    covered_ranges: coveredRanges.map((range: any) => ({ first_page: range.first_page, last_page: range.last_page })),
+    assertion: { id: assertion.id, kind: assertion.kind, text: assertion.text },
+    entries: entries.map((entry: any) => ({
+      ...(entry.node ? { node: { id: entry.node.id, kind: entry.node.kind, text: entry.node.text } } : {}),
+      ...(entry.path ? { path: entry.path.map((edge: any) => ({ from: edge.from, to: edge.to, kind: edge.kind })) } : {}),
+      ...(entry.locator ? { locator: {
+        kind: entry.locator.kind, digest: entry.locator.digest, member_ref: input.memberRef,
+        association: entry.locator.association, text: entry.locator.text,
+      } } : {}),
+    })),
+    relations: relations.map((relation: any) => ({
+      relation_id: relation.relation_id, kind: relation.kind, from: endpoint(relation.from), to: endpoint(relation.to), scope: relation.scope,
+    })),
+    bytes: raw.bytes, nodes: raw.nodes,
+  };
+  return Buffer.byteLength(JSON.stringify(projected), 'utf8') <= MAX_ASSERTION_READ_BYTES ? projected : undefined;
 }
 
 /** Supervisory timeout also bounds transports that ignore AbortSignal. */

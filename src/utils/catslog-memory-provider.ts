@@ -28,6 +28,8 @@ import type {
   CatscoSkillsQuery,
   CatscoSkillsResponse,
   CatscoSkillOutcomeInput,
+  CatscoSourceAssertionClosureInput,
+  CatscoSourceAssertionClosureRead,
   CatscoSourceMemoryProjectionRead,
 } from './catsco-log-agent-client';
 import type {
@@ -105,6 +107,11 @@ export interface CatsLogMemoryBackend {
   readSourceMemoryProjection?(input: {
     projectionRef: string;
   }, signal?: AbortSignal): Promise<CatscoSourceMemoryProjectionRead>;
+  /**
+   * Optional bounded closure of one assertion under a Collection/Delta root
+   * that the same capability issued. Same failure contract as the source read.
+   */
+  readSourceAssertionClosure?(input: CatscoSourceAssertionClosureInput, signal?: AbortSignal): Promise<CatscoSourceAssertionClosureRead>;
   readSkills?(
     query: CatscoSkillsQuery,
     signal?: AbortSignal,
@@ -445,6 +452,27 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     if (signal?.aborted || latestState.stateCorrupt || clean(latestState.skillToken) !== issued.token
       || latestConfig.apiBaseUrl !== issued.apiBaseUrl || !this.isAvailable()) {
       throw new CatsLogMemoryUnavailableError('CatsLog source reference capability changed during read');
+    }
+    return result;
+  }
+
+  /** Assertion closure under a root this capability issued; same pinning as the source read. */
+  async readSourceAssertionClosure(input: CatscoSourceAssertionClosureInput, signal?: AbortSignal): Promise<CatscoSourceAssertionClosureRead> {
+    const issued = this.projectionCapabilities.get(input.projectionRef);
+    const config = this.currentConfig();
+    const state = loadCatscoLogAgentState(config.stateFilePath);
+    const capability = !state.stateCorrupt && readCapabilityFromState(state, this.now());
+    if (!issued || !capability || capability.token !== issued.token || config.apiBaseUrl !== issued.apiBaseUrl) {
+      throw new CatsLogMemoryUnavailableError('CatsLog assertion closure capability changed or unavailable');
+    }
+    const result = await this.clientFor(issued.apiBaseUrl).readSourceAssertionClosure({
+      ...input, token: capability.token, sourceReadUrl: DEFAULT_SOURCE_READ_URL, signal,
+    });
+    const latestConfig = this.currentConfig();
+    const latestState = loadCatscoLogAgentState(latestConfig.stateFilePath);
+    if (signal?.aborted || latestState.stateCorrupt || clean(latestState.skillToken) !== issued.token
+      || latestConfig.apiBaseUrl !== issued.apiBaseUrl || !this.isAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog assertion closure capability changed during read');
     }
     return result;
   }
