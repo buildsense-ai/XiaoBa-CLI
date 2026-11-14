@@ -418,6 +418,34 @@ export interface CatscoSourceMemoryProjectionRead {
   sources?: unknown[];
 }
 
+export interface CatscoSourceAssertionClosureInput {
+  projectionRef: string;
+  memberRef: string;
+  nodeId: string;
+  maxBytes?: number;
+  maxNodes?: number;
+}
+
+/**
+ * One assertion's bounded qualifier closure under a Collection/Delta member.
+ * Loosely typed like the projection read: the Branch session projects only
+ * the fields it validates and never forwards `source_scope`.
+ */
+export interface CatscoSourceAssertionClosureRead {
+  status?: 'complete' | 'bounded' | 'not_found';
+  read_required?: boolean;
+  content_trust?: string;
+  source_completeness?: string;
+  projection_ref?: string;
+  member_ref?: string;
+  covered_ranges?: unknown[];
+  assertion?: Record<string, unknown>;
+  entries?: unknown[];
+  relations?: unknown[];
+  bytes?: number;
+  nodes?: number;
+}
+
 export interface CatscoMemoryNote {
   id?: string;
   kind?: string;
@@ -1158,6 +1186,40 @@ export class CatscoLogAgentClient {
     const data: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('CatsLog source-read returned an invalid envelope');
     return data as CatscoSourceMemoryProjectionRead;
+  }
+
+  /**
+   * Read one current assertion's bounded qualifier closure from a verified
+   * Collection or Delta root. This is the source/read operation's typed
+   * `assertion` variant; it never accepts caller-supplied scope or text.
+   */
+  async readSourceAssertionClosure(input: CatscoSourceAssertionClosureInput & {
+    token?: string;
+    skillToken?: string;
+    sourceReadUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatscoSourceAssertionClosureRead> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const projectionRef = typeof input.projectionRef === 'string' ? input.projectionRef.trim() : '';
+    const memberRef = typeof input.memberRef === 'string' ? input.memberRef.trim() : '';
+    const nodeId = typeof input.nodeId === 'string' ? input.nodeId.trim() : '';
+    const maxBytes = input.maxBytes ?? 12 * 1024;
+    const maxNodes = input.maxNodes ?? 16;
+    if (!isCatsLogPoolCitationRef(projectionRef) || !isCatsLogPoolCitationRef(memberRef)) {
+      throw new Error('CatsLog assertion closure refs must be ref_-prefixed pool refs');
+    }
+    if (!/^[a-f0-9]{64}$/.test(nodeId) || !Number.isSafeInteger(maxBytes) || maxBytes < 512 || maxBytes > 64 * 1024
+      || !Number.isSafeInteger(maxNodes) || maxNodes < 1 || maxNodes > 64) {
+      throw new Error('CatsLog assertion closure bounds or node ID are invalid');
+    }
+    const requestPath = input.sourceReadUrl ?? DEFAULT_SOURCE_READ_URL;
+    if (requestPath !== DEFAULT_SOURCE_READ_URL) throw new Error('CatsLog source-read endpoint is invalid');
+    const data = await this.postCapabilityJSON<unknown>(requestPath, token, {
+      projection_ref: projectionRef,
+      assertion: { member_ref: memberRef, node_id: nodeId, max_bytes: maxBytes, max_nodes: maxNodes },
+    }, 'CatsLog assertion closure read failed', input.signal, undefined, 64 * 1024);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('CatsLog assertion closure returned an invalid envelope');
+    return data as CatscoSourceAssertionClosureRead;
   }
 
   /**
