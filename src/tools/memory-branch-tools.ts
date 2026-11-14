@@ -205,6 +205,123 @@ export class MemorySourceReadTool implements Tool {
 }
 
 /**
+ * Exact read of one readable handle this run issued: a Memory node (canonical
+ * memory-graph/3 view) or a session turn / learning node (one complete source),
+ * cited by a Diary entry the main agent read or reached through memory_links.
+ * Whole or not at all.
+ */
+export class MemoryNodeReadTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_node_read',
+    description: [
+      '读取一个本 run 发出的可读句柄：memory-node:…（精确记忆节点及其条件/省略）或 source:…（完整的历史会话 turn / 学习节点）。',
+      '句柄来自 document_graph_seeds 或 memory_links 结果中 readable:true 的端点；entry:… 句柄只能用于 memory_links，不能读取。',
+      '与 memory_source_read 共享整轮调用与视图预算；只交付完整内容，否则返回 reference_only。成功结果中的 ref（catslog:source:…）可写入 finish evidence。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        node: { type: 'string', description: '原样给出的 memory-node:… 或 source:… 句柄。' },
+      },
+      required: ['node'],
+    },
+  };
+
+  constructor(
+    private readonly read: (node: string, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      return { ok: true, content: jsonToolResult(await this.read(String(args?.node || ''), context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
+ * One body-free page of stored graph links around an issued handle. The
+ * session resolves the handle to its exact anchor, validates every endpoint
+ * and issues opaque handles for resolved remotes; coordinates never reach the model.
+ */
+export class MemoryLinksTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_links',
+    description: [
+      '沿 CatsLog 已存储的图关系做联想：给一个本 run 发出的句柄（entry:… / source:… / memory-node:…），返回与它相连的端点。',
+      '结果只有关系类型（corrects/supplements/requires/derived_from/continues/related/used）、方向和新句柄，没有正文；有记忆图投影覆盖的会话 turn 直接给出记忆节点句柄（via 标明原端点类型）；entry 端点只能继续 memory_links，readable:true 的端点可用 memory_node_read 读取。',
+      'paths 是本 run 中通往同一端点的不同关系数，越多说明关联越集中。每 run 最多 3 次，每次最多 16 条边。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: '原样给出的 entry:… / source:… / memory-node:… 句柄。' },
+        direction: { type: 'string', enum: ['in', 'out', 'both'], description: '可选。out=该端点指向别处，in=别处指向该端点；默认 both。' },
+      },
+      required: ['handle'],
+    },
+  };
+
+  constructor(
+    private readonly expand: (handle: string, direction: unknown, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      return { ok: true, content: jsonToolResult(await this.expand(String(args?.handle || ''), args?.direction, context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
+ * Bounded closure of one assertion under a Collection/Delta root this run
+ * already expanded. The session owns locator membership and the shared
+ * two-read budget; the server revalidates capability, member and range.
+ */
+export class MemorySourceAssertionReadTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_assertion_read',
+    description: [
+      '只为当前问题中的一个明确断言，读取已展开 Collection/Delta 根下对应 member 的限定闭包。',
+      '必须先用 memory_source_read 展开同一 ref，并依据其 Delta relation/节点或 Collection 成员选定 member_ref 与 node_id。',
+      '每个 run 最多一次，与 memory_source_read 共享整轮调用预算；服务器限 12 KiB/16 nodes。',
+      'Collection 成员列表本身不是结论；只有 status 为 complete 的闭包才可写入 finish evidence。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: '本 run 已展开的 Collection/Delta ref_<64hex>。' },
+        member_ref: { type: 'string', description: '该根的成员 ref_<64hex>；Delta 自身的新断言使用根 ref。' },
+        node_id: { type: 'string', description: '64 位十六进制 assertion 节点 ID。' },
+      },
+      required: ['ref', 'member_ref', 'node_id'],
+    },
+  };
+
+  constructor(
+    private readonly read: (input: { ref: string; memberRef: string; nodeId: string }, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const ref = typeof args?.ref === 'string' ? args.ref.trim() : '';
+    const memberRef = typeof args?.member_ref === 'string' ? args.member_ref.trim() : '';
+    const nodeId = typeof args?.node_id === 'string' ? args.node_id.trim() : '';
+    if (!CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || !CATSLOG_POOL_CITATION_REF_PATTERN.test(memberRef)
+      || !/^[a-f0-9]{64}$/.test(nodeId)) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'An expanded root ref, an exact member ref and an assertion node ID are required.', retryable: true };
+    }
+    try {
+      return { ok: true, content: jsonToolResult(await this.read({ ref, memberRef, nodeId }, context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
  * Model-driven remote recall over the device-bound agent_memory branch lane.
  * One model-selected literal term (<=64 code points) per search. Empty-query
  * prefetch enumerates bounded candidates in server source-native order;
@@ -361,10 +478,10 @@ function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => bool
   const evidence: string[] = args.evidence.map((ref: string) => ref.trim()).filter(Boolean);
   const uniqueRefs: string[] = Array.from(new Set(evidence));
   for (const ref of uniqueRefs) {
-    // The active local grammar remains unchanged. Pool refs are an explicit
-    // run-local extension, admitted only after complete delivery.
+    // The active local grammar remains unchanged. Pool and Memory node refs are
+    // explicit run-local extensions, admitted only after complete delivery.
     if (!CANONICAL_REF_PATTERN.test(ref)
-      && !(CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) && isDeliveredPoolRef(ref))) {
+      && !((CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) && isDeliveredPoolRef(ref))) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }
@@ -400,6 +517,7 @@ const CATSLOG_STREAM_REF_PATTERN = /^(.+)#(?:[1-9][0-9]*|summary)$/;
 const CATSLOG_SESSION_HASH_REF_PATTERN = /^catslog:session:[a-f0-9]{24}$/;
 const CATSLOG_SKILL_REF_PATTERN = /^catslog:skill:(.+)@([1-9][0-9]*)$/;
 const CATSLOG_REF_HASH_PATTERN = /^catslog:ref:[a-f0-9]{24}$/;
+const CATSLOG_SOURCE_REF_PATTERN = /^catslog:source:[a-f0-9]{64}$/;
 // Local distilled-knowledge citations: managed KB documents and raw source
 // Markdown under the KB store's documents/ tree (see xiaoba-knowledge). The
 // path grammar is deliberately narrower than the store accepts: ASCII
@@ -407,6 +525,30 @@ const CATSLOG_REF_HASH_PATTERN = /^catslog:ref:[a-f0-9]{24}$/;
 // never double as a traversal path or URL.
 const KNOWLEDGE_KB_REF_PATTERN = /^kb:KB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const KNOWLEDGE_FILE_REF_PATTERN = /^file:documents\/(?:[A-Za-z0-9][A-Za-z0-9 ._-]*\/)*[A-Za-z0-9][A-Za-z0-9 ._-]*\.[mM][dD]$/;
+
+/**
+ * Citable ref for one entry revision of the Agent-private daily knowledge
+ * corpus: `catslog:knowledge:<document_id>:<revision>:<entry_id>`. Segments
+ * use the shared package's opaque-ID charset, so branch refs and
+ * `stream#line` strings can never masquerade as corpus refs. This is a NEW,
+ * distinct identity domain — it does not widen the local-KB grammar.
+ */
+const CATSLOG_KNOWLEDGE_REF_PATTERN = /^catslog:knowledge:([A-Za-z0-9_-]{1,256}):([A-Za-z0-9_-]{1,128}):([A-Za-z0-9_-]{1,256})$/;
+
+/** Build the citable ref for an exact day/document/revision/entry anchor. */
+export function catslogKnowledgeCitationRef(
+  documentId: string,
+  revision: string,
+  entryId: string,
+): string | null {
+  const ref = `catslog:knowledge:${documentId}:${revision}:${entryId}`;
+  return CATSLOG_KNOWLEDGE_REF_PATTERN.test(ref) ? ref : null;
+}
+
+/** True when `ref` is a typed daily-knowledge corpus ref. */
+export function isCatsLogKnowledgeCitationRef(ref: string): boolean {
+  return CATSLOG_KNOWLEDGE_REF_PATTERN.test(ref);
+}
 
 /**
  * Citable ref form of a local distilled-knowledge document: `kb:<KB-ID>` for
@@ -425,6 +567,9 @@ export function isMemoryCitationRef(ref: string): boolean {
   // Server pool-citation refs pass through the branch projection unchanged;
   // the observed-refs tracker still gates any citation of them.
   if (CATSLOG_POOL_CITATION_REF_PATTERN.test(ref)) return true;
+  // Typed daily-knowledge corpus refs (knowledge/1). Identity domains stay
+  // disjoint: the ref carries document/revision/entry exactly as served.
+  if (isCatsLogKnowledgeCitationRef(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) return true;
   const stream = ref.match(CATSLOG_STREAM_REF_PATTERN);
   if (stream && isSafeCatsLogOpaqueIdentifier(stream[1], 256)) return true;
   const skill = ref.match(CATSLOG_SKILL_REF_PATTERN);
