@@ -35,6 +35,8 @@ import type {
 import type {
   CatsLogKnowledgeExpandQuery,
   CatsLogKnowledgeLinkPage,
+  CatsLogKnowledgeProjectedNodesPage,
+  CatsLogKnowledgeProjectedNodesQuery,
   CatsLogKnowledgeReadQuery,
   CatsLogKnowledgeReadResult,
   CatsLogKnowledgeSearchPage,
@@ -148,6 +150,11 @@ export interface CatsLogMemoryBackend {
     query: CatsLogKnowledgeExpandQuery,
     signal?: AbortSignal,
   ): Promise<CatsLogKnowledgeLinkPage>;
+  /** Optional session turn -> Memory node lookup; absent or failing means turns stay raw. */
+  projectedKnowledgeNodes?(
+    query: CatsLogKnowledgeProjectedNodesQuery,
+    signal?: AbortSignal,
+  ): Promise<CatsLogKnowledgeProjectedNodesPage>;
 }
 
 export interface CatsLogMemoryProviderOptions {
@@ -426,6 +433,22 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           knowledgeExpandUrl: capability.knowledgeExpandUrl,
           signal,
         });
+      },
+      signal,
+    );
+  }
+
+  /** Resolve session turns to the Memory nodes mapping them through the read capability. */
+  async projectedKnowledgeNodes(query: CatsLogKnowledgeProjectedNodesQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeProjectedNodesPage> {
+    if (!this.isKnowledgeRecallAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    }
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).projectedKnowledgeNodes !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the knowledge projected nodes route');
+        }
+        return client.projectedKnowledgeNodes({ ...query, token: capability.token, signal });
       },
       signal,
     );

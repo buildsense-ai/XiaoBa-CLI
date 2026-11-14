@@ -250,7 +250,7 @@ export class MemoryLinksTool implements Tool {
     name: 'memory_links',
     description: [
       '沿 CatsLog 已存储的图关系做联想：给一个本 run 发出的句柄（entry:… / source:… / memory-node:…），返回与它相连的端点。',
-      '结果只有关系类型（corrects/supplements/requires/derived_from/continues/related/used）、方向和新句柄，没有正文；entry 端点只能继续 memory_links，readable:true 的端点可用 memory_node_read 读取。',
+      '结果只有关系类型（corrects/supplements/requires/derived_from/continues/related/used）、方向和新句柄，没有正文；有记忆图投影覆盖的会话 turn 直接给出记忆节点句柄（via 标明原端点类型）；entry 端点只能继续 memory_links，readable:true 的端点可用 memory_node_read 读取。',
       'paths 是本 run 中通往同一端点的不同关系数，越多说明关联越集中。每 run 最多 3 次，每次最多 16 条边。',
     ].join(' '),
     parameters: {

@@ -8,6 +8,9 @@ import {
   CATSLOG_KNOWLEDGE_ENTRY_STATUSES,
   CATSLOG_KNOWLEDGE_LINK_KINDS,
   DEFAULT_KNOWLEDGE_EXPAND_URL,
+  DEFAULT_KNOWLEDGE_PROJECTED_NODES_URL,
+  KNOWLEDGE_MAX_PROJECTED_NODES_ANCHORS,
+  KNOWLEDGE_MAX_PROJECTED_NODES_PER_ANCHOR,
   DEFAULT_KNOWLEDGE_READ_URL,
   DEFAULT_KNOWLEDGE_SOURCE_READ_URL,
   DEFAULT_KNOWLEDGE_SEARCH_URL,
@@ -24,6 +27,8 @@ import {
   type CatsLogKnowledgeLinkDirection,
   type CatsLogKnowledgeLinkKind,
   type CatsLogKnowledgeLinkPage,
+  type CatsLogKnowledgeProjectedNodesQuery,
+  type CatsLogKnowledgeProjectedNodesPage,
   type CatsLogKnowledgeReadPage,
   type CatsLogKnowledgeReadQuery,
   type CatsLogKnowledgeReadResult,
@@ -1017,6 +1022,25 @@ export class CatscoLogAgentClient {
     );
   }
 
+  /** Session turns -> Memory nodes of the committed head projections mapping them (lookup only). */
+  async projectedKnowledgeNodes(input: CatsLogKnowledgeProjectedNodesQuery & {
+    token?: string;
+    skillToken?: string;
+    knowledgeProjectedNodesUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<CatsLogKnowledgeProjectedNodesPage> {
+    const token = requireCapabilityToken(input.token ?? input.skillToken);
+    const body = validateKnowledgeProjectedNodesQuery(input);
+    const page = await this.postCapabilityJSON<CatsLogKnowledgeProjectedNodesPage>(
+      input.knowledgeProjectedNodesUrl || DEFAULT_KNOWLEDGE_PROJECTED_NODES_URL,
+      token,
+      body,
+      'CatsLog knowledge projected nodes failed',
+      input.signal,
+    );
+    return decodeKnowledgeProjectedNodesPage(page, (body.anchors as unknown[]).length, (body.limit as number | undefined) ?? 4);
+  }
+
   /** Exact source/context read. Raw text is a stored projection, not log bytes. */
   async readKnowledgeSource(input: CatsLogKnowledgeSourceQuery & {
     token?: string;
@@ -1924,6 +1948,36 @@ export function validateKnowledgeSourceQuery(query: CatsLogKnowledgeSourceQuery)
   const cursor = validateKnowledgeCursor(query.cursor);
   if (cursor !== undefined) body.cursor = cursor;
   return body;
+}
+
+/** Wire-shaped body for POST /catsco/agent/knowledge/projected-nodes. */
+export function validateKnowledgeProjectedNodesQuery(query: CatsLogKnowledgeProjectedNodesQuery): Record<string, unknown> {
+  if (!Array.isArray(query?.anchors) || query.anchors.length === 0 || query.anchors.length > KNOWLEDGE_MAX_PROJECTED_NODES_ANCHORS) {
+    throw new Error('CatsLog knowledge projected nodes need 1..16 anchors');
+  }
+  const anchors = query.anchors.map(anchor => {
+    if (anchor?.kind !== 'session_query' && anchor?.kind !== 'session_result' || !anchor.stream_id) {
+      throw new Error('CatsLog knowledge projected nodes resolve session turns only');
+    }
+    return validateKnowledgeSourceQuery({ anchor }).anchor;
+  });
+  const body: Record<string, unknown> = { anchors };
+  const limit = validateKnowledgeLimit(query.limit, KNOWLEDGE_MAX_PROJECTED_NODES_PER_ANCHOR);
+  if (limit !== undefined) body.limit = limit;
+  return body;
+}
+
+/** Shape and bounds only; node anchors are validated again by their consumer and re-proved on read. */
+export function decodeKnowledgeProjectedNodesPage(raw: unknown, anchors: number, limit: number): CatsLogKnowledgeProjectedNodesPage {
+  const items = (raw as any)?.items;
+  if (!Array.isArray(items) || items.length !== anchors) throw new Error('CatsLog knowledge projected nodes page is invalid');
+  for (const item of items) {
+    if (!item || typeof item !== 'object' || !Array.isArray(item.nodes) || item.nodes.length > limit || typeof item.truncated !== 'boolean'
+      || item.nodes.some((node: any) => node?.kind !== 'source_memory_projection_node')) {
+      throw new Error('CatsLog knowledge projected nodes page is invalid');
+    }
+  }
+  return { items };
 }
 
 /** Wire-shaped body for POST /catsco/agent/knowledge/expand. */

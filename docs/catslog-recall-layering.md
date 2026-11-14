@@ -73,3 +73,28 @@ Branch (graph association):
 - **L6** A session or learning source is delivered while not `read`, not `complete`, truncated, mismatched with its anchor, or over the shared node allowance; a source read bypasses the two-read cap.
 - **L7** Seeds come from anything other than successful `catslog_knowledge_recall` `graph`/`read` results.
 - **L8** Anchor coordinates (session, stream, document identifiers) appear in seed or link results shown to the model.
+
+## Turns resolve to Memory first
+
+A cited session turn is Session Graph: one raw message. The Memory Graph already covers most of them. Production on 2026-11-14 (read-only): 6,463 of the 9,132 distinct turns Diary entries cite (71%) fall inside a committed Memory projection of their stream, which reaches 5,327 of 7,479 turn-citing entries. Each projection's `mappings` tie every node to the exact turn it came from, and a projection is small (median 9 nodes and 7 edges, p90 15 and 14). Reading any one of its nodes returns the canonical `memory-graph/3` view of the whole projection: every node, edge, mapping, condition and omission.
+
+So the Branch resolves turns to Memory before the model sees anything. CatsLog's `POST /catsco/agent/knowledge/projected-nodes` maps a batch of turn anchors to the nodes that the committed head projection of their stream maps to them. It only looks the nodes up; `source/read` re-proves every mapped source when a node is read. The client then:
+
+- issues **one Memory-node handle per projection**, the node that the most cited turns map to;
+- ranks projections by how many **distinct Diary entries** converge on them (then by turns), and shows only that count;
+- keeps a raw turn as a readable seed **only** when no projection covers it;
+- applies the same resolution to turn endpoints reached through `memory_links`, inside that call's slot.
+
+Server (projected-nodes):
+
+- **P1** A turn resolves to a node of a projection that is not the committed head of its stream, or of another principal or memory scope.
+- **P2** A turn resolves to a node whose mapping cites a different stream, byte offset or anchor kind.
+- **P3** One call takes more than 16 turns or returns more than 8 nodes per turn, or cuts a list without reporting `truncated`.
+
+Branch (projection resolution):
+
+- **P4** A projected turn is still offered as a raw-turn seed, or an unprojected turn is dropped instead of kept as one.
+- **P5** Seeds carry more than one handle per projection, or projections are not ordered by converging entries.
+- **P6** A failed or unavailable lookup blocks the Branch instead of leaving the raw-turn seeds; a lookup consumes a read.
+- **P7** Lookup results put node text or anchor coordinates in front of the model.
+- **P8** `memory_links` offers a projected turn endpoint as a raw turn, or runs its lookup outside the call's slot.
