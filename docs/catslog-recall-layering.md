@@ -5,7 +5,7 @@ CatsLog keeps three layers: Session Graph (what happened), Memory Graph (cleaned
 | Agent | Layer | Purpose | Surface |
 | --- | --- | --- | --- |
 | Main agent | Wiki/Diary documents | Converge on maintained, revision-pinned knowledge | `catslog_knowledge_recall` with `search`, `read`, `graph` |
-| Memory Branch | Memory and sessions | Bounded divergence into surrounding context | local `memory_search`/`memory_read_turn`/`memory_neighbors`, remote `memory_remote_search`/`memory_source_read`/`memory_assertion_read`, cited `memory_node_read` |
+| Memory Branch | Memory and sessions | Bounded divergence into surrounding context | local `memory_search`/`memory_read_turn`/`memory_neighbors`, remote `memory_remote_search`/`memory_source_read`/`memory_assertion_read`, cited `memory_node_read`, graph `memory_links` |
 
 The layers meet through citations the server already stores: a Diary entry's `source_anchors` pin exact Memory nodes (`source_memory_projection_node`: projection ref, revision, node id). When the main agent has read Diary entries, the Branch receives those anchors as **seed candidates only**. It never receives the document bodies. `memory_node_read` reads one seeded node as its canonical `memory-graph/3` view (selected node, conditions, omissions, mappings), whole or not at all, sharing the two-read cap with discovered projections. Node views have their own 32 KiB whole-or-nothing allowance: a canonical view carries the node's closure, generation contexts and output proofs, and a real two-turn adapter node measured 15,908 bytes, at the edge of the 16,000-byte projection budget. Reading the cited node rather than its whole projection is what keeps real Memory deliverable at all.
 
@@ -30,7 +30,7 @@ Branch (memory):
 - **B5** Seeds are unbounded, or seeded node reads bypass the shared two-read / byte budget.
 - **B6** Seed refs are attributed to a Branch request pool and reported as downstream citations.
 - **B7** A seeded Memory node reaches parent input without the `programmatic_observation` execution binding, or is bound to a model call that preceded its delivery.
-- **B8** The Branch reads a node other than an exact seeded anchor, or delivers a response that is not the canonical `memory-graph/3` view of that anchor.
+- **B8** The Branch reads a node other than an exact seeded or link-issued anchor, or delivers a Memory node response that is not the canonical `memory-graph/3` view of that anchor.
 
 ## Collection and Delta roots
 
@@ -48,3 +48,53 @@ Branch (Collection / Delta):
 - **D8** The closure's `source_scope` or any other field outside the projected closure reaches a model.
 - **D9** An assertion read runs under a capability other than the one that issued the root, follows a redirect, or buffers an unbounded response.
 - **D10** A Delta closure is cut to fit the 16,000-byte budget instead of being delivered whole or not at all.
+
+## Graph association
+
+Keyword search only finds a starting point. Association follows the links CatsLog already stores. Production on 2026-11-14 (read-only count): Diary entries cite raw session turns (13,251 `session_query` anchors in 7,467 of 7,847 entries), learning nodes and other entries; no entry cites a `source_memory_projection_node`. Stored links are entry↔entry (`related` 1,415, `derived_from` 1,294, `supplements` 1,244, `continues` 976, `requires` 461, `corrects` 325) and entry→session turn (`derived_from` 10,023). Memory-node seeds alone therefore reach nothing in production; the existing bridge is Diary → session turns.
+
+Seeds widen accordingly. From the Diary entries the main agent actually read (`graph` nodes, `read` entries; never search hits), the Branch receives:
+
+- the entries themselves, as **hop-only** handles: they can be expanded, never read, never cited;
+- the session turns and learning nodes those entries cite, as **readable** handles;
+- cited Memory nodes, as before.
+
+`memory_links` expands one issued handle through `/knowledge/expand` and returns typed, body-free edges whose remote endpoints become new handles of the same three classes. `related` and `continues`, which `graph` deliberately leaves out of the main agent's closure, are reachable here. `memory_node_read` reads a readable handle: a Memory node as its canonical `memory-graph/3` view, a session turn or learning node as one complete source. The model sees opaque handles and edge kinds only; anchor coordinates stay in the client.
+
+Budgets: three link calls per run, 16 edges per call, 32 handles in total; reads stay inside the shared two-read cap and the 32 KiB whole-or-nothing node allowance.
+
+Branch (graph association):
+
+- **L1** A Diary entry's body, title or text reaches Branch input through seeds or link results.
+- **L2** An entry handle can be read, or a Diary ref is accepted as finish evidence.
+- **L3** A link expansion or read runs for a handle this run did not issue (not seeded, not a link endpoint); a model-supplied raw anchor reaches HTTP.
+- **L4** Link expansion exceeds three calls, 16 edges per call or 32 handles; a failed call does not consume its slot.
+- **L5** A link endpoint whose `remote_status` is not `resolved`, or whose anchor fails validation, becomes a handle.
+- **L6** A session or learning source is delivered while not `read`, not `complete`, truncated, mismatched with its anchor, or over the shared node allowance; a source read bypasses the two-read cap.
+- **L7** Seeds come from anything other than successful `catslog_knowledge_recall` `graph`/`read` results.
+- **L8** Anchor coordinates (session, stream, document identifiers) appear in seed or link results shown to the model.
+
+## Turns resolve to Memory first
+
+A cited session turn is Session Graph: one raw message. The Memory Graph already covers most of them. Production on 2026-11-14 (read-only): 6,463 of the 9,132 distinct turns Diary entries cite (71%) fall inside a committed Memory projection of their stream, which reaches 5,327 of 7,479 turn-citing entries. Each projection's `mappings` tie every node to the exact turn it came from, and a projection is small (median 9 nodes and 7 edges, p90 15 and 14). Reading any one of its nodes returns the canonical `memory-graph/3` view of the whole projection: every node, edge, mapping, condition and omission.
+
+So the Branch resolves turns to Memory before the model sees anything. CatsLog's `POST /catsco/agent/knowledge/projected-nodes` maps a batch of turn anchors to the nodes that the committed head projection of their stream maps to them. It only looks the nodes up; `source/read` re-proves every mapped source when a node is read. The client then:
+
+- issues **one Memory-node handle per projection**, the node that the most cited turns map to;
+- ranks projections by how many **distinct Diary entries** converge on them (then by turns), and shows only that count;
+- keeps a raw turn as a readable seed **only** when no projection covers it;
+- applies the same resolution to turn endpoints reached through `memory_links`, inside that call's slot.
+
+Server (projected-nodes):
+
+- **P1** A turn resolves to a node of a projection that is not the committed head of its stream, or of another principal or memory scope.
+- **P2** A turn resolves to a node whose mapping cites a different stream, byte offset or anchor kind.
+- **P3** One call takes more than 16 turns or returns more than 8 nodes per turn, or cuts a list without reporting `truncated`.
+
+Branch (projection resolution):
+
+- **P4** A projected turn is still offered as a raw-turn seed, or an unprojected turn is dropped instead of kept as one.
+- **P5** Seeds carry more than one handle per projection, or projections are not ordered by converging entries.
+- **P6** A failed or unavailable lookup blocks the Branch instead of leaving the raw-turn seeds; a lookup consumes a read.
+- **P7** Lookup results put node text or anchor coordinates in front of the model.
+- **P8** `memory_links` offers a projected turn endpoint as a raw turn, or runs its lookup outside the call's slot.

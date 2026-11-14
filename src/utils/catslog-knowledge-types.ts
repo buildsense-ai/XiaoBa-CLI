@@ -199,6 +199,18 @@ export interface CatsLogKnowledgeLinkPage {
   exhausted: boolean;
 }
 
+/** Mirrors knowledge.ProjectedNodesQuery: session turns -> committed head Memory nodes mapping them. */
+export interface CatsLogKnowledgeProjectedNodesQuery {
+  anchors: CatsLogKnowledgeAnchor[];
+  /** Per anchor, 1..8; server default 4. */
+  limit?: number;
+}
+
+/** Mirrors knowledge.ProjectedNodesPage; items answer the query anchors in order. Nodes are not proved until read. */
+export interface CatsLogKnowledgeProjectedNodesPage {
+  items: Array<{ anchor: CatsLogKnowledgeAnchor; nodes: CatsLogKnowledgeAnchor[]; truncated: boolean }>;
+}
+
 /** Frozen source reader v1: /tmp/knowledge-coverage-source-contract.md.
  * Raw sources are redacted stored projections, never original log bytes.
  */
@@ -333,6 +345,9 @@ export const DEFAULT_KNOWLEDGE_SEARCH_URL = '/catsco/agent/knowledge/search';
 export const DEFAULT_KNOWLEDGE_READ_URL = '/catsco/agent/knowledge/read';
 export const DEFAULT_KNOWLEDGE_SOURCE_READ_URL = '/catsco/agent/knowledge/source/read';
 export const DEFAULT_KNOWLEDGE_EXPAND_URL = '/catsco/agent/knowledge/expand';
+export const DEFAULT_KNOWLEDGE_PROJECTED_NODES_URL = '/catsco/agent/knowledge/projected-nodes';
+export const KNOWLEDGE_MAX_PROJECTED_NODES_ANCHORS = 16;
+export const KNOWLEDGE_MAX_PROJECTED_NODES_PER_ANCHOR = 8;
 
 /** Wire bounds (knowledge/types.go). Upper bounds only — nothing truncates. */
 export const KNOWLEDGE_MAX_SEARCH_QUERY_BYTES = 4 << 10;

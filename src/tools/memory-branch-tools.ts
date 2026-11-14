@@ -205,21 +205,23 @@ export class MemorySourceReadTool implements Tool {
 }
 
 /**
- * Exact read of one Memory node cited by a Diary entry the main agent read.
- * Only seeded `memory-node:` handles resolve; the node arrives as its
- * canonical memory-graph/3 view, whole or not at all.
+ * Exact read of one readable handle this run issued: a Memory node (canonical
+ * memory-graph/3 view) or a session turn / learning node (one complete source),
+ * cited by a Diary entry the main agent read or reached through memory_links.
+ * Whole or not at all.
  */
 export class MemoryNodeReadTool implements Tool {
   definition: ToolDefinition = {
     name: 'memory_node_read',
     description: [
-      '读取一个 document_cited_memory_nodes 中的 memory-node 句柄：主 agent 已读日记所引用的精确记忆节点及其条件/省略。',
-      '与 memory_source_read 共享整轮调用与视图预算；只交付完整节点，否则返回 reference_only。成功结果中的 ref（catslog:source:…）可写入 finish evidence。',
+      '读取一个本 run 发出的可读句柄：memory-node:…（精确记忆节点及其条件/省略）或 source:…（完整的历史会话 turn / 学习节点）。',
+      '句柄来自 document_graph_seeds 或 memory_links 结果中 readable:true 的端点；entry:… 句柄只能用于 memory_links，不能读取。',
+      '与 memory_source_read 共享整轮调用与视图预算；只交付完整内容，否则返回 reference_only。成功结果中的 ref（catslog:source:…）可写入 finish evidence。',
     ].join(' '),
     parameters: {
       type: 'object',
       properties: {
-        node: { type: 'string', description: 'document_cited_memory_nodes 中原样给出的 memory-node:… 句柄。' },
+        node: { type: 'string', description: '原样给出的 memory-node:… 或 source:… 句柄。' },
       },
       required: ['node'],
     },
@@ -232,6 +234,42 @@ export class MemoryNodeReadTool implements Tool {
   async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
       return { ok: true, content: jsonToolResult(await this.read(String(args?.node || ''), context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
+ * One body-free page of stored graph links around an issued handle. The
+ * session resolves the handle to its exact anchor, validates every endpoint
+ * and issues opaque handles for resolved remotes; coordinates never reach the model.
+ */
+export class MemoryLinksTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_links',
+    description: [
+      '沿 CatsLog 已存储的图关系做联想：给一个本 run 发出的句柄（entry:… / source:… / memory-node:…），返回与它相连的端点。',
+      '结果只有关系类型（corrects/supplements/requires/derived_from/continues/related/used）、方向和新句柄，没有正文；有记忆图投影覆盖的会话 turn 直接给出记忆节点句柄（via 标明原端点类型）；entry 端点只能继续 memory_links，readable:true 的端点可用 memory_node_read 读取。',
+      'paths 是本 run 中通往同一端点的不同关系数，越多说明关联越集中。每 run 最多 3 次，每次最多 16 条边。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: '原样给出的 entry:… / source:… / memory-node:… 句柄。' },
+        direction: { type: 'string', enum: ['in', 'out', 'both'], description: '可选。out=该端点指向别处，in=别处指向该端点；默认 both。' },
+      },
+      required: ['handle'],
+    },
+  };
+
+  constructor(
+    private readonly expand: (handle: string, direction: unknown, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      return { ok: true, content: jsonToolResult(await this.expand(String(args?.handle || ''), args?.direction, context?.abortSignal)) };
     } catch (error: any) {
       return toolError(error);
     }

@@ -52,7 +52,7 @@ function seedMessages(messages: Message[]): any[] {
 }
 
 async function runBranch(recentMessages: Message[], script: (turn: number, messages: Message[]) => [string, unknown],
-  serve: (a: any) => unknown = a => nodePage(a)) {
+  serve: (a: any) => unknown = a => nodePage(a), extra: Record<string, unknown> = {}) {
   const queue = new InMemorySyntheticObservationQueue();
   const requests: Array<{ messages: Message[]; tools: string[] }> = [];
   const toolResults: any[] = [];
@@ -75,6 +75,7 @@ async function runBranch(recentMessages: Message[], script: (turn: number, messa
     async readKnowledgeSource(query: any) { reads.push(query); return serve(query.anchor); },
     async searchKnowledge() { throw new Error('Branch must not search Diary documents'); },
     async readKnowledgeGraph() { throw new Error('Branch must not read Diary graphs'); },
+    ...extra,
   };
   await new MemorySearchBranchSession({
     sessionKey: 'layering', input: 'Continue the lock review.', recentMessages, workingDirectory: os.tmpdir(),
@@ -180,4 +181,85 @@ test('B5: a cited node over its allowance is delivered whole or not at all', asy
     a => nodePage(a, 'x'.repeat(MAX_MEMORY_NODE_VIEW_BYTES)));
   assert.equal(over.toolResults[0].expansion_error, 'memory_node_over_budget');
   assert.equal(over.queue.size(), 0);
+});
+
+// Graph association (L1-L8). The real-HTTP path is TestDailyMemoryLinksActualClientPG in CatsLog;
+// these cover endpoint and budget failures a well-formed server does not produce.
+const DOC = `akd-${'1'.repeat(24)}`;
+const REV = `akr-${'3'.repeat(64)}`;
+const entryAnchor = (id = `ake-${'2'.repeat(24)}`) => ({ kind: 'knowledge_entry', document_id: DOC, revision: REV, id });
+const turnAnchor = (n: number) => ({ kind: 'session_query', id: `turn-${n}`, session_id: 's1', session_type: 'cli', stream_id: `stream-${n}`, byte_offset: 0 });
+const readResult = (sourceAnchors: unknown[]): Message => ({ role: 'tool', tool_call_id: 'read-1', name: 'catslog_knowledge_recall', content: JSON.stringify({
+  document_id: DOC, revision: REV, exhausted: true, entries: [{ id: entryAnchor().id, title: DIARY_TITLE, text: DIARY_BODY, source_anchors: sourceAnchors }],
+}) } as Message);
+const graphSeeds = (messages: Message[]): any => messages.flatMap(m => {
+  try { const body = JSON.parse(String(m.content)); return body?.retrieval_mode === 'document_graph_seeds' ? [body] : []; } catch { return []; }
+})[0];
+const sourcePage = (a: unknown, patch: Record<string, unknown> = {}) => ({ source: { anchor: a, status: 'read', role: 'user', speaker: 'user',
+  occurred_at: null, text: 'turn text', coverage: 'complete', truncated: false, redacted: false, missing: false, revoked: false, ...patch },
+  before: [], after: [], before_exhausted: true, after_exhausted: true, context_truncated: false, served_at: '2026-11-12T00:00:00Z' });
+const edge = (id: string, kind: string, remote: any, remote_status = 'resolved') =>
+  ({ link: { id, kind, source: entryAnchor(), target: remote }, remote, remote_status });
+
+test('L7: search hits seed nothing; read and graph entries seed hop-only entries and their cited turns', async () => {
+  const expandKnowledge = async () => ({ edges: [], exhausted: true });
+  const search: Message = { role: 'tool', tool_call_id: 's', name: 'catslog_knowledge_recall', content: JSON.stringify({
+    hits: [{ document_id: DOC, entry_id: entryAnchor().id, revision: REV, source_anchors: [turnAnchor(1)] }], exhausted: true }) } as Message;
+  const fromSearch = await runBranch([search], () => finish([], false), undefined, { expandKnowledge });
+  assert.equal(graphSeeds(fromSearch.requests[0].messages), undefined);
+  assert.ok(!fromSearch.requests[0].tools.includes('memory_links'));
+  const fromRead = await runBranch([readResult([turnAnchor(1)])], () => finish([], false), undefined, { expandKnowledge });
+  const seeds = graphSeeds(fromRead.requests[0].messages);
+  assert.equal(seeds.entries.length, 1);
+  assert.deepEqual(seeds.sources.map((s: any) => [s.kind, s.readable]), [['session_query', true]]);
+  assert.ok(fromRead.requests[0].tools.includes('memory_links'));
+  for (const leaked of [DIARY_TITLE, DIARY_BODY, DOC, 'stream-1', 's1']) assert.ok(!JSON.stringify(seeds).includes(leaked), `L1/L8 seed leaked ${leaked}`);
+});
+
+test('L4/L5/L8: only resolved, valid, supported endpoints become handles; three calls, failures included', async () => {
+  const skill = { kind: 'skill_program', id: 'p1', skill_version_id: 'v1' };
+  const edges = [edge('l1', 'related', entryAnchor(`ake-${'4'.repeat(24)}`), 'target_missing'),
+    edge('l2', 'related', { ...entryAnchor(), id: 'ake-not-hex' }), edge('l3', 'used', skill), edge('l4', 'derived_from', turnAnchor(2))];
+  let calls = 0;
+  const expandKnowledge = async () => { calls += 1; if (calls === 2) throw new Error('transport'); return { edges, exhausted: true }; };
+  const run = await runBranch([readResult([turnAnchor(1)])], (turn, messages) => {
+    const entry = graphSeeds(messages)?.entries[0].handle;
+    return turn <= 4 ? ['memory_links', { handle: entry }] : finish([], false);
+  }, undefined, { expandKnowledge });
+  const [first, failed, third, fourth] = run.toolResults;
+  assert.deepEqual(first.edges.map((e: any) => [e.kind, e.status ?? 'handle', e.readable]),
+    [['derived_from', 'handle', true], ['related', 'target_missing', undefined], ['related', 'invalid_endpoint', undefined], ['used', 'unsupported_endpoint', undefined]]);
+  assert.match(first.edges[0].remote, /^source:[a-f0-9]{16}$/);
+  assert.ok(!JSON.stringify(first).includes('stream-2') && !JSON.stringify(first).includes(DOC), 'L8 coordinates in link result');
+  assert.equal(failed.status, 'reference_only');
+  assert.equal(third.edges[0].remote, first.edges[0].remote, 'one endpoint, one handle');
+  assert.equal(fourth.expansion_error, 'budget_exhausted');
+  assert.equal(calls, 3, 'L4 a failed call did not consume its slot');
+});
+
+test('L4/L5: oversized or foreign link pages are rejected whole', async () => {
+  const tooMany = Array.from({ length: 17 }, (_, i) => edge(`l${i}`, 'related', entryAnchor(`ake-${i.toString(16).padStart(24, '0')}`)));
+  const foreign = [{ ...edge('lf', 'related', turnAnchor(3)), link: { id: 'lf', kind: 'related', source: turnAnchor(4), target: turnAnchor(3) } }];
+  for (const edges of [tooMany, foreign]) {
+    const run = await runBranch([readResult([turnAnchor(1)])], (turn, messages) => turn === 1
+      ? ['memory_links', { handle: graphSeeds(messages).entries[0].handle }] : finish([], false), undefined,
+      { expandKnowledge: async () => ({ edges, exhausted: true }) });
+    assert.equal(run.toolResults[0].expansion_error, 'invalid_link_page');
+  }
+});
+
+test('L2/L6: entry handles never read; session sources arrive complete and exact or not at all, inside the read cap', async () => {
+  const expandKnowledge = async () => ({ edges: [], exhausted: true });
+  const variants = [(a: any) => sourcePage(a, { coverage: 'partial' }), (a: any) => sourcePage({ ...a, stream_id: 'stream-9' })];
+  let served = 0;
+  const run = await runBranch([readResult([turnAnchor(1)])], (turn, messages) => {
+    const seeds = graphSeeds(messages);
+    if (turn === 1) return readNode(seeds.entries[0].handle);
+    if (turn <= 4) return readNode(seeds.sources[0].handle);
+    return finish([], false);
+  }, a => variants[served++](a), { expandKnowledge });
+  assert.deepEqual(run.toolResults.slice(0, 4).map(r => r.expansion_error),
+    ['entry_handle_not_readable', 'invalid_session_source', 'invalid_session_source', 'budget_exhausted']);
+  assert.equal(run.reads.length, 2);
+  assert.equal(run.queue.size(), 0);
 });
