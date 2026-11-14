@@ -601,6 +601,135 @@ describe('CatscoLogUploadScheduler', () => {
     assert.equal(requests.filter(item => item.url?.startsWith('/catsco/agent/skills')).length, 1);
   });
 
+  // Upload token refresh (upload_token_refresh_v1) failure modes:
+  // R1 bootstrap omits the capability, so the server keeps issuing legacy leases;
+  // R2 a token inside the refresh margin is used anyway and the cycle is lost to a 401;
+  // R3 a far expiry, a legacy state without an expiry, or a missing CatsCo login
+  //    token triggers a bootstrap every cycle or drops a still-usable token;
+  // R4 the end-of-cycle save restores a token a concurrent bootstrap replaced;
+  // R5 a 401 for the replaced token clears the newer token on disk, while a 401
+  //    for the current token must still clear it.
+  const logPath = 'logs/sessions/chat/2026-05-14/chat_cli.jsonl';
+
+  test('refreshes an upload token inside the refresh margin before uploading', async t => {
+    writeLog(logPath, '{"entry_type":"turn"}\n', true);
+    const statePath = writeUploadState({ tokenExpiresAt: new Date(Date.now() + 60_000).toISOString() });
+    const freshExpiry = new Date(Date.now() + 3_600_000).toISOString();
+    const bootstraps = await serveBootstrap({ token: 'fresh-upload-token', expires_at: freshExpiry });
+    const usedTokens = mockUploads(t);
+
+    await new CatscoLogUploadScheduler(testRoot).runPendingUploadCycle('manual');
+
+    assert.equal(bootstraps.length, 1);
+    assert.deepEqual(bootstraps[0].client_capabilities, ['upload_token_refresh_v1']);
+    assert.deepEqual(usedTokens, ['fresh-upload-token']);
+    const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(saved.token, 'fresh-upload-token');
+    assert.equal(saved.tokenExpiresAt, freshExpiry);
+  });
+
+  for (const scenario of ['an expiry outside the margin', 'no recorded expiry', 'no CatsCo login token']) {
+    test(`keeps the stored upload token with ${scenario}`, async t => {
+      writeLog(logPath, '{"entry_type":"turn"}\n', true);
+      const expiresIn = scenario === 'an expiry outside the margin' ? 3_600_000 : 60_000;
+      writeUploadState(scenario === 'no recorded expiry' ? {} : { tokenExpiresAt: new Date(Date.now() + expiresIn).toISOString() });
+      const bootstraps = await serveBootstrap({ token: 'fresh-upload-token' });
+      const companyToken = process.env.CATSCOMPANY_USER_TOKEN;
+      delete process.env.CATSCOMPANY_USER_TOKEN;
+      t.after(() => restoreEnv('CATSCOMPANY_USER_TOKEN', companyToken));
+      if (scenario === 'no CatsCo login token') delete process.env.CATSCO_USER_TOKEN;
+      const usedTokens = mockUploads(t);
+
+      await new CatscoLogUploadScheduler(testRoot).runPendingUploadCycle('manual');
+
+      assert.equal(bootstraps.length, 0);
+      assert.deepEqual(usedTokens, ['stored-upload-token']);
+    });
+  }
+
+  test('keeps an upload token a concurrent bootstrap stored during the cycle', async t => {
+    writeLog(logPath, '{"entry_type":"turn"}\n', true);
+    const statePath = writeUploadState({ tokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+    mockUploads(t, () => replaceStoredToken(statePath, 'concurrent-upload-token'));
+
+    await new CatscoLogUploadScheduler(testRoot).runPendingUploadCycle('manual');
+
+    const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(saved.token, 'concurrent-upload-token');
+    assert.equal(saved.uploaded[logPath].uploadId, 'record-1');
+  });
+
+  for (const replaced of [true, false]) {
+    test(`a 401 ${replaced ? 'for a replaced token keeps the newer token' : 'for the current token clears it'}`, async t => {
+      writeLog(logPath, '{"entry_type":"turn"}\n', true);
+      const statePath = writeUploadState({ tokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+      mockUploads(t, () => {
+        if (replaced) replaceStoredToken(statePath, 'concurrent-upload-token');
+        throw Object.assign(new Error('unauthorized'), { status: 401 });
+      });
+
+      await new CatscoLogUploadScheduler(testRoot).runPendingUploadCycle('manual');
+
+      assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).token, replaced ? 'concurrent-upload-token' : undefined);
+    });
+  }
+
+  function writeUploadState(extra: Record<string, unknown>): string {
+    process.env.CATSCO_LOG_UPLOAD_ENABLED = 'true';
+    process.env.CATSCO_LOG_API_BASE_URL = 'http://127.0.0.1:1';
+    process.env.CATSCO_LOG_STATE_FILE = 'data/catsco-log-state.json';
+    process.env.CATSCO_LOG_STABLE_MINUTES = '5';
+    process.env.CATSCO_USER_TOKEN = 'refresh-test-user-token';
+    delete process.env.XIAOBA_ROLE;
+    const statePath = path.join(testRoot, 'data/catsco-log-state.json');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ token: 'stored-upload-token', uploadProtocol: 1, uploaded: {}, ...extra }));
+    return statePath;
+  }
+
+  async function serveBootstrap(fields: Record<string, unknown>): Promise<Array<Record<string, unknown>>> {
+    const bodies: Array<Record<string, unknown>> = [];
+    server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        if (req.url !== '/catsco/agent/bootstrap') {
+          res.writeHead(404).end();
+          return;
+        }
+        bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          user_id: 'catsco_123', external_provider: 'catsco', external_user_id: '123',
+          device_id: 'device_test', token_id: 'token-2', upload_url: '/catsco/logs/upload',
+          issued_at: new Date().toISOString(), ...fields,
+        }));
+      });
+    });
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', () => resolve()));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    process.env.CATSCO_LOG_API_BASE_URL = `http://127.0.0.1:${address.port}`;
+    return bodies;
+  }
+
+  function mockUploads(t: { mock: { method: Function } }, during?: () => void): string[] {
+    const tokens: string[] = [];
+    let attempts = 0;
+    t.mock.method(CatscoLogAgentClient.prototype, 'uploadLog', async (input: Parameters<CatscoLogAgentClient['uploadLog']>[0]) => {
+      tokens.push(input.token);
+      during?.();
+      attempts++;
+      return { status: 'created', record_id: `record-${attempts}`, sha256: crypto.createHash('sha256').update(fs.readFileSync(input.filePath)).digest('hex') };
+    });
+    return tokens;
+  }
+
+  function replaceStoredToken(statePath: string, token: string): void {
+    const current = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    fs.writeFileSync(statePath, JSON.stringify({ ...current, token, tokenId: 'concurrent-id' }));
+  }
+
   function configureV1Upload(): string {
     process.env.CATSCO_LOG_UPLOAD_ENABLED = 'true';
     process.env.CATSCO_LOG_API_BASE_URL = 'http://127.0.0.1:1';
