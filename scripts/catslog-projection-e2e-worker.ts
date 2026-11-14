@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as assert from 'node:assert/strict';
-import { runActualFlow, assertPositiveFlow, hash, qualifierTexts } from '../tests/helpers/catslog-projection-harness';
+import { runActualFlow, assertDeltaAssertionFlow, assertPositiveFlow, hash, qualifierTexts } from '../tests/helpers/catslog-projection-harness';
 
 // Runtime logger writes are private stderr. Exactly one stdout JSON verdict.
 for (const name of ['log', 'info', 'warn', 'debug'] as const) console[name] = (...args: any[]) => console.error(...args);
@@ -14,6 +14,10 @@ async function main() {
   assert.equal(manifest.schema, 'catslog.xiaoba_projection_e2e.v1');
   assert.ok(path.isAbsolute(manifest.artifact_dir));
   assert.ok(manifest.question_text && manifest.query_text);
+  assert.ok(manifest.assertion_mode === undefined || manifest.assertion_mode === 'delta_authored', 'unsupported assertion mode');
+  // Delta mode attests hashes only: the caller rejects any artifact holding a raw ref or node id.
+  const deltaMode = manifest.assertion_mode === 'delta_authored';
+  const ident = (value: string) => deltaMode ? hash(value) : value;
   const url = new URL(manifest.base_url);
   assert.ok(['localhost', '127.0.0.1', '[::1]'].includes(url.hostname), 'fixture must be loopback');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'projection-crossrepo-'));
@@ -28,21 +32,57 @@ async function main() {
   try {
     const run = await runActualFlow({ targetRoot, root, baseUrl: manifest.base_url, token: manifest.device_skill_token,
       deviceId: manifest.device_id, skillTokenId: manifest.skill_token_id, tokenExpiresAt: manifest.skill_token_expires_at,
-      question: manifest.question_text, keyword: manifest.query_text, forceSearch: true, signal: AbortSignal.timeout(65_000) });
-    artifact.requests = run.requests;
+      question: manifest.question_text, keyword: manifest.query_text, forceSearch: true, signal: AbortSignal.timeout(65_000),
+      ...(deltaMode ? { readAssertion: true, assertionMode: 'delta_authored' as const } : {}) });
+    artifact.requests = deltaMode ? run.requests.map(r => ({ method: r.method, path: r.path, body_keys: r.body_keys.slice().sort(),
+      ...(r.query_text !== undefined ? { query_codepoints: Array.from(r.query_text as string).length, query_sha256: hash(r.query_text) } : {}),
+      ...(r.projection_ref !== undefined ? { projection_ref_sha256: hash(r.projection_ref) } : {}),
+      ...(r.assertion_body_keys ? { assertion_body_keys: r.assertion_body_keys, assertion_member_is_projection_root: r.assertion_member_is_projection_root,
+        assertion_node_id_sha256: r.assertion_node_id_sha256, assertion_max_bytes: r.assertion_max_bytes, assertion_max_nodes: r.assertion_max_nodes } : {}),
+      status: r.status, response_bytes: r.response_bytes, response_sha256: r.response_sha256,
+      capability_matches_initial: r.capability_matches_initial, ...(r.error_class ? { error_class: r.error_class } : {}) })) : run.requests;
     artifact.request_counts = Object.fromEntries(['branch', 'source_read', 'bootstrap'].map(name => [name,
       run.requests.filter(r => r.path === ({ branch: '/catsco/agent/branch', source_read: '/catsco/agent/knowledge/source/read', bootstrap: '/catsco/agent/bootstrap' } as any)[name]).length]));
-    artifact.observed_refs = run.observed;
-    artifact.delivered_refs = [...run.delivered.keys()];
-    artifact.retained_refs = run.retained.map(e => e.ref);
-    artifact.cited_refs = run.cited;
-    Object.assign(artifact, run.measurements);
-    artifact.formatted_content = run.observations.map(o => ({ bytes: Buffer.byteLength(o.formattedContent), sha256: hash(o.formattedContent), refs: JSON.parse(o.formattedContent).refs }));
-    assertPositiveFlow(run, manifest.question_text, manifest.root_ref); // root_ref assertions ONLY
+    if (deltaMode) artifact.request_counts.assertion_read = run.requests.filter(r => r.path.endsWith('/source/read') && r.body_keys.includes('assertion')).length;
+    artifact.observed_refs = run.observed.map(ident);
+    artifact.delivered_refs = [...run.delivered.keys()].map(ident);
+    artifact.retained_refs = run.retained.map(e => ident(e.ref));
+    artifact.cited_refs = run.cited.map(ident);
+    artifact.main_model_calls = run.mainCalls.length;
+    artifact.branch_tool_results = run.branchToolResults;
+    if (deltaMode) artifact.measurements = Object.fromEntries(Object.entries(run.measurements).map(([key, requests]: [string, any]) => [key,
+      requests.map((request: any) => ({ input_bytes: request.input_bytes, input_sha256: request.input_sha256,
+        evidence: request.evidence.map((e: any) => ({ ref_sha256: hash(e.ref), bytes: e.bytes, sha256: e.sha256 })) }))]));
+    else Object.assign(artifact, run.measurements);
+    artifact.formatted_content = run.observations.map(o => ({ bytes: Buffer.byteLength(o.formattedContent), sha256: hash(o.formattedContent),
+      ...(deltaMode ? {} : { refs: JSON.parse(o.formattedContent).refs }) }));
+    if (deltaMode) {
+      assertDeltaAssertionFlow(run, manifest.question_text, manifest.root_ref, stage => { artifact.failure_stage = stage; });
+      const semanticView = run.retained[0].semantic_view;
+      const closure = semanticView.assertion_closures[0];
+      artifact.assertion_closure = { complete: closure.status === 'complete' && closure.read_required === false,
+        content_trust: closure.content_trust, source_completeness: closure.source_completeness,
+        member_is_root: closure.member_ref === manifest.root_ref, projection_is_root: closure.projection_ref === manifest.root_ref,
+        assertion_node_id_sha256: hash(closure.assertion.id), covered_range_count: closure.covered_ranges.length,
+        entry_count: closure.entries.length, relation_count: closure.relations.length,
+        bytes: closure.bytes, nodes: closure.nodes, semantic_sha256: hash(JSON.stringify(closure)) };
+      const mainEntry = run.mainCalls[0].flatMap((message: any) => {
+        if (typeof message.content !== 'string') return [];
+        try { return JSON.parse(message.content).retained_remote_evidence ?? []; } catch { return []; }
+      }).find((entry: any) => entry.ref === manifest.root_ref);
+      artifact.main_input_contains_complete_assertion_closure = Boolean(mainEntry && JSON.stringify(mainEntry.semantic_view) === JSON.stringify(semanticView));
+      assert.equal(artifact.main_input_contains_complete_assertion_closure, true, 'main input omitted the complete closure');
+      artifact.main_input_view_sha256 = hash(JSON.stringify(mainEntry.semantic_view));
+      artifact.checks.push('delta_authored_assertion_from_delivered_view', 'root_member_binding', 'complete_closure_in_main_input', 'no_private_scope_or_token');
+      artifact.failure_stage = undefined;
+    } else {
+      assertPositiveFlow(run, manifest.question_text, manifest.root_ref); // root_ref assertions ONLY
+    }
     artifact.checks.push('active_session_wire_expansion', 'branch_whole_view', 'formatted_content_whole_view', 'main_actual_input_whole_view', 'safe_ref_subsets');
     assert.equal(artifact.request_counts.bootstrap, 0, 'Skill capability was misused as login token');
     assert.ok(run.requests.every(r => r.capability_matches_initial), 'unexpected capability used');
     assert.ok(run.requests.filter(r => r.path.endsWith('/source/read')).length <= 2, 'shared expansion call budget exceeded');
+    if (deltaMode) assert.equal(artifact.request_counts.assertion_read, 1, 'exactly one assertion read expected');
     const viewBytes = Buffer.byteLength(JSON.stringify({ retained_remote_evidence: [...run.delivered].map(([ref, semantic_view]) => ({ ref, semantic_view })) }), 'utf8');
     artifact.retained_evidence_bytes = viewBytes;
     assert.ok(viewBytes <= 16_000, 'shared whole-view budget exceeded');
@@ -59,7 +99,9 @@ async function main() {
     // Assertion text is harness-owned; never serialize transport payloads,
     // bearer values, raw documents, or stack traces into the public verdict.
     artifact.error_class = error?.name ?? 'Error';
-    artifact.failure = String(error?.message ?? 'flow failed').replaceAll(manifest.device_skill_token, '[redacted]').slice(0, 500);
+    // Delta assertion messages can carry refs or node ids; keep only the stage there.
+    artifact.failure = deltaMode ? 'E2E failure details withheld'
+      : String(error?.message ?? 'flow failed').replaceAll(manifest.device_skill_token, '[redacted]').slice(0, 500);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -70,7 +112,7 @@ async function main() {
   process.stdout.write(JSON.stringify({ event: artifact.ok ? 'projection_e2e_pass' : 'projection_e2e_fail', artifact_path: artifactPath,
     artifact_schema: artifactSchema, request_counts: artifact.request_counts, observed_ref_count: artifact.observed_refs.length,
     delivered_ref_count: artifact.delivered_refs.length, retained_ref_count: artifact.retained_refs.length, cited_ref_count: artifact.cited_refs.length,
-    main_request_count: artifact.main_requests?.length ?? 0 }) + '\n');
+    main_request_count: artifact.main_model_calls ?? 0 }) + '\n');
   process.exitCode = artifact.ok ? 0 : 1;
 }
 main().catch(() => { process.stdout.write(JSON.stringify({ event: 'projection_e2e_fail', error: 'invalid_manifest_or_environment' }) + '\n'); process.exitCode = 2; });
