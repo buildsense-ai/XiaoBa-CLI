@@ -1,3 +1,4 @@
+import type { MemoryBranchEvent } from './memory-branch-presentation';
 import { ContentBlock, Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
@@ -27,6 +28,7 @@ export interface MemorySidecarBranchOptions {
   logEnabled?: boolean;
   activationContext?: MemoryBranchActivationContext;
   catslogMemory?: CatsLogMemoryBackend;
+  onPresentation?: (event: MemoryBranchEvent) => void;
 }
 
 export interface MemorySidecarBranchHandle {

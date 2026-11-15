@@ -1,3 +1,4 @@
+import { MemoryBranchPresentation, type MemoryBranchEvent } from './memory-branch-presentation';
 import { isCatsLogKnowledgeCitationRef } from '../tools/memory-branch-tools';
 import { CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from '../tools/catslog-knowledge-recall-tool';
 import { stripToolTargetContextForDisplay } from '../tools/tool-target-context';
@@ -50,6 +51,7 @@ export interface MemorySearchBranchSessionOptions {
   logEnabled?: boolean;
   activationContext?: MemoryBranchActivationContext;
   catslogMemory?: CatsLogMemoryBackend;
+  onPresentation?: (event: MemoryBranchEvent) => void;
 }
 const PREFETCH_TIMEOUT_MS = 3_000;
 const SOURCE_READ_TIMEOUT_MS = 15_000;
@@ -93,6 +95,7 @@ const NODE_ID = /^(?:output-)?[a-f0-9]{64}$/;
  * seed candidates (docs/catslog-recall-layering.md).
  */
 export class MemorySearchBranchSession extends ObservationBranchSession<MemorySearchFinishPayload> {
+  private readonly presentation: MemoryBranchPresentation;
   private readonly store: MemoryLogStore;
   private readonly remoteAbort = new AbortController();
   private readonly candidates = new Map<string, string | undefined>(); // ref -> issuing request_id
@@ -120,9 +123,21 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       parallelToolExecution: false,
     });
     this.store = new MemoryLogStore(memoryOptions.workingDirectory);
+    this.presentation = new MemoryBranchPresentation(this.options.id, memoryOptions.onPresentation);
   }
 
-  override stop(): void { this.remoteAbort.abort(); super.stop(); }
+  override async run(): Promise<void> {
+    this.presentation.publish('running');
+    try { await super.run(); }
+    finally {
+      if (this.presentation.snapshot().status === 'running') this.presentation.publish(this.memoryOptions.signal?.aborted ? 'cancelled' : 'failed');
+    }
+  }
+
+  override stop(): void {
+    this.remoteAbort.abort(); super.stop();
+    if (this.presentation.snapshot().status === 'running') this.presentation.publish('cancelled');
+  }
 
   protected async buildInitialMessages(): Promise<Message[]> {
     const messages: Message[] = [
@@ -396,6 +411,8 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         const remote = remoteClass === 'entry' ? exactEntryAnchor(edge.remote)
           : remoteClass === 'memory-node' ? exactProjectionNodeAnchor(edge.remote) : exactSourceAnchor(edge.remote);
         if (!remote) { edges.push({ ...summary, status: 'invalid_endpoint' }); continue; }
+        const linkOut = summary.direction === 'out';
+        this.presentation.relation(link.id, String(summary.kind), linkOut ? issued.anchor : remote, linkOut ? remote : issued.anchor);
         pending.push({ summary, linkId: link.id, remoteClass, remote });
       }
       // Turn endpoints resolve to their Memory projection inside this call's slot and deadline.
@@ -449,6 +466,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       if (this.nodeBytes(nodes) > MAX_MEMORY_NODE_VIEW_BYTES) return referenceOnly('memory_node_over_budget');
       this.readNodes.add(node);
       this.deliveredNodes.set(ref, source);
+      this.presentation.source(ref, anchor, source.projection_context);
       return { node, ref, status: 'expanded', content_trust: 'untrusted_branch_evidence', source };
     } catch (error) { return referenceOnly(classifyExpansionError(error, deadline.signal)); }
     finally { deadline.dispose(); }
@@ -477,6 +495,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     }
     this.readNodes.add(node);
     this.deliveredSources.set(ref, source);
+    this.presentation.source(ref, anchor);
     return { node, ref, status: 'expanded', content_trust: 'untrusted_branch_evidence', source };
   }
 
@@ -512,6 +531,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       retained.push({ ref, ...item });
       if (this.contextBytes(retained) > MAX_TOTAL_PROJECTION_VIEW_CHARS) return referenceOnly('semantic_view_over_budget');
       this.delivered.set(ref, item);
+      this.presentation.projection(ref, result.semantic_view);
       if (contract === DELTA_CONTRACT) this.navigableViews.set(ref, result.semantic_view);
       return { ...result, content_trust: 'untrusted_branch_evidence' };
     } catch (error) { return referenceOnly(classifyExpansionError(error, deadline.signal)); }
@@ -567,6 +587,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         return referenceOnly('semantic_view_over_budget');
       }
       this.delivered.set(ref, item);
+      this.presentation.assertion(ref, input.memberRef, closure);
       return { ref, status: 'complete', content_trust: 'derived_assertion_closure', closure };
     } catch (error) { return referenceOnly(classifyExpansionError(error, deadline.signal)); }
     finally { deadline.dispose(); }
@@ -582,6 +603,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const inject = payload.inject && payload.refs.every(ref => !isCatsLogKnowledgeCitationRef(ref)
       && (!isCatsLogPoolCitationRef(ref) || this.delivered.has(ref))
       && (!ref.startsWith('catslog:source:') || this.deliveredNodes.has(ref) || this.deliveredSources.has(ref)));
+    if (!inject) this.presentation.publish('empty');
     return { inject, logPayload: { refs: payload.refs, summary: payload.summary } };
   }
 
@@ -618,6 +640,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       source: 'memory', status: 'completed', relevance: payload.refs.length ? 'medium' : 'low', summary: payload.summary,
       metadata: {
         branchId: this.options.id, branchType: this.options.type, refs: payload.refs,
+        memory_branch: this.presentation.publish(payload.refs.length ? 'ready' : 'empty'),
         ...(retained.length ? { deliveredRemoteRefs: retained.map(item => item.ref) } : {}),
         ...(retainedNodes.length ? { deliveredMemoryNodeRefs: retainedNodes.map(item => item.ref) } : {}),
         ...(retainedSources.length ? { deliveredSessionSourceRefs: retainedSources.map(item => item.ref) } : {}),
