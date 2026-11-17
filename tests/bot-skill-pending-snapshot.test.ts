@@ -64,18 +64,113 @@ test('pending evidence cleans temporary output on copy failure and preserves the
   }
 });
 
-test('pending evidence refuses nested links and leaves no published partial snapshot', async () => {
+test('pending evidence records nested links without reading targets or creating package links', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-links-'));
   try {
     const source = path.join(root, 'skills');
     const external = path.join(root, 'external');
     fs.mkdirSync(source);
     fs.mkdirSync(external);
+    fs.writeFileSync(path.join(external, 'private.txt'), 'must not be read or copied');
+    fs.writeFileSync(path.join(source, 'README.md'), 'keep local content');
     fs.symlinkSync(external, path.join(source, '.venv'), process.platform === 'win32' ? 'junction' : 'dir');
-    await assert.rejects(snapshotPendingBotSkillWorkspace({ runtimeRoot: root,
-      sourcePath: source, botId: 'bot-a', reason: 'activation_cloud_reconcile', cloudRevision: 1 }), /symbolic link/);
-    assert.equal(fs.existsSync(path.join(root, 'data')), false);
+    fs.symlinkSync(source, path.join(source, 'loop'), process.platform === 'win32' ? 'junction' : 'dir');
+    const originalReaddir = fs.promises.readdir;
+    t.mock.method(fs.promises, 'readdir', async (...args: any[]) => {
+      const requested = path.resolve(String(args[0]));
+      assert.notEqual(requested, external, 'must not traverse the external target');
+      assert.notEqual(requested, path.join(source, '.venv'), 'must not traverse an ephemeral-named link');
+      assert.notEqual(requested, path.join(source, 'loop'), 'must not traverse a loop');
+      return (originalReaddir as any)(...args);
+    });
+    const options = { runtimeRoot: root, sourcePath: source, botId: 'bot-a',
+      reason: 'activation_cloud_reconcile' as const, cloudRevision: 1 };
+    const snapshot = await snapshotPendingBotSkillWorkspace(options);
+    const manifest = JSON.parse(fs.readFileSync(path.join(snapshot.path, 'manifest.json'), 'utf8'));
+    assert.equal(manifest.schema, 'xiaoba.bot-skill-local-pending.v2');
+    assert.deepEqual(manifest.links, ['.venv', 'loop'].map(name => ({
+      path: name, target: fs.readlinkSync(path.join(source, name)),
+    })));
+    assert.equal(snapshot.linkCount, 2);
+    assert.equal(snapshot.fileCount, 1);
+    assert.deepEqual(fs.readdirSync(path.join(snapshot.path, 'package')), ['README.md']);
+    assert.equal(fs.readFileSync(path.join(external, 'private.txt'), 'utf8'), 'must not be read or copied');
+    assert.equal((await snapshotPendingBotSkillWorkspace(options)).deduplicated, true);
+
+    // A changed manifest must never suppress the creation of valid evidence.
+    manifest.links[0].target = 'corrupted';
+    fs.writeFileSync(path.join(snapshot.path, 'manifest.json'), JSON.stringify(manifest));
+    const replacement = await snapshotPendingBotSkillWorkspace({ ...options,
+      now: () => new Date('2026-11-17T00:00:01Z') });
+    assert.equal(replacement.deduplicated, false);
+    assert.notEqual(replacement.path, snapshot.path);
+
+    // Nor may a runnable link inserted into package/ qualify as valid evidence.
+    fs.symlinkSync(external, path.join(replacement.path, 'package', 'injected'),
+      process.platform === 'win32' ? 'junction' : 'dir');
+    assert.equal((await snapshotPendingBotSkillWorkspace({ ...options,
+      now: () => new Date('2026-11-17T00:00:02Z') })).deduplicated, false);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('pending evidence fingerprints link changes and supports dangling and npm file links', {
+  skip: process.platform === 'win32' ? 'Windows directory junctions are covered by the nested-link test.' : false,
+}, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-file-links-'));
+  try {
+    const source = path.join(root, 'skills');
+    const bin = path.join(source, 'stageshow', 'node_modules', '.bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(source, 'private.txt'), 'do not dereference');
+    fs.symlinkSync('../../../private.txt', path.join(bin, 'portless'));
+    fs.symlinkSync('missing', path.join(source, 'dangling'));
+    const options = { runtimeRoot: root, sourcePath: source, botId: 'bot-a',
+      reason: 'activation_cloud_reconcile' as const, cloudRevision: 1 };
+    const first = await snapshotPendingBotSkillWorkspace(options);
+    assert.equal(first.linkCount, 2);
+    const manifest = JSON.parse(fs.readFileSync(path.join(first.path, 'manifest.json'), 'utf8'));
+    assert.deepEqual(manifest.links, [
+      { path: 'dangling', target: 'missing' },
+      { path: 'stageshow/node_modules/.bin/portless', target: '../../../private.txt' },
+    ]);
+    assert.equal(fs.existsSync(path.join(first.path, 'package', 'stageshow')), false);
+    fs.unlinkSync(path.join(source, 'dangling'));
+    fs.symlinkSync('another-missing', path.join(source, 'dangling'));
+    const second = await snapshotPendingBotSkillWorkspace(options);
+    assert.notEqual(first.fingerprint, second.fingerprint);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('pending evidence refuses link target changes while copying and keeps the source', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-link-race-'));
+  const original = fs.promises.copyFile;
+  try {
+    const source = path.join(root, 'skills');
+    const targetA = path.join(root, 'a');
+    const targetB = path.join(root, 'b');
+    fs.mkdirSync(source);
+    fs.mkdirSync(targetA);
+    fs.mkdirSync(targetB);
+    fs.writeFileSync(path.join(source, 'README.md'), 'keep');
+    const link = path.join(source, 'animate');
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+    fs.symlinkSync(targetA, link, linkType);
+    fs.promises.copyFile = async (...args) => {
+      await original(...args);
+      fs.unlinkSync(link);
+      fs.symlinkSync(targetB, link, linkType);
+    };
+    await assert.rejects(snapshotPendingBotSkillWorkspace({ runtimeRoot: root,
+      sourcePath: source, botId: 'bot-a', reason: 'activation_cloud_reconcile', cloudRevision: 1 }),
+    /workspace changed during pending snapshot/);
+    assert.equal(fs.realpathSync(link), fs.realpathSync(targetB));
+    assert.deepEqual(fs.readdirSync(path.join(root, 'data', 'bot-skills', 'local-pending', 'bot-a')), []);
+  } finally {
+    fs.promises.copyFile = original;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
