@@ -115,6 +115,30 @@ test('pending evidence records nested links without reading targets or creating 
   }
 });
 
+test('pending evidence refuses a link-only snapshot whose empty package directory disappeared', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-link-only-'));
+  try {
+    const source = path.join(root, 'skills');
+    const external = path.join(root, 'external');
+    fs.mkdirSync(source);
+    fs.mkdirSync(external);
+    fs.symlinkSync(external, path.join(source, 'animate'), process.platform === 'win32' ? 'junction' : 'dir');
+    const options = { runtimeRoot: root, sourcePath: source, botId: 'bot-a',
+      reason: 'activation_cloud_reconcile' as const, cloudRevision: 1 };
+    const first = await snapshotPendingBotSkillWorkspace(options);
+    assert.equal(first.fileCount, 0);
+    assert.equal(first.linkCount, 1);
+    assert.equal((await snapshotPendingBotSkillWorkspace(options)).deduplicated, true);
+    fs.rmdirSync(path.join(first.path, 'package'));
+    const replacement = await snapshotPendingBotSkillWorkspace({ ...options,
+      now: () => new Date('2026-11-17T00:00:03Z') });
+    assert.equal(replacement.deduplicated, false);
+    assert.notEqual(replacement.path, first.path);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('pending evidence fingerprints link changes and supports dangling and npm file links', {
   skip: process.platform === 'win32' ? 'Windows directory junctions are covered by the nested-link test.' : false,
 }, async () => {

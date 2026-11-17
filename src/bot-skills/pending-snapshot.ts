@@ -220,7 +220,11 @@ async function findExistingSnapshot(root: string, fingerprint: string): Promise<
       if (manifest.schema === 'xiaoba.bot-skill-local-pending.v2'
         && (!Array.isArray(manifest.links) || manifest.links.length === 0)) continue;
       if (manifest.schema === 'xiaoba.bot-skill-local-pending.v1' && manifest.links !== undefined) continue;
-      const packageContent = await listWorkspaceContent(path.join(candidate, 'package'));
+      const packageRoot = path.join(candidate, 'package');
+      // A link-only snapshot has zero files. A missing package directory is
+      // corrupted evidence, not a valid empty package eligible for dedupe.
+      if (!(await fs.promises.lstat(packageRoot)).isDirectory()) continue;
+      const packageContent = await listWorkspaceContent(packageRoot);
       if (
         packageContent.links.length === 0
         && snapshotFilesEqual(manifest.files, packageContent.files)
