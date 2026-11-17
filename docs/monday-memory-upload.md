@@ -1,37 +1,41 @@
 # Monday memory upload
 
-This opt-in module runs with runtime command support. It does not require CatsLog, share its credentials or state, or modify original logs. The matching server change is the Harness Memory stage-pipeline PR.
+This independent uploader is enabled by default for a bound Bot. It requires no memory API key, project selection, capability grant or client dataset setting. It does not use CatsLog configuration or progress. Inspector runtimes do not start it; a runtime without a known Bot UID waits until one becomes available.
 
-Configure the runtime environment:
+Optional independent settings:
 
 ```dotenv
-MONDAY_MEMORY_ENABLED=true
-MONDAY_MEMORY_URL=http://127.0.0.1:18462
-MONDAY_MEMORY_KEY=your-project-key
-MONDAY_MEMORY_DATASET=your-rebuild-id
+XIAOBA_MEMORY_UPLOAD_ENABLED=true
+XIAOBA_MEMORY_UPLOAD_URL=http://121.11.233.41
 ```
 
-The localhost example can be an SSH tunnel to Monday. The URL must be a service origin. The project key establishes authorization; the dataset ID fences old uploader requests after a clean rebuild. Key rotation does not reset upload progress. Use a separate runtime root/state for another project.
+Set `XIAOBA_MEMORY_UPLOAD_ENABLED=false` to disable this uploader. Its default receiver is Monday's HTTP upload ingress. `MONDAY_MEMORY_*` was the earlier opt-in prototype and no longer controls this uploader. The CatsLog upload setting remains independent. Search, workbench and original-source read authorization are server concerns and are not removed by keyless upload.
 
-## First enable and subsequent scans
+## Bot ownership
 
-First discovery freezes each existing session JSONL file's complete-line end, B0. All bytes before B0 are historical backfill. Appends after B0, and files discovered after initialization, are incremental. Discovery runs on startup if needed and at Beijing 03:00/15:00. Backfill continues between discovery times, transferring bounded chunks in round-robin order; incremental gets a turn before history. No file-idle test blocks active files. Incomplete final lines wait for a newline. The server controls Episode closure, the ten-minute eligibility delay, model batching and generation.
+The current Bot UID and display name come from the existing CatsCo runtime binding; memory upload does not require the Bot's API key. The resolver rereads the binding for each upload so a local name change is sent with the next request. UID is stable identity; name is mutable display metadata. Historical files with `agent_identity.agent_id` use that recorded UID (`usr365` normalizes to `365`). Older files without an identity inherit the currently bound Bot. The receiver marks whether attribution came from the original or from the uploader.
 
-Files are read from `logs/sessions/{chat,cli,catscompany,feishu,weixin}/YYYY-MM-DD/*.jsonl`. State is exclusively `data/monday-memory-state.json` and its process lock. B0, file generation, stable source ID, manifests, acknowledged cursors, hashes and file errors survive restart. Startup fails closed on corrupt/mismatched state and pauses this uploader; the bot remains usable. Never erase state during an ordinary restart.
+Manifests group files by Bot UID, session and history/incremental lane. Each upload goes to `/v1/bots/{uid}/ingest/{manifests,batches,fragments}` with the current `bot_name` when available. The server updates names without rewriting original log bytes or creating a new Bot identity. Explicit record identities must agree with the selected Bot; a conflicting or mixed-identity file is left at its source offset with an error, not reassigned. Source instances and file generations remain separate from Bot identity so multiple installations do not collide at byte offset zero.
 
-A request is checkpointed only after offset and SHA-256 acknowledgment match the actual outgoing bytes. Lost ACKs resend identical coordinates. A source rewrite, truncation, invalid response or unsupported log record pauses that file range and is recorded; other files continue, including files in the same session. Discovery errors are separately persisted and do not stop normal file discovery. Current ordinary chunks are at most 1 MiB, and encoded requests are bounded to 3 MiB, below the server's 4 MiB HTTP limit. A larger complete JSONL line (up to 64 MiB) travels through resumable 1 MiB `/ingest/fragments` requests. Only the final whole-record hash/offset ACK advances the local cursor; restart can replay fragments safely. Larger individual records are visibly deferred at their original offset, never truncated or skipped. Hash state is cached only while file size/mtime and cursor remain unchanged; restart or source changes revalidate the acknowledged prefix.
+## First enable and future scans
 
-The receiver stores original records before model processing. A manifest identifies the frozen per-session scan range; transport chunks do not become separate model batches. No `/ingest/complete` is called per chunk. Complete files and earlier closed logical days can process before a large session scan finishes; incomplete runtime Episodes always wait for the remaining material. Acknowledged upload does not mean Wiki generation completed: query the server's `/v1/ingest/status` and extraction status for that.
+The first discovery freezes each existing session JSONL file's complete-line end, B0. All bytes before B0 are historical backfill. Later appends and newly discovered files are incremental. Discovery runs on first activation and Beijing 03:00/15:00. Saved historical ranges continue draining between scans in bounded chunks; increments receive a turn before history. Files may still be active; incomplete final lines wait. The server requires complete runtime Episodes and a ten-minute delay after completion before model processing.
 
-## Explicit clean rebuild
+Files are read from `logs/sessions/{chat,cli,catscompany,feishu,weixin}/YYYY-MM-DD/*.jsonl`. State is exclusively `data/monday-memory-upload/state.json` and its process lock. This new ledger intentionally does not read the earlier key-based prototype ledger or CatsLog markers: first activation of this protocol includes all history. Ordinary restarts preserve B0, source identity, manifests, ACK/hash cursors and errors and do not reupload completed ranges.
 
-Stop the old Monday companion and this module first. Stop memory workers, clear the selected server project using its documented admin command, set a new matching server/uploader dataset ID, archive only `data/monday-memory-state.json`, then enable this module. Keep logs and CatsLog state untouched. Keep one authoritative uploader per runtime/project. Regular startup, credential rotation and scheduled scans never perform this reset.
+The receiver's `/v1/bot-ingest/config` supplies a dataset identifier automatically. Once saved, an unexpected dataset change pauses the uploader rather than silently resetting acknowledged progress. Explicit server rebuilds archive only this independent ledger before a new first scan. Original logs and third-party state remain intact.
+
+## Reliable transport and model batches
+
+An offset advances only after the response offset and SHA-256 match the actual outgoing bytes, which are checked again against the source file. Lost ACKs replay the same coordinates. Ordinary chunks are at most 1 MiB, encoded requests at most 3 MiB. A larger complete JSONL record uses resumable 1 MiB fragments with a 64 MiB whole-record limit. Larger individual records remain visibly blocked; no source text is truncated or skipped. Source rewrites, rejected records and discovery errors are isolated by file.
+
+Transport chunks do not define model batches. Monday stores immutable raw records, indexes complete Episodes, groups by 03:00 logical day and request budget, and pipelines Stage1/Stage2 jobs. It can process complete files and earlier closed days while a larger historical range is still arriving. Upload ACK is not Wiki completion.
 
 ## Verification
 
 ```sh
-npx tsc --noEmit
-node --import tsx --test tests/monday-memory-uploader.test.ts tests/runtime-command-support.test.ts
+npm run build
+node --import tsx --test tests/monday-memory-uploader.test.ts tests/runtime-command-support.test.ts tests/catsco-log-agent-config.test.ts tests/catsco-log-agent-state.test.ts
 ```
 
-The uploader tests use real HTTP servers and temporary log directories. They cover lost normal/fragment ACKs, restart with a rotated key, partial lines, exact transfer, unchanged source bytes, isolated file errors and corrupt nested state rejection.
+Real HTTP/temp-file tests cover no authorization header, default-on independent configuration, dynamic name changes, recorded/fallback UID routing, full history, later appends, lost ACKs, restart, fragments, partial lines, read-only source bytes, isolated errors and invalid state rejection.

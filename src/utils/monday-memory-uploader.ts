@@ -2,11 +2,15 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createHash, randomUUID, type Hash } from 'crypto';
 import { glob } from 'glob';
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
+import { CatsCoLocalConfigService } from '../catscompany/local-config';
 import { Logger } from './logger';
 
 type Lane = 'backfill' | 'incremental';
 interface Cursor { offset: number; hash: string }
 interface FileState {
+  bot_uid: string;
   generation: string;
   baseline: number;
   backfill: Cursor;
@@ -15,6 +19,7 @@ interface FileState {
 }
 interface FilePlan { path: string; stream_id: string; start: number; end: number; base: number }
 interface Manifest {
+  bot_uid: string;
   manifest_id: string;
   session_key: string;
   lane: Lane;
@@ -22,7 +27,7 @@ interface Manifest {
   registered: boolean;
 }
 interface State {
-  version: 1;
+  version: 2;
   endpoint: string;
   dataset: string;
   source_id: string;
@@ -31,7 +36,8 @@ interface State {
   manifests: Manifest[];
   discovery_errors: Record<string, { message: string; historical: boolean }>;
 }
-export interface MondayMemoryConfig { endpoint: string; key: string; dataset: string; root: string }
+export interface MemoryBot { uid: string; name?: string }
+export interface MondayMemoryConfig { endpoint: string; root: string; bot: () => MemoryBot | undefined }
 const digest = (x: string | Buffer) => createHash('sha256').update(x).digest('hex');
 const MAX_BODY = 3 * 1024 * 1024;
 const READ_BYTES = 1024 * 1024;
@@ -42,27 +48,28 @@ function valid(condition: unknown): asserts condition { if (!condition) throw Er
 function integer(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
 function identity(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 256; }
 function parseState(value: unknown, config: MondayMemoryConfig): State {
-  valid(object(value) && value.version === 1 && value.endpoint === config.endpoint && value.dataset === config.dataset && identity(value.source_id) && integer(value.last_discovery) && object(value.files) && Array.isArray(value.manifests));
+  valid(object(value) && value.version === 2 && value.endpoint === config.endpoint && typeof value.dataset === 'string' && identity(value.source_id) && integer(value.last_discovery) && object(value.files) && Array.isArray(value.manifests));
   const files: State['files'] = {};
   const cursor = (v: unknown): Cursor => { valid(object(v) && integer(v.offset) && typeof v.hash === 'string' && /^[a-f0-9]{64}$/.test(v.hash)); return { offset: v.offset, hash: v.hash }; };
   for (const [key, item] of Object.entries(value.files)) {
-    valid(safePath(key) && object(item) && identity(item.generation) && integer(item.baseline) && (item.error === undefined || typeof item.error === 'string'));
+    valid(safePath(key) && object(item) && typeof item.bot_uid === 'string' && /^[1-9][0-9]{0,18}$/.test(item.bot_uid) && identity(item.generation) && integer(item.baseline) && (item.error === undefined || typeof item.error === 'string'));
     const backfill = cursor(item.backfill), incremental = cursor(item.incremental);
     valid(backfill.offset <= item.baseline && incremental.offset >= item.baseline);
-    files[key] = { generation: item.generation, baseline: item.baseline, backfill, incremental, ...(typeof item.error === 'string' ? { error: item.error } : {}) };
+    files[key] = { bot_uid: item.bot_uid, generation: item.generation, baseline: item.baseline, backfill, incremental, ...(typeof item.error === 'string' ? { error: item.error } : {}) };
   }
   const manifests = value.manifests.map((m: unknown): Manifest => {
-    valid(object(m) && identity(m.manifest_id) && typeof m.session_key === 'string' && (m.lane === 'backfill' || m.lane === 'incremental') && typeof m.registered === 'boolean' && Array.isArray(m.files) && m.files.length > 0);
+    valid(object(m) && typeof m.bot_uid === 'string' && /^[1-9][0-9]{0,18}$/.test(m.bot_uid) && identity(m.manifest_id) && typeof m.session_key === 'string' && (m.lane === 'backfill' || m.lane === 'incremental') && typeof m.registered === 'boolean' && Array.isArray(m.files) && m.files.length > 0);
     const lane = m.lane, session = m.session_key;
     const plans = m.files.map((f: unknown): FilePlan => {
       valid(object(f) && typeof f.path === 'string' && safePath(f.path) && identity(f.stream_id) && integer(f.start) && integer(f.end) && integer(f.base));
       const file = files[f.path];
+      valid(file && file.bot_uid === m.bot_uid);
       valid(file && f.base === (lane === 'backfill' ? 0 : file.baseline) && f.start >= f.base && f.end > f.start && (lane !== 'backfill' || f.end <= file.baseline));
       valid(f.path.split('/')[1] + '/' + path.basename(f.path) === session && f.stream_id === digest(file.generation + ':' + lane));
       return { path: f.path, stream_id: f.stream_id, start: f.start, end: f.end, base: f.base };
     });
     valid(new Set(plans.map(f => f.path)).size === plans.length);
-    return { manifest_id: m.manifest_id, session_key: session, lane, registered: m.registered, files: plans };
+    return { bot_uid: m.bot_uid, manifest_id: m.manifest_id, session_key: session, lane, registered: m.registered, files: plans };
   });
   valid(new Set(manifests.map(m => m.manifest_id)).size === manifests.length);
   const errors: State['discovery_errors'] = {};
@@ -73,16 +80,36 @@ function parseState(value: unknown, config: MondayMemoryConfig): State {
       errors[key] = { message: error.message, historical: error.historical };
     }
   }
-  return { version: 1, endpoint: config.endpoint, dataset: config.dataset, source_id: value.source_id, last_discovery: value.last_discovery, files, manifests, discovery_errors: errors };
+  return { version: 2, endpoint: config.endpoint, dataset: value.dataset, source_id: value.source_id, last_discovery: value.last_discovery, files, manifests, discovery_errors: errors };
 }
 
 export function mondayMemoryConfig(root: string, env = process.env): MondayMemoryConfig | undefined {
-  if (env.MONDAY_MEMORY_ENABLED !== 'true' || env.XIAOBA_ROLE === 'inspector-cat') return;
-  const endpoint = env.MONDAY_MEMORY_URL?.replace(/\/$/, '');
-  if (!endpoint || !env.MONDAY_MEMORY_KEY || !env.MONDAY_MEMORY_DATASET) throw Error('Monday memory requires URL, KEY and DATASET');
+  if (env.XIAOBA_MEMORY_UPLOAD_ENABLED === 'false' || env.XIAOBA_ROLE === 'inspector-cat') return;
+  const endpoint = (env.XIAOBA_MEMORY_UPLOAD_URL || 'http://121.11.233.41').replace(/\/$/, '');
   const url = new URL(endpoint);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw Error('invalid Monday memory URL');
-  return { endpoint, key: env.MONDAY_MEMORY_KEY, dataset: env.MONDAY_MEMORY_DATASET, root };
+  const local = new CatsCoLocalConfigService({ runtimeRoot: root, env });
+  return { endpoint, root, bot: () => {
+    const current = local.load().currentBot;
+    const uid = String(local.getAuthState().botUid || '').replace(/^usr/, '').trim();
+    if (!/^[1-9][0-9]{0,18}$/.test(uid)) return;
+    const matching = String(current?.uid || '').replace(/^usr/, '') === uid ? current : undefined;
+    return { uid, name: matching?.name || matching?.username || env.CURRENT_AGENT_DISPLAY_NAME || undefined };
+  } };
+}
+
+async function recordedBot(file: string, end: number): Promise<string | undefined> {
+  if (!end) return;
+  const input = createReadStream(file, { end: end - 1 });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      const value: unknown = JSON.parse(line);
+      if (!object(value) || !object(value.agent_identity)) continue;
+      const uid = String(value.agent_identity.agent_id || '').replace(/^usr/, '');
+      if (/^[1-9][0-9]{0,18}$/.test(uid)) return uid;
+    }
+  } finally { lines.close(); input.destroy(); }
 }
 
 /** Beijing 03:00/15:00, independent of the host's timezone. */
@@ -131,7 +158,7 @@ export class MondayMemoryUploader {
   private hashes = new Map<string, { offset: number; mtime: number; size: number; hash: Hash }>();
   private readonly statePath: string;
   constructor(private readonly config: MondayMemoryConfig) {
-    this.statePath = path.join(config.root, 'data', 'monday-memory-state.json');
+    this.statePath = path.join(config.root, 'data', 'monday-memory-upload', 'state.json');
   }
   async start(): Promise<void> {
     await this.acquire();
@@ -170,7 +197,7 @@ export class MondayMemoryUploader {
       this.state = parseState(JSON.parse(await fs.readFile(this.statePath, 'utf8')), this.config);
     } catch (e) {
       if (!(e instanceof Error) || !('code' in e) || e.code !== 'ENOENT') throw e;
-      this.state = { version: 1, endpoint: this.config.endpoint, dataset: this.config.dataset, source_id: 'bot_' + randomUUID(), last_discovery: 0, files: {}, manifests: [], discovery_errors: {} };
+      this.state = { version: 2, endpoint: this.config.endpoint, dataset: '', source_id: 'bot_' + randomUUID(), last_discovery: 0, files: {}, manifests: [], discovery_errors: {} };
       await this.save();
     }
   }
@@ -190,11 +217,12 @@ export class MondayMemoryUploader {
       if (!this.stopped) { this.timer = setTimeout(() => this.tick(), 30000); this.timer.unref(); }
     });
   }
-  private async post(route: string, body: unknown): Promise<unknown> {
-    const text = JSON.stringify(body);
+  private async post(uid: string, route: string, body: Record<string, unknown>): Promise<unknown> {
+    const current = this.config.bot();
+    const text = JSON.stringify({ ...body, dataset_id: this.state!.dataset, ...(current?.uid === uid && current.name ? { bot_name: current.name } : {}) });
     if (Buffer.byteLength(text) > MAX_BODY) throw Error('Monday request exceeds transport budget');
-    const response = await fetch(this.config.endpoint + '/v1' + route, {
-      method: 'POST', headers: { authorization: 'Bearer ' + this.config.key, 'content-type': 'application/json' },
+    const response = await fetch(this.config.endpoint + '/v1/bots/' + uid + route, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
       body: text, signal: AbortSignal.timeout(60000),
     });
     if (!response.ok) throw Error('Monday HTTP ' + response.status);
@@ -204,6 +232,13 @@ export class MondayMemoryUploader {
   async cycle(now = Date.now()): Promise<void> {
     if (!this.lock) { await this.acquire(); await this.load(); }
     const state = this.state!;
+    if (!this.config.bot() && !Object.keys(state.files).length) return;
+    const response = await fetch(this.config.endpoint + '/v1/bot-ingest/config', { signal: AbortSignal.timeout(60000) });
+    if (!response.ok) throw Error('Monday config HTTP ' + response.status);
+    const remote: unknown = await response.json();
+    if (!object(remote) || !identity(remote.dataset_id)) throw Error('invalid Monday dataset');
+    if (state.dataset && state.dataset !== remote.dataset_id) throw Error('Monday dataset changed; archive uploader state before a full rebuild');
+    if (!state.dataset) { state.dataset = remote.dataset_id; await this.save(); }
     if (!state.last_discovery || now >= nextMemoryScan(state.last_discovery)) await this.discover(now);
     // One bounded chunk per file and lane before rotating, with new material first.
     for (const lane of ['incremental', 'backfill'] as const) {
@@ -211,8 +246,8 @@ export class MondayMemoryUploader {
         if (this.stopped) return;
         try {
           if (!manifest.registered) {
-            await this.post('/ingest/manifests', {
-              dataset_id: this.config.dataset, source_id: state.source_id,
+            await this.post(manifest.bot_uid, '/ingest/manifests', {
+              source_id: state.source_id,
               manifest_id: manifest.manifest_id, session_key: manifest.session_key, lane,
               files: manifest.files.map(f => ({ stream_id: f.stream_id, end_offset: f.end - f.base, path: f.path })),
             });
@@ -243,10 +278,15 @@ export class MondayMemoryUploader {
         const absolute = path.join(this.config.root, 'logs', relative), stat = await fs.lstat(absolute);
         if (!stat.isFile() || stat.isSymbolicLink()) continue;
         const end = await completeEnd(absolute);
-        if (!state.files[relative]) state.files[relative] = {
-          generation: randomUUID(), baseline: historical ? end : 0,
-          backfill: { offset: 0, hash: digest('') }, incremental: { offset: historical ? end : 0, hash: historical ? (await prefixHasher(absolute, end)).digest('hex') : digest('') },
-        };
+        if (!state.files[relative]) {
+          const uid = await recordedBot(absolute, end) ?? this.config.bot()?.uid;
+          if (!uid) throw Error('awaiting bot uid');
+          state.files[relative] = {
+            bot_uid: uid,
+            generation: randomUUID(), baseline: historical ? end : 0,
+            backfill: { offset: 0, hash: digest('') }, incremental: { offset: historical ? end : 0, hash: historical ? (await prefixHasher(absolute, end)).digest('hex') : digest('') },
+          };
+        }
         const file = state.files[relative];
         if (end < Math.max(file.baseline, file.backfill.offset, file.incremental.offset)) throw Error('source rewritten: ' + relative);
         const session = relative.split('/')[1] + '/' + path.basename(relative);
@@ -255,8 +295,8 @@ export class MondayMemoryUploader {
           const target = lane === 'backfill' ? file.baseline : end;
           const planned = Math.max(file[lane].offset, ...state.manifests.filter(m => m.lane === lane).flatMap(m => m.files.filter(f => f.path === relative).map(f => f.end)));
           if (target <= planned) continue;
-          const key = session + ':' + lane;
-          if (!plans.has(key)) plans.set(key, { manifest_id: 'scan_' + randomUUID(), session_key: session, lane, files: [], registered: false });
+          const key = file.bot_uid + ':' + session + ':' + lane;
+          if (!plans.has(key)) plans.set(key, { bot_uid: file.bot_uid, manifest_id: 'scan_' + randomUUID(), session_key: session, lane, files: [], registered: false });
           plans.get(key)!.files.push({ path: relative, base, start: planned, end: target, stream_id: digest(file.generation + ':' + lane) });
         }
         delete state.discovery_errors[relative];
@@ -306,16 +346,16 @@ export class MondayMemoryUploader {
       const hash = digest(bytes);
       for (let fragment = 0; fragment < bytes.length;) {
         const next = Math.min(bytes.length, fragment + READ_BYTES);
-        result = await this.post('/ingest/fragments', {
-          dataset_id: this.config.dataset, source_id: this.state!.source_id, stream_id: plan.stream_id,
+        result = await this.post(this.state!.files[plan.path].bot_uid, '/ingest/fragments', {
+          source_id: this.state!.source_id, stream_id: plan.stream_id,
           record_offset: cursor.offset - plan.base, fragment_offset: fragment, total_bytes: bytes.length, record_hash: hash,
           origin: { path: plan.path, offset: cursor.offset }, raw_base64: bytes.subarray(fragment, next).toString('base64'),
         });
         if (!object(result) || !integer(result.next_fragment_offset) || result.next_fragment_offset < next || result.next_fragment_offset > bytes.length) throw Error('invalid Monday fragment ACK');
         fragment = result.next_fragment_offset;
       }
-    } else result = await this.post('/ingest/batches', {
-      dataset_id: this.config.dataset, source_id: this.state!.source_id, stream_id: plan.stream_id, harness: 'xiaoba', records,
+    } else result = await this.post(this.state!.files[plan.path].bot_uid, '/ingest/batches', {
+      source_id: this.state!.source_id, stream_id: plan.stream_id, harness: 'xiaoba', records,
     });
     if (!result || typeof result !== 'object' || !('next_offset' in result) || result.next_offset !== cursor.offset + bytes.length - plan.base ||
         !('sha256' in result) || result.sha256 !== digest(bytes)) throw Error('invalid Monday ACK; cursor not advanced');
