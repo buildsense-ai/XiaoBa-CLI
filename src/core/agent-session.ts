@@ -1205,7 +1205,7 @@ export class AgentSession {
       // /stop - 中断当前正在运行的请求
       if (commandName === 'stop') {
         this.requestInterrupt();
-        return { handled: true, reply: '正在停止当前请求...' };
+        return { handled: true, reply: '已停止当前请求。' };
       }
 
       // /compact - explicitly create one checkpoint without creating a user turn.

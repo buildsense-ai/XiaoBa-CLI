@@ -2224,7 +2224,7 @@ export class CatsCompanyBot {
     // before any asynchronous history restore or ordinary message queueing.
     if (/^\/stop(?:\s|$)/i.test(msg.text)) {
       this.stopSessionExecution(key);
-      await this.sender.reply(msg.topic, '正在停止当前请求...').catch((err: any) => {
+      await this.sender.reply(msg.topic, '已停止当前请求。').catch((err: any) => {
         Logger.warning(`停止提示发送失败: ${err?.message || err}`);
       });
       return;
