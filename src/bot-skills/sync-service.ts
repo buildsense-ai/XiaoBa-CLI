@@ -80,6 +80,7 @@ export interface BotSkillSyncResult {
     path: string;
     fingerprint: string;
     fileCount: number;
+    linkCount?: number;
   };
 }
 
@@ -551,6 +552,7 @@ export class BotSkillSyncService {
             path: snapshot.path,
             fingerprint: snapshot.fingerprint,
             fileCount: snapshot.fileCount,
+            ...(snapshot.linkCount ? { linkCount: snapshot.linkCount } : {}),
           },
         };
       }
@@ -1578,7 +1580,14 @@ export class BotSkillSyncService {
             path: snapshot.path,
             fingerprint: snapshot.fingerprint,
             fileCount: snapshot.fileCount,
+            ...(snapshot.linkCount ? { linkCount: snapshot.linkCount } : {}),
           };
+          if (snapshot.linkCount) {
+            Logger.warning(
+              `Bot Skill restore preserved ${snapshot.linkCount} symbolic link(s) as inert recovery metadata at ${snapshot.path}; `
+              + 'link targets were not read, and links were excluded from the restored workspace.',
+            );
+          }
         }
         await options.validateScope?.();
         this.writeRestoreJournal({ stage, backup, phase: 'backup_pending' });
