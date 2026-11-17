@@ -29,12 +29,52 @@ interface State {
   last_discovery: number;
   files: Record<string, FileState>;
   manifests: Manifest[];
+  discovery_errors: Record<string, { message: string; historical: boolean }>;
 }
 export interface MondayMemoryConfig { endpoint: string; key: string; dataset: string; root: string }
 const digest = (x: string | Buffer) => createHash('sha256').update(x).digest('hex');
 const MAX_BODY = 3 * 1024 * 1024;
 const READ_BYTES = 1024 * 1024;
+const MAX_RECORD = 64 * READ_BYTES;
 const safePath = (p: string) => /^sessions\/(chat|cli|catscompany|feishu|weixin)\/\d{4}-\d{2}-\d{2}\/[^/\\]+\.jsonl$/.test(p);
+function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
+function valid(condition: unknown): asserts condition { if (!condition) throw Error('invalid Monday memory state; review before resetting'); }
+function integer(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
+function identity(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 256; }
+function parseState(value: unknown, config: MondayMemoryConfig): State {
+  valid(object(value) && value.version === 1 && value.endpoint === config.endpoint && value.dataset === config.dataset && identity(value.source_id) && integer(value.last_discovery) && object(value.files) && Array.isArray(value.manifests));
+  const files: State['files'] = {};
+  const cursor = (v: unknown): Cursor => { valid(object(v) && integer(v.offset) && typeof v.hash === 'string' && /^[a-f0-9]{64}$/.test(v.hash)); return { offset: v.offset, hash: v.hash }; };
+  for (const [key, item] of Object.entries(value.files)) {
+    valid(safePath(key) && object(item) && identity(item.generation) && integer(item.baseline) && (item.error === undefined || typeof item.error === 'string'));
+    const backfill = cursor(item.backfill), incremental = cursor(item.incremental);
+    valid(backfill.offset <= item.baseline && incremental.offset >= item.baseline);
+    files[key] = { generation: item.generation, baseline: item.baseline, backfill, incremental, ...(typeof item.error === 'string' ? { error: item.error } : {}) };
+  }
+  const manifests = value.manifests.map((m: unknown): Manifest => {
+    valid(object(m) && identity(m.manifest_id) && typeof m.session_key === 'string' && (m.lane === 'backfill' || m.lane === 'incremental') && typeof m.registered === 'boolean' && Array.isArray(m.files) && m.files.length > 0);
+    const lane = m.lane, session = m.session_key;
+    const plans = m.files.map((f: unknown): FilePlan => {
+      valid(object(f) && typeof f.path === 'string' && safePath(f.path) && identity(f.stream_id) && integer(f.start) && integer(f.end) && integer(f.base));
+      const file = files[f.path];
+      valid(file && f.base === (lane === 'backfill' ? 0 : file.baseline) && f.start >= f.base && f.end > f.start && (lane !== 'backfill' || f.end <= file.baseline));
+      valid(f.path.split('/')[1] + '/' + path.basename(f.path) === session && f.stream_id === digest(file.generation + ':' + lane));
+      return { path: f.path, stream_id: f.stream_id, start: f.start, end: f.end, base: f.base };
+    });
+    valid(new Set(plans.map(f => f.path)).size === plans.length);
+    return { manifest_id: m.manifest_id, session_key: session, lane, registered: m.registered, files: plans };
+  });
+  valid(new Set(manifests.map(m => m.manifest_id)).size === manifests.length);
+  const errors: State['discovery_errors'] = {};
+  if (value.discovery_errors !== undefined) {
+    valid(object(value.discovery_errors));
+    for (const [key, error] of Object.entries(value.discovery_errors)) {
+      valid(safePath(key) && object(error) && typeof error.message === 'string' && typeof error.historical === 'boolean');
+      errors[key] = { message: error.message, historical: error.historical };
+    }
+  }
+  return { version: 1, endpoint: config.endpoint, dataset: config.dataset, source_id: value.source_id, last_discovery: value.last_discovery, files, manifests, discovery_errors: errors };
+}
 
 export function mondayMemoryConfig(root: string, env = process.env): MondayMemoryConfig | undefined {
   if (env.MONDAY_MEMORY_ENABLED !== 'true' || env.XIAOBA_ROLE === 'inspector-cat') return;
@@ -127,13 +167,10 @@ export class MondayMemoryUploader {
   }
   private async load() {
     try {
-      const value: State = JSON.parse(await fs.readFile(this.statePath, 'utf8'));
-      if (value.version !== 1 || value.endpoint !== this.config.endpoint || value.dataset !== this.config.dataset ||
-          typeof value.source_id !== 'string' || !value.files || !Array.isArray(value.manifests)) throw Error('Monday memory state mismatch; explicit reset required');
-      this.state = value;
+      this.state = parseState(JSON.parse(await fs.readFile(this.statePath, 'utf8')), this.config);
     } catch (e) {
       if (!(e instanceof Error) || !('code' in e) || e.code !== 'ENOENT') throw e;
-      this.state = { version: 1, endpoint: this.config.endpoint, dataset: this.config.dataset, source_id: 'bot_' + randomUUID(), last_discovery: 0, files: {}, manifests: [] };
+      this.state = { version: 1, endpoint: this.config.endpoint, dataset: this.config.dataset, source_id: 'bot_' + randomUUID(), last_discovery: 0, files: {}, manifests: [], discovery_errors: {} };
       await this.save();
     }
   }
@@ -182,10 +219,11 @@ export class MondayMemoryUploader {
             manifest.registered = true; await this.save();
           }
           for (const file of manifest.files) {
+            if (state.discovery_errors[file.path]) continue;
             const cursor = state.files[file.path][lane];
             if (cursor.offset < file.end) {
               try { await this.send(file, lane); delete state.files[file.path].error; }
-              catch (error) { state.files[file.path].error = error instanceof Error ? error.message : 'upload failed'; await this.save(); throw error; }
+              catch (error) { state.files[file.path].error = error instanceof Error ? error.message : 'upload failed'; await this.save(); }
             }
           }
         } catch (error) {
@@ -200,24 +238,30 @@ export class MondayMemoryUploader {
     const state = this.state!, plans = new Map<string, Manifest>();
     const files = (await glob('sessions/*/*/*.jsonl', { cwd: path.join(this.config.root, 'logs'), nodir: true, follow: false })).map(p => p.split(path.sep).join('/')).sort();
     for (const relative of files.filter(safePath)) {
-      const absolute = path.join(this.config.root, 'logs', relative), stat = await fs.lstat(absolute);
-      if (!stat.isFile() || stat.isSymbolicLink()) continue;
-      const end = await completeEnd(absolute);
-      if (!state.files[relative]) state.files[relative] = {
-        generation: randomUUID(), baseline: state.last_discovery ? 0 : end,
-        backfill: { offset: 0, hash: digest('') }, incremental: { offset: state.last_discovery ? 0 : end, hash: state.last_discovery ? digest('') : (await prefixHasher(absolute, end)).digest('hex') },
-      };
-      const file = state.files[relative];
-      if (end < file.baseline) throw Error('source rewritten: ' + relative);
-      const session = relative.split('/')[1] + '/' + path.basename(relative);
-      for (const lane of ['backfill', 'incremental'] as const) {
-        const base = lane === 'backfill' ? 0 : file.baseline;
-        const target = lane === 'backfill' ? file.baseline : end;
-        const planned = Math.max(file[lane].offset, ...state.manifests.filter(m => m.lane === lane).flatMap(m => m.files.filter(f => f.path === relative).map(f => f.end)));
-        if (target <= planned) continue;
-        const key = session + ':' + lane;
-        if (!plans.has(key)) plans.set(key, { manifest_id: 'scan_' + randomUUID(), session_key: session, lane, files: [], registered: false });
-        plans.get(key)!.files.push({ path: relative, base, start: planned, end: target, stream_id: digest(file.generation + ':' + lane) });
+      const historical = state.discovery_errors[relative]?.historical ?? !state.last_discovery;
+      try {
+        const absolute = path.join(this.config.root, 'logs', relative), stat = await fs.lstat(absolute);
+        if (!stat.isFile() || stat.isSymbolicLink()) continue;
+        const end = await completeEnd(absolute);
+        if (!state.files[relative]) state.files[relative] = {
+          generation: randomUUID(), baseline: historical ? end : 0,
+          backfill: { offset: 0, hash: digest('') }, incremental: { offset: historical ? end : 0, hash: historical ? (await prefixHasher(absolute, end)).digest('hex') : digest('') },
+        };
+        const file = state.files[relative];
+        if (end < Math.max(file.baseline, file.backfill.offset, file.incremental.offset)) throw Error('source rewritten: ' + relative);
+        const session = relative.split('/')[1] + '/' + path.basename(relative);
+        for (const lane of ['backfill', 'incremental'] as const) {
+          const base = lane === 'backfill' ? 0 : file.baseline;
+          const target = lane === 'backfill' ? file.baseline : end;
+          const planned = Math.max(file[lane].offset, ...state.manifests.filter(m => m.lane === lane).flatMap(m => m.files.filter(f => f.path === relative).map(f => f.end)));
+          if (target <= planned) continue;
+          const key = session + ':' + lane;
+          if (!plans.has(key)) plans.set(key, { manifest_id: 'scan_' + randomUUID(), session_key: session, lane, files: [], registered: false });
+          plans.get(key)!.files.push({ path: relative, base, start: planned, end: target, stream_id: digest(file.generation + ':' + lane) });
+        }
+        delete state.discovery_errors[relative];
+      } catch (error) {
+        state.discovery_errors[relative] = { message: error instanceof Error ? error.message : 'discovery failed', historical };
       }
     }
     state.manifests.push(...plans.values()); state.last_discovery = now;
@@ -235,18 +279,42 @@ export class MondayMemoryUploader {
     try {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, cursor.offset);
       const end = buffer.subarray(0, bytesRead).lastIndexOf(10);
-      if (end < 0) throw Error('record_too_large at ' + plan.path + ':' + cursor.offset);
-      bytes = buffer.subarray(0, end + 1);
+      if (end >= 0) bytes = buffer.subarray(0, end + 1);
+      else {
+        const chunks = [buffer.subarray(0, bytesRead)]; let length = bytesRead;
+        for (;;) {
+          if (length >= MAX_RECORD || cursor.offset + length >= plan.end) throw Error('record_too_large or incomplete at ' + plan.path + ':' + cursor.offset);
+          const chunk = Buffer.alloc(Math.min(READ_BYTES, MAX_RECORD - length, plan.end - cursor.offset - length));
+          const read = await handle.read(chunk, 0, chunk.length, cursor.offset + length);
+          if (!read.bytesRead) throw Error('source truncated');
+          const newline = chunk.subarray(0, read.bytesRead).indexOf(10);
+          const data = chunk.subarray(0, newline < 0 ? read.bytesRead : newline + 1); chunks.push(data); length += data.length;
+          if (newline >= 0) { bytes = Buffer.concat(chunks); break; }
+        }
+      }
     } finally { await handle.close(); }
     const records = [];
     let start = 0;
-    for (let i = 0; i < bytes.length; i++) if (bytes[i] === 10) {
+    for (let i = 0; bytes.length <= READ_BYTES && i < bytes.length; i++) if (bytes[i] === 10) {
       records.push({ offset: cursor.offset + start - plan.base, raw_base64: bytes.subarray(start, i + 1).toString('base64'), origin: { path: plan.path, offset: cursor.offset + start } });
       start = i + 1;
       if (records.length >= 10000) break;
     }
-    bytes = bytes.subarray(0, start);
-    const result = await this.post('/ingest/batches', {
+    if (bytes.length <= READ_BYTES) bytes = bytes.subarray(0, start);
+    let result: unknown;
+    if (bytes.length > READ_BYTES) {
+      const hash = digest(bytes);
+      for (let fragment = 0; fragment < bytes.length;) {
+        const next = Math.min(bytes.length, fragment + READ_BYTES);
+        result = await this.post('/ingest/fragments', {
+          dataset_id: this.config.dataset, source_id: this.state!.source_id, stream_id: plan.stream_id,
+          record_offset: cursor.offset - plan.base, fragment_offset: fragment, total_bytes: bytes.length, record_hash: hash,
+          origin: { path: plan.path, offset: cursor.offset }, raw_base64: bytes.subarray(fragment, next).toString('base64'),
+        });
+        if (!object(result) || !integer(result.next_fragment_offset) || result.next_fragment_offset < next || result.next_fragment_offset > bytes.length) throw Error('invalid Monday fragment ACK');
+        fragment = result.next_fragment_offset;
+      }
+    } else result = await this.post('/ingest/batches', {
       dataset_id: this.config.dataset, source_id: this.state!.source_id, stream_id: plan.stream_id, harness: 'xiaoba', records,
     });
     if (!result || typeof result !== 'object' || !('next_offset' in result) || result.next_offset !== cursor.offset + bytes.length - plan.base ||
