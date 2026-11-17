@@ -40,9 +40,11 @@ test('AgentSession requestInterrupt aborts an in-flight model request', async ()
   const runPromise = session.handleMessage('开始一个会被停止的任务');
   await waitFor(() => Boolean(observedSignal));
 
-  session.requestInterrupt();
+  const stopResult = await session.handleCommand('stop', []);
   const result = await runPromise;
 
+  assert.equal(stopResult.handled, true);
+  assert.equal(stopResult.reply, '已停止当前请求。');
   assert.equal(observedSignal?.aborted, true);
   assert.equal(result.text, '已停止当前请求。');
 });

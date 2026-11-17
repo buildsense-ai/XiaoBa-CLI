@@ -364,11 +364,12 @@ describe('CatsCompany execution scope flow', () => {
     (harness.session as any).requestInterrupt = () => { interrupts++; };
     harness.session.handleCommand = async () => {
       (harness.session as any).requestInterrupt();
-      return { handled: true, reply: '正在停止当前请求...' };
+      return { handled: true, reply: '已停止当前请求。' };
     };
     await harness.bot.onMessage(message('follow-up before stop', 20));
     assert.equal(harness.bot.messageQueue.get(key)?.length, 1);
     await harness.bot.onMessage(message('/stop', 21));
+    assert.deepEqual(harness.replies, ['已停止当前请求。']);
     harness.session.setBusy(false);
     await harness.bot.drainMessageQueue(key);
     assert.equal(interrupts, 1);
