@@ -121,7 +121,7 @@ export class MemoryReadTurnTool implements Tool {
     },
   };
 
-  constructor(private readonly store: MemoryLogStore, private readonly onRead?: (ref: string, archive?: ArchiveTurnPin) => void) {}
+  constructor(private readonly store: MemoryLogStore, private readonly onRead?: (ref: string, archive?: ArchiveTurnPin, truncated?: boolean) => void) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
@@ -129,7 +129,7 @@ export class MemoryReadTurnTool implements Tool {
         budgetChars: args?.budget_chars,
       }, context.abortSignal);
       const {archive, ...visible} = result;
-      this.onRead?.(result.ref, archive);
+      this.onRead?.(result.ref, archive, result.truncated);
       return { ok: true, content: jsonToolResult(visible) };
     } catch (error: any) {
       return toolError(error);
@@ -168,7 +168,7 @@ export class MemoryNeighborsTool implements Tool {
     },
   };
 
-  constructor(private readonly store: MemoryLogStore, private readonly onRead?: (ref: string, archive?: ArchiveTurnPin) => void) {}
+  constructor(private readonly store: MemoryLogStore, private readonly onRead?: (ref: string, archive?: ArchiveTurnPin, truncated?: boolean) => void) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
@@ -178,7 +178,7 @@ export class MemoryNeighborsTool implements Tool {
         budgetChars: args?.budget_chars,
       }, context.abortSignal);
       const turns = result.turns.map(({archive, ...visible}) => {
-        this.onRead?.(visible.ref, archive);
+        this.onRead?.(visible.ref, archive, visible.truncated);
         return visible;
       });
       return { ok: true, content: jsonToolResult({...result, turns}) };

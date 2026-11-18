@@ -164,6 +164,46 @@ function captureRuntimeEvents(): { events: any[]; restore: () => void } {
   return { events, restore: () => { Logger.runtimeEvent = original; } };
 }
 
+test('a completed read batch uses the next existing Branch request for its evidence decision', async t => {
+  const { MemorySearchBranchSession } = await import('../src/core/memory-search-branch-session');
+  const { refA, refB } = writeMemoryFixture();
+  const calls: string[] = [];
+  const publications: any[] = [];
+  const events: any[] = [];
+  const ai = new ScriptedAI({provider:'openai',apiUrl:'http://127.0.0.1:1/v1',model:'scripted',apiKey:'fixture'}, async messages => {
+    const last = [...messages].reverse().find(m => m.role === 'tool');
+    const step = calls.length;
+    calls.push(last?.name ?? 'start');
+    if (!step) {
+      events.push({kind:'user_input',sequence:2,turn:2,text:'Does the export contain narration?'});
+      return toolCall('clip', 'memory_read_turn', { ref: refA, budget_chars: 1 });
+    }
+    if (step === 1) {
+      assert.ok(JSON.stringify(messages).includes('Does the export contain narration?'));
+      assert.ok(JSON.stringify(messages).includes('evidence_decision'));
+      return toolCall('invalid', 'publish_memory_finding', { subject:'export',claim:'approved',evidence:[refA] });
+    }
+    if (step === 2) {
+      assert.match(String(last?.content), /read|完整/i);
+      return toolCall('full', 'memory_read_turn', {ref:refB});
+    }
+    if (step === 3) return toolCall('report', 'publish_memory_finding', {subject:'export',claim:'Narration remains open',evidence:[refB]});
+    if (step === 4) return toolCall('end', 'finish_memory_search', {summary:'No more evidence',evidence:[],inject:false});
+    return {content:'done',toolCalls:[],usage};
+  });
+  const branch = new MemorySearchBranchSession({workingDirectory:dataRoot, aiService:ai, input:'Draft note',recentMessages:[], queue:{push:()=>true} as any,
+    session:{inputSequence:1, originTurn:1, originTurnId:'one',scope:executionScope('usr275'),currentInputSequence:()=>2,
+      takeEvents:()=>events.splice(0), heldObservations:()=>[], publish:(finding: any,_id: string,seq: number,observation: any)=>{
+        assert.equal(observation.metadata.memory_branch.schema, 'catsco.memory_branch.v1');
+        assert.deepEqual(observation.metadata.deliveredLocalRefs, observation.metadata.memory_branch.read_refs.slice(-1));
+        publications.push({finding,seq}); return {ok:true,verifiedThroughInput:seq};
+      } } as any } as any);
+  await branch.run();
+  assert.deepEqual(publications.map(p=>[p.finding.sourceRefs,p.seq]), [[[refB],2]]);
+  assert.equal(branch.branchTermination,'finished');
+  report.fixtures.evidence_decision = { calls, publications, outcome:branch.branchTermination };
+});
+
 test('19:12 replay: the reply ends, the Branch keeps running and terminalizes, the follow-up is admitted immediately, A settles once', async t => {
   const relay = await startCreditRelay(t);
   const { refA, refB } = writeMemoryFixture();

@@ -3,7 +3,7 @@ import type { MemoryBranchEvent } from './memory-branch-presentation';
 import { ContentBlock, Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { Logger } from '../utils/logger';
-import { SyntheticObservationQueue } from './synthetic-observation';
+import { SyntheticObservation, SyntheticObservationQueue } from './synthetic-observation';
 import { MemorySearchBranchSession } from './memory-search-branch-session';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import type { MemoryBranchBudget } from './branch-budget';
@@ -49,7 +49,7 @@ export interface MemoryBranchSessionContext {
     reason?: string;
   }>;
   currentInputSequence: () => number;
-  publish: (finding: MemoryBranchFinding, branchId: string, verifiedThroughInput: number) => MemoryBranchPublishResult;
+  publish: (finding: MemoryBranchFinding, branchId: string, verifiedThroughInput: number, observation?: SyntheticObservation) => MemoryBranchPublishResult;
   reconfirm: (observationId: string, sequence: number) => MemoryBranchPublishResult;
   withdraw: (observationId: string, reason: string) => MemoryBranchPublishResult;
 }

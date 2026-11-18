@@ -76,6 +76,18 @@ function readFor(document: any): any {
     sources: [{ text: 'server-authenticated source proof material must not enter model context', status: 'read' }],
   };
 }
+test('ordinary memory_projection_v1 output graph expands without a synthesis aggregate', async () => {
+  const document = outputDocument({transform_contract:'memory_projection_v1'});
+  const response = {branches:[{source:'agent_memory',items:[{source:'agent_memory',kind:'source_reference',ref:opaqueRef(ROOT_REVISION, ROOT_STREAM)}]}]};
+  const [result] = await expandSourceReferences(response, async () => readFor(document));
+  assert.equal(result.status,'expanded');
+  assert.equal((result.semantic_view?.nodes as any[])?.length,document.nodes.length);
+  for (const overrides of [{transform_contract:'unrecognized/v1'}, {transform_contract:'result_collection/v1'}, {aggregate:{contract:'memory_projection_v1'}}]) {
+    const [invalid] = await expandSourceReferences(response, async () => readFor({...document,...overrides}));
+    assert.equal(invalid.expansion_error,'invalid_response');
+  }
+});
+
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)); }
 
 const invalidCases: Array<[string, (document: any) => void]> = [

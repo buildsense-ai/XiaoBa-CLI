@@ -255,8 +255,11 @@ export class SessionMemoryBranchStore implements SyntheticObservationQueue {
   }
 
   /** Coalesced events the Branch has not consumed yet (destructive: one consumer). */
-  takeEvents(): MemoryBranchSessionEvent[] {
-    return this.events.splice(0, this.events.length);
+  takeEvents(actorUserId?: string): MemoryBranchSessionEvent[] {
+    if (actorUserId === undefined) return this.events.splice(0);
+    const eligible = this.events.filter(event => event.actorUserId === actorUserId);
+    this.events.splice(0, this.events.length, ...this.events.filter(event => event.actorUserId !== actorUserId));
+    return eligible;
   }
 
   pendingEvents(): MemoryBranchSessionEvent[] {

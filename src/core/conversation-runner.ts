@@ -233,6 +233,8 @@ export interface RunnerOptions {
   pendingUserInputProvider?: PendingUserInputProvider;
   /** Non-blocking runtime observations produced by sidecar branches. */
   syntheticObservationProvider?: SyntheticObservationProvider;
+  /** Branch-local messages to consume before an already scheduled provider request. */
+  branchRequestUpdates?: (history: readonly Message[]) => Message[];
   /** Non-durable runtime system context produced by sidecar branches. */
   runtimeTransientProvider?: RuntimeTransientProvider;
   /** Internal id that ties all messages created by one externally visible user turn together. */
@@ -331,6 +333,7 @@ export class ConversationRunner {
   private promptTraceLogger: PromptTraceLogger;
   private cacheTraceSink?: CacheTraceSink;
   private syntheticObservationProvider?: SyntheticObservationProvider;
+  private readonly branchRequestUpdates?: RunnerOptions['branchRequestUpdates'];
   private runtimeTransientProvider?: RuntimeTransientProvider;
   private episodeId?: string;
   private suppressFinalResponse: boolean;
@@ -373,6 +376,7 @@ export class ConversationRunner {
     this.inheritedTargetResolutionState = options?.toolExecutionContext?.targetResolutionState;
     this.pendingUserInputProvider = options?.pendingUserInputProvider;
     this.syntheticObservationProvider = options?.syntheticObservationProvider;
+    this.branchRequestUpdates = options?.branchRequestUpdates;
     this.runtimeTransientProvider = options?.runtimeTransientProvider;
     this.episodeId = options?.episodeId;
     this.checkpointCompactionCoordinator = options?.checkpointCompactionCoordinator;
@@ -491,6 +495,11 @@ export class ConversationRunner {
           messages,
           newMessages,
         };
+      }
+      if (this.branchRequestUpdates) {
+        const updates = this.branchRequestUpdates(messages);
+        messages.push(...updates);
+        newMessages.push(...updates);
       }
       this.injectSyntheticObservations(messages, turns, newMessages);
       const manualCreditResume = isManualCreditResume(this.toolExecutionContext?.sessionId);

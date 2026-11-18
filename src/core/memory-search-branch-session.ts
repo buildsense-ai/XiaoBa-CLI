@@ -107,7 +107,8 @@ const NODE_ID = /^(?:output-)?[a-f0-9]{64}$/;
 export class MemorySearchBranchSession extends ObservationBranchSession<MemorySearchFinishPayload> {
   private readonly presentation: MemoryBranchPresentation;
   private readonly store: MemoryLogStore;
-  private readonly localReads = new Map<string, string>();
+  private readonly localReads = new Map<string, string>(); // complete, citable reads only
+  private readonly seenLocalRefs = new Set<string>();
   private readonly remoteAbort = new AbortController();
   private readonly candidates = new Map<string, string | undefined>(); // ref -> issuing request_id
   private readonly delivered = new Map<string, DeliveredProjectionEvidence>();
@@ -225,13 +226,34 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
    * may publish against.
    */
   protected override async consumeSessionEvents(_outcome: BranchRunOutcome): Promise<boolean> {
+    const update = this.takeSessionUpdate();
+    if (!update) return false;
+    this.messages.push(update);
+    return true;
+  }
+
+  protected override branchRequestUpdates(history: readonly Message[]): Message[] {
+    if (!this.memoryOptions.session || this.hasFinishPayload()) return [];
+    const update = this.takeSessionUpdate();
+    const updates: Message[] = update ? [update] : [];
+    const last = history[history.length - 1];
+    if (last?.role === 'tool' && /^(memory_|catslog_session_lookup)/.test(last.name ?? '')) {
+      updates.push({ role: 'user', content: JSON.stringify({
+        kind: 'evidence_decision', verified_through_input: this.consumedThroughInput,
+        instruction: '针对当前输入判断这批来源。已核实且对主任务有新增价值就立即 publish_memory_finding。仍缺一项会改变结论的事实，就围绕它选择下一次查询或读取。重复、无关或已无可核实的线索就 finish_memory_search，inject:false 并说明原因。截断来源需重读完整后方可引用。',
+      }) });
+    }
+    return updates;
+  }
+
+  private takeSessionUpdate(): Message | undefined {
     const session = this.memoryOptions.session;
-    if (!session || !this.shouldContinue()) return false;
+    if (!session || !this.shouldContinue()) return;
     const events = session.takeEvents();
-    if (!events.length) return false;
+    if (!events.length) return;
     this.consumedThroughInput = Math.max(this.consumedThroughInput, ...events.map(event => event.sequence));
     const held = session.heldObservations();
-    this.messages.push({ role: 'user', content: JSON.stringify({
+    const update: Message = { role: 'user', content: JSON.stringify({
       content_trust: 'untrusted_branch_evidence',
       new_session_events: events.map(event => ({
         kind: event.kind,
@@ -243,22 +265,26 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       current_input_sequence: session.currentInputSequence(),
       verified_through_input: this.consumedThroughInput,
       instruction: 'New session events arrived during your lookup. Reassess your current question. If a held observation is still true for the newest user input, reconfirm it; if the newest input changed the topic, cancelled the conclusion, or the evidence is stale, withdraw it. Publish any newly verified claim with publish_memory_finding. If nothing remains useful, call finish_memory_search with inject:false.',
-    }) });
+    }) };
     this.logger.write('consumed_session_events', {
       event_count: events.length,
       sequences: events.map(event => event.sequence),
       verified_through_input: this.consumedThroughInput,
       held_observations: held.length,
     });
-    return true;
+    return update;
   }
 
   protected buildTools(): Tool[] {
-    const recordRead = (ref: string, archive?: ArchiveTurnPin) => {
-      if (this.localReads.has(ref) || this.localReads.size >= 48) return;
+    const recordRead = (ref: string, archive?: ArchiveTurnPin, truncated?: boolean) => {
+      const seen = this.seenLocalRefs.has(ref);
+      if (this.localReads.has(ref) || (!seen && this.seenLocalRefs.size >= 48)) return;
       const receipt = 'local:' + createHash('sha256').update(JSON.stringify([this.options.id, ref])).digest('hex');
-      this.localReads.set(ref, receipt);
-      this.presentation.localRead(receipt, archive);
+      if (!truncated) this.localReads.set(ref, receipt);
+      if (!seen) {
+        this.seenLocalRefs.add(ref);
+        this.presentation.localRead(receipt, archive);
+      }
     };
     const tools: Tool[] = [new MemorySearchTool(this.store), new MemoryReadTurnTool(this.store, recordRead), new MemoryNeighborsTool(this.store, recordRead)];
     const backend = this.availableCatsLogMemory();
@@ -281,13 +307,17 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const session = this.memoryOptions.session;
     if (session) {
       tools.push(new PublishMemoryFindingTool(payload => {
+        const observation = this.buildObservation({
+          summary: [payload.subject, payload.claim, payload.qualification].filter(Boolean).join(' — '),
+          refs: payload.refs, inject: true,
+        }, false);
         const result = session.publish({
           subject: payload.subject,
           claim: payload.claim,
           sourceRefs: payload.refs,
           ...(payload.qualification ? { qualification: payload.qualification } : {}),
           ...(payload.supersedes?.length ? { supersedes: payload.supersedes } : {}),
-        }, this.options.id, this.consumedThroughInput);
+        }, this.options.id, this.consumedThroughInput, observation);
         this.logger.write('publish_finding', {
           ok: result.ok,
           reason: result.reason,
@@ -734,7 +764,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     return { inject, logPayload: { refs: payload.refs, summary: payload.summary } };
   }
 
-  protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
+  protected buildObservation(payload: MemorySearchFinishPayload, terminal = true): SyntheticObservation {
     const retained: Array<{ ref: string } & DeliveredProjectionEvidence> = [];
     const retainedNodes: Array<{ ref: string; source: DeliveredMemoryNode }> = [];
     const retainedSources: Array<{ ref: string; source: DeliveredSessionSource }> = [];
@@ -779,7 +809,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
           originTurnId: this.memoryOptions.session.originTurnId,
           memoryBranchScope: { ...this.memoryOptions.session.scope },
         } : {}),
-        memory_branch: this.presentation.publish(payload.refs.length ? 'ready' : 'empty'),
+        memory_branch: terminal ? this.presentation.publish(payload.refs.length ? 'ready' : 'empty') : this.presentation.snapshot(),
         ...(retained.length ? { deliveredRemoteRefs: retained.map(item => item.ref) } : {}),
         ...(retainedNodes.length ? { deliveredMemoryNodeRefs: retainedNodes.map(item => item.ref) } : {}),
         ...(retainedSources.length ? { deliveredSessionSourceRefs: retainedSources.map(item => item.ref) } : {}),
@@ -960,7 +990,7 @@ function buildMemorySearchSystemPrompt(): string {
     '- recent_completed_turns 已经会提供给主 agent。不要把它们已经覆盖的内容当作新增记忆返回。',
     '- 如果搜索结果只是在重复最近一两轮的短对话，且没有额外的工具结果、旧决策、用户修正或压缩风险，请使用 inject:false。',
     '- 适合注入的内容包括：跨会话信息、更早的同话题决策、用户后来修正过的约束、工具调用结果、被压缩后容易丢失的事实、当前任务需要避免冲突或重复讨论的信息。',
-    '- 如果找到了足够支撑当前任务的高价值 refs，应及时 finish_memory_search；不要为了重复确认而继续读取大量近邻。',
+    '- 每批读取后判断是否足够：有发布工具时先发布已核实的新发现；若剩下具体缺口，仅查能解决它的来源。重复或无关就结束。',
     '- 如果 late/older memory 与当前用户输入冲突，summary 要明确提示冲突，并让主 agent 以当前用户输入为准。',
     '- 历史时间和版本只是证据边界。不要把旧结论写成当前事实；当前用户输入、recent context 和当前代码状态优先。',
     '- repeated activation 会提供 delta_since_last_run 和 previous_injections。previous_injections 只是避免内容重复的参考，不是 refs 黑名单。',

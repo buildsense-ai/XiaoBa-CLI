@@ -783,7 +783,7 @@ export class AgentTurnController {
       return;
     }
 
-    const pendingEvents = this.memoryBranchStore.takeEvents()
+    const pendingEvents = this.memoryBranchStore.takeEvents(options.memoryInput.scope.actorUserId)
       .filter(event => !(event.kind === 'user_input' && event.sequence === options.memoryInput.sequence));
     const activationContext: MemoryBranchActivationContext = {
       taskAnchor: contentToMemoryText(options.input),
@@ -953,9 +953,11 @@ export class AgentTurnController {
     finding: MemoryBranchFinding,
     branchId: string,
     verifiedThroughInput: number,
+    observation?: SyntheticObservation,
   ): MemoryBranchPublishResult {
     return this.memoryBranchStore.publish({
       ...finding,
+      observation,
       scope: investigation.scope,
       originTurn: investigation.originTurn,
       originTurnId: investigation.originTurnId,
@@ -1030,17 +1032,18 @@ export class AgentTurnController {
         originTurn: options.originTurn,
         originTurnId: options.originTurnId,
         scope,
-        takeEvents: () => this.memoryBranchStore.takeEvents(),
+        takeEvents: () => this.memoryBranchStore.takeEvents(scope.actorUserId),
         heldObservations: () => this.memoryBranchStore.heldFor(
           this.memoryBranchStore.currentInputSequence,
           scope,
         ),
         currentInputSequence: () => this.memoryBranchStore.currentInputSequence,
-        publish: (finding, branchId, verifiedThroughInput) => this.publishMemoryFinding(
+        publish: (finding, branchId, verifiedThroughInput, observation) => this.publishMemoryFinding(
           { scope, originTurn: options.originTurn, originTurnId: options.originTurnId },
           finding,
           branchId,
           verifiedThroughInput,
+          observation,
         ),
         reconfirm: (observationId, sequence) => this.memoryBranchStore.reconfirm({
           observationId,

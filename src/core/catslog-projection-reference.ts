@@ -101,7 +101,11 @@ export function validateSourceMemoryProjectionDocument(
   const membershipIndex = d.transform_contract === 'result_collection/v1';
   const contentTrust = membershipIndex ? 'derived_membership_index' : 'derived_memory_projection';
   if (envelope.content_trust !== contentTrust) return invalid();
-  if (d.transform_contract !== undefined && (!text(d.transform_contract) || record(d.aggregate)?.contract !== d.transform_contract)) return invalid();
+  // CatsLog's ordinary graph uses a transform identifier without an aggregate.
+  // Synthesis and collection documents bind the identifier to their aggregate.
+  if (d.transform_contract === 'memory_projection_v1') {
+    if (d.aggregate != null) return invalid();
+  } else if (d.transform_contract !== undefined && (!text(d.transform_contract) || record(d.aggregate)?.contract !== d.transform_contract)) return invalid();
   if (membershipIndex) return validMembershipIndex(d) ? { ok: true, contentTrust, document: d, sources, projectionRef: requestedRef, revision: projection.Revision } : invalid();
   if (d.schema_version !== 1 || d.provenance !== 'derived' || d.model_steps !== 'unknown'
     || d.causality !== 'unknown' || !text(d.goal) || !text(d.summary)

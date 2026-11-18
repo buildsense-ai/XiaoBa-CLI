@@ -173,6 +173,8 @@ export abstract class BranchSession {
    */
   protected prepareConversationTurn(): void {}
 
+  protected branchRequestUpdates?(history: readonly Message[]): Message[];
+
   protected async runConversation(): Promise<BranchRunOutcome> {
     if (!this.beginConversationPass()) {
       return { messages: this.messages };
@@ -199,6 +201,7 @@ export abstract class BranchSession {
     );
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
       stream: false,
+      branchRequestUpdates: this.branchRequestUpdates?.bind(this),
       // Branches own an in-memory transcript, so they use the same checkpoint
       // compaction as every other surface and never persist a checkpoint.
       checkpointCompactionCoordinator: new CheckpointCompactionCoordinator(
