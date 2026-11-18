@@ -1,4 +1,5 @@
 import { MemoryBranchPresentation, type MemoryBranchEvent } from './memory-branch-presentation';
+import { CreditTaskSettledError } from './credit-task-runtime';
 import { isCatsLogKnowledgeCitationRef } from '../tools/memory-branch-tools';
 import { CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from '../tools/catslog-knowledge-recall-tool';
 import { CatsLogSessionLookupTool } from '../tools/catslog-session-lookup-tool';
@@ -14,11 +15,14 @@ import { Tool } from '../types/tool';
 import {
   FinishMemorySearchTool, MemoryLinksTool, MemoryNeighborsTool, MemoryNodeReadTool, MemoryReadTurnTool, MemoryRemoteSearchTool,
   MemorySearchFinishPayload, MemorySearchTool, MemorySourceAssertionReadTool, MemorySourceReadTool, MEMORY_FINISH_MAX_INVALID_ATTEMPTS,
+  PublishMemoryFindingTool, ResolveHeldObservationTool,
 } from '../tools/memory-branch-tools';
 import { SyntheticObservation, SyntheticObservationQueue } from './synthetic-observation';
 import { ObservationBranchDisposition, ObservationBranchSession } from './observation-branch-session';
 import { MemoryLogStore, type ArchiveTurnPin } from './memory-log-store';
-import type { MemoryBranchActivationContext } from './sidecar-memory-branch';
+import type { MemoryBranchActivationContext, MemoryBranchSessionContext } from './sidecar-memory-branch';
+import type { MemoryBranchBudget } from './branch-budget';
+import type { BranchRunOutcome } from './branch-session';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import { hasCatsLogControlCodePoint, isCatsLogPoolCitationRef } from '../utils/catsco-log-agent-client';
 import {
@@ -53,6 +57,11 @@ export interface MemorySearchBranchSessionOptions {
   activationContext?: MemoryBranchActivationContext;
   catslogMemory?: CatsLogMemoryBackend;
   onPresentation?: (event: MemoryBranchEvent) => void;
+  branchId?: string;
+  budget?: MemoryBranchBudget;
+  /** Session-scoped event consumption and publication hooks. */
+  session?: MemoryBranchSessionContext;
+  metrics?: import('../utils/metrics').MetricsCollector;
 }
 const PREFETCH_TIMEOUT_MS = 3_000;
 const SOURCE_READ_TIMEOUT_MS = 15_000;
@@ -116,14 +125,25 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private readonly projectedSeeds: Array<{ handle: string; entries: number; turns: number }> = [];
   private assertionCalls = 0;
   private searchCalls = 0;
+  /** Latest user input this investigation has actually consumed (eligibility). */
+  private consumedThroughInput: number;
 
   constructor(private readonly memoryOptions: MemorySearchBranchSessionOptions) {
+    const budget = memoryOptions.budget;
     super({
-      id: `memory-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
+      id: memoryOptions.branchId ?? `memory-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
       type: 'memory', aiService: memoryOptions.aiService, workingDirectory: memoryOptions.workingDirectory,
       queue: memoryOptions.queue, signal: memoryOptions.signal, logEnabled: memoryOptions.logEnabled,
       parallelToolExecution: false,
+      ...(memoryOptions.metrics ? { metrics: memoryOptions.metrics } : {}),
+      ...(budget ? {
+        deadlineMs: budget.deadlineMs,
+        maxPasses: budget.maxPasses,
+        maxTurnsPerPass: budget.maxTurnsPerPass,
+        maxContextTokens: budget.maxContextTokens,
+      } : {}),
     });
+    this.consumedThroughInput = memoryOptions.session?.inputSequence ?? 0;
     this.store = new MemoryLogStore(memoryOptions.workingDirectory);
     this.presentation = new MemoryBranchPresentation(this.options.id, memoryOptions.onPresentation);
   }
@@ -131,8 +151,18 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   override async run(): Promise<void> {
     this.presentation.publish('running');
     try { await super.run(); }
+    catch (error) {
+      // The originating task settled while a status check was in flight: the
+      // investigation is over, not failed, and its published claims stand.
+      if (!(error instanceof CreditTaskSettledError)) throw error;
+      this.markTermination('idle');
+    }
     finally {
-      if (this.presentation.snapshot().status === 'running') this.presentation.publish(this.memoryOptions.signal?.aborted ? 'cancelled' : 'failed');
+      if (this.presentation.snapshot().status === 'running') {
+        this.presentation.publish(this.memoryOptions.signal?.aborted
+          ? 'cancelled'
+          : this.branchTermination === 'idle' ? 'empty' : 'failed');
+      }
     }
   }
 
@@ -147,6 +177,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       { role: 'user', content: buildMemorySearchUserInput({
         input: this.memoryOptions.input, recentMessages: this.memoryOptions.recentMessages,
         hasMemoryRoots: this.store.hasRoots(), activationContext: this.memoryOptions.activationContext,
+        session: this.memoryOptions.session,
       }) },
     ];
     const backend = this.availableCatsLogMemory();
@@ -176,7 +207,50 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       sources: sources.map(handle => ({ handle, kind: this.handles.get(handle)!.anchor.kind, readable: true })),
       instruction: 'The main agent already read the Diary entries behind these handles; their text stays with the main agent. memory_nodes are Memory Graph projections of the session turns those entries cite, one handle per projection, ordered by how many of the entries converge on it (entries) and how many cited turns it covers (turns); memory_node_read on one returns its whole projection: nodes, edges, conditions and omissions. Prefer them. Source handles are cited turns or learning nodes no projection covers. Entry handles are graph positions only: use memory_links to reach related entries and their Memory. Reads share the two-read budget.',
     }) });
+    const session = this.memoryOptions.session;
+    if (session) {
+      const held = session.heldObservations();
+      if (held.length && this.shouldContinue()) messages.push({ role: 'user', content: JSON.stringify({
+        content_trust: 'untrusted_branch_evidence', held_observations: held,
+        current_input_sequence: session.currentInputSequence(), verified_through_input: this.consumedThroughInput,
+        instruction: 'These claims were published for an older user input and are held: they cannot reach the main agent yet. After consuming the current input, reconfirm each one you still stand behind (resolve_held_memory_observation decision=reconfirm) or withdraw it (decision=withdraw). If the new input changed the topic or cancelled the conclusion, withdraw. Do not reconfirm evidence you have not re-read when the new input makes it doubtful.',
+      }) });
+    }
     return messages;
+  }
+
+  /**
+   * Session events that arrived during the lookup (a new user input or a main
+   * agent tool result). Consuming one advances the sequence this investigation
+   * may publish against.
+   */
+  protected override async consumeSessionEvents(_outcome: BranchRunOutcome): Promise<boolean> {
+    const session = this.memoryOptions.session;
+    if (!session || !this.shouldContinue()) return false;
+    const events = session.takeEvents();
+    if (!events.length) return false;
+    this.consumedThroughInput = Math.max(this.consumedThroughInput, ...events.map(event => event.sequence));
+    const held = session.heldObservations();
+    this.messages.push({ role: 'user', content: JSON.stringify({
+      content_trust: 'untrusted_branch_evidence',
+      new_session_events: events.map(event => ({
+        kind: event.kind,
+        sequence: event.sequence,
+        turn: event.turn,
+        ...(event.kind === 'user_input' ? { user_input: event.text } : { tool: event.toolName, tool_result: event.text }),
+      })),
+      held_observations: held,
+      current_input_sequence: session.currentInputSequence(),
+      verified_through_input: this.consumedThroughInput,
+      instruction: 'New session events arrived during your lookup. Reassess your current question. If a held observation is still true for the newest user input, reconfirm it; if the newest input changed the topic, cancelled the conclusion, or the evidence is stale, withdraw it. Publish any newly verified claim with publish_memory_finding. If nothing remains useful, call finish_memory_search with inject:false.',
+    }) });
+    this.logger.write('consumed_session_events', {
+      event_count: events.length,
+      sequences: events.map(event => event.sequence),
+      verified_through_input: this.consumedThroughInput,
+      held_observations: held.length,
+    });
+    return true;
   }
 
   protected buildTools(): Tool[] {
@@ -204,6 +278,50 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       });
       this.complete(payload);
     }, ref => this.delivered.has(ref) || this.deliveredNodes.has(ref) || this.deliveredSources.has(ref), ref => this.localReads.has(ref)));
+    const session = this.memoryOptions.session;
+    if (session) {
+      tools.push(new PublishMemoryFindingTool(payload => {
+        const result = session.publish({
+          subject: payload.subject,
+          claim: payload.claim,
+          sourceRefs: payload.refs,
+          ...(payload.qualification ? { qualification: payload.qualification } : {}),
+          ...(payload.supersedes?.length ? { supersedes: payload.supersedes } : {}),
+        }, this.options.id, this.consumedThroughInput);
+        this.logger.write('publish_finding', {
+          ok: result.ok,
+          reason: result.reason,
+          observation_id: result.observationId,
+          claim_key: result.claimKey,
+          subject: payload.subject,
+          claim: payload.claim,
+          refs: payload.refs,
+          qualification: payload.qualification,
+          supersedes: payload.supersedes,
+          verified_through_input: this.consumedThroughInput,
+        });
+        return {
+          ok: result.ok,
+          observation_id: result.observationId,
+          verified_through_input: result.verifiedThroughInput,
+          reason: result.reason,
+        };
+      }, ref => this.delivered.has(ref) || this.deliveredNodes.has(ref) || this.deliveredSources.has(ref), ref => this.localReads.has(ref)));
+      tools.push(new ResolveHeldObservationTool((observationId, decision, reason) => {
+        const result = decision === 'reconfirm'
+          ? session.reconfirm(observationId, this.consumedThroughInput)
+          : session.withdraw(observationId, reason || 'branch_withdrew');
+        this.logger.write('resolve_held_observation', {
+          observation_id: observationId,
+          decision,
+          reason,
+          ok: result.ok,
+          rejection: result.reason,
+          verified_through_input: this.consumedThroughInput,
+        });
+        return { ok: result.ok, observation_id: result.observationId, reason: result.reason };
+      }));
+    }
     return tools;
   }
 
@@ -653,6 +771,14 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       source: 'memory', status: 'completed', relevance: payload.refs.length ? 'medium' : 'low', summary: payload.summary,
       metadata: {
         branchId: this.options.id, branchType: this.options.type, refs: payload.refs,
+        subject: 'memory',
+        claim: payload.summary,
+        ...(this.memoryOptions.session ? {
+          verifiedThroughInput: this.consumedThroughInput,
+          originTurn: this.memoryOptions.session.originTurn,
+          originTurnId: this.memoryOptions.session.originTurnId,
+          memoryBranchScope: { ...this.memoryOptions.session.scope },
+        } : {}),
         memory_branch: this.presentation.publish(payload.refs.length ? 'ready' : 'empty'),
         ...(retained.length ? { deliveredRemoteRefs: retained.map(item => item.ref) } : {}),
         ...(retainedNodes.length ? { deliveredMemoryNodeRefs: retainedNodes.map(item => item.ref) } : {}),
@@ -861,16 +987,25 @@ function buildMemorySearchSystemPrompt(): string {
     '最终 summary 应该是给主 agent 使用的任务辅助记忆总结，优先用清晰自然的中文表达。',
     '分工：日记文档由主 agent 检索，你负责其周边的会话与记忆。document_cited_memory_nodes 是主 agent 已读日记所引用的精确记忆节点，可用 memory_node_read 读取；不要把日记 ref（catslog:knowledge:…）写进 evidence。',
     '图联想：document_graph_seeds.memory_nodes 是主 agent 已读日记条目所引用会话的记忆图投影（每个投影一个句柄），按汇聚到它的条目数（entries）排序；memory_node_read 读取其一即得到整张投影（节点、边、条件、省略），优先读取。sources 只是没有投影覆盖的原始会话 turn。关键词搜不到时，用 memory_links 沿已存储的关系（related/continues/supplements/corrects/derived_from 等）找到相关条目，它们引用的会话会解析为记忆节点。entry 句柄只是图上的位置，不能读取或作为 evidence。',
+    '发布与结束：publish_memory_finding 发布单条已核实发现，不结束 investigation；finish_memory_search 仍负责结束。每条发布都给 subject、claim、evidence，并用 qualification 写明限制条件。',
+    '发布时机：一条发现核实后即可发布，不必等第二线索查完；但必须是已完整读取的来源。搜索结果只是线索。',
+    '新用户输入到达时，先看 held_observations：仍成立就 reconfirm，换了话题、结论被取消或证据过期就 withdraw。未处理的 hold 发现不会进入主 agent 的请求。',
+    '同一 subject/claim/refs 只发布一次；后续来源更正旧结论时，用 supersedes 指向旧 observation_id，让主 agent 只看到更正后的版本。',
     '当前时间：' + new Date().toISOString(),
   ].join('\n');
 }
 function buildMemorySearchUserInput(options: {
-  input: string | ContentBlock[]; recentMessages: Message[]; hasMemoryRoots: boolean; activationContext?: MemoryBranchActivationContext;
+  input: string | ContentBlock[]; recentMessages: Message[]; hasMemoryRoots: boolean;
+  activationContext?: MemoryBranchActivationContext; session?: MemoryBranchSessionContext;
 }): string {
   const payload: Record<string, unknown> = {
     current_user_input: contentToText(options.input), recent_completed_turns: extractRecentCompletedTurns(options.recentMessages).slice(-2),
     memory_source_available: options.hasMemoryRoots,
   };
+  if (options.session) {
+    payload.current_input_sequence = options.session.currentInputSequence();
+    payload.verified_through_input = options.session.inputSequence;
+  }
   if (options.activationContext) {
     payload.current_user_input = options.activationContext.taskAnchor;
     payload.delta_since_last_run = options.activationContext.deltaSinceLastRun;

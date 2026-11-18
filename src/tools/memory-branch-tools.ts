@@ -19,6 +19,24 @@ export type MemorySearchFinishHandler = (payload: MemorySearchFinishPayload) => 
 
 export const MEMORY_FINISH_MAX_INVALID_ATTEMPTS = 3;
 
+/** One verified claim, published before the investigation ends. */
+export interface MemoryPublishFindingPayload {
+  subject: string;
+  claim: string;
+  refs: string[];
+  qualification?: string;
+  supersedes?: string[];
+}
+
+export type MemoryPublishFindingResult = {
+  ok: boolean;
+  observation_id?: string;
+  verified_through_input?: number;
+  reason?: string;
+};
+
+export const MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS = 3;
+
 const CANONICAL_REF_PATTERN = /^[^/\\#]+\/\d{4}-\d{2}-\d{2}\/[^/\\#]+\.jsonl#(?:\d+|(?:run|input|legacy):[a-zA-Z0-9:_-]+)$/;
 
 export class MemorySearchTool implements Tool {
@@ -463,6 +481,186 @@ export class FinishMemorySearchTool implements Tool {
       retryable: true,
     };
   }
+}
+
+/**
+ * Publishes one verified claim without ending the investigation. The finish
+ * tool still ends it: a Branch can keep exploring after a publication, and a
+ * later source can correct the earlier claim with `supersedes`.
+ */
+export class PublishMemoryFindingTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'publish_memory_finding',
+    description: [
+      '发布一条已核实的记忆发现；不结束 investigation。',
+      '只用于已经通过 read 工具完整交付的证据；搜索结果本身只是线索。',
+      'subject 是被讨论的对象，claim 是可被主 agent 直接使用的断言，evidence 是支撑它的 canonical refs。',
+      'qualification 写明限制条件（例如“已修复，但该导出未验证”）。',
+      '发现重复或错误时，用 supersedes 指出被更正的 observation_id。',
+      '同一 subject/claim/refs 只会入队一次；重复发布会被拒绝并返回 duplicate。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: '被讨论的对象（项目、导出、版本或事件）。' },
+        claim: { type: 'string', description: '一条可被主 agent 使用的断言。' },
+        evidence: { type: 'array', description: '支撑该断言的 canonical refs；必须已完整读取。', items: { type: 'string' } },
+        qualification: { type: 'string', description: '改变该断言可用方式的限定（可选）。' },
+        supersedes: { type: 'array', description: '被本发现更正的 observation_id 或 claimKey（可选）。', items: { type: 'string' } },
+      },
+      required: ['subject', 'evidence', 'claim'],
+    },
+  };
+
+  private invalidAttempts = 0;
+
+  constructor(
+    private readonly onPublish: (payload: MemoryPublishFindingPayload) => MemoryPublishFindingResult,
+    private readonly isDeliveredPoolRef: (ref: string) => boolean = () => false,
+    private readonly isReadLocalRef?: (ref: string) => boolean,
+  ) {}
+
+  async execute(args: any): Promise<ToolExecutionResult> {
+    const validation = validatePublishFindingArgs(args, this.isDeliveredPoolRef, this.isReadLocalRef);
+    if (!validation.ok) return this.invalidResult(validation.error);
+    this.invalidAttempts = 0;
+    const result = this.onPublish(validation.payload);
+    if (!result.ok) {
+      return {
+        ok: false,
+        errorCode: result.reason === 'duplicate' ? 'DUPLICATE_OBSERVATION' : 'PUBLICATION_REJECTED',
+        message: jsonToolError(`${result.reason || 'publication_rejected'}${result.observation_id ? `: ${result.observation_id}` : ''}`),
+        retryable: result.reason === 'duplicate',
+      };
+    }
+    return {
+      ok: true,
+      content: jsonToolResult({
+        ok: true,
+        observation_id: result.observation_id,
+        verified_through_input: result.verified_through_input,
+        note: 'Published. The investigation continues; finish_memory_search still ends it.',
+      }),
+    };
+  }
+
+  async handleInvalidArguments(message: string): Promise<ToolExecutionResult> {
+    return this.invalidResult(message);
+  }
+
+  private invalidResult(error: string): ToolExecutionResult {
+    this.invalidAttempts += 1;
+    return {
+      ok: false,
+      errorCode: 'INVALID_TOOL_ARGUMENTS',
+      message: jsonToolError([
+        error,
+        `Attempt ${this.invalidAttempts}/${MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS}. Correct format:`,
+        'publish={"subject":"...","claim":"...","evidence":["chat/2026-08-13/demo.jsonl#1"],"qualification":"..."}',
+      ].join(' ')),
+      retryable: this.invalidAttempts < MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS,
+    };
+  }
+}
+
+/**
+ * Resolves an observation published for an older input: after consuming the
+ * new user input the Branch either stands behind the claim (reconfirm) or
+ * withdraws it. Nothing is delivered until this runs.
+ */
+export class ResolveHeldObservationTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'resolve_held_memory_observation',
+    description: [
+      '处理因新用户输入而被 hold 的已发布发现。',
+      '消费新输入后，如果该断言仍然成立，用 decision=reconfirm 推进它的 verified_through_input；',
+      '如果新输入换了话题、取消了该结论或证据已过期，用 decision=withdraw 撤回。',
+      '未处理的 hold 发现不会进入主 agent 的请求。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        observation_id: { type: 'string', description: 'held_observations 中的 observationId。' },
+        decision: { type: 'string', enum: ['reconfirm', 'withdraw'], description: '仍成立则 reconfirm，否则 withdraw。' },
+        reason: { type: 'string', description: '撤回或确认的简短原因（可选）。' },
+      },
+      required: ['observation_id', 'decision'],
+    },
+  };
+
+  constructor(private readonly resolve: (
+    observationId: string,
+    decision: 'reconfirm' | 'withdraw',
+    reason?: string,
+  ) => MemoryPublishFindingResult) {}
+
+  async execute(args: any): Promise<ToolExecutionResult> {
+    const observationId = String(args?.observation_id || '').trim();
+    const decision = args?.decision;
+    if (!observationId || (decision !== 'reconfirm' && decision !== 'withdraw')) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_TOOL_ARGUMENTS',
+        message: jsonToolError('resolve_held_memory_observation requires observation_id and decision=reconfirm|withdraw'),
+        retryable: true,
+      };
+    }
+    const result = this.resolve(observationId, decision, typeof args?.reason === 'string' ? args.reason : undefined);
+    if (!result.ok) {
+      return {
+        ok: false,
+        errorCode: 'OBSERVATION_NOT_HELD',
+        message: jsonToolError(result.reason || 'observation_not_held'),
+        retryable: false,
+      };
+    }
+    return {
+      ok: true,
+      content: jsonToolResult({ ok: true, observation_id: result.observation_id, decision }),
+    };
+  }
+}
+
+function validatePublishFindingArgs(
+  args: any,
+  isDeliveredPoolRef: (ref: string) => boolean,
+  isReadLocalRef?: (ref: string) => boolean,
+): { ok: true; payload: MemoryPublishFindingPayload } | { ok: false; error: string } {
+  const subject = String(args?.subject || '').trim();
+  const claim = String(args?.claim || '').trim();
+  if (!subject) return { ok: false, error: 'subject must be a non-empty string' };
+  if (!claim) return { ok: false, error: 'claim must be a non-empty string' };
+  const rawEvidence: unknown[] = Array.isArray(args?.evidence) ? args.evidence as unknown[] : [];
+  if (rawEvidence.length === 0) {
+    return { ok: false, error: 'publish_memory_finding requires evidence: string[] with at least one fully read ref' };
+  }
+  if (rawEvidence.some(ref => typeof ref !== 'string')) {
+    return { ok: false, error: 'evidence must contain strings only' };
+  }
+  const refs: string[] = Array.from(new Set((rawEvidence as string[]).map(ref => ref.trim()).filter(Boolean)));
+  for (const ref of refs) {
+    if (CANONICAL_REF_PATTERN.test(ref) && isReadLocalRef && !isReadLocalRef(ref)) {
+      return { ok: false, error: 'Use memory_read_turn or memory_neighbors to read each local evidence ref before publishing.' };
+    }
+    if (!CANONICAL_REF_PATTERN.test(ref)
+      && !((CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) && isDeliveredPoolRef(ref))) {
+      return { ok: false, error: `invalid canonical ref: ${ref}` };
+    }
+  }
+  return {
+    ok: true,
+    payload: {
+      subject,
+      claim,
+      refs,
+      ...(typeof args?.qualification === 'string' && args.qualification.trim()
+        ? { qualification: args.qualification.trim() }
+        : {}),
+      ...(Array.isArray(args?.supersedes)
+        ? { supersedes: (args.supersedes as unknown[]).map(value => String(value || '').trim()).filter(Boolean) }
+        : {}),
+    },
+  };
 }
 
 function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => boolean, isReadLocalRef?: (ref: string) => boolean):

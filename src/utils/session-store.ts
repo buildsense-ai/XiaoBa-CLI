@@ -156,6 +156,13 @@ function serializeMessages(messages: Message[]): string {
 
 export interface SessionRuntimeState {
   creditTask?: import('../core/credit-task-runtime').CreditTaskSnapshot;
+  /**
+   * Per-task snapshots (taskId -> snapshot). A session-scoped Branch can hold
+   * its originating task past the reply while the next turn already created
+   * its own task, so one session slot is no longer enough.
+   * 1.6.x and earlier wrote only `creditTask`; that legacy shape is still read.
+   */
+  creditTasks?: Record<string, import('../core/credit-task-runtime').CreditTaskSnapshot>;
   currentDirectory?: string;
   remoteContextCursors?: Record<string, number>;
   /**

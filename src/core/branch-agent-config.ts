@@ -132,7 +132,7 @@ export function saveBranchAgentConfig(
  * primary agent's service stays untouched. The override model must keep tool
  * calling (assess_memory_need / finish_memory_search are the branch's only
  * tool surfaces): the sidecar gate
- * (AgentTurnController.startMemorySidecarIfEnabled) fails closed — branch
+ * (AgentTurnController.createMemorySidecarHandle) fails closed — branch
  * skipped, visible warn — when the resolved model cannot call tools.
  */
 export function resolveMemoryBranchModelOverride(config: BranchAgentConfig): Partial<ChatConfig> | undefined {

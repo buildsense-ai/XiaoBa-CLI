@@ -1,13 +1,15 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { AgentTurnController } from '../src/core/agent-turn-controller';
-import { InMemorySyntheticObservationQueue, SyntheticObservation } from '../src/core/synthetic-observation';
+import { SyntheticObservation } from '../src/core/synthetic-observation';
+import { SessionMemoryBranchStore, normalizeMemoryBranchScope } from '../src/core/session-memory-branch';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
 import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
 
+const SESSION_KEY = 'session:v2:catscompany:group:grp_test:agent:usr1';
 const POOL_REF = `ref_${'a'.repeat(64)}`;
 const OTHER_POOL_REF = `ref_${'b'.repeat(64)}`;
 const KB_REF = 'kb:KB-11111111-2222-4333-8444-555555555555';
@@ -64,10 +66,12 @@ function createCitationController(options: {
   responses: string[];
   catslogMemory?: CatsLogMemoryBackend;
   citationCalls: RecordedCitationCall[];
-}): { controller: AgentTurnController; queues: InMemorySyntheticObservationQueue[] } {
+}): { controller: AgentTurnController; store: SessionMemoryBranchStore; queues: Array<{ push: (observation: SyntheticObservation) => boolean }> } {
+  const store = new SessionMemoryBranchStore();
   const controller = new AgentTurnController({
-    sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
+    sessionKey: SESSION_KEY,
     sessionType: 'catscompany',
+    memoryBranchStore: store,
     services: {
       memoryBranch: { enabled: true, modelSource: 'inherit' },
       aiService: new ScriptedAIService(options.responses) as any,
@@ -96,21 +100,31 @@ function createCitationController(options: {
     updateCurrentDirectory: () => undefined,
   });
 
-  const queues: InMemorySyntheticObservationQueue[] = [];
-  (controller as any).startMemorySidecarIfEnabled = () => {
-    const queue = new InMemorySyntheticObservationQueue();
+  const queues: Array<{ push: (observation: SyntheticObservation) => boolean }> = [];
+  // The Branch itself is not under test here: a published observation enters
+  // the session store at this turn's input sequence.
+  (controller as any).createMemorySidecarHandle = (slotOptions: any) => {
+    const queue = {
+      push: (observation: SyntheticObservation) => store.push({
+        ...observation,
+        metadata: {
+          ...(observation.metadata || {}),
+          originTurn: slotOptions.originTurn,
+          originTurnId: slotOptions.episodeId,
+          verifiedThroughInput: slotOptions.memoryInput.sequence,
+          memoryBranchScope: slotOptions.memoryInput.scope,
+        },
+      }),
+    };
     queues.push(queue);
     return {
-      queue,
-      originTurn: queues.length,
-      done: false,
-      handle: {
-        cancel: () => undefined,
-        done: new Promise<void>(() => undefined),
-      },
+      branchId: 'citation-branch',
+      done: new Promise<void>(() => undefined),
+      outcome: () => 'idle' as const,
+      cancel: () => undefined,
     };
   };
-  return { controller, queues };
+  return { controller, store, queues };
 }
 
 function citationBackend(calls: RecordedCitationCall[], behavior?: 'throw'): CatsLogMemoryBackend {
@@ -126,23 +140,49 @@ async function settleMicrotasks(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 20));
 }
 
+/**
+ * Runs consecutive turns exactly like a session: a newer input makes earlier
+ * observations stale, so a same-topic turn reconfirms them before its request.
+ */
+function turnRunner(controller: AgentTurnController, store: SessionMemoryBranchStore) {
+  let messages: Message[] = [];
+  let turn = 0;
+  return async (input: string) => {
+    turn += 1;
+    let memoryBranchInput: { sequence: number; turn: number; turnId: string; scope: ReturnType<typeof normalizeMemoryBranchScope> } | undefined;
+    if (turn > 1) {
+      const scope = normalizeMemoryBranchScope({ sessionKey: SESSION_KEY, topicId: SESSION_KEY, actorUserId: 'unknown_actor' });
+      const sequence = store.noteUserInput({ text: input, scope, turn, turnId: `input:${turn}` });
+      for (const entry of store.snapshot().entries) {
+        if (entry.status === 'queued' || entry.status === 'held') {
+          store.reconfirm({ observationId: entry.id, sequence, scope });
+        }
+      }
+      memoryBranchInput = { sequence, turn, turnId: `input:${turn}`, scope };
+    }
+    const result = await controller.run({
+      input,
+      messages,
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+      ...(memoryBranchInput ? { memoryBranchInput } : {}),
+    });
+    messages = result.messages;
+    return result;
+  };
+}
+
 describe('AgentTurnController branch citation reporting', () => {
   test('reports the cited pool refs for the request that produced the injection', async () => {
     const citationCalls: RecordedCitationCall[] = [];
-    const { controller, queues } = createCitationController({
+    const { controller, store, queues } = createCitationController({
       responses: ['turn one done', `根据 ${POOL_REF} 的决策，另见 ${KB_REF}。`],
       catslogMemory: citationBackend(citationCalls),
       citationCalls,
     });
+    const runTurn = turnRunner(controller, store);
 
-    let messages: Message[] = [];
-    const runTurn = async (input: string) => {
-      const result = await controller.run({ input, messages, runtimeFeedback: [], shouldContinue: () => true });
-      messages = result.messages;
-      return result;
-    };
-
-    // Turn 1 produces the branch injection (queued but not yet consumed).
+    // Turn 1 produces the branch injection (published but not yet consumed).
     await runTurn('turn one');
     queues[0].push(citedObservation('obs-1', { pool: [POOL_REF, OTHER_POOL_REF], knowledge: [KB_REF] }));
 
@@ -159,18 +199,12 @@ describe('AgentTurnController branch citation reporting', () => {
 
   test('citation failures degrade silently and the turn completes', async () => {
     const citationCalls: RecordedCitationCall[] = [];
-    const { controller, queues } = createCitationController({
+    const { controller, store, queues } = createCitationController({
       responses: ['turn one done', `cited ${POOL_REF}`],
       catslogMemory: citationBackend(citationCalls, 'throw'),
       citationCalls,
     });
-
-    let messages: Message[] = [];
-    const runTurn = async (input: string) => {
-      const result = await controller.run({ input, messages, runtimeFeedback: [], shouldContinue: () => true });
-      messages = result.messages;
-      return result;
-    };
+    const runTurn = turnRunner(controller, store);
 
     await runTurn('turn one');
     queues[0].push(citedObservation('obs-1', { pool: [POOL_REF], knowledge: [] }));
@@ -182,16 +216,10 @@ describe('AgentTurnController branch citation reporting', () => {
   });
 
   test('missing citation backend leaves the turn untouched', async () => {
-    const { controller, queues } = createCitationController({
+    const { controller, store, queues } = createCitationController({
       responses: ['turn one done', 'cited nothing reportable'],
     });
-
-    let messages: Message[] = [];
-    const runTurn = async (input: string) => {
-      const result = await controller.run({ input, messages, runtimeFeedback: [], shouldContinue: () => true });
-      messages = result.messages;
-      return result;
-    };
+    const runTurn = turnRunner(controller, store);
 
     await runTurn('turn one');
     queues[0].push(citedObservation('obs-1', { pool: [POOL_REF], knowledge: [KB_REF] }));
@@ -201,18 +229,12 @@ describe('AgentTurnController branch citation reporting', () => {
 
   test('uncited injections produce no reports', async () => {
     const citationCalls: RecordedCitationCall[] = [];
-    const { controller, queues } = createCitationController({
+    const { controller, store, queues } = createCitationController({
       responses: ['turn one done', 'the reply mentions nothing citable'],
       catslogMemory: citationBackend(citationCalls),
       citationCalls,
     });
-
-    let messages: Message[] = [];
-    const runTurn = async (input: string) => {
-      const result = await controller.run({ input, messages, runtimeFeedback: [], shouldContinue: () => true });
-      messages = result.messages;
-      return result;
-    };
+    const runTurn = turnRunner(controller, store);
 
     await runTurn('turn one');
     queues[0].push(citedObservation('obs-1', { pool: [POOL_REF], knowledge: [KB_REF] }));

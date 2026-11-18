@@ -100,16 +100,65 @@ export class SessionLifecycleManager {
   }
 
   loadCreditTask(): import('./credit-task-runtime').CreditTaskSnapshot | undefined {
-    return this.sessionStore.loadRuntimeState(this.options.sessionKey).creditTask;
+    return this.loadCreditTasks().active;
+  }
+
+  /**
+   * Recover per-task credit state and split it into three disjoint groups:
+   * the session's active task, tasks whose foreground finished but whose
+   * Branch children died with the process (they settle exactly once and are
+   * never resumed), and orphaned foreground tasks (paused, never replayed).
+   * Legacy state with a single `creditTask` behaves exactly as before.
+   */
+  loadCreditTasks(): {
+    active?: import('./credit-task-runtime').CreditTaskSnapshot;
+    pendingBranchTasks: import('./credit-task-runtime').CreditTaskSnapshot[];
+    interruptedTasks: import('./credit-task-runtime').CreditTaskSnapshot[];
+  } {
+    const state = this.sessionStore.loadRuntimeState(this.options.sessionKey);
+    const tasks: Record<string, import('./credit-task-runtime').CreditTaskSnapshot> = { ...(state.creditTasks || {}) };
+    if (state.creditTask?.taskId && !tasks[state.creditTask.taskId]) tasks[state.creditTask.taskId] = state.creditTask;
+    const entries = Object.values(tasks);
+    const active = state.creditTask ?? entries
+      .filter(task => task.state !== 'completed')
+      .sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))[0];
+    const pendingBranchTasks: import('./credit-task-runtime').CreditTaskSnapshot[] = [];
+    const interruptedTasks: import('./credit-task-runtime').CreditTaskSnapshot[] = [];
+    for (const task of entries) {
+      if (active && task.taskId === active.taskId) continue;
+      if (task.state === 'completed' && task.finishPending !== true) continue;
+      if (task.state === 'running' && (task.foregroundCompleted === true || (task.branchChildren ?? 0) > 0)) {
+        pendingBranchTasks.push(task);
+      } else if (task.state !== 'completed') {
+        interruptedTasks.push(task);
+      }
+    }
+    return { active, pendingBranchTasks, interruptedTasks };
   }
 
   loadContextForResume(): Message[] {
     return this.pendingRestore ?? this.sessionStore.loadContext(this.resolveExistingSessionKey() ?? this.options.sessionKey);
   }
 
-  saveCreditTask(creditTask: import('./credit-task-runtime').CreditTaskSnapshot): void {
+  saveCreditTask(
+    creditTask: import('./credit-task-runtime').CreditTaskSnapshot,
+    activeTaskId?: string,
+  ): void {
+    const state = this.sessionStore.loadRuntimeState(this.options.sessionKey);
+    const tasks: Record<string, import('./credit-task-runtime').CreditTaskSnapshot> = { ...(state.creditTasks || {}) };
+    // Migrate the legacy single-slot snapshot into the per-task map on first write.
+    if (state.creditTask?.taskId && !tasks[state.creditTask.taskId]) tasks[state.creditTask.taskId] = state.creditTask;
+    tasks[creditTask.taskId] = creditTask;
+    const isActive = !activeTaskId || activeTaskId === creditTask.taskId;
+    // Keep the map bounded: settled tasks stay only while a finish ack is pending.
+    const keep = Object.values(tasks)
+      .filter(task => task.taskId === activeTaskId || task.state !== 'completed' || task.finishPending === true)
+      .sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
+      .slice(0, 8);
     const saved = this.sessionStore.saveRuntimeState(this.options.sessionKey, {
-      ...this.sessionStore.loadRuntimeState(this.options.sessionKey), creditTask,
+      ...state,
+      creditTasks: Object.fromEntries(keep.map(task => [task.taskId, task])),
+      ...(isActive ? { creditTask } : {}),
     });
     if (!saved) throw new Error('原任务状态保存失败，已停止后续模型调用');
   }
