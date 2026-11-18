@@ -22,6 +22,8 @@ export interface BotSkillPendingSnapshotResult {
   fingerprint: string;
   fileCount: number;
   deduplicated: boolean;
+  /** Links are recorded as inert manifest data, never copied into package/. */
+  linkCount?: number;
 }
 
 interface PendingSnapshotFile {
@@ -30,8 +32,18 @@ interface PendingSnapshotFile {
   sha256: string;
 }
 
+interface PendingSnapshotLink {
+  path: string;
+  target: string;
+}
+
+interface PendingSnapshotContent {
+  files: PendingSnapshotFile[];
+  links: PendingSnapshotLink[];
+}
+
 interface PendingSnapshotManifest {
-  schema: 'xiaoba.bot-skill-local-pending.v1';
+  schema: 'xiaoba.bot-skill-local-pending.v1' | 'xiaoba.bot-skill-local-pending.v2';
   botId: string;
   sourcePath: string;
   reason: BotSkillPendingSnapshotOptions['reason'];
@@ -40,12 +52,17 @@ interface PendingSnapshotManifest {
   cloudRevision: number;
   baseRevision?: number;
   files: PendingSnapshotFile[];
+  /** v2 only. Recovery metadata, not permission to follow or recreate links. */
+  links?: PendingSnapshotLink[];
 }
 
 /**
  * Preserves durable local Skill workspace content before Cloud-authoritative
  * activation replaces it. Regenerable runtime directories are excluded. The
  * snapshot is evidence only and is never loaded as an active Skill workspace.
+ * Nested symbolic links are recorded with readlink, without reading their
+ * targets or creating runnable links in the evidence package. A linked root
+ * is still rejected because ownership of its contents cannot be established.
  */
 export async function snapshotPendingBotSkillWorkspace(
   options: BotSkillPendingSnapshotOptions,
@@ -54,7 +71,10 @@ export async function snapshotPendingBotSkillWorkspace(
   const sourcePath = path.resolve(options.sourcePath);
   const recordedSourcePath = path.resolve(options.recordedSourcePath ?? sourcePath);
   const botId = normalizeBotId(options.botId);
-  const files = await listWorkspaceFiles(sourcePath);
+  const content = await listWorkspaceContent(sourcePath);
+  const { files, links } = content;
+  const linkMetadata = links.length > 0 ? { links } : {};
+  const linkCount = links.length > 0 ? { linkCount: links.length } : {};
   const fingerprint = pendingFingerprint({
     botId,
     sourcePath: recordedSourcePath,
@@ -62,12 +82,13 @@ export async function snapshotPendingBotSkillWorkspace(
     ...(options.baseRevision !== undefined ? { baseRevision: options.baseRevision } : {}),
     cloudRevision: options.cloudRevision,
     files,
+    ...linkMetadata,
   });
   const root = path.join(runtimeRoot, 'data', 'bot-skills', 'local-pending', botId);
   const existing = await findExistingSnapshot(root, fingerprint);
   if (existing) {
-    await verifySourceUnchanged(sourcePath, files);
-    return { path: existing, fingerprint, fileCount: files.length, deduplicated: true };
+    await verifySourceUnchanged(sourcePath, content);
+    return { path: existing, fingerprint, fileCount: files.length, deduplicated: true, ...linkCount };
   }
 
   const detectedAt = (options.now ?? (() => new Date()))().toISOString();
@@ -76,7 +97,7 @@ export async function snapshotPendingBotSkillWorkspace(
   const temporary = path.join(root, `.tmp-${process.pid}-${crypto.randomBytes(8).toString('hex')}`);
   const packageRoot = path.join(temporary, 'package');
   const manifest: PendingSnapshotManifest = {
-    schema: 'xiaoba.bot-skill-local-pending.v1',
+    schema: links.length > 0 ? 'xiaoba.bot-skill-local-pending.v2' : 'xiaoba.bot-skill-local-pending.v1',
     botId,
     sourcePath: recordedSourcePath,
     reason: options.reason,
@@ -85,6 +106,7 @@ export async function snapshotPendingBotSkillWorkspace(
     cloudRevision: options.cloudRevision,
     ...(options.baseRevision !== undefined ? { baseRevision: options.baseRevision } : {}),
     files,
+    ...linkMetadata,
   };
 
   try {
@@ -99,7 +121,7 @@ export async function snapshotPendingBotSkillWorkspace(
         throw new Error(`Bot Skill pending snapshot verification failed: ${file.path}`);
       }
     }
-    await verifySourceUnchanged(sourcePath, files);
+    await verifySourceUnchanged(sourcePath, content);
     await fs.promises.writeFile(
       path.join(temporary, 'manifest.json'),
       `${JSON.stringify(manifest, null, 2)}\n`,
@@ -107,27 +129,28 @@ export async function snapshotPendingBotSkillWorkspace(
     );
     await fs.promises.mkdir(root, { recursive: true });
     await fs.promises.rename(temporary, finalPath);
-    return { path: finalPath, fingerprint, fileCount: files.length, deduplicated: false };
+    return { path: finalPath, fingerprint, fileCount: files.length, deduplicated: false, ...linkCount };
   } catch (error) {
     await fs.promises.rm(temporary, { recursive: true, force: true });
     throw error;
   }
 }
 
-async function verifySourceUnchanged(root: string, files: PendingSnapshotFile[]): Promise<void> {
+async function verifySourceUnchanged(root: string, content: PendingSnapshotContent): Promise<void> {
   // Async I/O allows other handlers/editors to run. Do not replace Local using
   // evidence that missed an edit/new file made while copying or deduplicating.
-  if (!snapshotFilesEqual(files, await listWorkspaceFiles(root))) {
+  const current = await listWorkspaceContent(root);
+  if (!snapshotFilesEqual(content.files, current.files) || !snapshotLinksEqual(content.links, current.links)) {
     throw new Error('Bot Skill workspace changed during pending snapshot; retry while idle.');
   }
 }
 
-async function listWorkspaceFiles(root: string): Promise<PendingSnapshotFile[]> {
+async function listWorkspaceContent(root: string): Promise<PendingSnapshotContent> {
   let rootStats: fs.Stats;
   try {
     rootStats = await fs.promises.lstat(root);
   } catch (error: any) {
-    if (error?.code === 'ENOENT') return [];
+    if (error?.code === 'ENOENT') return { files: [], links: [] };
     throw error;
   }
   if (rootStats.isSymbolicLink()) {
@@ -136,16 +159,18 @@ async function listWorkspaceFiles(root: string): Promise<PendingSnapshotFile[]> 
   if (!rootStats.isDirectory()) throw new Error('Bot Skill workspace is not a directory.');
 
   const files: PendingSnapshotFile[] = [];
+  const links: PendingSnapshotLink[] = [];
   const visit = async (directory: string): Promise<void> => {
     for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
-      // Only skip real runtime directories. A symlink with an ephemeral name
-      // still reaches lstat below and is rejected fail-closed.
+      // Only skip real runtime directories. Links with ephemeral names must
+      // still be preserved as metadata, without traversing their targets.
       if (entry.isDirectory() && isEphemeralSkillDirectory(entry.name)) continue;
       const absolute = path.join(directory, entry.name);
       const relative = path.relative(root, absolute).split(path.sep).join('/');
       const stats = await fs.promises.lstat(absolute);
       if (stats.isSymbolicLink()) {
-        throw new Error(`Bot Skill pending snapshot cannot follow a symbolic link: ${relative}`);
+        links.push({ path: relative, target: await fs.promises.readlink(absolute) });
+        continue;
       }
       if (stats.isDirectory()) await visit(absolute);
       else if (stats.isFile()) files.push(await fileRecord(root, relative));
@@ -153,7 +178,10 @@ async function listWorkspaceFiles(root: string): Promise<PendingSnapshotFile[]> 
     }
   };
   await visit(root);
-  return files.sort((left, right) => compareText(left.path, right.path));
+  return {
+    files: files.sort((left, right) => compareText(left.path, right.path)),
+    links: links.sort((left, right) => compareText(left.path, right.path)),
+  };
 }
 
 async function fileRecord(root: string, relative: string): Promise<PendingSnapshotFile> {
@@ -186,21 +214,28 @@ async function findExistingSnapshot(root: string, fingerprint: string): Promise<
       ) as Partial<PendingSnapshotManifest>;
       // Most historic snapshots cannot match. Never reread their package bytes
       // just to discover this; matching manifests still require full verification.
-      if (manifest.schema !== 'xiaoba.bot-skill-local-pending.v1'
+      if ((manifest.schema !== 'xiaoba.bot-skill-local-pending.v1'
+        && manifest.schema !== 'xiaoba.bot-skill-local-pending.v2')
         || manifest.fingerprint !== fingerprint || !Array.isArray(manifest.files)) continue;
-      const packageFiles = await listWorkspaceFiles(path.join(candidate, 'package'));
+      if (manifest.schema === 'xiaoba.bot-skill-local-pending.v2'
+        && (!Array.isArray(manifest.links) || manifest.links.length === 0)) continue;
+      if (manifest.schema === 'xiaoba.bot-skill-local-pending.v1' && manifest.links !== undefined) continue;
+      const packageRoot = path.join(candidate, 'package');
+      // A link-only snapshot has zero files. A missing package directory is
+      // corrupted evidence, not a valid empty package eligible for dedupe.
+      if (!(await fs.promises.lstat(packageRoot)).isDirectory()) continue;
+      const packageContent = await listWorkspaceContent(packageRoot);
       if (
-        manifest.schema === 'xiaoba.bot-skill-local-pending.v1'
-        && manifest.fingerprint === fingerprint
-        && Array.isArray(manifest.files)
-        && snapshotFilesEqual(manifest.files, packageFiles)
+        packageContent.links.length === 0
+        && snapshotFilesEqual(manifest.files, packageContent.files)
         && pendingFingerprint({
           botId: String(manifest.botId || ''),
           sourcePath: String(manifest.sourcePath || ''),
           reason: manifest.reason as PendingSnapshotManifest['reason'],
           ...(manifest.baseRevision !== undefined ? { baseRevision: manifest.baseRevision } : {}),
           cloudRevision: Number(manifest.cloudRevision),
-          files: packageFiles,
+          files: packageContent.files,
+          ...(manifest.links ? { links: manifest.links } : {}),
         }) === fingerprint
       ) return candidate;
     } catch {
@@ -213,7 +248,7 @@ async function findExistingSnapshot(root: string, fingerprint: string): Promise<
 function pendingFingerprint(
   value: Pick<
     PendingSnapshotManifest,
-    'botId' | 'sourcePath' | 'reason' | 'baseRevision' | 'cloudRevision' | 'files'
+    'botId' | 'sourcePath' | 'reason' | 'baseRevision' | 'cloudRevision' | 'files' | 'links'
   >,
 ): string {
   return sha256(Buffer.from(JSON.stringify({
@@ -223,6 +258,7 @@ function pendingFingerprint(
     ...(value.baseRevision !== undefined ? { baseRevision: value.baseRevision } : {}),
     cloudRevision: value.cloudRevision,
     files: value.files,
+    ...(value.links?.length ? { links: value.links } : {}),
   })));
 }
 
@@ -234,6 +270,12 @@ function snapshotFilesEqual(
     file?.path === actual[index]?.path
     && file?.size === actual[index]?.size
     && file?.sha256 === actual[index]?.sha256
+  ));
+}
+
+function snapshotLinksEqual(expected: PendingSnapshotLink[], actual: PendingSnapshotLink[]): boolean {
+  return expected.length === actual.length && expected.every((link, index) => (
+    link?.path === actual[index]?.path && link?.target === actual[index]?.target
   ));
 }
 

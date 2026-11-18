@@ -40,6 +40,7 @@ describe('runtime command support', () => {
         path.resolve(runtimeRoot),
       );
     } finally {
+      await stopRuntimeCommandSupport();
       fs.rmSync(runtimeRoot, { recursive: true, force: true });
     }
   });

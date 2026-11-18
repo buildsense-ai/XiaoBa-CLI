@@ -1,3 +1,4 @@
+import { currentCreditTask } from './credit-task-runtime';
 import { AIService } from '../utils/ai-service';
 import { SkillManager } from '../skills/skill-manager';
 import { Logger } from '../utils/logger';
@@ -262,7 +263,8 @@ export class SubAgentManager {
     // fire-and-forget：manager.spawn() 只负责创建并启动后台 session。
     // 这里不 return/await session.run()，所以 spawn_subagent 工具不会等子 agent 跑完。
     // 子 agent 完成后会在 finalizeSession() 里通过 result observation 回流父会话。
-    void session.run()
+    const rootTask = currentCreditTask();
+    const runChild = () => session.run()
       .catch(err => {
         session.status = 'failed';
         session.completedAt = Date.now();
@@ -272,7 +274,8 @@ export class SubAgentManager {
       .finally(async () => {
         await releaseTurnSkillSnapshotLease(childSnapshotLease, id);
         await this.finalizeSession(parentSessionKey, id, session, platform, taskDescription);
-      })
+      });
+    void (rootTask ? rootTask.child(runChild) : runChild())
       .catch(error => {
         Logger.error(`[SubAgentManager] ${id} 收尾失败: ${error?.message || error}`);
       });
@@ -616,6 +619,15 @@ export class SubAgentManager {
     let info = session.getInfo();
     this.subAgents.delete(id);
     this.completedSubAgents.set(id, info);
+
+    const root = currentCreditTask();
+    if (root?.snapshot.enabled === true && !root.snapshot.subagentProgress?.[id]) {
+      root.saveSubagentProgress(id, {
+        taskDescription,
+        messages: [{ role: 'assistant', content: info.resultSummary || '子步骤已结束' }],
+        outputFiles: info.outputFiles,
+      });
+    }
 
     try {
       await session.close();

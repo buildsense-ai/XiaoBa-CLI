@@ -1,3 +1,5 @@
+import { budgetedCreditResumeResponses, creditAccountingHeaderFailures, creditTaskHeaders, takeManualCreditResumeBudget } from '../core/credit-task-runtime';
+import { isDeepStrictEqual } from 'node:util';
 import axios from 'axios';
 import { createHash } from 'crypto';
 import { StringDecoder } from 'string_decoder';
@@ -32,6 +34,10 @@ const MAX_RESPONSES_HEADERS_TIMEOUT_MS = 10 * 60 * 1000;
 // gets 630s; the client must leave room for the final response/error to arrive.
 const CATS_RELAY_RESPONSES_TIMEOUT_MS = 660_000;
 const MAX_RESPONSES_STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+// Relay pricing catalog v5: maximum DeepSeek Flash rate across tiers/periods.
+const FLASH_RESERVE_UNITS_PER_TOKEN = 1512;
+const RESUME_MAX_OUTPUT_TOKENS = 4096;
+const RESUME_WIRE_HEADROOM_BYTES = 4096;
 
 type ResponsesFailurePhase = 'headers' | 'stream' | 'terminal_event';
 
@@ -251,6 +257,7 @@ export class OpenAIProvider implements AIProvider {
     return {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${this.apiKey}`,
+      ...creditTaskHeaders(this.apiUrl),
     };
   }
 
@@ -288,7 +295,8 @@ export class OpenAIProvider implements AIProvider {
    */
   async chat(messages: Message[], tools?: ToolDefinition[], options?: AIRequestOptions): Promise<ChatResponse> {
     if (this.openaiApiMode === 'responses') {
-      return this.chatResponses(messages, tools, options);
+      return this.withResponsesResumeBudget(messages, tools, false, options,
+        (body, bounded) => this.chatResponses(messages, tools, options, body, bounded));
     }
     const body = this.buildRequestBody(messages, tools, false);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
@@ -335,7 +343,8 @@ export class OpenAIProvider implements AIProvider {
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
     if (this.openaiApiMode === 'responses') {
-      return this.chatStreamResponses(messages, tools, callbacks, options);
+      return this.withResponsesResumeBudget(messages, tools, true, options,
+        (body, wire) => this.chatStreamResponses(messages, tools, wire ? undefined : callbacks, options, body, wire));
     }
     const body = this.buildRequestBody(messages, tools, true);
 
@@ -1277,12 +1286,127 @@ export class OpenAIProvider implements AIProvider {
     return JSON.parse(JSON.stringify(item));
   }
 
+  private preservesSavedResponsesTools(history: Message[], input: any[]): boolean {
+    const expected: any[] = [];
+    const calls = new Set<string>();
+    const results = new Set<string>();
+    for (const message of history) {
+      if (message.role === 'tool') {
+        const id = message.tool_call_id;
+        if (!id || !calls.has(id) || results.has(id)) return false;
+        expected.push({ type: 'function_call_output', call_id: id, output: this.responsesFunctionOutput(message.content) });
+        results.add(id);
+        continue;
+      }
+      for (const call of message.tool_calls ?? []) {
+        if (message.role !== 'assistant' || !call.id || calls.has(call.id)) return false;
+        expected.push({ type: 'function_call', call_id: call.id, name: call.function.name, arguments: call.function.arguments || '{}' });
+        calls.add(call.id);
+      }
+    }
+    if (calls.size !== results.size) return false;
+    const actual = input.flatMap<Record<string, unknown>>(item => item.type === 'function_call'
+      ? [{ type: item.type, call_id: item.call_id, name: item.name, arguments: item.arguments }]
+      : item.type === 'function_call_output'
+        ? [{ type: item.type, call_id: item.call_id, output: item.output }]
+        : []);
+    return isDeepStrictEqual(expected, actual);
+  }
+
+  private async withResponsesResumeBudget(
+    messages: Message[], tools: ToolDefinition[] | undefined, stream: boolean, options: AIRequestOptions | undefined,
+    invoke: (body?: any, wire?: Buffer) => Promise<ChatResponse>,
+  ): Promise<ChatResponse> {
+    const cache = options?.promptCacheContext;
+    const credit = this.model === 'deepseek-flash' && cache?.phase === 'normal'
+      && Boolean(creditTaskHeaders(this.apiUrl)['X-CatsCo-Root-Task-ID']);
+    if (!credit) return invoke();
+    const budget = takeManualCreditResumeBudget(this.responsesUrl, cache!.sessionKey, this.apiKey);
+    const bytes = (body: any) => Buffer.byteLength(JSON.stringify(body), 'utf8');
+    let body: any;
+    let wire: Buffer | undefined;
+    if (budget) {
+      const spendable = budget.spendableUnits;
+      if (spendable === undefined || spendable <= 0) throw budget.keepPaused();
+      body = this.buildResponsesRequestBody(messages, tools, stream, options);
+      const originalBytes = bytes(body);
+      const originalOutput = body.max_output_tokens;
+      if (originalBytes + originalOutput > Math.floor(spendable / FLASH_RESERVE_UNITS_PER_TOKEN)) {
+        const output = Math.min(originalOutput, RESUME_MAX_OUTPUT_TOKENS);
+        // Leave 10% of the spendable balance plus fixed space for Relay normalization.
+        const cap = Math.floor(spendable * 0.9 / FLASH_RESERVE_UNITS_PER_TOKEN) - output - RESUME_WIRE_HEADROOM_BYTES;
+        if (cap <= 0) throw budget.keepPaused();
+        const pending = JSON.stringify(budget.pendingInput);
+        const pendingIndices = messages.flatMap((message, i) => message.role === 'user'
+          && !this.isTurnDeltaMessage(message) && !message.__checkpointSummary
+          && JSON.stringify(message.content) === pending ? [i] : []);
+        if (pendingIndices.length !== 1) throw budget.keepPaused();
+        // Only closed, text-only user/assistant pairs from before the exact
+        // original input may be omitted. All tool exchanges and all special
+        // context (including checkpoint/routing entries) stay byte-for-byte.
+        const plain = (message: Message) => typeof message.content === 'string'
+          && Object.entries(message).every(([key, value]) => value === undefined
+            || ['role', 'content', '__episodeId', '__episodeInputKind'].includes(key));
+        const episodeCounts = new Map<string, number>();
+        for (const { __episodeId: id } of messages) {
+          if (id) episodeCounts.set(id, (episodeCounts.get(id) ?? 0) + 1);
+        }
+        const dropped = new Set<number>();
+        let estimatedBytes = originalBytes;
+        for (let i = 0; estimatedBytes > cap && i + 1 < pendingIndices[0]; i++) {
+          const user = messages[i];
+          const assistant = messages[i + 1];
+          const next = messages[i + 2];
+          if (user.role !== 'user' || assistant.role !== 'assistant'
+            || !plain(user) || !plain(assistant) || user.__episodeInputKind === 'pending'
+            || user.__episodeId !== assistant.__episodeId
+            || (user.__episodeId && (episodeCounts.get(user.__episodeId) !== 2 || next.__episodeId === user.__episodeId))
+            || next.role !== 'user' || (next.__episodeInputKind === 'pending' && i + 2 !== pendingIndices[0])
+            || this.isTurnDeltaMessage(next) || next.__checkpointSummary || next.__runtimeObservation) continue;
+          dropped.add(i);
+          dropped.add(++i);
+          estimatedBytes -= bytes(this.convertResponsesMessages([user, assistant]));
+        }
+        if (dropped.size) {
+          body = this.buildResponsesRequestBody(messages.filter((_, i) => !dropped.has(i)), tools, stream, options);
+        }
+        body.max_output_tokens = output;
+        // Check the original exchange against the wire, not the repaired request view.
+        if (!this.preservesSavedResponsesTools(budget.toolHistory, body.input)) throw budget.keepPaused();
+        wire = Buffer.from(JSON.stringify(body), 'utf8');
+        if (wire.length > cap || wire.length + output >= originalBytes + originalOutput) throw budget.keepPaused();
+        budget.beginBoundedAttempt();
+      }
+    }
+    try {
+      const result = await invoke(body, wire);
+      if (wire) {
+        // Incomplete/empty responses cannot fall back to a larger request.
+        if (!['completed', 'tool_calls'].includes(result.stopReason ?? '')
+          || (!result.content?.trim() && !result.toolCalls?.length)) throw new Error('Unusable bounded Responses result');
+        budgetedCreditResumeResponses.add(result);
+      }
+      return result;
+    } catch (error: any) {
+      if (wire) throw budget!.stopAttempt();
+      if (options?.signal?.aborted || isProviderAbortError(error)) throw error;
+      const details = error?.response?.data?.error;
+      if (error?.response?.status === 402 && details?.type === 'api_error' && details.param === null
+        && details.code === 'credit_request_failed' && details.message === 'credit request could not be accounted') {
+        creditAccountingHeaderFailures.add(error);
+      }
+      throw error;
+    }
+  }
+
   private async chatResponses(
     messages: Message[],
     tools?: ToolDefinition[],
     options?: AIRequestOptions,
+    preparedBody?: any,
+    wire?: Buffer,
   ): Promise<ChatResponse> {
-    let body = this.buildResponsesRequestBody(messages, tools, false, options);
+    let body = preparedBody ?? this.buildResponsesRequestBody(messages, tools, false, options);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.responsesUrl,
       body,
@@ -1292,10 +1416,10 @@ export class OpenAIProvider implements AIProvider {
     let response;
     try {
       response = await this.postProviderRequest(
-        this.responsesUrl, body, false, options, requestHeaders,
+        this.responsesUrl, wire ?? body, false, options, requestHeaders, Boolean(wire),
       );
     } catch (error) {
-      if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
+      if (wire || !this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
       this.responsesExplicitAnchorSupported = false;
       Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying once without it.');
       body = this.buildResponsesRequestBody(messages, tools, false, options, true);
@@ -1331,8 +1455,10 @@ export class OpenAIProvider implements AIProvider {
     tools?: ToolDefinition[],
     callbacks?: StreamCallbacks,
     options?: AIRequestOptions,
+    preparedBody?: any,
+    wire?: Buffer,
   ): Promise<ChatResponse> {
-    let body = this.buildResponsesRequestBody(messages, tools, true, options);
+    let body = preparedBody ?? this.buildResponsesRequestBody(messages, tools, true, options);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
       apiUrl: this.responsesUrl,
       body,
@@ -1342,10 +1468,10 @@ export class OpenAIProvider implements AIProvider {
     let response: Awaited<ReturnType<typeof this.postProviderRequest>>;
     try {
       response = await this.postProviderRequest(
-        this.responsesUrl, body, true, options, requestHeaders,
+        this.responsesUrl, wire ?? body, true, options, requestHeaders, Boolean(wire),
       );
     } catch (error) {
-      if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
+      if (wire || !this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
       this.responsesExplicitAnchorSupported = false;
       Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying stream once without it.');
       body = this.buildResponsesRequestBody(messages, tools, true, options, true);
@@ -1391,7 +1517,7 @@ export class OpenAIProvider implements AIProvider {
         if (settled) return;
         cleanup();
         if (
-          !streamedVisibleText
+          !wire && !streamedVisibleText
           && !outputItems.some(Boolean)
           && this.shouldRetryWithoutExplicitAnchor(error, body)
         ) {
@@ -1592,6 +1718,7 @@ export class OpenAIProvider implements AIProvider {
     stream: boolean,
     options?: AIRequestOptions,
     headers: Record<string, string> = this.headers,
+    bounded = false,
   ): Promise<any> {
     const headersTimeoutMs = url === this.responsesUrl && (stream || isCatsRelayApiBase(url))
       ? this.responsesHeadersTimeoutMs()
@@ -1614,6 +1741,7 @@ export class OpenAIProvider implements AIProvider {
     try {
       return await axios.post(url, body, {
         headers,
+        ...(bounded ? { maxRedirects: 0, transformRequest: [(data: Buffer) => data] } : {}),
         ...(stream ? { responseType: 'stream' as const } : {}),
         signal: watchdogController?.signal ?? options?.signal,
       });

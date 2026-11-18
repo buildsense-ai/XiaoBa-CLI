@@ -99,6 +99,21 @@ export class SessionLifecycleManager {
     return this.sessionStore.saveContext(this.options.sessionKey, messages);
   }
 
+  loadCreditTask(): import('./credit-task-runtime').CreditTaskSnapshot | undefined {
+    return this.sessionStore.loadRuntimeState(this.options.sessionKey).creditTask;
+  }
+
+  loadContextForResume(): Message[] {
+    return this.pendingRestore ?? this.sessionStore.loadContext(this.resolveExistingSessionKey() ?? this.options.sessionKey);
+  }
+
+  saveCreditTask(creditTask: import('./credit-task-runtime').CreditTaskSnapshot): void {
+    const saved = this.sessionStore.saveRuntimeState(this.options.sessionKey, {
+      ...this.sessionStore.loadRuntimeState(this.options.sessionKey), creditTask,
+    });
+    if (!saved) throw new Error('原任务状态保存失败，已停止后续模型调用');
+  }
+
   loadCurrentDirectory(): string | undefined {
     const current = this.sessionStore.loadRuntimeState(this.options.sessionKey).currentDirectory;
     if (current) return current;

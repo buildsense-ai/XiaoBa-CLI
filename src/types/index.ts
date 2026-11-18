@@ -88,6 +88,8 @@ export interface Message {
 export interface ChatConfig {
   apiKey?: string;
   apiUrl?: string;
+  /** Set by CatsCo catalog runtime provenance, including configured private relay origins. */
+  catsCoRelay?: boolean;
   model?: string;
   temperature?: number;
   maxTokens?: number;

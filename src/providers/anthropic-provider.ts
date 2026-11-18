@@ -1,3 +1,4 @@
+import { creditTaskHeaders, currentCreditTask } from '../core/credit-task-runtime';
 import Anthropic from '@anthropic-ai/sdk';
 import { Message, ChatConfig, ChatResponse, ContentBlock, type ProviderStateReference } from '../types';
 import { ToolDefinition } from '../types/tool';
@@ -528,7 +529,9 @@ export class AnthropicProvider implements AIProvider {
   }
 
   private createMessage(params: Anthropic.MessageCreateParamsNonStreaming, options?: AIRequestOptions): Promise<any> {
-    const requestOptions = { signal: options?.signal } as any;
+    const task = currentCreditTask();
+    const requestOptions = { signal: options?.signal, headers: creditTaskHeaders(this.apiUrl),
+      ...(task?.snapshot.enabled === true && task.matches(this.apiUrl) ? { maxRetries: 0 } : {}) } as any;
     if (this.supportsNativePromptCaching()) {
       return this.client.beta.promptCaching.messages.create(params as any, requestOptions) as any;
     }
@@ -536,7 +539,9 @@ export class AnthropicProvider implements AIProvider {
   }
 
   private createMessageStream(params: Anthropic.MessageCreateParamsStreaming, options?: AIRequestOptions): any {
-    const requestOptions = { signal: options?.signal } as any;
+    const task = currentCreditTask();
+    const requestOptions = { signal: options?.signal, headers: creditTaskHeaders(this.apiUrl),
+      ...(task?.snapshot.enabled === true && task.matches(this.apiUrl) ? { maxRetries: 0 } : {}) } as any;
     if (this.supportsNativePromptCaching()) {
       return this.client.beta.promptCaching.messages.stream(params as any, requestOptions);
     }

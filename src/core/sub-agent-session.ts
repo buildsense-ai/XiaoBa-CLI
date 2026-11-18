@@ -1,3 +1,4 @@
+import { currentCreditTask, CreditTaskPausedError } from './credit-task-runtime';
 import { Message } from '../types';
 import { AIService } from '../utils/ai-service';
 import { ToolManager } from '../tools/tool-manager';
@@ -197,6 +198,13 @@ export class SubAgentSession {
         return; // 成功，直接返回
       } catch (err: any) {
         lastError = err;
+        const root = currentCreditTask();
+        if (err instanceof CreditTaskPausedError || root?.snapshot.state === 'paused') {
+          root?.saveSubagentProgress(this.id, {
+            taskDescription: this.taskDescription, messages: this.messages, outputFiles: this.outputFiles,
+          });
+          break;
+        }
         if (this.stopped) break;
         if (!SubAgentSession.isRetryableError(err) || attempt === SubAgentSession.SESSION_MAX_RETRIES) {
           break; // 不可重试 或 重试次数用尽

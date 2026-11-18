@@ -40,6 +40,60 @@ describe('Bot Skill Local/Base/Cloud sync', () => {
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   });
 
+  for (const layout of ['managed-link', 'dirty-with-local-link', 'nested-dependency-link'] as const) {
+    test(`activation preserves link evidence and verifies the restored workspace: ${layout}`, async () => {
+      const fixture = createFixture(roots);
+      writeSkill(fixture.skillsRoot, 'managed', 'managed', 'verified cloud content');
+      await fixture.sync();
+      const originalPackage = fs.readFileSync(path.join(fixture.skillsRoot, 'managed', 'SKILL.md'), 'utf8');
+      new BotSkillWorkspaceService(fixture.runtimeRoot).activate(fixture.botId);
+      const external = path.join(fixture.runtimeRoot, 'external');
+      fs.mkdirSync(external);
+      fs.writeFileSync(path.join(external, 'private.txt'), 'never read or modify');
+      let link: string;
+      if (layout === 'managed-link') {
+        fs.renameSync(path.join(fixture.skillsRoot, 'managed'), path.join(external, 'managed'));
+        link = path.join(fixture.skillsRoot, 'managed');
+        fs.symlinkSync(path.join(external, 'managed'), link, process.platform === 'win32' ? 'junction' : 'dir');
+      } else {
+        fs.appendFileSync(path.join(fixture.skillsRoot, 'managed', 'SKILL.md'), '\nLocal pending edit.\n');
+        link = layout === 'dirty-with-local-link'
+          ? path.join(fixture.skillsRoot, 'animate')
+          : path.join(fixture.skillsRoot, 'managed', 'node_modules', '.bin', 'portless');
+        fs.mkdirSync(path.dirname(link), { recursive: true });
+        fs.symlinkSync(external, link, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+      const target = fs.readlinkSync(link);
+      fixture.cloud.revision += 1;
+      fixture.cloudModel = { kind: 'catalog', modelId: 'gpt-6.1-sol' };
+      const prepared = await prepareBoundBotSkills({
+        runtimeRoot: fixture.runtimeRoot, botId: fixture.botId,
+        auth: { apiKey: 'bot-key', httpBaseUrl: 'https://cats.test', serverUrl: 'wss://cats.test' },
+        definitionService: fixture.definitionService, fetchImpl: fixture.fetchImpl,
+        requireActiveWorkspace: true,
+        reuseVerifiedLocal: { skills: fixture.cloud.skills, definitionRevision: fixture.cloud.revision },
+      });
+      assert.equal(prepared.sync?.applyStatus, 'applied');
+      assert.equal(prepared.sync?.appliedRevision, fixture.cloud.revision);
+      assert.equal(prepared.sync?.localPendingEvidence?.linkCount, 1);
+      assert.equal(fixture.packageDownloads, 1, 'a failed reuse must still restore a verified cloud package');
+      assert.equal(fixture.patches, 1, 'activation must not upload local content');
+      assert.equal(fs.readFileSync(path.join(fixture.skillsRoot, 'managed', 'SKILL.md'), 'utf8'), originalPackage);
+      assert.equal(fs.lstatSync(path.join(fixture.skillsRoot, 'managed')).isSymbolicLink(), false);
+      assert.equal(scanBotSkillWorkspace(fixture.skillsRoot).length, 1);
+      assert.equal(fs.readFileSync(path.join(external, 'private.txt'), 'utf8'), 'never read or modify');
+      const snapshot = readPendingSnapshot(fixture.runtimeRoot, fixture.botId);
+      assert.equal(snapshot.manifest.schema, 'xiaoba.bot-skill-local-pending.v2');
+      assert.deepEqual((snapshot.manifest as any).links, [{
+        path: path.relative(fixture.skillsRoot, link).split(path.sep).join('/'), target,
+      }]);
+      assert.equal(fs.existsSync(path.join(snapshot.path, 'package', 'external', 'private.txt')), false);
+      if (layout !== 'managed-link') {
+        assert.ok(fs.readFileSync(path.join(snapshot.path, 'package', 'managed', 'SKILL.md'), 'utf8').includes('Local pending edit.'));
+      }
+    });
+  }
+
   test('fails closed when activation service construction rejects an existing workspace', async () => {
     const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-skill-runtime-fail-closed-'));
     roots.push(runtimeRoot);

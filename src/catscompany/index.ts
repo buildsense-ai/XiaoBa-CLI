@@ -45,6 +45,7 @@ import {
 import { Logger } from '../utils/logger';
 import { SessionTurnLogger } from '../utils/session-turn-logger';
 import { SubAgentManager } from '../core/sub-agent-manager';
+import { currentCreditTask } from '../core/credit-task-runtime';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import type { SubAgentInfo } from '../core/sub-agent-session';
 import { ChannelCallbacks, CurrentUserApprovalInput, DeviceRpcTransport, GroupRosterEntry, TargetRoutes, ThinToolRpcTransport, ToolErrorCode, ToolExecutionConfirmationRequest, ToolExecutionConfirmationResult, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
@@ -2229,7 +2230,7 @@ export class CatsCompanyBot {
     // before any asynchronous history restore or ordinary message queueing.
     if (/^\/stop(?:\s|$)/i.test(msg.text)) {
       this.stopSessionExecution(key);
-      await this.sender.reply(msg.topic, '正在停止当前请求...').catch((err: any) => {
+      await this.sender.reply(msg.topic, '已停止当前请求。').catch((err: any) => {
         Logger.warning(`停止提示发送失败: ${err?.message || err}`);
       });
       return;
@@ -2322,7 +2323,7 @@ export class CatsCompanyBot {
       // /compact follows the normal slash-command/reply path, with the
       // existing Working-style thinking callback for checkpoint progress. It
       // deliberately does not inherit /clear's destructive cleanup.
-      const commandCallbacks = isCompact
+      const commandCallbacks = isCompact || command.toLowerCase() === 'resume'
         ? this.buildSessionCallbacks(msg.topic, {
           sessionKey: key,
           senderId: msg.senderId,
@@ -2330,7 +2331,22 @@ export class CatsCompanyBot {
           clearGeneration: entryClearGeneration,
         })
         : undefined;
-      const result = await session.handleCommand(command, args, commandCallbacks);
+      const result = await session.handleCommand(command, args, commandCallbacks, command.toLowerCase() === 'resume' ? {
+        channel: this.buildChannel(msg.topic, { sessionKey: key, senderId: msg.senderId, channelSource: msg.executionScope?.channelSource }),
+        sessionRoute,
+        executionScope: msg.executionScope,
+        currentUserApprovalInputs: [currentUserApprovalInputFromCatsMessage(msg)],
+        artifactContextRef: msg.artifactContextRef,
+        artifactTaskRef: msg.artifactTaskRef,
+        skillConnectorGrants: msg.skillConnectorGrants,
+        localDeviceGrant: this.localDeviceGrant,
+        deviceGrants: msg.deviceGrants,
+        deviceSelection: msg.deviceSelection,
+        targetRoutes: msg.targetRoutes,
+        groupRoster: toGroupRosterEntries(msg.roster),
+        deviceRpc: this.buildDeviceRpcTransport(),
+        thinToolRpc: this.maybeBuildThinToolRpcTransport(),
+      } : undefined);
       let commandReply = result.reply;
       if (result.handled && isClear && !args.includes('--all')) {
         const clearPersisted = this.cloudSessionRestorer.markLocalSessionCleared(sessionRoute?.sessionKey || key);
@@ -2745,13 +2761,21 @@ export class CatsCompanyBot {
     sessionKey: string,
     task: ActiveConversationTask | undefined,
     status: Omit<ConversationTaskStatusInput, 'run_id'>,
+    options: { preserveInterruptedTurn?: boolean } = {},
   ): void {
     if (!task || task.finished) return;
     task.finished = true;
     // Any terminal outcome retires the interruption marker: the turn either
     // finished, failed on its own, or the user asked it to stop. Only a
     // process death may leave a marker behind for the next start() to resume.
-    this.clearInterruptedTurn(sessionKey);
+    //
+    // A failed *automatic resume* is the exception, which is why callers can opt
+    // out. That failure is not the user's turn ending, it is the recovery of a
+    // turn that never ended: retiring the marker there deleted the only record
+    // that work was still owed, so the task disappeared without a trace. The
+    // marker is kept instead, and the startup scan's existing age window and
+    // attempt budget still bound how often it can be retried.
+    if (!options.preserveInterruptedTurn) this.clearInterruptedTurn(sessionKey);
     const tasks = this.activeConversationTasks ??= new Map<string, ActiveConversationTask>();
     if (tasks.get(sessionKey) === task) {
       tasks.delete(sessionKey);
@@ -2942,7 +2966,15 @@ export class CatsCompanyBot {
       // suppresses replies built for sub-agent observations and would swallow the
       // answer the user is still waiting for.
       await this.runTrackedConversationWork(() =>
-        this.runInterruptedTurnResume(sessionKey, topic, notice, candidate.deviceContext, clearGeneration, stopGeneration));
+        this.runInterruptedTurnResume(
+          sessionKey,
+          topic,
+          notice,
+          candidate.deviceContext,
+          clearGeneration,
+          stopGeneration,
+          attempts,
+        ));
     } finally {
       // Release before draining, matching every other session work path.
       this.releaseSessionExecution(sessionKey);
@@ -3011,6 +3043,7 @@ export class CatsCompanyBot {
     deviceContext?: InterruptedTurnDeviceContext,
     clearGeneration = this.getSessionClearGeneration(sessionKey),
     stopGeneration = this.getSessionStopGeneration(sessionKey),
+    attempt = 1,
   ): Promise<void> {
     await this.assertForkLocalContextAvailable({ sessionKey, topicId: topic }, true);
     if (this.shuttingDown || !this.connectorReady
@@ -3020,6 +3053,18 @@ export class CatsCompanyBot {
     // The session was claimed by resumeOneInterruptedTurn() before any
     // user-visible side effect; this only runs the turn.
     const session = this.sessionManager.getOrCreate(sessionKey);
+    // A resume is a real turn, so it needs its own run. It used to run with no
+    // ActiveConversationTask at all: the platform then kept whatever terminal
+    // the previous process published (stale) for the whole resume, so the user
+    // watched a dead run while the agent worked, and no end of the resume could
+    // ever be reported. beginConversationTask() mints a fresh run and publishes
+    // running; it also refuses once destroy() has begun, which is the reason the
+    // marker is left alone there instead of being cleared.
+    const task = this.beginConversationTask(sessionKey, topic, undefined, deviceContext);
+    if (!task) {
+      Logger.info(`[${sessionKey}] 中断恢复未开始：connector 正在 shutdown，保留中断标记`);
+      return;
+    }
     const stopTypingHeartbeat = this.startTypingHeartbeat(topic);
     // Rebuild the device access the interrupted turn had. A resume carries no
     // metadata of its own, so without this the turn has no execution scope,
@@ -3028,42 +3073,139 @@ export class CatsCompanyBot {
     // available", stranding exactly the tasks this feature rescues.
     const resumedContext = this.rebuildDeviceContext(deviceContext);
     try {
-      const result = await session.handleRuntimeObservation(notice, {
-        // senderId is not read by either builder (both key off topic and
-        // channelSource), so it is omitted rather than filled with a
-        // placeholder that implies semantics it does not have.
-        channel: this.buildChannel(topic, { sessionKey }),
-        callbacks: this.buildSessionCallbacks(topic, { sessionKey }),
-        source: 'interrupted_turn_resume',
-        executionScope: resumedContext.executionScope,
-        deviceGrants: resumedContext.deviceGrants,
-        deviceSelection: resumedContext.deviceSelection,
-        targetRoutes: resumedContext.targetRoutes,
-        localDeviceGrant: this.localDeviceGrant,
-        deviceRpc: this.buildDeviceRpcTransport(),
-        thinToolRpc: this.maybeBuildThinToolRpcTransport(),
-      });
+      let result: {
+        text?: string;
+        visibleToUser?: boolean;
+        taskOutcome?: 'completed' | 'failed' | 'cancelled';
+      };
+      try {
+        result = await session.handleRuntimeObservation(notice, {
+          // senderId is not read by either builder (both key off topic and
+          // channelSource), so it is omitted rather than filled with a
+          // placeholder that implies semantics it does not have.
+          channel: this.buildChannel(topic, { sessionKey }),
+          callbacks: this.buildSessionCallbacks(topic, { sessionKey }),
+          source: 'interrupted_turn_resume',
+          executionScope: resumedContext.executionScope,
+          deviceGrants: resumedContext.deviceGrants,
+          deviceSelection: resumedContext.deviceSelection,
+          targetRoutes: resumedContext.targetRoutes,
+          localDeviceGrant: this.localDeviceGrant,
+          deviceRpc: this.buildDeviceRpcTransport(),
+          thinToolRpc: this.maybeBuildThinToolRpcTransport(),
+        });
+      } catch (error: any) {
+        if (this.shuttingDown) {
+          // destroy() owns this run from here on: its sweep can see the task
+          // (registered above), publishes stale for it and rewrites the marker.
+          // Finishing it here would beat the sweep to the terminal and drop the
+          // record that the interrupted work is still owed.
+          Logger.info(`[${sessionKey}] destroy 已开始，丢弃迟到的中断恢复失败结果`);
+          return;
+        }
+        if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
+          || stopGeneration !== this.getSessionStopGeneration(sessionKey)) {
+          // /clear or /stop already published this run's terminal.
+          this.finishConversationTask(sessionKey, task, {
+            state: 'cancelled',
+            summary: '任务已停止',
+          });
+          Logger.info(`[${sessionKey}] clear/stop 后忽略中断恢复的异常`);
+          return;
+        }
+        // The resume turn is an internal observation, so it produces no reply of
+        // its own. Logging the failure left the user reading "正在自动继续…"
+        // forever, with no way to tell whether to wait or resend.
+        await this.reportInterruptedResumeFailure(sessionKey, topic, attempt, error);
+        this.finishConversationTask(sessionKey, task, {
+          state: 'failed',
+          summary: '中断任务自动继续失败',
+          error: '中断任务自动继续失败',
+        }, { preserveInterruptedTurn: true });
+        Logger.warning(
+          `[${sessionKey}] 中断恢复回合失败（第 ${attempt} 次），已保留中断标记: ${error?.message || error}`,
+        );
+        return;
+      }
       if (this.shuttingDown) {
         Logger.info(`[${sessionKey}] destroy 已开始，丢弃迟到的中断恢复结果`);
         return;
       }
-      if (result.visibleToUser && result.text) {
-        await this.sender.reply(topic, result.text, this.replyOptionsFor(sessionKey)).catch((error: any) => {
-          Logger.warning(`[${sessionKey}] 中断恢复回复发送失败: ${error?.message || error}`);
+      if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
+        || stopGeneration !== this.getSessionStopGeneration(sessionKey)) {
+        // The interrupting path already published cancelled for this run.
+        // finishConversationTask() is a no-op on a retired run, so this can only
+        // race a clear that landed without one -- never revive the run.
+        this.finishConversationTask(sessionKey, task, {
+          state: 'cancelled',
+          summary: '任务已停止',
         });
+        Logger.info(`[${sessionKey}] clear/stop 后忽略中断恢复的返回`);
+        return;
       }
-    } catch (error: any) {
-      Logger.warning(`[${sessionKey}] 中断恢复回合失败: ${error?.message || error}`);
+      let replyDelivered = true;
+      if (result.visibleToUser && result.text) {
+        try {
+          await this.sender.reply(topic, result.text, this.replyOptionsFor(sessionKey));
+        } catch (error: any) {
+          replyDelivered = false;
+          Logger.warning(`[${sessionKey}] 中断恢复回复发送失败: ${error?.message || error}`);
+        }
+      }
+      const status = this.taskStatusForResult(result, replyDelivered);
+      // A resumed turn that ran and reported failure (provider error, credit
+      // pause, undelivered reply) is still an unfinished interruption from the
+      // user's point of view, so its marker survives for one more bounded
+      // attempt. completed/cancelled end the work and retire it.
+      this.finishConversationTask(sessionKey, task, status, {
+        preserveInterruptedTurn: status.state === 'failed',
+      });
     } finally {
-      // Only retire the marker when this resume actually reached a terminal
-      // state. If destroy() began while it was in flight the work was
-      // discarded above, and nothing else would re-write the marker: a resume
-      // turn creates no ActiveConversationTask, so the shutdown sweep never
-      // sees it. Clearing here would silently lose the interrupted work.
-      if (!this.shuttingDown) {
-        this.clearInterruptedTurn(sessionKey);
-      }
       stopTypingHeartbeat();
+      // Last-resort fence: an unexpected throw between begin and finish must not
+      // leave the run published as running until the six-hour lease expires.
+      // finishConversationTask() is a no-op on a retired run, so the explicit
+      // outcomes above still win.
+      if (!task.finished && !this.shuttingDown) {
+        this.finishConversationTask(sessionKey, task, {
+          state: 'failed',
+          summary: '中断任务自动继续失败',
+          error: '中断任务自动继续失败',
+        }, { preserveInterruptedTurn: true });
+      }
+    }
+  }
+
+  /**
+   * Tells the user that the automatic resume of their interrupted turn failed.
+   *
+   * The resume runs as an internal runtime observation, so the only reply the
+   * user would ever see is the one this method sends. It also states whether an
+   * automatic retry is still possible: "下次启动会再试" and "请重新发送" are
+   * very different instructions, and the attempt budget is invisible otherwise.
+   */
+  private async reportInterruptedResumeFailure(
+    sessionKey: string,
+    topic: string,
+    attempt: number,
+    error: any,
+  ): Promise<void> {
+    const detail = String(error?.message || error || '未知错误')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 200) || '未知错误';
+    const remaining = Math.max(0, INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS - attempt);
+    const nextStep = remaining > 0
+      ? '已保留中断记录，下次启动会再自动继续一次。'
+      : '自动继续次数已用完，请重新发送任务。';
+    try {
+      await this.sender.reply(
+        topic,
+        `自动继续上一轮任务失败（第 ${attempt}/${INTERRUPTED_TURN_MAX_RESUME_ATTEMPTS} 次）：${detail}。${nextStep}`,
+        this.replyOptionsFor(sessionKey),
+      );
+    } catch (replyError: any) {
+      Logger.warning(`[${sessionKey}] 中断恢复失败提示发送失败: ${replyError?.message || replyError}`);
     }
   }
 
@@ -3148,17 +3290,21 @@ export class CatsCompanyBot {
   private async finishActiveConversationTasksForShutdown(timeoutMs = 3_000): Promise<void> {
     const activeTasks = Array.from(this.activeConversationTasks.entries());
     for (const [sessionKey, task] of activeTasks) {
-      // Order matters: finishConversationTask() clears any interruption marker
-      // as part of retiring the task, so the marker for this shutdown has to be
-      // written after it. This is the durable record that the next start()
-      // resumes instead of leaving the conversation looking dead
-      // (2026-09-29: the model was killed mid-turn and the user had to type
-      // "继续" by hand).
+      // The marker is preserved across the terminal on purpose: the sweep always
+      // rewrites it right after, and a clear-then-write pair reset the resumption
+      // budget to zero every restart. That turned a resume which keeps dying into
+      // an unbounded kill-resume-kill loop -- exactly what the attempt budget
+      // exists to stop. markInterruptedTurn() keeps the stored attempt count.
+      //
+      // Order still matters: this is the durable record that the next start()
+      // resumes instead of leaving the conversation looking dead (2026-09-29: the
+      // model was killed mid-turn and the user had to type "继续" by hand), and the
+      // rewrite also refreshes topic/reason/startedAt for this shutdown.
       this.finishConversationTask(sessionKey, task, {
         state: 'stale',
         summary: 'Agent 正在重启，本次任务已自动中止，可重新发送',
         error: 'connector shutdown before terminal task status',
-      });
+      }, { preserveInterruptedTurn: true });
       this.markInterruptedTurn(sessionKey, task.topic, this.shutdownInterruptReason(), task.deviceContext);
     }
 
@@ -3494,13 +3640,23 @@ export class CatsCompanyBot {
 
     const suppressFinalResponse = resultObservationHandling !== 'notify'
       && shouldSuppressSubAgentObservationReply(text);
-    if (suppressFinalResponse) {
+    const creditRoot = currentCreditTask();
+    const creditEnabled = creditRoot?.snapshot.enabled === true;
+    if (suppressFinalResponse && !creditEnabled) {
       this.scheduleSubAgentCompletionBatch(sessionKey, topic, senderId, text, executionScope);
       await this.drainMessageQueue(sessionKey);
       return;
     }
 
-    if (!this.tryReserveSessionExecution(sessionKey, session)) {
+    if (creditEnabled) {
+      // Await delivery in the child's root scope so finish cannot precede result processing.
+      while (!this.tryReserveSessionExecution(sessionKey, session)) {
+        if (this.shuttingDown || creditRoot.snapshot.state !== 'running'
+          || clearGeneration !== this.getSessionClearGeneration(sessionKey)
+          || stopGeneration !== this.getSessionStopGeneration(sessionKey)) return;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    } else if (!this.tryReserveSessionExecution(sessionKey, session)) {
       this.enqueueSubAgentFeedback(sessionKey, topic, senderId, text, executionScope, 0, clearGeneration, stopGeneration);
       Logger.info(`[${sessionKey}] 主会话忙，子智能体反馈已入队`);
       return;
@@ -4697,7 +4853,7 @@ export class CatsCompanyBot {
         state: 'stale',
         summary: 'Agent 正在重启，本次任务已自动中止，可重新发送',
         error: 'connector shutdown before terminal task status',
-      });
+      }, { preserveInterruptedTurn: true });
       this.markInterruptedTurn(sessionKey, task.topic, this.shutdownInterruptReason(), task.deviceContext);
     }
     Logger.info('CatsCo agent 已停止');
