@@ -145,6 +145,49 @@ test('reads the current local bot name dynamically without configuring an upload
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test('migrates an endpoint without resetting source IDs, manifests, baselines or ACK cursors', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'monday-endpoint-migration-'));
+  const file = path.join(root, 'logs/sessions/cli/2026-11-16/cli_migrate.jsonl');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const history = '{"entry_type":"turn","user":{"text":"history"}}\n';
+  const added = '{"entry_type":"turn","user":{"text":"increment"}}\n';
+  await fs.writeFile(file, history);
+  const received: string[] = [];
+  let dataset = 'same';
+  const server = createServer(async (req, res) => {
+    if (req.method === 'GET') { res.end(JSON.stringify({ dataset_id: dataset })); return; }
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    if (req.url?.endsWith('/manifests')) { res.end('{}'); return; }
+    const raw = Buffer.concat(body.records.map((r: { raw_base64: string }) => Buffer.from(r.raw_base64, 'base64')));
+    received.push(raw.toString());
+    res.end(JSON.stringify({ next_offset: body.records[0].offset + raw.length, sha256: createHash('sha256').update(raw).digest('hex') }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); assert.ok(address && typeof address === 'object');
+  const config = { root, endpoint: `http://127.0.0.1:${address.port}`, bot: () => ({ uid: '365', name: 'Saturday' }) };
+  const statePath = path.join(root, 'data/monday-memory-upload/state.json');
+  let uploader = new MondayMemoryUploader(config);
+  try {
+    await uploader.cycle(Date.parse('2026-11-17T03:00:00+08:00')); await uploader.stop();
+    const before = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    uploader = new MondayMemoryUploader({ ...config, endpoint: `http://localhost:${address.port}` });
+    await uploader.cycle(Date.parse('2026-11-17T04:00:00+08:00'));
+    const migrated = JSON.parse(await fs.readFile(statePath, 'utf8'));
+    assert.equal(migrated.source_id, before.source_id);
+    assert.deepEqual(migrated.files, before.files);
+    assert.deepEqual(migrated.manifests, before.manifests);
+    assert.deepEqual(received, [history], 'acknowledged history is not reuploaded');
+    await fs.appendFile(file, added);
+    await uploader.cycle(Date.parse('2026-11-17T15:00:00+08:00'));
+    assert.deepEqual(received, [history, added]);
+    const saved = await fs.readFile(statePath, 'utf8');
+    dataset = 'wrong';
+    await assert.rejects(uploader.cycle(), /dataset changed/);
+    assert.equal(await fs.readFile(statePath, 'utf8'), saved, 'dataset mismatch leaves progress untouched');
+  } finally { await uploader.stop(); await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test('routes historical files by recorded bot uid and retains fallback attribution for older files', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'monday-bot-routing-'));
   const folder = path.join(root, 'logs/sessions/cli/2026-11-16');

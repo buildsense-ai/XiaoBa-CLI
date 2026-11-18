@@ -6,6 +6,7 @@ import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import { CatsCoLocalConfigService } from '../catscompany/local-config';
 import { Logger } from './logger';
+import { memoryUploadDestination, memoryUploadEndpoint, MondayMemoryTransport, type MemoryUploadDestination } from './monday-memory-transport';
 
 type Lane = 'backfill' | 'incremental';
 interface Cursor { offset: number; hash: string }
@@ -37,7 +38,7 @@ interface State {
   discovery_errors: Record<string, { message: string; historical: boolean }>;
 }
 export interface MemoryBot { uid: string; name?: string }
-export interface MondayMemoryConfig { endpoint: string; root: string; bot: () => MemoryBot | undefined }
+export interface MondayMemoryConfig extends MemoryUploadDestination { root: string; bot: () => MemoryBot | undefined }
 const digest = (x: string | Buffer) => createHash('sha256').update(x).digest('hex');
 const MAX_BODY = 3 * 1024 * 1024;
 const READ_BYTES = 1024 * 1024;
@@ -47,8 +48,9 @@ function object(value: unknown): value is Record<string, unknown> { return !!val
 function valid(condition: unknown): asserts condition { if (!condition) throw Error('invalid Monday memory state; review before resetting'); }
 function integer(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
 function identity(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 256; }
-function parseState(value: unknown, config: MondayMemoryConfig): State {
-  valid(object(value) && value.version === 2 && value.endpoint === config.endpoint && typeof value.dataset === 'string' && identity(value.source_id) && integer(value.last_discovery) && object(value.files) && Array.isArray(value.manifests));
+function parseState(value: unknown): State {
+  valid(object(value) && value.version === 2 && typeof value.endpoint === 'string' && typeof value.dataset === 'string' && identity(value.source_id) && integer(value.last_discovery) && object(value.files) && Array.isArray(value.manifests));
+  const endpoint = memoryUploadEndpoint(value.endpoint);
   const files: State['files'] = {};
   const cursor = (v: unknown): Cursor => { valid(object(v) && integer(v.offset) && typeof v.hash === 'string' && /^[a-f0-9]{64}$/.test(v.hash)); return { offset: v.offset, hash: v.hash }; };
   for (const [key, item] of Object.entries(value.files)) {
@@ -80,16 +82,14 @@ function parseState(value: unknown, config: MondayMemoryConfig): State {
       errors[key] = { message: error.message, historical: error.historical };
     }
   }
-  return { version: 2, endpoint: config.endpoint, dataset: value.dataset, source_id: value.source_id, last_discovery: value.last_discovery, files, manifests, discovery_errors: errors };
+  return { version: 2, endpoint, dataset: value.dataset, source_id: value.source_id, last_discovery: value.last_discovery, files, manifests, discovery_errors: errors };
 }
 
 export function mondayMemoryConfig(root: string, env = process.env): MondayMemoryConfig | undefined {
   if (env.XIAOBA_MEMORY_UPLOAD_ENABLED === 'false' || env.XIAOBA_ROLE === 'inspector-cat') return;
-  const endpoint = (env.XIAOBA_MEMORY_UPLOAD_URL || 'http://121.11.233.41').replace(/\/$/, '');
-  const url = new URL(endpoint);
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw Error('invalid Monday memory URL');
+  const destination = memoryUploadDestination(env);
   const local = new CatsCoLocalConfigService({ runtimeRoot: root, env });
-  return { endpoint, root, bot: () => {
+  return { ...destination, root, bot: () => {
     const current = local.load().currentBot;
     const uid = String(local.getAuthState().botUid || '').replace(/^usr/, '').trim();
     if (!/^[1-9][0-9]{0,18}$/.test(uid)) return;
@@ -157,8 +157,10 @@ export class MondayMemoryUploader {
   private lock?: fs.FileHandle;
   private hashes = new Map<string, { offset: number; mtime: number; size: number; hash: Hash }>();
   private readonly statePath: string;
+  private readonly transport: MondayMemoryTransport;
   constructor(private readonly config: MondayMemoryConfig) {
     this.statePath = path.join(config.root, 'data', 'monday-memory-upload', 'state.json');
+    this.transport = new MondayMemoryTransport(config);
   }
   async start(): Promise<void> {
     await this.acquire();
@@ -194,7 +196,7 @@ export class MondayMemoryUploader {
   }
   private async load() {
     try {
-      this.state = parseState(JSON.parse(await fs.readFile(this.statePath, 'utf8')), this.config);
+      this.state = parseState(JSON.parse(await fs.readFile(this.statePath, 'utf8')));
     } catch (e) {
       if (!(e instanceof Error) || !('code' in e) || e.code !== 'ENOENT') throw e;
       this.state = { version: 2, endpoint: this.config.endpoint, dataset: '', source_id: 'bot_' + randomUUID(), last_discovery: 0, files: {}, manifests: [], discovery_errors: {} };
@@ -221,24 +223,17 @@ export class MondayMemoryUploader {
     const current = this.config.bot();
     const text = JSON.stringify({ ...body, dataset_id: this.state!.dataset, ...(current?.uid === uid && current.name ? { bot_name: current.name } : {}) });
     if (Buffer.byteLength(text) > MAX_BODY) throw Error('Monday request exceeds transport budget');
-    const response = await fetch(this.config.endpoint + '/v1/bots/' + uid + route, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: text, signal: AbortSignal.timeout(60000),
-    });
-    if (!response.ok) throw Error('Monday HTTP ' + response.status);
-    return response.json();
+    return this.transport.post('/v1/bots/' + uid + route, text);
   }
   /** Public for manual runs/tests; normal startup uses the same persistent cycle. */
   async cycle(now = Date.now()): Promise<void> {
     if (!this.lock) { await this.acquire(); await this.load(); }
     const state = this.state!;
     if (!this.config.bot() && !Object.keys(state.files).length) return;
-    const response = await fetch(this.config.endpoint + '/v1/bot-ingest/config', { signal: AbortSignal.timeout(60000) });
-    if (!response.ok) throw Error('Monday config HTTP ' + response.status);
-    const remote: unknown = await response.json();
-    if (!object(remote) || !identity(remote.dataset_id)) throw Error('invalid Monday dataset');
-    if (state.dataset && state.dataset !== remote.dataset_id) throw Error('Monday dataset changed; archive uploader state before a full rebuild');
-    if (!state.dataset) { state.dataset = remote.dataset_id; await this.save(); }
+    const dataset = await this.transport.connect(state.dataset);
+    if (!state.dataset || state.endpoint !== this.config.endpoint) {
+      state.dataset = dataset; state.endpoint = this.config.endpoint; await this.save();
+    }
     if (!state.last_discovery || now >= nextMemoryScan(state.last_discovery)) await this.discover(now);
     // One bounded chunk per file and lane before rotating, with new material first.
     for (const lane of ['incremental', 'backfill'] as const) {

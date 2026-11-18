@@ -6,10 +6,19 @@ Optional independent settings:
 
 ```dotenv
 XIAOBA_MEMORY_UPLOAD_ENABLED=true
-XIAOBA_MEMORY_UPLOAD_URL=http://121.11.233.41
+XIAOBA_MEMORY_UPLOAD_URL=https://memory.catsco.cn:18443
+XIAOBA_MEMORY_UPLOAD_FALLBACK_URL=https://memory.catsco.cc:18443
 ```
 
-Set `XIAOBA_MEMORY_UPLOAD_ENABLED=false` to disable this uploader. Its default receiver is Monday's HTTP upload ingress. `MONDAY_MEMORY_*` was the earlier opt-in prototype and no longer controls this uploader. The CatsLog upload setting remains independent. Search, workbench and original-source read authorization are server concerns and are not removed by keyless upload.
+Set `XIAOBA_MEMORY_UPLOAD_ENABLED=false` to disable this uploader. Its default receiver is Monday's HTTPS upload ingress on TCP 18443, with `.cn` primary and `.cc` fallback. Both must have valid public certificates and return the same dataset. `MONDAY_MEMORY_*` was the earlier opt-in prototype and no longer controls this uploader. The CatsLog upload setting remains independent. Search, workbench and original-source read authorization are server concerns and are not removed by keyless upload.
+
+An explicit `XIAOBA_MEMORY_UPLOAD_URL` overrides the default route and disables implicit fallback; set `XIAOBA_MEMORY_UPLOAD_FALLBACK_URL` explicitly if wanted. An internal receiver such as `http://10.0.0.11` remains supported as an explicit deployment override. Public defaults never downgrade to HTTP or disable certificate checks. Deployment of the default URL requires the receiver's certificate and Nginx listener; a DNS record alone is insufficient.
+
+## Endpoint migration and fallback
+
+The endpoint is routing metadata, not the source identity. On address changes the uploader loads its existing independent state and verifies the new receiver's dataset before changing that metadata. It retains the installation ID, file generations, B0, manifests and acknowledged offsets. A different dataset stops processing and leaves the state unchanged; do not delete state just to change HTTP/IP to HTTPS/domain.
+
+Connection failures, timeouts and HTTP 502/503/504 can try the configured backup once per operation. Before replaying a POST there, the uploader verifies that backup's dataset. The request body, source coordinates and dataset are unchanged, so the receiver's existing idempotency handles an accepted request whose ACK was lost. A healthy backup is reused and the primary is rechecked after 15 minutes. Request errors, 429, invalid JSON/config and dataset mismatches do not trigger fallback. There is no simultaneous mirrored upload.
 
 ## Bot ownership
 
@@ -35,7 +44,7 @@ Transport chunks do not define model batches. Monday stores immutable raw record
 
 ```sh
 npm run build
-node --import tsx --test tests/monday-memory-uploader.test.ts tests/runtime-command-support.test.ts tests/catsco-log-agent-config.test.ts tests/catsco-log-agent-state.test.ts
+node --import tsx --test tests/monday-memory-uploader.test.ts tests/monday-memory-transport.test.ts tests/runtime-command-support.test.ts tests/catsco-log-agent-config.test.ts tests/catsco-log-agent-state.test.ts
 ```
 
 Real HTTP/temp-file tests cover no authorization header, default-on independent configuration, dynamic name changes, recorded/fallback UID routing, full history, later appends, lost ACKs, restart, fragments, partial lines, read-only source bytes, isolated errors and invalid state rejection.
