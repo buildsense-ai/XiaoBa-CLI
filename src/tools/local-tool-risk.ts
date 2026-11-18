@@ -38,6 +38,10 @@ const LOW_RISK_TOOLS = new Set([
   // the provider; it does not mutate the local machine or send an external
   // side effect.
   'finish_memory_search',
+  // Session-scoped publication: a verified claim enters the Branch queue only;
+  // delivery stays behind the mechanical provider-call gate.
+  'publish_memory_finding',
+  'resolve_held_memory_observation',
 ]);
 
 const CONFIRM_TOOLS = new Set([

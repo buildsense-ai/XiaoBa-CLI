@@ -44,6 +44,11 @@ import {
 import { TurnLogRecorder } from './turn-log-recorder';
 import { TurnContextBuilder } from './turn-context-builder';
 import { AgentTurnController, AgentTurnRunError } from './agent-turn-controller';
+import {
+  SessionMemoryBranchStore,
+  normalizeMemoryBranchScope,
+  type MemoryBranchScope,
+} from './session-memory-branch';
 import { SessionLifecycleManager } from './session-lifecycle-manager';
 import { prepareForkMessages, truncateAtTurn } from './session-fork';
 import { PlanRuntime } from './plan-runtime';
@@ -306,6 +311,11 @@ export class AgentSession {
   private creditTask?: CreditTaskRuntime;
   private creditTurnInFlight = false;
   private creditResumeOptions?: HandleMessageOptions;
+  /** Session-scoped Memory Branch queue: one lifetime, many turns. */
+  private readonly memoryBranchStore = new SessionMemoryBranchStore();
+  private activeCreditTaskId?: string;
+  private memoryInputTurn = 0;
+  private readonly recoveredCreditSettlements = new Set<string>();
 
   constructor(
     public readonly key: string,
@@ -370,10 +380,12 @@ export class AgentSession {
       allowLegacySessionFallback: this.shouldAllowLegacySessionFallback(sessionRoute),
       runtimeFeedbackInbox: this.runtimeFeedbackInbox,
     });
-    const creditSnapshot = this.lifecycleManager.loadCreditTask();
+    const recoveredCredit = this.lifecycleManager.loadCreditTasks();
+    const creditSnapshot = recoveredCredit.active;
     if (creditSnapshot && creditSnapshot.enabled !== false
       && (creditSnapshot.state !== 'completed' || creditSnapshot.finishPending) && isCatsCoCreditProvider(modelConfig)) {
       this.creditTask = this.createCreditTask(modelConfig, creditSnapshot);
+      this.activeCreditTaskId = creditSnapshot.taskId;
       if (creditSnapshot.state === 'running') this.creditTask.pause('运行已中断，请手动恢复原任务');
     }
     this.defaultDirectory = this.resolveDefaultDirectory();
@@ -382,6 +394,7 @@ export class AgentSession {
       sessionKey: key,
       sessionType,
       sessionRoute,
+      memoryBranchStore: this.memoryBranchStore,
       services,
       skillRuntime: this.skillRuntime,
       planRuntime: this.planRuntime,
@@ -418,6 +431,18 @@ export class AgentSession {
           }
         } : undefined,
     });
+
+    // A task whose foreground ended before the crash was only waiting on
+    // Branch children that no longer exist. Settle it exactly once, without
+    // resuming it and without touching the newer active task's state.
+    if (isCatsCoCreditProvider(modelConfig)) {
+      for (const pending of recoveredCredit.pendingBranchTasks) {
+        void this.settleRecoveredBranchTask(modelConfig, pending);
+      }
+      for (const interrupted of recoveredCredit.interruptedTasks) {
+        Logger.warning(`[${key}] 发现无主的原任务 ${interrupted.taskId}（前台未完成，进程已重启），不重放，保留快照待人工处理`);
+      }
+    }
 
     const runtimeFeedbackInbox = this.runtimeFeedbackInbox;
     const subAgentManager = SubAgentManager.getInstance();
@@ -740,7 +765,92 @@ export class AgentSession {
     config: import('../types').ChatConfig,
     snapshot?: import('./credit-task-runtime').CreditTaskSnapshot,
   ): CreditTaskRuntime {
-    return new CreditTaskRuntime(config, snapshot, state => this.lifecycleManager.saveCreditTask(state));
+    return new CreditTaskRuntime(config, snapshot,
+      state => this.lifecycleManager.saveCreditTask(state, this.activeCreditTaskId));
+  }
+
+  /**
+   * Recovery for a task whose foreground already finished: its Branch children
+   * died with the process, so the parent settles once and is never resumed.
+   * The active (newer) task's snapshot, running state and recovery stay
+   * untouched because the save callback writes only this task's map entry.
+   */
+  private async settleRecoveredBranchTask(
+    config: import('../types').ChatConfig,
+    snapshot: import('./credit-task-runtime').CreditTaskSnapshot,
+  ): Promise<void> {
+    if (this.recoveredCreditSettlements.has(snapshot.taskId)) return;
+    this.recoveredCreditSettlements.add(snapshot.taskId);
+    const task = new CreditTaskRuntime(config, snapshot,
+      state => this.lifecycleManager.saveCreditTask(state, this.activeCreditTaskId));
+    Logger.runtimeEvent('INFO', `[${this.key}] recovered branch-only credit task settles once`, {
+      type: 'credit_task_recovered_settlement',
+      payload: {
+        task_id: snapshot.taskId,
+        active_task_id: this.activeCreditTaskId,
+        foreground_completed: snapshot.foregroundCompleted === true,
+        branch_children: snapshot.branchChildren ?? 0,
+      },
+    });
+    try {
+      await task.complete();
+    } catch (error: any) {
+      Logger.warning(`[${this.key}] 恢复期原任务 ${snapshot.taskId} 结算未完成: ${error?.message || error}`);
+    }
+  }
+
+  /**
+   * The sender whose input a Branch observation may serve. In a group session
+   * the same bot session handles several senders, so sender identity is part
+   * of the delivery gate rather than an inference made by the model.
+   */
+  private resolveMemoryBranchScope(
+    options?: SessionCallbacks | HandleMessageOptions,
+  ): MemoryBranchScope {
+    const candidate = options && ('sessionRoute' in options || 'executionScope' in options)
+      ? options as HandleMessageOptions
+      : undefined;
+    const route = candidate?.sessionRoute ?? this.sessionRoute;
+    const scope = candidate?.executionScope;
+    return normalizeMemoryBranchScope({
+      sessionKey: this.key,
+      topicId: route?.topicId ?? scope?.topicId ?? this.key,
+      actorUserId: route?.actorUserId ?? scope?.actorUserId ?? 'unknown_actor',
+    });
+  }
+
+  /**
+   * Front-of-line admission for the Memory Branch: the sequence advances when
+   * a real user input is admitted, never for runtime observation turns or
+   * replays of an already admitted pending input.
+   */
+  private admitMemoryBranchInput(
+    text: string | import('../types').ContentBlock[],
+    options: SessionCallbacks | HandleMessageOptions | undefined,
+    skipAdvance: boolean,
+  ): import('./agent-turn-controller').MemoryBranchTurnInput {
+    const scope = this.resolveMemoryBranchScope(options);
+    if (skipAdvance) {
+      return {
+        sequence: this.memoryBranchStore.currentInputSequence,
+        turn: this.memoryInputTurn,
+        turnId: 'runtime_observation',
+        scope,
+      };
+    }
+    const turn = ++this.memoryInputTurn;
+    const turnId = `input:${turn}`;
+    const sequence = this.memoryBranchStore.noteUserInput({ text, scope, turn, turnId });
+    return { sequence, turn, turnId, scope };
+  }
+
+  /** Explicit cancellation / scope loss / session closure all end the investigation. */
+  cancelMemoryBranch(reason: string): void {
+    this.turnController.cancelMemoryBranch(reason);
+  }
+
+  expireMemoryBranchQueue(reason: string): number {
+    return this.memoryBranchStore.expire(reason);
   }
 
   private async handleInput(
@@ -756,12 +866,15 @@ export class AgentSession {
       return { text: this.creditTask.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
     }
     if (!isCatsCoCreditProvider(config)) {
-      return this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse);
+      const memoryBranchInput = this.admitMemoryBranchInput(text, callbacksOrOptions, Boolean(runtimeObservationSource));
+      return this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse, memoryBranchInput);
     }
     if (this.busy || this.creditTurnInFlight || this.manualCompactionInFlight) {
       return { text: BUSY_MESSAGE, visibleToUser: true };
     }
-    if (this.creditTask?.snapshot.finishPending) {
+    // A finish acknowledgement is in flight, but the foreground is done and
+    // only Branch children may remain: the input slot is already released.
+    if (this.creditTask?.snapshot.finishPending && !this.creditTask.hasOnlyBranchChildren()) {
       return { text: this.creditTask.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
     }
     if (this.creditTask?.snapshot.state === 'paused' && !resumeTask) {
@@ -772,14 +885,23 @@ export class AgentSession {
       && (inherited?.snapshot.state === 'completed' || this.creditTask?.snapshot.state === 'completed')) {
       return { text: '', visibleToUser: false, taskOutcome: 'completed' };
     }
-    if (!resumeTask && !runtimeObservationSource && this.creditTask?.snapshot.state === 'running' && !inherited) {
+    // A running task that only holds Branch children has released the input
+    // slot: the next turn starts its own task and snapshot.
+    if (!resumeTask && !runtimeObservationSource && this.creditTask?.snapshot.state === 'running'
+      && !inherited && !this.creditTask.canAdmitNextTurn()) {
       return { text: '原任务的子步骤仍在执行，请等待结束后再启动新任务。', visibleToUser: true, taskOutcome: 'failed' };
     }
     const task = resumeTask ?? inherited
       ?? (runtimeObservationSource && this.creditTask?.snapshot.state === 'running' ? this.creditTask : undefined)
       ?? this.createCreditTask(config);
     if (callbacksOrOptions && !resumeTask) this.creditResumeOptions = callbacksOrOptions as HandleMessageOptions;
+    const memoryBranchInput = this.admitMemoryBranchInput(
+      text,
+      callbacksOrOptions,
+      Boolean(runtimeObservationSource || resumeTask),
+    );
     this.creditTask = task;
+    this.activeCreditTaskId = task.snapshot.taskId;
     this.creditTurnInFlight = true;
     this.interruptRequested = false;
     const admissionGeneration = this.lifecycleGeneration;
@@ -803,7 +925,13 @@ export class AgentSession {
           await task.complete();
           return { text: '已停止当前请求。', visibleToUser: true, taskOutcome: 'cancelled' };
         }
-        const result = await this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse);
+        const result = await this.executeInput(
+          text,
+          callbacksOrOptions,
+          runtimeObservationSource,
+          suppressFinalResponse,
+          memoryBranchInput,
+        );
         if (task.snapshot.state === 'paused') return { text: task.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
         if (result.taskOutcome === 'completed' || result.taskOutcome === 'cancelled' || task.snapshot.enabled === false) {
           if (!inherited || resumeTask) await task.complete();
@@ -828,6 +956,7 @@ export class AgentSession {
     callbacksOrOptions?: SessionCallbacks | HandleMessageOptions,
     runtimeObservationSource?: string,
     suppressFinalResponse = false,
+    memoryBranchInput?: import('./agent-turn-controller').MemoryBranchTurnInput,
   ): Promise<HandleMessageResult> {
     return this.withLogContext(async () => {
       // 兼容旧签名：如果传入的对象有 onText/onToolStart 等字段，视为 SessionCallbacks
@@ -1029,6 +1158,7 @@ export class AgentSession {
           dispatchedAsTool,
           localFileGrants,
           pendingUserInputProvider,
+          memoryBranchInput,
           abortSignal: this.activeAbortController.signal,
           shouldContinue: () => !this.interruptRequested,
         });
@@ -1468,6 +1598,7 @@ export class AgentSession {
     this.checkpointCandidateFallbackRequired = false;
     this.checkpointBlockedReason = null;
     this.planRuntime.clear();
+    this.memoryBranchStore.reset('session_reset');
     this.stopSubAgents('父会话 reset');
     this.messages = [];
     this.resetCurrentDirectory();
@@ -1487,6 +1618,7 @@ export class AgentSession {
     this.checkpointCandidateFallbackRequired = false;
     this.checkpointBlockedReason = null;
     this.planRuntime.clear();
+    this.expireMemoryBranchQueue('session_closed');
     this.stopSubAgents('父会话 clear');
     this.messages = [];
     const state = this.lifecycleManager.clear();
@@ -1559,6 +1691,7 @@ export class AgentSession {
 
   /** 请求中断当前运行中的对话回合 */
   requestInterrupt(): void {
+    this.cancelMemoryBranch('explicit_cancel');
     if (this.resumeInFlight) {
       this.lifecycleGeneration++;
       this.checkpointRevision++;

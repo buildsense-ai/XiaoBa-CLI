@@ -79,7 +79,7 @@ async function actualAgentTurn(options: { localOnly?: boolean; failFirstDispatch
   let loggerModule: any;
 
   try {
-    synthetic = require('../src/core/synthetic-observation');
+    synthetic = require('../src/core/session-memory-branch');
     loggerModule = require('../src/utils/logger');
     const [agent, context, ai, turnLoggerModule, fixture] = await Promise.all([
       import('../src/core/agent-turn-controller'),
@@ -198,7 +198,7 @@ async function actualAgentTurn(options: { localOnly?: boolean; failFirstDispatch
       updateCurrentDirectory: () => undefined,
     });
     const logger = new turnLoggerModule.SessionTurnLogger('cli', sessionId);
-    const queuePrototype = synthetic.InMemorySyntheticObservationQueue.prototype;
+    const queuePrototype = synthetic.SessionMemoryBranchStore.prototype;
     originalPush = queuePrototype.push;
     queuePrototype.push = function(observation: any) {
       const pushed = originalPush.call(this, observation);
@@ -234,23 +234,26 @@ async function actualAgentTurn(options: { localOnly?: boolean; failFirstDispatch
           abortSignal: abortController!.signal,
           callbacks: { onMemoryBranch: (event: any) => { presentationEvents.push(structuredClone(event)); } },
         }));
-        await waitFor('next user turn consumes the carried Branch', running);
+        await waitFor('next user turn completes without the held claim', running);
         runSettled = true;
       }
     }
     if (options.carryover) {
-      const pendingSidecar = (controller as any).memoryBranchCarryover?.handle?.done;
-      if (pendingSidecar) await waitFor('follow-up sidecar settles before fixture cleanup', pendingSidecar);
+      (controller as any).cancelMemoryBranch('fixture_cleanup');
     }
     const rawLoggerBytes = fs.existsSync(logger.getLogFilePath()) ? fs.readFileSync(logger.getLogFilePath()) : Buffer.alloc(0);
     const rawLogBytes = extractExecutionGraphLogRecords(rawLoggerBytes);
-    return { sessionId, events, presentationEvents, mainRequests, mainRequestHashes, branchRequests, branchCallCount, branchOperations, nodeAnchor: sourceAnchor, rawLogBytes };
+    return {
+      sessionId, events, presentationEvents, mainRequests, mainRequestHashes, branchRequests,
+      branchCallCount, branchOperations, nodeAnchor: sourceAnchor, rawLogBytes,
+      storeSnapshot: (controller as any).memoryBranchStore.snapshot(),
+    };
   } finally {
     if (!runSettled) {
       abortController?.abort();
       if (running) await Promise.race([running.then(() => undefined, () => undefined), new Promise(resolve => setTimeout(resolve, 1000))]);
     }
-    if (originalPush) synthetic.InMemorySyntheticObservationQueue.prototype.push = originalPush;
+    if (originalPush) synthetic.SessionMemoryBranchStore.prototype.push = originalPush;
     if (originalRuntimeEvent) loggerModule.Logger.runtimeEvent = originalRuntimeEvent;
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -355,11 +358,16 @@ test('D5: actual MemorySearchBranchSession late result is excluded from call 1 a
     const hidden = await actualAgentTurn({ cite: 'hidden' });
     assert.deepEqual(hidden.presentationEvents.find(event => event.status === 'answered').answer_refs, [], 'an annotation removed at the actual reply boundary cannot count as a visible reference');
     const carried = await actualAgentTurn({ carryover: true });
-    const carryInjection = carried.presentationEvents.find(event => event.status === 'injected');
-    assert.ok(carryInjection, 'late prior-turn observation reaches the next user turn');
-    assert.notEqual(carryInjection.origin_turn_id, carryInjection.consumed_turn_id);
-    assert.ok(carried.presentationEvents.some(event => event.status === 'deferred' && event.branch_run_id === carryInjection.branch_run_id), 'origin turn ends with an explicit deferred state');
-    assert.equal(carried.presentationEvents.filter(event => event.status === 'injected' && event.consumed_turn_id === event.origin_turn_id).length, 0, 'origin answer is never decorated as consuming the late result');
+    // Session-scoped delivery: a claim verified for input #1 is held on input
+    // #2 until the Branch reconfirms it. The follow-up request must not contain
+    // it, and the origin turn ends with an explicit deferred state.
+    assert.equal(carried.presentationEvents.some(event => event.status === 'injected' && event.consumed_turn_id === 'episode:2'),
+      false, 'held claim is absent from the follow-up request');
+    assert.ok(carried.presentationEvents.some(event => event.status === 'deferred'), 'origin turn ends with an explicit deferred state');
+    const held = carried.storeSnapshot.entries.filter((entry: any) => entry.status === 'held');
+    assert.equal(held.length, 1, 'the prior-turn claim is held for the new input sequence');
+    assert.equal(held[0].verifiedThroughInput, 1);
+    assert.equal(carried.storeSnapshot.inputSequence, 2);
 
     const report = {
       carryover_presentation_events: carried.presentationEvents,

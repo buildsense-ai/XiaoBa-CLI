@@ -9,6 +9,7 @@ import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 import { resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
+import type { MetricsCollector } from '../utils/metrics';
 
 export interface BranchSessionOptions {
   id: string;
@@ -27,6 +28,8 @@ export interface BranchSessionOptions {
   maxContextTokens?: number;
   /** Memory's restored autonomous tool loop uses the original serial execution. */
   parallelToolExecution?: boolean;
+  /** Per-run spend attribution (branch tokens charge the originating task). */
+  metrics?: MetricsCollector;
 }
 
 export interface BranchRunOutcome {
@@ -215,6 +218,7 @@ export abstract class BranchSession {
       // in one model turn run concurrently (results stay keyed to their
       // tool_use ids; the shared abortSignal cancels the whole batch).
       parallelToolExecution: this.options.parallelToolExecution ?? true,
+      ...(this.options.metrics ? { metrics: this.options.metrics } : {}),
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
         sessionId: `branch:${this.options.type}:${this.options.id}`,
