@@ -104,6 +104,7 @@ export interface CatsLogKnowledgeSearchHit {
   status: CatsLogKnowledgeEntryStatus;
   /** Document revision containing this entry version. */
   revision: string;
+  matched_terms?: string[];
   follow_on?: CatsLogKnowledgeFollowOnHint;
 }
 
@@ -112,7 +113,10 @@ export interface CatsLogKnowledgeSearchHit {
  * server-side directly into knowledge.SearchQuery; no scope fields exist.
  */
 export interface CatsLogKnowledgeSearchQuery {
-  query: string;
+  any_of?: string[];
+  query?: string;
+  /** List metadata by day without a keyword. Date bounds are optional. */
+  recent?: boolean;
   /** 1..50; server default 10 when omitted. */
   limit?: number;
   /** Opaque; replay unmodified for continuation. */

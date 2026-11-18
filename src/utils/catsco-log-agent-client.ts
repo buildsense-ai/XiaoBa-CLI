@@ -1852,11 +1852,17 @@ function validateKnowledgeDay(value: unknown, name: string): string | undefined 
 export function validateKnowledgeSearchQuery(query: CatsLogKnowledgeSearchQuery): Record<string, unknown> {
   const text = typeof query.query === 'string' ? query.query : '';
   const trimmed = text.trim();
-  if (!trimmed) throw new Error('CatsLog knowledge search query is required');
+  const alternatives = query.any_of;
+  if (alternatives !== undefined && (trimmed || query.recent || !Array.isArray(alternatives) || alternatives.length < 1 || alternatives.length > 4
+    || alternatives.some(term => typeof term !== 'string' || !term.trim())
+    || alternatives.reduce((size, term) => size + Buffer.byteLength(term.trim()), 0) > KNOWLEDGE_MAX_SEARCH_QUERY_BYTES)) {
+    throw new Error('CatsLog any_of requires 1..4 literal alternatives within the search byte limit');
+  }
+  if (!trimmed && !alternatives && query.recent !== true) throw new Error('CatsLog knowledge search query is required');
   if (Buffer.byteLength(trimmed, 'utf8') > KNOWLEDGE_MAX_SEARCH_QUERY_BYTES) {
     throw new Error(`CatsLog knowledge search query must be at most ${KNOWLEDGE_MAX_SEARCH_QUERY_BYTES} bytes`);
   }
-  const body: Record<string, unknown> = { query: trimmed };
+  const body: Record<string, unknown> = query.recent === true ? { recent: true } : alternatives ? { any_of: alternatives.map(term => term.trim()) } : { query: trimmed };
   const limit = validateKnowledgeLimit(query.limit, KNOWLEDGE_MAX_SEARCH_LIMIT);
   if (limit !== undefined) body.limit = limit;
   const cursor = validateKnowledgeCursor(query.cursor);
@@ -1865,6 +1871,8 @@ export function validateKnowledgeSearchQuery(query: CatsLogKnowledgeSearchQuery)
   if (dateFrom !== undefined) body.date_from = dateFrom;
   const dateTo = validateKnowledgeDay(query.date_to, 'date_to');
   if (dateTo !== undefined) body.date_to = dateTo;
+  if (query.recent === true && trimmed) throw new Error('Recent Diary cannot use a keyword');
+  if (dateFrom && dateTo && dateFrom > dateTo) throw new Error('CatsLog knowledge date range is inverted');
   if (query.statuses !== undefined) {
     if (!Array.isArray(query.statuses) || query.statuses.some(status => !CATSLOG_KNOWLEDGE_ENTRY_STATUSES.includes(status))) {
       throw new Error('CatsLog knowledge search statuses are invalid');

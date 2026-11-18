@@ -94,7 +94,7 @@ test('M1/M2: main agent recall exposes only document actions and rejects memory-
     get(target: any, key) { if (key in target) return target[key]; return async () => { backendCalls++; return {}; }; },
   });
   const tool = new CatsLogKnowledgeRecallTool(spy);
-  assert.deepEqual((tool.definition.parameters as any).properties.action.enum, ['search', 'read', 'graph']);
+  assert.deepEqual((tool.definition.parameters as any).properties.action.enum, ['search', 'read', 'graph', 'recent']);
   const props = Object.keys((tool.definition.parameters as any).properties);
   for (const memoryOnly of ['anchor', 'direction', 'kinds', 'before', 'after', 'max_bytes', 'search_any']) {
     assert.ok(!props.includes(memoryOnly), `main schema still exposes ${memoryOnly}`);

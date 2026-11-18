@@ -6,7 +6,6 @@ import type {
   CatsLogKnowledgeAnchor,
   CatsLogKnowledgeReadQuery,
   CatsLogKnowledgeSearchQuery,
-  CatsLogKnowledgeSearchHit,
 } from '../utils/catslog-knowledge-types';
 import { recallTextHash, dailyKnowledgeRef, hashedRecallRef, nativeRecallAttribution, type NativeRecallSource } from '../core/native-recall-attribution';
 export const CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME = 'catslog_knowledge_recall';
@@ -37,7 +36,7 @@ interface RecallArgs {
   format?: unknown;
 }
 
-const DOCUMENT_ACTIONS = ['search', 'read', 'graph'] as const;
+const DOCUMENT_ACTIONS = ['search', 'read', 'graph', 'recent'] as const;
 
 /**
  * Native read-only mainAgent recall over the Agent-private CatsLog Diary
@@ -66,7 +65,8 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     name: CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME,
     description: [
       '按需检索本 Agent 在 CatsLog 的私有日记文档（只读）。历史会话与来源记忆由后台记忆 branch 负责，不在此工具中。',
-      'action=search：按关键词搜索每日知识条目（默认包含 draft 未审定条目，status 字段可见，draft 不代表已核验；命中标题/状态/所在文档与日期，全文需 read）。',
+      'action=recent：按日期从新到旧列举日记，适用于工作复盘。日期可选，按问题限定范围。先取小页，找到足够线索就用 graph 或 read 按固定版本核实正文和后续更正。',
+      'action=search：按关键词搜索每日知识，优先返回标题命中，同档按日记日期从新到旧。点名项目、事项或术语时优先用 search；可按用户的时间范围筛选。默认包含 draft，全文需 read 或 graph 核实。',
       'action=graph：读取精确条目 seeds 的完整必要条件与补充/修正子图；预算不足整组失败，不返回省掉条件的正文。优先用于搜索后的记忆读取。Skill 是日记经验的可选补充。',
       'action=read：读取指定文档（可选 revision/entry_id）；format=json 返回条目全文分页，format=okf 返回整篇 Open Knowledge Format Markdown。',
       '每次成功返回 recall_attribution.trace_id 和稳定 ref；引用事实时复制对应正文 ref。披露/交付不等于已使用；引用与最终保留在本地分别统计，远端 typed-source feedback 尚未接入。',
@@ -79,14 +79,14 @@ export class CatsLogKnowledgeRecallTool implements Tool {
         action: {
           type: 'string',
           enum: [...DOCUMENT_ACTIONS],
-          description: 'search=搜索日记条目；read=读取文档；graph=读取条目的完整必要条件与修正子图。',
+          description: 'recent=按日期列举候选；search=搜索日记条目；read=读取文档；graph=读取必要条件与更正子图。',
         },
         seeds: { type: 'array', items: { type: 'object' }, description: 'graph 必填：1..8 个精确 knowledge_entry anchor（kind/id/document_id/revision）。' },
         node_budget: { type: 'number', description: 'graph 节点预算 1..32，默认16。' },
         edge_budget: { type: 'number', description: 'graph 关系预算 1..128，默认64。' },
         byte_budget: { type: 'number', description: 'graph 完整 JSON 字节预算 256..262144，默认65536。' },
         query: { type: 'string', description: '一个字面短语，优先整段匹配。首屏零命中时，2..4 个空格分隔的词会按任一词重试。精确多词短语可用单元素 any_of。' },
-        any_of: { type: 'array', items: { type: 'string' }, description: 'search 时与 query 二选一。1..4 个候选短语，按任一短语匹配并去重。继续某词的搜索请使用单独的 query。' },
+        any_of: { type: 'array', items: { type: 'string' }, description: 'search 时与 query 二选一。1..4 个候选短语，按任一短语匹配并去重。使用同样的查询条件和 next_cursor 翻页。' },
         limit: { type: 'number', description: '可选。每页条数上限（服务端有默认值与上限）。' },
         cursor: { type: 'string', description: '可选。上一页响应原样返回的 next_cursor、before_cursor 或 after_cursor，翻页时必须逐字节一致。' },
         date_from: { type: 'string', description: '可选。YYYY-MM-DD 起始日（含）。' },
@@ -123,6 +123,8 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       switch (input.action) {
         case 'search':
           result = await this.search(input, signal); break;
+        case 'recent':
+          result = await this.recent(input, signal); break;
         case 'graph':
           result = await this.graph(input, signal); break;
         case 'read':
@@ -132,7 +134,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
             ok: false,
             errorCode: 'INVALID_TOOL_ARGUMENTS',
             retryable: false,
-            message: 'action 必须是 search / read / graph 之一；历史会话与来源记忆由记忆 branch 检索',
+            message: 'action 必须是 recent / search / read / graph 之一；历史会话与来源记忆由记忆 branch 检索',
           };
       }
       return this.withAttribution(result, String(input.action));
@@ -141,11 +143,27 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     }
   }
 
+  private async recent(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {
+    if (input.query !== undefined || input.any_of !== undefined) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'recent 不接受关键词' };
+    }
+    if (!this.backend.searchKnowledge) return this.unavailableResult('当前运行环境未接入 CatsLog 日记检索');
+    const page = await this.backend.searchKnowledge({
+      recent: true,
+      ...(typeof input.date_from === 'string' ? { date_from: input.date_from } : {}),
+      ...(typeof input.date_to === 'string' ? { date_to: input.date_to } : {}),
+      limit: this.optionalLimit(input.limit), cursor: this.optionalCursor(input.cursor),
+      include_draft: input.include_draft !== false,
+      ...(Array.isArray(input.statuses) ? { statuses: input.statuses as CatsLogKnowledgeSearchQuery['statuses'] } : {}),
+    }, signal);
+    return this.pageResult(page, page.next_cursor, page.exhausted);
+  }
+
   private async search(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {
     const alternatives = input.any_of;
-    if (alternatives !== undefined && (input.query !== undefined || input.cursor !== undefined || !Array.isArray(alternatives)
+    if (alternatives !== undefined && (input.query !== undefined || !Array.isArray(alternatives)
       || alternatives.length < 1 || alternatives.length > 4 || !alternatives.every(term => typeof term === 'string' && term.trim()))) {
-      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'any_of 需要 1..4 个非空短语，不能与 query 或 cursor 混用' };
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'any_of 需要 1..4 个非空短语，不能与 query 混用' };
     }
     const phrase = Array.isArray(alternatives) ? alternatives[0] : input.query;
     if (typeof phrase !== 'string' || !phrase.trim()) {
@@ -165,35 +183,22 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     if (!this.backend.searchKnowledge) {
       return this.unavailableResult('当前运行环境未接入 CatsLog 每日知识检索');
     }
-    const search = (term: string) => this.backend.searchKnowledge!({ ...query, query: term }, signal);
-    let terms: string[];
-    if (Array.isArray(alternatives)) {
-      terms = [...new Set(alternatives.map(term => term.trim() as string))];
-    } else {
-      const page = await search(phrase);
-      terms = [...new Set(phrase.trim().split(/\s+/u))];
+    const terms = Array.isArray(alternatives) ? alternatives.map(term => term.trim() as string) : [...new Set(phrase.trim().split(/\s+/u))];
+    // A phrase can fall back to alternatives. Remember that mode when the caller
+    // repeats the original phrase with the continuation returned by the tool.
+    const prefix = 'diary-any:';
+    const resumed = query.cursor?.startsWith(prefix);
+    if (!alternatives && !resumed) {
+      const page = await this.backend.searchKnowledge(query, signal);
       if (query.cursor || page.hits?.length || !page.exhausted || page.next_cursor || terms.length < 2 || terms.length > 4) {
         return this.pageResult(page, page.next_cursor, page.exhausted);
       }
     }
-    const limit = Math.min(query.limit ?? 10, 50);
-    const matches = new Map<string, { hit: CatsLogKnowledgeSearchHit; matched_terms: string[] }>();
-    let exhausted = true;
-    for (const term of terms) {
-      const page = await search(term);
-      if (!page.exhausted || page.next_cursor) exhausted = false;
-      for (const hit of page.hits ?? []) {
-        const key = JSON.stringify([hit.document_id, hit.entry_id, hit.revision]);
-        const match = matches.get(key) ?? { hit, matched_terms: [] };
-        if (!match.matched_terms.includes(term)) match.matched_terms.push(term);
-        matches.set(key, match);
-      }
-    }
-    const hits = [...matches.values()].sort((a, b) => b.matched_terms.length - a.matched_terms.length || b.hit.day.localeCompare(a.hit.day))
-      .slice(0, limit).map(({ hit, matched_terms }) => ({ ...hit, matched_terms }));
-    exhausted &&= matches.size <= limit;
-    return { ok: true, content: JSON.stringify({ hits, any_of: terms, exhausted,
-      ...(!exhausted && { incomplete: true, note: '只显示合并预览。逐个用 query 和原筛选条件从首页检索，再按该词的 next_cursor 翻页。' }) }) };
+    const { query: _phrase, ...filters } = query;
+    const page = await this.backend.searchKnowledge({ ...filters, any_of: terms,
+      cursor: resumed ? filters.cursor!.slice(prefix.length) : filters.cursor }, signal);
+    const next = page.next_cursor && (!alternatives || resumed) ? prefix + page.next_cursor : page.next_cursor;
+    return this.pageResult({ ...page, any_of: terms }, next, page.exhausted);
   }
 
   private async graph(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {
@@ -254,7 +259,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     if ((action === 'graph' || action === 'read') && body.contract === 'memory-graph/1') {
       body.nodes = body.nodes.map((node: any) => ({ ...node,
         ref: daily(node.anchor.document_id, node.anchor.revision, node.anchor.id, 'text', node.entry.text) }));
-    } else if (action === 'search') {
+    } else if (action === 'search' || action === 'recent') {
       body.hits = (body.hits || []).map((hit: any) => ({ ...hit,
         ref: daily(hit.document_id, hit.revision, hit.entry_id, 'metadata'),
       }));
