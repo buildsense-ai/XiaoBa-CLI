@@ -887,7 +887,7 @@ export class AgentTurnController {
     const candidate = observation.metadata?.memory_branch as MemoryBranchEvent | undefined;
     if (candidate?.schema !== 'catsco.memory_branch.v1') return;
     const previous = this.branchPresentations.get(candidate.branch_run_id) ?? candidate;
-    const actual = [observation.metadata?.deliveredRemoteRefs, observation.metadata?.deliveredMemoryNodeRefs, observation.metadata?.deliveredSessionSourceRefs]
+    const actual = [observation.metadata?.deliveredLocalRefs, observation.metadata?.deliveredRemoteRefs, observation.metadata?.deliveredMemoryNodeRefs, observation.metadata?.deliveredSessionSourceRefs]
       .flatMap(value => Array.isArray(value) ? value.filter((ref): ref is string => typeof ref === 'string') : []);
     const injectedRefs = actual.filter(ref => previous.read_refs.includes(ref));
     this.publishMemoryPresentation({ ...previous, status: injectedRefs.length ? 'injected' : 'unavailable', consumed_turn_id: this.presentationContext?.turnId,

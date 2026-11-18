@@ -6,6 +6,7 @@ import type {
   CatsLogKnowledgeAnchor,
   CatsLogKnowledgeReadQuery,
   CatsLogKnowledgeSearchQuery,
+  CatsLogKnowledgeSearchHit,
 } from '../utils/catslog-knowledge-types';
 import { recallTextHash, dailyKnowledgeRef, hashedRecallRef, nativeRecallAttribution, type NativeRecallSource } from '../core/native-recall-attribution';
 export const CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME = 'catslog_knowledge_recall';
@@ -22,6 +23,7 @@ interface RecallArgs {
   byte_budget?: unknown;
   // search
   query?: unknown;
+  any_of?: unknown;
   limit?: unknown;
   cursor?: unknown;
   date_from?: unknown;
@@ -83,7 +85,8 @@ export class CatsLogKnowledgeRecallTool implements Tool {
         node_budget: { type: 'number', description: 'graph 节点预算 1..32，默认16。' },
         edge_budget: { type: 'number', description: 'graph 关系预算 1..128，默认64。' },
         byte_budget: { type: 'number', description: 'graph 完整 JSON 字节预算 256..262144，默认65536。' },
-        query: { type: 'string', description: 'search 必填。检索词。' },
+        query: { type: 'string', description: '一个字面短语，优先整段匹配。首屏零命中时，2..4 个空格分隔的词会按任一词重试。精确多词短语可用单元素 any_of。' },
+        any_of: { type: 'array', items: { type: 'string' }, description: 'search 时与 query 二选一。1..4 个候选短语，按任一短语匹配并去重。继续某词的搜索请使用单独的 query。' },
         limit: { type: 'number', description: '可选。每页条数上限（服务端有默认值与上限）。' },
         cursor: { type: 'string', description: '可选。上一页响应原样返回的 next_cursor、before_cursor 或 after_cursor，翻页时必须逐字节一致。' },
         date_from: { type: 'string', description: '可选。YYYY-MM-DD 起始日（含）。' },
@@ -139,11 +142,17 @@ export class CatsLogKnowledgeRecallTool implements Tool {
   }
 
   private async search(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {
-    if (typeof input.query !== 'string' || !input.query.trim()) {
-      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'search 需要 query' };
+    const alternatives = input.any_of;
+    if (alternatives !== undefined && (input.query !== undefined || input.cursor !== undefined || !Array.isArray(alternatives)
+      || alternatives.length < 1 || alternatives.length > 4 || !alternatives.every(term => typeof term === 'string' && term.trim()))) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'any_of 需要 1..4 个非空短语，不能与 query 或 cursor 混用' };
+    }
+    const phrase = Array.isArray(alternatives) ? alternatives[0] : input.query;
+    if (typeof phrase !== 'string' || !phrase.trim()) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'search 需要 query 或 any_of' };
     }
     const query: CatsLogKnowledgeSearchQuery = {
-      query: input.query,
+      query: phrase,
       ...(this.optionalLimit(input.limit) !== undefined ? { limit: this.optionalLimit(input.limit) } : {}),
       ...(this.optionalCursor(input.cursor) !== undefined ? { cursor: this.optionalCursor(input.cursor) } : {}),
       ...(typeof input.date_from === 'string' && input.date_from.trim() ? { date_from: input.date_from.trim() } : {}),
@@ -156,8 +165,35 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     if (!this.backend.searchKnowledge) {
       return this.unavailableResult('当前运行环境未接入 CatsLog 每日知识检索');
     }
-    const page = await this.backend.searchKnowledge(query, signal);
-    return this.pageResult(page, page.next_cursor, page.exhausted);
+    const search = (term: string) => this.backend.searchKnowledge!({ ...query, query: term }, signal);
+    let terms: string[];
+    if (Array.isArray(alternatives)) {
+      terms = [...new Set(alternatives.map(term => term.trim() as string))];
+    } else {
+      const page = await search(phrase);
+      terms = [...new Set(phrase.trim().split(/\s+/u))];
+      if (query.cursor || page.hits?.length || !page.exhausted || page.next_cursor || terms.length < 2 || terms.length > 4) {
+        return this.pageResult(page, page.next_cursor, page.exhausted);
+      }
+    }
+    const limit = Math.min(query.limit ?? 10, 50);
+    const matches = new Map<string, { hit: CatsLogKnowledgeSearchHit; matched_terms: string[] }>();
+    let exhausted = true;
+    for (const term of terms) {
+      const page = await search(term);
+      if (!page.exhausted || page.next_cursor) exhausted = false;
+      for (const hit of page.hits ?? []) {
+        const key = JSON.stringify([hit.document_id, hit.entry_id, hit.revision]);
+        const match = matches.get(key) ?? { hit, matched_terms: [] };
+        if (!match.matched_terms.includes(term)) match.matched_terms.push(term);
+        matches.set(key, match);
+      }
+    }
+    const hits = [...matches.values()].sort((a, b) => b.matched_terms.length - a.matched_terms.length || b.hit.day.localeCompare(a.hit.day))
+      .slice(0, limit).map(({ hit, matched_terms }) => ({ ...hit, matched_terms }));
+    exhausted &&= matches.size <= limit;
+    return { ok: true, content: JSON.stringify({ hits, any_of: terms, exhausted,
+      ...(!exhausted && { incomplete: true, note: '只显示合并预览。逐个用 query 和原筛选条件从首页检索，再按该词的 next_cursor 翻页。' }) }) };
   }
 
   private async graph(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {

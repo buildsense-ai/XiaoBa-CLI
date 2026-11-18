@@ -64,6 +64,37 @@ function context(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionCo
 }
 
 describe('catslog_knowledge_recall tool', () => {
+  test('grp_7445: phrase miss and explicit alternatives recover distinct, attributed entries', async () => {
+    const calls: string[] = [];
+    const tool = new CatsLogKnowledgeRecallTool(fakeBackend({ searchKnowledge: async q => {
+      calls.push(q.query);
+      assert.equal(q.date_from, '2026-11-01');
+      return { exhausted: true, hits: ['未完成','待办','下一步'].includes(q.query) ? [{ document_id: DOC, entry_id: ENTRY, day: '2026-11-15', revision: REV, title: 'fixture', status: 'draft' }] : [] };
+    } }));
+    for (const query of ['未完成 待办 待跟进 TODO', '未完成 待续 下一步 跟进']) {
+      for (const args of [{ query }, { any_of: query.split(' ') }]) {
+        calls.length = 0;
+        const result = await tool.execute({ action: 'search', date_from: '2026-11-01', ...args }, context());
+        const page = JSON.parse(String(result.content));
+        assert.equal(page.hits.length, 1);
+        assert.equal(page.hits[0].matched_terms.length, 2);
+        assert.equal(page.recall_attribution.sources.length, 1);
+        assert.equal(page.exhausted, true);
+        assert.ok(calls.length <= 5);
+      }
+    }
+  });
+
+  test('alternative preview never claims skipped hits or pages were exhausted', async () => {
+    const tool = new CatsLogKnowledgeRecallTool(fakeBackend());
+    const result = await tool.execute({action:'search', any_of:['a','b'], limit:1}, context());
+    const page = JSON.parse(String(result.content));
+    assert.equal(page.exhausted,false);
+    assert.ok(page.incomplete && page.note.includes('query'));
+    assert.equal(page.next_cursor,undefined);
+    assert.equal((await tool.execute({action:'search',any_of:['a'],cursor:'opaque'},context())).ok,false);
+  });
+
   test('search passes cursors byte-exact and reports pagination faithfully', async () => {
     const backend = fakeBackend();
     const tool = new CatsLogKnowledgeRecallTool(backend);
