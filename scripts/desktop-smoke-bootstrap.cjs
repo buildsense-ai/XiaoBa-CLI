@@ -61,7 +61,15 @@ app.whenReady().then(async () => {
   const child = spawnSync(bundledNode, ['-e', `(${probe.toString()})(${JSON.stringify(appRoot)}).then(x=>console.log(JSON.stringify(x))).catch(e=>{console.error(e);process.exit(1)})`], {
     cwd: appRoot, encoding: 'utf8', env: { ...process.env, NODE_PATH: path.join(appRoot, 'node_modules') }, timeout: 30_000,
   });
-  assert.equal(child.status, 0, child.stderr);
+  if (child.error || child.status !== 0 || child.signal) {
+    const details = [
+      `status=${child.status}`,
+      `signal=${child.signal}`,
+      child.error && `spawn error: ${child.error.message}`,
+      child.stderr?.trim() && `stderr: ${child.stderr.trim()}`,
+    ].filter(Boolean).join('; ');
+    throw new Error(`Bundled Node smoke probe failed for ${bundledNode}: ${details}`, { cause: child.error });
+  }
   const nodeNative = JSON.parse(child.stdout.trim());
   assert.equal(fs.existsSync(path.join(process.resourcesPath, 'node_modules')), false, 'No duplicate dependencies');
   const result = { ok: true, version: app.getVersion(), renderer, electronNative, nodeNative, nativeLoads };

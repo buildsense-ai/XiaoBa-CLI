@@ -298,23 +298,55 @@ async function sha256File(filePath) {
 }
 
 function installRuntimeArchive(archivePath, destination, target) {
+  const windowsNode = target.runtimeName === 'node' && target.key.startsWith('win32-');
+  try {
+    const extractor = extractAndCopyRuntime(archivePath, destination, target);
+    if (windowsNode && !hasWindowsNodeEntrypoint(destination)) {
+      const entrypoint = path.join(destination, 'node.exe');
+      const incomplete = `Windows Node staging for ${target.key} from ${archivePath} did not produce a non-empty regular file at ${entrypoint}`;
+      if (extractor === 'Expand-Archive') {
+        console.warn(`  node: ${incomplete}; retrying extraction with tar`);
+        fs.rmSync(destination, { recursive: true, force: true });
+        extractAndCopyRuntime(archivePath, destination, target, true);
+      }
+      if (!hasWindowsNodeEntrypoint(destination)) {
+        throw new Error(`${incomplete}${extractor === 'Expand-Archive' ? ' after retrying with tar' : ''}`);
+      }
+    }
+  } catch (error) {
+    if (windowsNode) fs.rmSync(destination, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function hasWindowsNodeEntrypoint(destination) {
+  const stat = fs.lstatSync(path.join(destination, 'node.exe'), { throwIfNoEntry: false });
+  return stat?.isFile() && stat.size > 0;
+}
+
+function extractAndCopyRuntime(archivePath, destination, target, useWindowsTar = false) {
   const extractRoot = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoba-runtime-${target.runtimeName}-`));
 
   try {
-    extractArchive(archivePath, extractRoot, target.archiveType);
+    const extractor = extractArchive(archivePath, extractRoot, target.archiveType, useWindowsTar);
     const packageRoot = resolveExtractedRoot(extractRoot, target.packageRoot);
     copyDirectoryContents(packageRoot, destination, {
       skip: target.skip || [],
     });
+    return extractor;
   } finally {
     fs.rmSync(extractRoot, { recursive: true, force: true });
   }
 }
 
-function extractArchive(archivePath, extractRoot, archiveType) {
+function extractArchive(archivePath, extractRoot, archiveType, useWindowsTar) {
   switch (archiveType) {
     case 'zip':
       if (process.platform === 'win32') {
+        if (useWindowsTar) {
+          runCommand('tar', ['-xf', archivePath, '-C', extractRoot]);
+          return;
+        }
         // Some stripped Windows images do not ship the Microsoft.PowerShell.Archive
         // module. Use the inbox tar implementation as a compatible fallback so
         // packaging does not depend on an optional PowerShell module.
@@ -329,11 +361,11 @@ function extractArchive(archivePath, extractRoot, archiveType) {
             '-NoProfile',
             '-NonInteractive',
             '-Command',
-            `Expand-Archive -LiteralPath \"${escapePowerShellPath(archivePath)}\" -DestinationPath \"${escapePowerShellPath(extractRoot)}\" -Force`,
+            `$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath ${quotePowerShellPath(archivePath)} -DestinationPath ${quotePowerShellPath(extractRoot)} -Force -ErrorAction Stop`,
           ]);
-        } else {
-          runCommand('tar', ['-xf', archivePath, '-C', extractRoot]);
+          return 'Expand-Archive';
         }
+        runCommand('tar', ['-xf', archivePath, '-C', extractRoot]);
       } else {
         runCommand('unzip', ['-q', archivePath, '-d', extractRoot]);
       }
@@ -355,9 +387,15 @@ function runCommand(command, args) {
     windowsHide: true,
   });
 
-  if (result.status !== 0) {
-    const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
-    throw new Error(`${command} ${args.join(' ')} failed${output ? `: ${output}` : ''}`);
+  if (result.error || result.status !== 0) {
+    const details = [
+      `status=${result.status}`,
+      `signal=${result.signal}`,
+      result.error?.message,
+      result.stderr?.trim(),
+      result.stdout?.trim(),
+    ].filter(Boolean).join('; ');
+    throw new Error(`${command} ${args.join(' ')} failed: ${details}`, { cause: result.error });
   }
 }
 
@@ -528,8 +566,8 @@ function getArchiveFileName(url) {
   return decodeURIComponent(path.basename(pathname));
 }
 
-function escapePowerShellPath(value) {
-  return value.replace(/`/g, '``').replace(/"/g, '`"');
+function quotePowerShellPath(value) {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 function parseArgs(args) {

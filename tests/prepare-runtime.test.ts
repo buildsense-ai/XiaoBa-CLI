@@ -1,10 +1,14 @@
-import { describe, test } from 'node:test';
+import { describe, test, type TestContext } from 'node:test';
 import * as assert from 'node:assert';
+import childProcess, { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
   loadRuntimeManifest,
+  main as prepareRuntime,
   normalizeArch,
   normalizePlatform,
   removeBrokenRuntimeSymlinks,
@@ -127,6 +131,106 @@ describe('resolveExtractedRoot', () => {
     }
   });
 });
+
+describe('Windows Node staging', () => {
+  for (const [name, entrypoint, cacheHit] of [
+    ['missing from a cached archive', 'missing', true],
+    ['empty in a new download', 'empty', false],
+    ['a directory instead of a file', 'directory', true],
+  ] as const) {
+    test(`rejects node.exe that is ${name}`, async (t) => {
+      const root = makeRuntimeFixtureRoot(t);
+      const fixture = path.join(root, 'fixture');
+      fs.mkdirSync(fixture);
+      fs.writeFileSync(path.join(fixture, 'README.md'), 'fixture');
+      const entry = path.join(fixture, 'node.exe');
+      if (entrypoint === 'empty') fs.writeFileSync(entry, '');
+      if (entrypoint === 'directory') fs.mkdirSync(entry);
+
+      const archiveType = process.platform === 'win32' ? 'zip' : 'tar.gz';
+      const fixtureArchive = path.join(root, `fixture.${archiveType}`);
+      execFileSync('tar', [archiveType === 'zip' ? '-acf' : '-czf', fixtureArchive, '-C', root, 'fixture']);
+      const options = configureWindowsNodeFixture(t, root, archiveType, fs.readFileSync(fixtureArchive), cacheHit);
+      const stagedNode = path.join(options.runtimeRoot, 'node');
+      fs.mkdirSync(stagedNode, { recursive: true });
+      fs.writeFileSync(path.join(stagedNode, 'node.exe'), 'stale runtime');
+
+      await assert.rejects(prepareRuntime(options), /Windows Node staging for win32-x64 .*node\.exe/);
+      assert.strictEqual(fs.existsSync(stagedNode), false);
+      assert.strictEqual(fs.existsSync(path.join(options.runtimeRoot, 'manifest.json')), false);
+      assert.strictEqual(options.fetchMock.mock.callCount(), cacheHit ? 0 : 1);
+    });
+  }
+
+  test('rejects a checksum-valid but unreadable ZIP as an extraction error', { skip: process.platform !== 'win32' }, async (t) => {
+    const root = makeRuntimeFixtureRoot(t);
+    const options = configureWindowsNodeFixture(t, root, 'zip', Buffer.from('not a zip'), true);
+    await assert.rejects(prepareRuntime(options), /failed: status=[1-9]/);
+    assert.strictEqual(fs.existsSync(path.join(options.runtimeRoot, 'node')), false);
+    assert.strictEqual(fs.existsSync(path.join(options.runtimeRoot, 'manifest.json')), false);
+    assert.strictEqual(options.fetchMock.mock.callCount(), 0);
+  });
+
+  test('re-extracts a ZIP when Expand-Archive reports success without node.exe', { skip: process.platform !== 'win32' }, async (t) => {
+    const root = makeRuntimeFixtureRoot(t);
+    const fixture = path.join(root, 'fixture');
+    fs.mkdirSync(fixture);
+    fs.writeFileSync(path.join(fixture, 'node.exe'), 'fixture node');
+    const archive = path.join(root, 'fixture.zip');
+    execFileSync('tar', ['-acf', archive, '-C', root, 'fixture']);
+    const options = configureWindowsNodeFixture(t, root, 'zip', fs.readFileSync(archive), true);
+
+    const spawnSync = childProcess.spawnSync;
+    const spawn = t.mock.method(childProcess, 'spawnSync', (command, args, spawnOptions) => {
+      if (command !== 'powershell.exe') return spawnSync(command, args, spawnOptions);
+      const probe = args.at(-1).startsWith('Get-Command');
+      return { status: 0, signal: null, stdout: probe ? 'Expand-Archive\r\n' : '', stderr: '' };
+    });
+    syncBuiltinESMExports();
+    t.after(() => { spawn.mock.restore(); syncBuiltinESMExports(); });
+
+    // The fixture ends after Node, before preparing Python or copying Git.
+    await assert.rejects(prepareRuntime(options), /Runtime python is not defined/);
+    assert.strictEqual(fs.readFileSync(path.join(options.runtimeRoot, 'node', 'node.exe'), 'utf8'), 'fixture node');
+    assert.deepStrictEqual(spawn.mock.calls.map(call => call.arguments[0]), ['powershell.exe', 'powershell.exe', 'tar']);
+    assert.strictEqual(options.fetchMock.mock.callCount(), 0);
+  });
+});
+
+function makeRuntimeFixtureRoot(t: TestContext): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-stage-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+function configureWindowsNodeFixture(t: TestContext, root: string, archiveType: string, bytes: Buffer, cacheHit: boolean) {
+  const filename = `node.${archiveType}`;
+  const url = `https://nodejs.org/${filename}`;
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const config = {
+    runtimes: {
+      node: { targets: { 'win32-x64': { archiveType, sources: [{ url, sha256 }] } } },
+    },
+  };
+  const manifestPath = path.join(root, 'runtime-manifest.json');
+  fs.writeFileSync(manifestPath, JSON.stringify(config));
+  const downloadCacheDir = path.join(root, "cache $[runtime]'s files");
+  if (cacheHit) {
+    const cache = path.join(downloadCacheDir, 'node', 'win32-x64');
+    fs.mkdirSync(cache, { recursive: true });
+    fs.writeFileSync(path.join(cache, filename), bytes);
+  }
+  const originalFetch = globalThis.fetch;
+  const fetchMock = t.mock.fn(async (request) => {
+    assert.strictEqual(request, url);
+    const response = new Response(Uint8Array.from(bytes));
+    Object.defineProperty(response, 'url', { value: url });
+    return response;
+  });
+  globalThis.fetch = fetchMock;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  return { manifestPath, downloadCacheDir, runtimeRoot: path.join(root, 'runtime'), platform: 'win32', arch: 'x64', fetchMock };
+}
 
 describe('repairNodeRuntimeEntrypoints', () => {
   test('repairs POSIX npm, npx, and corepack entrypoints that were copied as regular files', (t) => {
