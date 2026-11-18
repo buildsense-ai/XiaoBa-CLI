@@ -26,6 +26,9 @@ import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
 import { confirmLocalToolExecution } from './local-tool-risk';
 import { buildToolTargetContext, operationForToolTargetContext } from './tool-target-context';
+import { CatsLogKnowledgeRecallTool, CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from './catslog-knowledge-recall-tool';
+import { CatsLogSessionLookupTool, CATSLOG_SESSION_LOOKUP_TOOL_NAME } from './catslog-session-lookup-tool';
+import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import { getDeviceTargetResolutionFailure } from './execution-router';
 
 const INTERNAL_TOOL_NAMES = ['ask_parent'] as const;
@@ -53,6 +56,13 @@ function resolveToolName(name: string): string {
  */
 export interface ToolManagerOptions {
   enabledToolNames?: readonly string[];
+  /**
+   * Optional device-bound CatsLog read capability. When present (and the
+   * profile allowlist includes the tool), the native read-only
+   * `catslog_knowledge_recall` tool is registered for direct mainAgent use,
+   * independent of the automatic branch switch.
+   */
+  catslogKnowledge?: CatsLogMemoryBackend;
 }
 
 export class ToolManager implements ToolExecutor {
@@ -67,10 +77,10 @@ export class ToolManager implements ToolExecutor {
   ) {
     this.workingDirectory = workingDirectory;
     this.contextDefaults = contextDefaults;
-    this.registerDefaultTools(options.enabledToolNames);
+    this.registerDefaultTools(options.enabledToolNames, options.catslogKnowledge);
   }
 
-  private registerDefaultTools(enabledToolNames?: readonly string[]): void {
+  private registerDefaultTools(enabledToolNames?: readonly string[], catslogKnowledge?: CatsLogMemoryBackend): void {
     const enabled = enabledToolNames ? new Set(enabledToolNames) : undefined;
     const defaultTools: Tool[] = [
       new ReadTool(),
@@ -104,10 +114,21 @@ export class ToolManager implements ToolExecutor {
       if (enabled.has('ask_parent')) {
         this.registerTool(new AskParentTool());
       }
+      // Daily-knowledge recall is registered only when a device-bound read
+      // capability was supplied; the profile allowlist still decides whether
+      // the tool is exposed at all. Without the capability the tool is absent
+      // from the surface entirely (no stub that could fake-empty).
+      if (enabled.has(CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME) && catslogKnowledge) {
+        this.registerTool(new CatsLogKnowledgeRecallTool(catslogKnowledge));
+      }
+      if (enabled.has(CATSLOG_SESSION_LOOKUP_TOOL_NAME) && catslogKnowledge) {
+        this.registerTool(new CatsLogSessionLookupTool(catslogKnowledge));
+      }
       const knownTools = new Set<string>([
         ...(DEFAULT_TOOL_NAMES as readonly string[]),
         ...(INTERNAL_TOOL_NAMES as readonly string[]),
         ...(LEGACY_DISABLED_TOOL_NAMES as readonly string[]),
+        CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME,
       ]);
       for (const toolName of enabled) {
         if (!knownTools.has(toolName)) {

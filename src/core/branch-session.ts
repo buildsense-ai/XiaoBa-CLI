@@ -9,6 +9,7 @@ import { AgentToolExecutor } from '../agents/agent-tool-executor';
 import { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 import { resolveModelPromptBudgetTokens } from '../utils/model-context-window';
 import { ConversationRunner, RunResult, RunnerCallbacks } from './conversation-runner';
+import type { MetricsCollector } from '../utils/metrics';
 
 export interface BranchSessionOptions {
   id: string;
@@ -27,6 +28,8 @@ export interface BranchSessionOptions {
   maxContextTokens?: number;
   /** Memory's restored autonomous tool loop uses the original serial execution. */
   parallelToolExecution?: boolean;
+  /** Per-run spend attribution (branch tokens charge the originating task). */
+  metrics?: MetricsCollector;
 }
 
 export interface BranchRunOutcome {
@@ -170,6 +173,8 @@ export abstract class BranchSession {
    */
   protected prepareConversationTurn(): void {}
 
+  protected branchRequestUpdates?(history: readonly Message[]): Message[];
+
   protected async runConversation(): Promise<BranchRunOutcome> {
     if (!this.beginConversationPass()) {
       return { messages: this.messages };
@@ -196,6 +201,7 @@ export abstract class BranchSession {
     );
     const runner = new ConversationRunner(this.options.aiService, toolExecutor, {
       stream: false,
+      branchRequestUpdates: this.branchRequestUpdates?.bind(this),
       // Branches own an in-memory transcript, so they use the same checkpoint
       // compaction as every other surface and never persist a checkpoint.
       checkpointCompactionCoordinator: new CheckpointCompactionCoordinator(
@@ -215,6 +221,7 @@ export abstract class BranchSession {
       // in one model turn run concurrently (results stay keyed to their
       // tool_use ids; the shared abortSignal cancels the whole batch).
       parallelToolExecution: this.options.parallelToolExecution ?? true,
+      ...(this.options.metrics ? { metrics: this.options.metrics } : {}),
       shouldContinue: () => this.shouldContinue(),
       toolExecutionContext: {
         sessionId: `branch:${this.options.type}:${this.options.id}`,

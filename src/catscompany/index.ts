@@ -1932,6 +1932,12 @@ export class CatsCompanyBot {
           || callbackStopGeneration !== this.getSessionStopGeneration(opts.sessionKey))),
     );
     return {
+      onMemoryBranch: async event => {
+        if (isStaleCallback() || suppressToolProgress) return;
+        const replyTo = this.replyOptionsFor(opts?.sessionKey, { progress: true })?.replyTo;
+        try { await this.sender.sendMemoryBranch(topic, event, replyTo ? { reply_to: replyTo } : undefined); }
+        catch (error: any) { Logger.warning(`记忆来源通知发送失败: ${error.message}`); }
+      },
       onRetry: async (attempt, maxRetries, info) => {
         if (isStaleCallback() || suppressToolProgress) {
           return;

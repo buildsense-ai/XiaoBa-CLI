@@ -2,19 +2,29 @@ import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { buildSourceProjectionSemanticView, discoverSourceReferenceItems, expandSourceReferences,
   recomputeSourceProjectionRef, retainedEvidenceBytes, validateSourceMemoryProjectionDocument } from '../src/core/catslog-projection-reference';
+import { qualifierTexts } from './helpers/catslog-projection-harness';
 import { FinishMemorySearchTool } from '../src/tools/memory-branch-tools';
 import { fixtureBranch, fixtureRead, fixtureRef } from './helpers/catslog-projection-reference-fixture';
 
-test('Go-cased envelope binds exact opaque ref and preserves complete graph/qualifiers/gaps', () => {
+test('Go-cased envelope binds exact opaque ref and preserves complete graph/qualifiers/gaps', async () => {
   const read = fixtureRead();
   assert.equal(recomputeSourceProjectionRef(read.projection.Revision, read.projection.StreamID), fixtureRef());
   const result = validateSourceMemoryProjectionDocument(read, fixtureRef());
   assert.equal(result.ok, true);
   const view = buildSourceProjectionSemanticView(result)!;
-  for (const key of ['goal', 'summary', 'conditions', 'omissions', 'nodes', 'edges', 'gap_acknowledgement']) {
+  for (const key of ['goal', 'summary', 'edges', 'gap_acknowledgement']) {
     assert.deepEqual(view[key], read.projection.Document[key]);
   }
-  assert.deepEqual((view.aggregate as any).gaps, read.projection.Document.aggregate.gaps);
+  assert.deepEqual(qualifierTexts(view, 'conditions'), read.projection.Document.conditions);
+  assert.deepEqual(qualifierTexts(view, 'omissions'), read.projection.Document.omissions);
+  assert.deepEqual(view.nodes, read.projection.Document.nodes);
+  const expansions = await expandSourceReferences(fixtureBranch(), async () => read);
+  assert.equal(expansions[0].observation?.hit.projection_ref, fixtureRef());
+  assert.equal(expansions[0].observation?.read?.revision, read.projection.Revision);
+  assert.deepEqual(expansions[0].observation?.read?.node_refs, read.projection.Document.nodes.map((node) => ({
+    kind: 'source_memory_projection_node', source_projection_ref: fixtureRef(), revision: read.projection.Revision, id: node.id,
+  })));
+  assert.equal(expansions[0].observation?.returned_to_branch, true);
   for (const hidden of ['PRIVATE_PRINCIPAL', 'PRIVATE_SCOPE', 'RAW_PAGE_REPROOF_ONLY', 'PRIVATE_RECEIPT']) assert.ok(!JSON.stringify(view).includes(hidden));
 });
 for (const mutation of ['kind', 'source', 'branch', 'ref', 'prose']) test(`candidate fence rejects ${mutation}`, () => {

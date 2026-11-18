@@ -127,23 +127,36 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 			t.Fatal(err)
 		}
 		meta := map[string]interface{}{"catsco_identity": h.buildCatscoIdentityMetadata(7, 42, "p2p_7_42", 1, "read"), "xiaoba_runtime": h.buildXiaobaRuntimeMetadata(7, 42, "p2p_7_42")}
+		identity := meta["catsco_identity"].(map[string]interface{})
+		delete(identity, "device_target_authorizations")
+		grants := identity["device_grants"].([]ScopedDeviceGrant)
+		var initial ScopedDeviceGrant
+		for i := range grants {
+			if grants[i].DeviceID == "a" {
+				initial = grants[i]
+				grants[i].Permanent = false
+				grants[i].ExpiresAt = grants[i].CreatedAt + defaultDeviceGrantTTL.Milliseconds()
+				grants[i].RenewableUntil = grants[i].CreatedAt + (24 * time.Hour).Milliseconds()
+			}
+		}
+		if initial.GrantID == "" {
+			t.Fatal("selected A grant missing from server metadata")
+		}
+		h.userDevices.rememberGrants(grants)
 		old := call(t, meta, "a")
 		if old.Wire == nil {
 			t.Fatal("missing initial wire")
 		}
-		// 服务端这一路的设备授权（p2p 回合内下发）目前是「永久 grant」：Permanent=true、
-		// 到期时间取 9999 年的哨兵值（server/user_device_registry.go 里那处 Permanent: true）。
-		// 客户端的设计是「只在到期前 6 分钟内续期」，永久 grant 永远不满足条件，
-		// 于是它正确地不发续期请求 —— 旧的断言在这里必然失败，且失败信息还指不到原因。
-		// 契约按两种形态分别断言，服务端哪天改成有限 TTL，下面的强断言自动生效。
-		permanentGrant := false
-		if identity, ok := meta["catsco_identity"].(map[string]interface{}); ok {
-			if grants, ok := identity["device_grants"].([]ScopedDeviceGrant); ok && len(grants) > 0 {
-				permanentGrant = grants[0].Permanent || grants[0].ExpiresAt > time.Now().Add(24*time.Hour).UnixMilli()
+		initialPermanent := false
+		for _, grant := range grants {
+			if grant.GrantID == old.Wire.GrantID {
+				initialPermanent = grant.Permanent
+				if initialPermanent || grant.ExpiresAt != initial.CreatedAt+defaultDeviceGrantTTL.Milliseconds() {
+					t.Fatalf("finite grant fixture not preserved in metadata: permanent=%v expires=%d", grant.Permanent, grant.ExpiresAt)
+				}
 			}
 		}
-		// 有限 grant 的续期窗口是「到期前 6 分钟内」：前进 5 分钟落在窗口内（TTL 10 分钟）。
-		now = now.Add(5 * time.Minute)
+		now = now.Add(4 * time.Minute)
 		var reply map[string]interface{}
 		if available {
 			payload, _ := json.Marshal(map[string]interface{}{"device_grant_renewal": map[string]interface{}{"type": "request", "request_id": "paired-renewal", "grant_id": old.Wire.GrantID}})
@@ -170,23 +183,25 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 		if got.Wire == nil {
 			t.Fatal("CLI lost original authorized device")
 		}
-		switch {
-		case available && !permanentGrant:
-			// 有限 grant：必须真的发起并消费续期。
-			if got.Wire.GrantID == old.Wire.GrantID || len(got.RenewalWire) == 0 {
-				t.Fatal("CLI did not consume renewed wire grant")
+		if available {
+			renewal := map[string]interface{}{}
+			if err := json.Unmarshal(got.RenewalWire, &renewal); err != nil || renewal["grant_id"] != old.Wire.GrantID {
+				t.Fatalf("CLI did not send renewal for original grant: expected=%q got=%v raw=%s", old.Wire.GrantID, renewal["grant_id"], got.RenewalWire)
 			}
-		case available && permanentGrant:
-			// 永久 grant：不该发续期请求（发了说明客户端在不该续的时候动了协议），
-			// 授权也必须还在。
-			if len(got.RenewalWire) != 0 {
-				t.Fatal("CLI requested renewal for a permanent grant")
+			resultGrant, ok := reply["grant"].(map[string]interface{})
+			if !ok || got.Wire.GrantID != resultGrant["grantId"] {
+				t.Fatalf("CLI did not consume renewed wire grant: result=%#v wire=%q", resultGrant, got.Wire.GrantID)
 			}
-			if got.Wire.GrantID != old.Wire.GrantID {
-				t.Fatal("permanent grant changed identity without renewal")
+			if initialPermanent && got.Wire.GrantID != old.Wire.GrantID {
+				t.Fatal("permanent grant renewal was not idempotent")
 			}
-		case !available && (got.Wire.GrantID != old.Wire.GrantID || len(got.RenewalWire) > 0):
-			t.Fatal("old server received a new protocol")
+			if !initialPermanent && got.Wire.GrantID == old.Wire.GrantID {
+				t.Fatal("finite grant renewal did not rotate authority")
+			}
+		} else {
+			if got.Wire.GrantID != old.Wire.GrantID || len(got.RenewalWire) > 0 {
+				t.Fatal("old server changed the grant or received renewal protocol")
+			}
 		}
 		now = now.Add(7 * time.Minute)
 		h.userDevices.touch(7, "a")
@@ -197,8 +212,23 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 		if available && authorization != nil {
 			t.Fatal(authorization)
 		}
-		if !available && authorization == nil {
+		if !available && !initialPermanent && authorization == nil {
 			t.Fatal("old server revived expired authority")
+		}
+		permanentMeta := h.buildCatscoIdentityMetadata(7, 42, "p2p_7_42", 2, "read")
+		delete(permanentMeta, "device_target_authorizations")
+		permanentRuntime := map[string]interface{}{"catsco_identity": permanentMeta, "xiaoba_runtime": h.buildXiaobaRuntimeMetadata(7, 42, "p2p_7_42")}
+		permanent := call(t, permanentRuntime, "a", map[string]interface{}{"now": unixMillis(now)})
+		if permanent.Wire == nil || len(permanent.RenewalWire) > 0 {
+			t.Fatal("permanent grant unexpectedly emitted a renewal request")
+		}
+		permanentGrants, _ := permanentMeta["device_grants"].([]ScopedDeviceGrant)
+		if len(permanentGrants) == 0 || !permanentGrants[0].Permanent || permanent.Wire.GrantID != permanentGrants[0].GrantID {
+			t.Fatalf("permanent grant did not remain idempotent: grants=%#v wire=%#v", permanentGrants, permanent.Wire)
+		}
+		permanent.Wire.ExpiresAt = unixMillis(now.Add(time.Minute))
+		if err := h.authorizeOrdinaryThinToolRPC(cloud, permanent.Wire, 7, "a", "read_file"); err != nil {
+			t.Fatalf("permanent grant expired at legacy TTL: %v", err)
 		}
 		selection, _ := h.userDevices.selectionRecord(7, session)
 		_, _ = h.userDevices.confirmDeviceSelection(7, session, "b", "test", selection.Revision)

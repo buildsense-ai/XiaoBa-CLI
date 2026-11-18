@@ -30,6 +30,10 @@ const ALLOWED_SESSION_TYPES = new Set(['chat', 'cli', 'catscompany', 'feishu', '
 const SESSION_LOG_PATH_RE = /^sessions\/([^/]+)\/(\d{4}-\d{2}-\d{2})\/([^/]+\.jsonl)$/;
 const MAX_APPEND_CHUNK_BYTES = 4 * 1024 * 1024;
 const APPEND_NEWLINE_SCAN_BYTES = 64 * 1024;
+// Refresh-capable upload tokens live one hour and cycles run every 30 minutes
+// by default; re-bootstrap early enough that a cycle never starts on a token
+// that expires mid-upload.
+const UPLOAD_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 interface UploadSession {
   token: string;
@@ -57,6 +61,8 @@ function copyCatscoReadCapability(
   target.memoryUrl = source.memoryUrl;
   target.memoryRecallUrl = source.memoryRecallUrl;
   target.sessionsUrl = source.sessionsUrl;
+  target.sessionNameUrl = source.sessionNameUrl;
+  target.sessionNameSearchUrl = source.sessionNameSearchUrl;
 }
 
 function copyCatscoWriteCapability(
@@ -88,6 +94,10 @@ function applyReadCapabilityResponse(
     ? response.skill_graph_url as string : undefined;
   state.sessionsUrl = isSafeCatsLogPath(typeof response.sessions_url === 'string' ? response.sessions_url : undefined)
     ? response.sessions_url as string : undefined;
+  state.sessionNameUrl = isSafeCatsLogPath(typeof response.session_name_url === 'string' ? response.session_name_url : undefined)
+    ? response.session_name_url as string : undefined;
+  state.sessionNameSearchUrl = isSafeCatsLogPath(typeof response.session_name_search_url === 'string' ? response.session_name_search_url : undefined)
+    ? response.session_name_search_url as string : undefined;
   state.memoryUrl = isSafeCatsLogPath(typeof response.memory_url === 'string' ? response.memory_url : undefined)
     ? response.memory_url as string : undefined;
   state.memoryRecallUrl = isSafeCatsLogPath(typeof response.memory_recall_url === 'string' ? response.memory_recall_url : undefined)
@@ -221,9 +231,11 @@ export class CatscoLogUploadScheduler {
         } catch (error: any) {
           if (Number(error?.status) === 401) {
             tokenRejected = true;
-            clearCatscoLogToken(state);
-            saveCatscoLogAgentState(config.stateFilePath, state);
-            Logger.warning('[CatsLog] upload token rejected; token cleared and will be refreshed next cycle');
+            if (clearRejectedUploadToken(config.stateFilePath, state, uploadSession.token)) {
+              Logger.warning('[CatsLog] upload token rejected; token cleared and will be refreshed next cycle');
+            } else {
+              Logger.info('[CatsLog] upload token was replaced during the cycle; the new token is used next cycle');
+            }
             return;
           }
           Logger.warning(`[CatsLog] failed to upload ${item.stateKey}: ${error.message}`);
@@ -231,7 +243,7 @@ export class CatscoLogUploadScheduler {
       },
       );
 
-      saveCatscoLogAgentState(config.stateFilePath, state);
+      persistUploadProgress(config.stateFilePath, state);
       if (uploadedCount > 0) {
         Logger.info(`[CatsLog] uploaded ${uploadedCount} session log files (${reason})`);
       }
@@ -291,11 +303,16 @@ export class CatscoLogUploadScheduler {
 
   private async ensureUploadSession(state: CatscoLogAgentState): Promise<UploadSession | null> {
     const config = getCatscoLogAgentConfig(this.workingDirectory);
+    // A token without a recorded expiry predates refresh support; keep using
+    // it until the server rejects it rather than bootstrapping every cycle.
+    const refreshDue = Boolean(config.catscoUserToken)
+      && uploadTokenExpiresWithin(state.tokenExpiresAt, Date.now() + UPLOAD_TOKEN_REFRESH_MARGIN_MS);
     // Legacy state files only contain the v1 token. Re-bootstrap those once so
     // an upgraded runtime can negotiate the server's v2 append capability
     // instead of silently continuing to reject large files.
     if (
       state.token
+      && !refreshDue
       && (
         state.uploadProtocol === 1
         || (state.uploadProtocol === 2 && isSafeServerPath(state.appendUrl))
@@ -340,6 +357,7 @@ export class CatscoLogUploadScheduler {
     state.tokenId = response.token_id;
     state.token = response.token;
     state.tokenIssuedAt = response.issued_at;
+    state.tokenExpiresAt = response.expires_at;
     const appendUrl = isSafeServerPath(response.append_url) ? response.append_url : undefined;
     state.uploadProtocol = response.upload_protocol === 2 && appendUrl ? 2 : 1;
     state.appendUrl = state.uploadProtocol === 2 ? appendUrl : undefined;
@@ -482,7 +500,7 @@ export class CatscoLogUploadScheduler {
           },
         };
         state.uploaded[item.stateKey] = record;
-        saveCatscoLogAgentState(stateFilePath, state);
+        persistUploadProgress(stateFilePath, state);
       }
 
       try {
@@ -510,7 +528,7 @@ export class CatscoLogUploadScheduler {
           },
         };
         state.uploaded[item.stateKey] = record;
-        saveCatscoLogAgentState(stateFilePath, state);
+        persistUploadProgress(stateFilePath, state);
       } catch (error) {
         if (error instanceof CatscoAppendConflictError && this.adoptAppendConflict(item.absolutePath, record, error)) {
           record = state.uploaded[item.stateKey] = {
@@ -521,7 +539,7 @@ export class CatscoLogUploadScheduler {
               prefixSha256: error.acceptedOffset === 0 ? '' : sha256FilePrefix(item.absolutePath, error.acceptedOffset),
             },
           };
-          saveCatscoLogAgentState(stateFilePath, state);
+          persistUploadProgress(stateFilePath, state);
           continue;
         }
         if (error instanceof CatscoAppendConflictError) return false;
@@ -742,6 +760,37 @@ function matchesKnownPrefix(actualHash: string, offset: number, record: CatscoLo
 function isSafeServerPath(value: string | undefined): value is string {
   const pathValue = String(value || '').trim();
   return /^\/[A-Za-z0-9._~\/-]*$/.test(pathValue) && !pathValue.startsWith('//');
+}
+
+function uploadTokenExpiresWithin(expiresAt: string | undefined, deadline: number): boolean {
+  const timestamp = Date.parse(String(expiresAt || ''));
+  return Number.isFinite(timestamp) && timestamp <= deadline;
+}
+
+/**
+ * An upload cycle owns only `uploaded`. The memory provider bootstraps on its
+ * own schedule and replaces the upload token on disk, so writing back the
+ * whole state loaded at cycle start would restore a revoked token.
+ */
+function persistUploadProgress(stateFilePath: string, state: CatscoLogAgentState): void {
+  const latest = loadCatscoLogAgentState(stateFilePath);
+  if (latest.stateCorrupt) {
+    saveCatscoLogAgentState(stateFilePath, state);
+    return;
+  }
+  latest.uploaded = state.uploaded;
+  saveCatscoLogAgentState(stateFilePath, latest);
+}
+
+/** Clears the stored token only if it is still the one the server rejected. */
+function clearRejectedUploadToken(stateFilePath: string, state: CatscoLogAgentState, rejectedToken: string): boolean {
+  const latest = loadCatscoLogAgentState(stateFilePath);
+  const target = latest.stateCorrupt ? state : latest;
+  target.uploaded = state.uploaded;
+  const cleared = target.token === rejectedToken;
+  if (cleared) clearCatscoLogToken(target);
+  saveCatscoLogAgentState(stateFilePath, target);
+  return cleared;
 }
 
 function hasUsableSkillCapability(state: CatscoLogAgentState): boolean {

@@ -16,6 +16,21 @@ interface SessionLogIdentityFields {
   agent_identity?: SessionLogAgentIdentity;
 }
 
+export interface SessionOutputLog {
+  kind: 'message' | 'tool_call';
+  source_session_id: string;
+  ref: string;
+  subtype?: string;
+  episode_id: string;
+  model_call_id: string;
+  output_position: number;
+  body_path: string;
+  body: string;
+  body_sha256: string;
+  body_complete: boolean;
+  body_truncated: boolean;
+}
+
 export interface SessionToolCallLog {
   id: string;
   name: string;
@@ -105,6 +120,11 @@ export interface SessionTurnLogEntry extends SessionLogIdentityFields {
   assistant: {
     text: string;
     tool_calls: SessionToolCallLog[];
+    outputs?: SessionOutputLog[];
+    outputs_contract?: 'session-output/1';
+    outputs_complete?: boolean;
+    outputs_omitted_count?: number;
+    outputs_omission_reasons?: string[];
   };
   tokens: {
     prompt: number;

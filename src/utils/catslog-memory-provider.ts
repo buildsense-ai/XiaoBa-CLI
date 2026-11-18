@@ -1,3 +1,5 @@
+import { DEFAULT_KNOWLEDGE_GRAPH_URL, type CatsLogKnowledgeGraphQuery, type CatsLogKnowledgeGraph } from './catslog-knowledge-graph';
+import type { CatscoSessionNameQuery, CatscoSessionNameSearchQuery, CatscoSessionName, CatscoSessionNameSearchResult } from './catslog-session-name';
 import * as os from 'os';
 import { APP_VERSION } from '../version';
 import {
@@ -7,12 +9,20 @@ import {
   DEFAULT_MEMORY_RECALL_URL,
   DEFAULT_MEMORY_URL,
   DEFAULT_SESSIONS_URL,
+  DEFAULT_SESSION_NAME_URL,
+  DEFAULT_SESSION_NAME_SEARCH_URL,
   DEFAULT_SKILL_GRAPH_URL,
   DEFAULT_SKILLS_URL,
   DEFAULT_SOURCE_READ_URL,
   isSafeCatsLogPath,
   isCatsLogPoolCitationRef,
 } from './catsco-log-agent-client';
+import {
+  DEFAULT_KNOWLEDGE_EXPAND_URL,
+  DEFAULT_KNOWLEDGE_READ_URL,
+  DEFAULT_KNOWLEDGE_SOURCE_READ_URL,
+  DEFAULT_KNOWLEDGE_SEARCH_URL,
+} from './catslog-knowledge-types';
 import type {
   CatscoBranchQuery,
   CatscoBranchResponse,
@@ -21,8 +31,22 @@ import type {
   CatscoSkillsQuery,
   CatscoSkillsResponse,
   CatscoSkillOutcomeInput,
+  CatscoSourceAssertionClosureInput,
+  CatscoSourceAssertionClosureRead,
   CatscoSourceMemoryProjectionRead,
 } from './catsco-log-agent-client';
+import type {
+  CatsLogKnowledgeExpandQuery,
+  CatsLogKnowledgeLinkPage,
+  CatsLogKnowledgeProjectedNodesPage,
+  CatsLogKnowledgeProjectedNodesQuery,
+  CatsLogKnowledgeReadQuery,
+  CatsLogKnowledgeReadResult,
+  CatsLogKnowledgeSearchPage,
+  CatsLogKnowledgeSourceQuery,
+  CatsLogKnowledgeSourcePage,
+  CatsLogKnowledgeSearchQuery,
+} from './catslog-knowledge-types';
 import { getCatscoLogAgentConfig } from './catsco-log-agent-config';
 import type { CatscoLogAgentState } from './catsco-log-agent-state';
 import {
@@ -70,6 +94,9 @@ export interface CatsLogMemoryBackend {
     query: CatscoSessionQuery,
     signal?: AbortSignal,
   ): Promise<CatscoSessionQueryResult>;
+  /** Explicit metadata lookup, independent of automatic Branch retrieval. */
+  readSessionName?(query: CatscoSessionNameQuery, signal?: AbortSignal): Promise<CatscoSessionName>;
+  searchSessionNames?(query: CatscoSessionNameSearchQuery, signal?: AbortSignal): Promise<CatscoSessionNameSearchResult>;
   /**
    * Optional downstream citation telemetry for the branch endpoint: reports
    * which pool refs the parent agent cited after consuming an injection.
@@ -88,6 +115,11 @@ export interface CatsLogMemoryBackend {
   readSourceMemoryProjection?(input: {
     projectionRef: string;
   }, signal?: AbortSignal): Promise<CatscoSourceMemoryProjectionRead>;
+  /**
+   * Optional bounded closure of one assertion under a Collection/Delta root
+   * that the same capability issued. Same failure contract as the source read.
+   */
+  readSourceAssertionClosure?(input: CatscoSourceAssertionClosureInput, signal?: AbortSignal): Promise<CatscoSourceAssertionClosureRead>;
   readSkills?(
     query: CatscoSkillsQuery,
     signal?: AbortSignal,
@@ -97,6 +129,38 @@ export interface CatsLogMemoryBackend {
     signal?: AbortSignal,
   ): Promise<void>;
   supportsSkillOutcomes?(): boolean;
+  /**
+   * Whether the Agent-private daily knowledge recall surface is currently
+   * exposed. Independent of the automatic branch switch: recall availability
+   * is decided by login/state/config alone. Optional keeps fakes compatible.
+   */
+  isKnowledgeRecallAvailable?(): boolean;
+  /** Optional knowledge/1 corpus search (device-bound, Agent-private scope). */
+  searchKnowledge?(
+    query: CatsLogKnowledgeSearchQuery,
+    signal?: AbortSignal,
+  ): Promise<CatsLogKnowledgeSearchPage>;
+  /** Optional knowledge/1 document read; okf format returns the raw markdown body. */
+  readKnowledgeGraph?(query: CatsLogKnowledgeGraphQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeGraph>;
+  readKnowledge?(
+    query: CatsLogKnowledgeReadQuery,
+    signal?: AbortSignal,
+  ): Promise<CatsLogKnowledgeReadResult>;
+  /** Exact source/context reader, preserving canonical identity and disclosure coverage. */
+  readKnowledgeSource?(
+    query: CatsLogKnowledgeSourceQuery,
+    signal?: AbortSignal,
+  ): Promise<CatsLogKnowledgeSourcePage>;
+  /** Optional knowledge/1 link expansion around one typed anchor. */
+  expandKnowledge?(
+    query: CatsLogKnowledgeExpandQuery,
+    signal?: AbortSignal,
+  ): Promise<CatsLogKnowledgeLinkPage>;
+  /** Optional session turn -> Memory node lookup; absent or failing means turns stay raw. */
+  projectedKnowledgeNodes?(
+    query: CatsLogKnowledgeProjectedNodesQuery,
+    signal?: AbortSignal,
+  ): Promise<CatsLogKnowledgeProjectedNodesPage>;
 }
 
 export interface CatsLogMemoryProviderOptions {
@@ -111,7 +175,14 @@ interface CatsLogReadCapability {
   token: string;
   skillsUrl: string;
   sessionsUrl: string;
+  sessionNameUrl: string;
+  sessionNameSearchUrl: string;
   branchUrl: string;
+  knowledgeSearchUrl: string;
+  knowledgeGraphUrl: string;
+  knowledgeReadUrl: string;
+  knowledgeSourceReadUrl: string;
+  knowledgeExpandUrl: string;
   sourceReadUrl: string;
 }
 
@@ -190,6 +261,15 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           branchUrl: capability.branchUrl,
           signal,
         }).then(response => {
+          // A discovery that resolves after its capability was replaced must not
+          // register refs. The read path pins every ref to the token and base it
+          // was discovered under, so a stale registration both makes the ref look
+          // issued while every read of it fails, and overwrites the newer valid
+          // issuance of the same ref. Dropping it keeps the later issuance usable.
+          const latestConfig = this.currentConfig();
+          const latestState = loadCatscoLogAgentState(latestConfig.stateFilePath);
+          if (latestState.stateCorrupt || clean(latestState.skillToken) !== capability.token
+            || latestConfig.apiBaseUrl !== apiBaseUrl) return response;
           for (const branch of response.branches ?? []) {
             if (branch?.source !== 'agent_memory') continue;
             for (const item of Array.isArray(branch.items) ? branch.items.slice(0, 50) : []) {
@@ -223,6 +303,21 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     );
   }
 
+  /** Metadata uses the explicit read surface, including its role/disable gate. */
+  async readSessionName(query: CatscoSessionNameQuery, signal?: AbortSignal): Promise<CatscoSessionName> {
+    if (!this.isKnowledgeRecallAvailable()) throw new CatsLogMemoryUnavailableError('CatsLog explicit reads unavailable');
+    return this.withReadCapability((capability, client) => client.readSessionName({
+      ...query, token: capability.token, sessionNameUrl: capability.sessionNameUrl, signal,
+    }), signal);
+  }
+
+  async searchSessionNames(query: CatscoSessionNameSearchQuery, signal?: AbortSignal): Promise<CatscoSessionNameSearchResult> {
+    if (!this.isKnowledgeRecallAvailable()) throw new CatsLogMemoryUnavailableError('CatsLog explicit reads unavailable');
+    return this.withReadCapability((capability, client) => client.searchSessionNames({
+      ...query, token: capability.token, sessionNameSearchUrl: capability.sessionNameSearchUrl, signal,
+    }), signal);
+  }
+
   /** Report downstream branch citations through the read capability. */
   async reportBranchCitations(input: {
     requestId: string;
@@ -239,6 +334,144 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
           branchUrl: capability.branchUrl,
           signal,
         });
+      },
+      signal,
+    );
+  }
+
+  /**
+   * Whether the Agent-private daily knowledge recall surface is exposed.
+   * Deliberately independent of the automatic branch switch: a device with a
+   * live read capability may consult its private knowledge corpus even when
+   * branch injection is off (or vice versa). `shouldExpose` keeps gating the
+   * branch; this check only adds the knowledge-recall kill switch.
+   */
+  isKnowledgeRecallAvailable(): boolean {
+    return CatsLogMemoryProvider.shouldExposeKnowledgeRecall(this.workingDirectory, this.runtimeEnv(), this.now());
+  }
+
+  static shouldExposeKnowledgeRecall(
+    workingDirectory: string,
+    env: NodeJS.ProcessEnv = process.env,
+    now = Date.now(),
+  ): boolean {
+    const role = String(env.XIAOBA_ROLE || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_]+/g, '-');
+    if (role === 'inspector-cat') return false;
+    // Dedicated recall kill switch; defaults on. The branch-level override
+    // (CATSLOG_MEMORY_ENABLED) intentionally does NOT gate recall.
+    if (/^(0|false|off|no)$/i.test(String(env.CATSLOG_KNOWLEDGE_RECALL_ENABLED || '').trim())) {
+      return false;
+    }
+    const config = getCatscoLogAgentConfig(workingDirectory, env);
+    if (!config.apiBaseUrl) return false;
+    if (config.catscoUserToken) return true;
+    const state = loadCatscoLogAgentState(config.stateFilePath);
+    if (state.stateCorrupt) return false;
+    return Boolean(readCapabilityFromState(state, now));
+  }
+
+  /** Search the Agent-private daily knowledge corpus (knowledge/1). */
+  async searchKnowledge(query: CatsLogKnowledgeSearchQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeSearchPage> {
+    // Kill-switch/role gate runs BEFORE any HTTP dispatch: with recall
+    // disabled the provider must never emit a request, only a typed error.
+    if (!this.isKnowledgeRecallAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    }
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).searchKnowledge !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the knowledge search route');
+        }
+        return client.searchKnowledge({
+          ...query,
+          token: capability.token,
+          knowledgeSearchUrl: capability.knowledgeSearchUrl,
+          signal,
+        });
+      },
+      signal,
+    );
+  }
+
+  /** Read one daily knowledge document; `okf` returns the raw markdown body. */
+  async readKnowledge(query: CatsLogKnowledgeReadQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeReadResult> {
+    if (!this.isKnowledgeRecallAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    }
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).readKnowledge !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the knowledge read route');
+        }
+        return client.readKnowledge({
+          ...query,
+          token: capability.token,
+          knowledgeReadUrl: capability.knowledgeReadUrl,
+          signal,
+        });
+      },
+      signal,
+    );
+  }
+
+  async readKnowledgeGraph(query: CatsLogKnowledgeGraphQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeGraph> {
+    if (!this.isKnowledgeRecallAvailable()) throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    return this.withReadCapability((capability, client) => {
+      if (typeof client.readKnowledgeGraph !== 'function') throw new CatsLogMemoryUnavailableError('CatsLog graph reader unavailable');
+      return client.readKnowledgeGraph({ ...query, token: capability.token, knowledgeGraphUrl: capability.knowledgeGraphUrl, signal });
+    }, signal);
+  }
+
+  async readKnowledgeSource(query: CatsLogKnowledgeSourceQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeSourcePage> {
+    if (!this.isKnowledgeRecallAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    }
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof client.readKnowledgeSource !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the knowledge source read route');
+        }
+        return client.readKnowledgeSource({ ...query, token: capability.token,
+          knowledgeSourceReadUrl: capability.knowledgeSourceReadUrl, signal });
+      }, signal,
+    );
+  }
+
+  /** Expand knowledge links around one typed anchor endpoint. */
+  async expandKnowledge(query: CatsLogKnowledgeExpandQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeLinkPage> {
+    if (!this.isKnowledgeRecallAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    }
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).expandKnowledge !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the knowledge expand route');
+        }
+        return client.expandKnowledge({
+          ...query,
+          token: capability.token,
+          knowledgeExpandUrl: capability.knowledgeExpandUrl,
+          signal,
+        });
+      },
+      signal,
+    );
+  }
+
+  /** Resolve session turns to the Memory nodes mapping them through the read capability. */
+  async projectedKnowledgeNodes(query: CatsLogKnowledgeProjectedNodesQuery, signal?: AbortSignal): Promise<CatsLogKnowledgeProjectedNodesPage> {
+    if (!this.isKnowledgeRecallAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog knowledge recall is disabled or has no live capability');
+    }
+    return this.withReadCapability(
+      (capability, client) => {
+        if (typeof (client as any).projectedKnowledgeNodes !== 'function') {
+          throw new CatsLogMemoryUnavailableError('CatsLog client does not support the knowledge projected nodes route');
+        }
+        return client.projectedKnowledgeNodes({ ...query, token: capability.token, signal });
       },
       signal,
     );
@@ -265,6 +498,27 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     if (signal?.aborted || latestState.stateCorrupt || clean(latestState.skillToken) !== issued.token
       || latestConfig.apiBaseUrl !== issued.apiBaseUrl || !this.isAvailable()) {
       throw new CatsLogMemoryUnavailableError('CatsLog source reference capability changed during read');
+    }
+    return result;
+  }
+
+  /** Assertion closure under a root this capability issued; same pinning as the source read. */
+  async readSourceAssertionClosure(input: CatscoSourceAssertionClosureInput, signal?: AbortSignal): Promise<CatscoSourceAssertionClosureRead> {
+    const issued = this.projectionCapabilities.get(input.projectionRef);
+    const config = this.currentConfig();
+    const state = loadCatscoLogAgentState(config.stateFilePath);
+    const capability = !state.stateCorrupt && readCapabilityFromState(state, this.now());
+    if (!issued || !capability || capability.token !== issued.token || config.apiBaseUrl !== issued.apiBaseUrl) {
+      throw new CatsLogMemoryUnavailableError('CatsLog assertion closure capability changed or unavailable');
+    }
+    const result = await this.clientFor(issued.apiBaseUrl).readSourceAssertionClosure({
+      ...input, token: capability.token, sourceReadUrl: DEFAULT_SOURCE_READ_URL, signal,
+    });
+    const latestConfig = this.currentConfig();
+    const latestState = loadCatscoLogAgentState(latestConfig.stateFilePath);
+    if (signal?.aborted || latestState.stateCorrupt || clean(latestState.skillToken) !== issued.token
+      || latestConfig.apiBaseUrl !== issued.apiBaseUrl || !this.isAvailable()) {
+      throw new CatsLogMemoryUnavailableError('CatsLog assertion closure capability changed during read');
     }
     return result;
   }
@@ -428,6 +682,19 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
     latest.deviceId = responseDeviceId || deviceId;
     ensureCatscoDeviceId(latest, stateFilePath);
 
+    // CatsLog replaces every device capability on bootstrap, including the
+    // upload token the scheduler holds. Hand the replacement to the scheduler
+    // or its next upload fails with a revoked token and bootstraps again,
+    // revoking this read capability in turn. Only replace the upload token we
+    // started from; a concurrent scheduler bootstrap may already be newer.
+    const uploadToken = clean(response.token);
+    if (uploadToken && clean(latest.token) === clean(state.token)) {
+      latest.tokenId = clean(response.token_id);
+      latest.token = uploadToken;
+      latest.tokenIssuedAt = clean(response.issued_at);
+      latest.tokenExpiresAt = clean(response.expires_at);
+    }
+
     if (hasRead) {
       latest.skillTokenId = clean(response.skill_token_id);
       latest.skillToken = skillToken;
@@ -435,9 +702,16 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       latest.skillsUrl = safePathOrDefault(response.skills_url, DEFAULT_SKILLS_URL);
       latest.skillGraphUrl = safePathOrDefault(response.skill_graph_url, DEFAULT_SKILL_GRAPH_URL);
       latest.sessionsUrl = safePathOrDefault(response.sessions_url, DEFAULT_SESSIONS_URL);
+      latest.sessionNameUrl = safePathOrDefault(response.session_name_url, DEFAULT_SESSION_NAME_URL);
+      latest.sessionNameSearchUrl = safePathOrDefault(response.session_name_search_url, DEFAULT_SESSION_NAME_SEARCH_URL);
       latest.memoryUrl = safePathOrDefault(response.memory_url, DEFAULT_MEMORY_URL);
       latest.memoryRecallUrl = safePathOrDefault(response.memory_recall_url, DEFAULT_MEMORY_RECALL_URL);
       latest.branchUrl = safePathOrDefault(response.branch_url, DEFAULT_BRANCH_URL);
+      latest.knowledgeSearchUrl = safePathOrDefault(responseRecord.knowledge_search_url, DEFAULT_KNOWLEDGE_SEARCH_URL);
+      latest.knowledgeGraphUrl = safePathOrDefault(responseRecord.knowledge_graph_url, DEFAULT_KNOWLEDGE_GRAPH_URL);
+      latest.knowledgeReadUrl = safePathOrDefault(responseRecord.knowledge_read_url, DEFAULT_KNOWLEDGE_READ_URL);
+      latest.knowledgeSourceReadUrl = safePathOrDefault(responseRecord.knowledge_source_read_url, DEFAULT_KNOWLEDGE_SOURCE_READ_URL);
+      latest.knowledgeExpandUrl = safePathOrDefault(responseRecord.knowledge_expand_url, DEFAULT_KNOWLEDGE_EXPAND_URL);
     } else if (responseHasReadCapabilityFields(response as unknown as Record<string, unknown>)) {
       // Only clear the snapshot we actually attempted to replace. A second
       // bootstrap may have completed while this request was in flight; never
@@ -513,7 +787,14 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
       token: clean(response?.skill_token)!,
       skillsUrl: safePathOrDefault(response?.skills_url, DEFAULT_SKILLS_URL),
       sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
+      sessionNameUrl: safePathOrDefault(response?.session_name_url, DEFAULT_SESSION_NAME_URL),
+      sessionNameSearchUrl: safePathOrDefault(response?.session_name_search_url, DEFAULT_SESSION_NAME_SEARCH_URL),
       branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
+      knowledgeSearchUrl: safePathOrDefault(response?.knowledge_search_url, DEFAULT_KNOWLEDGE_SEARCH_URL),
+      knowledgeGraphUrl: safePathOrDefault(response?.knowledge_graph_url, DEFAULT_KNOWLEDGE_GRAPH_URL),
+      knowledgeReadUrl: safePathOrDefault(response?.knowledge_read_url, DEFAULT_KNOWLEDGE_READ_URL),
+      knowledgeSourceReadUrl: safePathOrDefault(response?.knowledge_source_read_url, DEFAULT_KNOWLEDGE_SOURCE_READ_URL),
+      knowledgeExpandUrl: safePathOrDefault(response?.knowledge_expand_url, DEFAULT_KNOWLEDGE_EXPAND_URL),
       sourceReadUrl: DEFAULT_SOURCE_READ_URL,
     }
     : null;
@@ -529,7 +810,14 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
     token,
     skillsUrl: safePathOrDefault(state.skillsUrl, DEFAULT_SKILLS_URL),
     sessionsUrl: safePathOrDefault(state.sessionsUrl, DEFAULT_SESSIONS_URL),
+    sessionNameUrl: safePathOrDefault(state.sessionNameUrl, DEFAULT_SESSION_NAME_URL),
+    sessionNameSearchUrl: safePathOrDefault(state.sessionNameSearchUrl, DEFAULT_SESSION_NAME_SEARCH_URL),
     branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
+    knowledgeSearchUrl: safePathOrDefault(state.knowledgeSearchUrl, DEFAULT_KNOWLEDGE_SEARCH_URL),
+    knowledgeGraphUrl: safePathOrDefault(state.knowledgeGraphUrl, DEFAULT_KNOWLEDGE_GRAPH_URL),
+    knowledgeReadUrl: safePathOrDefault(state.knowledgeReadUrl, DEFAULT_KNOWLEDGE_READ_URL),
+    knowledgeSourceReadUrl: safePathOrDefault(state.knowledgeSourceReadUrl, DEFAULT_KNOWLEDGE_SOURCE_READ_URL),
+    knowledgeExpandUrl: safePathOrDefault(state.knowledgeExpandUrl, DEFAULT_KNOWLEDGE_EXPAND_URL),
     sourceReadUrl: DEFAULT_SOURCE_READ_URL,
   };
 }

@@ -12,6 +12,7 @@ import type {
   SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
+  SessionOutputLog,
   SessionTurnLogEntry,
   SessionInputMetadata,
   SessionTranscriptEvent,
@@ -21,6 +22,7 @@ import type { SubAgentRuntimeEvent } from '../core/sub-agent-events';
 import type { SubAgentInfo } from '../core/sub-agent-session';
 import type { PromptTraceSnapshot } from './prompt-observability';
 import { PathResolver } from './path-resolver';
+import { SharedInputManifestEncoder } from './shared-input-manifest';
 
 export type {
   LegacySessionTurnLogEntry,
@@ -32,6 +34,7 @@ export type {
   SessionRuntimeLogEvent,
   SessionSubAgentEventLogEntry,
   SessionToolCallLog,
+  SessionOutputLog,
   SessionTurnLogEntry,
 } from './session-log-schema';
 
@@ -52,6 +55,11 @@ export interface LogTurnOptions {
   runtimeFeedback?: string[];
   runtimeObservationSource?: string;
   prompt?: SessionPromptTurnLog;
+  outputs?: SessionOutputLog[];
+  outputsContract?: 'session-output/1';
+  outputsComplete?: boolean;
+  outputsOmittedCount?: number;
+  outputsOmissionReasons?: string[];
 }
 
 /**
@@ -68,6 +76,7 @@ export class SessionTurnLogger {
   private readonly streamId = randomUUID();
   private eventSequence = 0;
   private checkedLogTail = false;
+  private readonly inputManifestEncoder = new SharedInputManifestEncoder();
 
   constructor(sessionType: string, sessionId: string, agentIdentity?: SessionLogAgentIdentity) {
     this.sessionType = sessionType;
@@ -107,6 +116,10 @@ export class SessionTurnLogger {
       ? mergeAgentIdentity(this.agentIdentity, normalized)
       : normalized;
     return true;
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
   }
 
   getLogFilePath(): string {
@@ -184,11 +197,26 @@ export class SessionTurnLogger {
           ...tc,
           result: this.truncate(tc.result, MAX_TOOL_RESULT_LENGTH),
         })),
+        ...(options.outputsContract && {
+          outputs_contract: options.outputsContract,
+          outputs_complete: options.outputsComplete,
+          outputs_omitted_count: options.outputsOmittedCount,
+          outputs_omission_reasons: options.outputsOmissionReasons,
+          ...(options.outputs && options.outputs.length > 0 && { outputs: options.outputs }),
+        }),
       },
       tokens,
       ...(options.prompt && { prompt: options.prompt }),
     };
 
+    const serialized = JSON.stringify(turnLog);
+    if (Buffer.byteLength(serialized, 'utf8') > 240 * 1024 && turnLog.assistant.outputs) {
+      const omitted = turnLog.assistant.outputs.length + (options.outputsOmittedCount || 0);
+      turnLog.assistant.outputs = undefined;
+      turnLog.assistant.outputs_complete = false;
+      turnLog.assistant.outputs_omitted_count = omitted;
+      turnLog.assistant.outputs_omission_reasons = [...new Set([...(options.outputsOmissionReasons || []), 'turn_line_budget'])].sort();
+    }
     this.appendLog(turnLog);
   }
 
@@ -213,7 +241,7 @@ export class SessionTurnLogger {
       ...this.agentIdentityFields(),
       level,
       message,
-      ...(event && { event }),
+      ...(event && { event: this.inputManifestEncoder.encodeEvent(event) }),
     };
     this.appendLog(runtimeEntry);
   }

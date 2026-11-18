@@ -1,5 +1,5 @@
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
-import { jsonToolError, jsonToolResult, MemoryLogStore } from '../core/memory-log-store';
+import { jsonToolError, jsonToolResult, MemoryLogStore, type ArchiveTurnPin } from '../core/memory-log-store';
 
 import {
   CATSLOG_POOL_CITATION_REF_PATTERN,
@@ -18,6 +18,24 @@ export interface MemorySearchFinishPayload {
 export type MemorySearchFinishHandler = (payload: MemorySearchFinishPayload) => void;
 
 export const MEMORY_FINISH_MAX_INVALID_ATTEMPTS = 3;
+
+/** One verified claim, published before the investigation ends. */
+export interface MemoryPublishFindingPayload {
+  subject: string;
+  claim: string;
+  refs: string[];
+  qualification?: string;
+  supersedes?: string[];
+}
+
+export type MemoryPublishFindingResult = {
+  ok: boolean;
+  observation_id?: string;
+  verified_through_input?: number;
+  reason?: string;
+};
+
+export const MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS = 3;
 
 const CANONICAL_REF_PATTERN = /^[^/\\#]+\/\d{4}-\d{2}-\d{2}\/[^/\\#]+\.jsonl#(?:\d+|(?:run|input|legacy):[a-zA-Z0-9:_-]+)$/;
 
@@ -103,14 +121,16 @@ export class MemoryReadTurnTool implements Tool {
     },
   };
 
-  constructor(private readonly store: MemoryLogStore) {}
+  constructor(private readonly store: MemoryLogStore, private readonly onRead?: (ref: string, archive?: ArchiveTurnPin, truncated?: boolean) => void) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
       const result = await this.store.readTurn(String(args?.ref || ''), {
         budgetChars: args?.budget_chars,
       }, context.abortSignal);
-      return { ok: true, content: jsonToolResult(result) };
+      const {archive, ...visible} = result;
+      this.onRead?.(result.ref, archive, result.truncated);
+      return { ok: true, content: jsonToolResult(visible) };
     } catch (error: any) {
       return toolError(error);
     }
@@ -148,7 +168,7 @@ export class MemoryNeighborsTool implements Tool {
     },
   };
 
-  constructor(private readonly store: MemoryLogStore) {}
+  constructor(private readonly store: MemoryLogStore, private readonly onRead?: (ref: string, archive?: ArchiveTurnPin, truncated?: boolean) => void) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
@@ -157,7 +177,11 @@ export class MemoryNeighborsTool implements Tool {
         next: args?.next,
         budgetChars: args?.budget_chars,
       }, context.abortSignal);
-      return { ok: true, content: jsonToolResult(result) };
+      const turns = result.turns.map(({archive, ...visible}) => {
+        this.onRead?.(visible.ref, archive, visible.truncated);
+        return visible;
+      });
+      return { ok: true, content: jsonToolResult({...result, turns}) };
     } catch (error: any) {
       return toolError(error);
     }
@@ -198,6 +222,123 @@ export class MemorySourceReadTool implements Tool {
     try {
       const result = await this.expand(String(args?.ref || ''), context?.abortSignal);
       return { ok: true, content: jsonToolResult(result) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
+ * Exact read of one readable handle this run issued: a Memory node (canonical
+ * memory-graph/3 view) or a session turn / learning node (one complete source),
+ * cited by a Diary entry the main agent read or reached through memory_links.
+ * Whole or not at all.
+ */
+export class MemoryNodeReadTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_node_read',
+    description: [
+      '读取一个本 run 发出的可读句柄：memory-node:…（精确记忆节点及其条件/省略）或 source:…（完整的历史会话 turn / 学习节点）。',
+      '句柄来自 document_graph_seeds 或 memory_links 结果中 readable:true 的端点；entry:… 句柄只能用于 memory_links，不能读取。',
+      '与 memory_source_read 共享整轮调用与视图预算；只交付完整内容，否则返回 reference_only。成功结果中的 ref（catslog:source:…）可写入 finish evidence。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        node: { type: 'string', description: '原样给出的 memory-node:… 或 source:… 句柄。' },
+      },
+      required: ['node'],
+    },
+  };
+
+  constructor(
+    private readonly read: (node: string, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      return { ok: true, content: jsonToolResult(await this.read(String(args?.node || ''), context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
+ * One body-free page of stored graph links around an issued handle. The
+ * session resolves the handle to its exact anchor, validates every endpoint
+ * and issues opaque handles for resolved remotes; coordinates never reach the model.
+ */
+export class MemoryLinksTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_links',
+    description: [
+      '沿 CatsLog 已存储的图关系做联想：给一个本 run 发出的句柄（entry:… / source:… / memory-node:…），返回与它相连的端点。',
+      '结果只有关系类型（corrects/supplements/requires/derived_from/continues/related/used）、方向和新句柄，没有正文；有记忆图投影覆盖的会话 turn 直接给出记忆节点句柄（via 标明原端点类型）；entry 端点只能继续 memory_links，readable:true 的端点可用 memory_node_read 读取。',
+      'paths 是本 run 中通往同一端点的不同关系数，越多说明关联越集中。每 run 最多 3 次，每次最多 16 条边。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', description: '原样给出的 entry:… / source:… / memory-node:… 句柄。' },
+        direction: { type: 'string', enum: ['in', 'out', 'both'], description: '可选。out=该端点指向别处，in=别处指向该端点；默认 both。' },
+      },
+      required: ['handle'],
+    },
+  };
+
+  constructor(
+    private readonly expand: (handle: string, direction: unknown, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    try {
+      return { ok: true, content: jsonToolResult(await this.expand(String(args?.handle || ''), args?.direction, context?.abortSignal)) };
+    } catch (error: any) {
+      return toolError(error);
+    }
+  }
+}
+
+/**
+ * Bounded closure of one assertion under a Collection/Delta root this run
+ * already expanded. The session owns locator membership and the shared
+ * two-read budget; the server revalidates capability, member and range.
+ */
+export class MemorySourceAssertionReadTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'memory_assertion_read',
+    description: [
+      '只为当前问题中的一个明确断言，读取已展开 Collection/Delta 根下对应 member 的限定闭包。',
+      '必须先用 memory_source_read 展开同一 ref，并依据其 Delta relation/节点或 Collection 成员选定 member_ref 与 node_id。',
+      '每个 run 最多一次，与 memory_source_read 共享整轮调用预算；服务器限 12 KiB/16 nodes。',
+      'Collection 成员列表本身不是结论；只有 status 为 complete 的闭包才可写入 finish evidence。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: '本 run 已展开的 Collection/Delta ref_<64hex>。' },
+        member_ref: { type: 'string', description: '该根的成员 ref_<64hex>；Delta 自身的新断言使用根 ref。' },
+        node_id: { type: 'string', description: '64 位十六进制 assertion 节点 ID。' },
+      },
+      required: ['ref', 'member_ref', 'node_id'],
+    },
+  };
+
+  constructor(
+    private readonly read: (input: { ref: string; memberRef: string; nodeId: string }, signal?: AbortSignal) => Promise<Record<string, unknown>>,
+  ) {}
+
+  async execute(args: any, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
+    const ref = typeof args?.ref === 'string' ? args.ref.trim() : '';
+    const memberRef = typeof args?.member_ref === 'string' ? args.member_ref.trim() : '';
+    const nodeId = typeof args?.node_id === 'string' ? args.node_id.trim() : '';
+    if (!CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || !CATSLOG_POOL_CITATION_REF_PATTERN.test(memberRef)
+      || !/^[a-f0-9]{64}$/.test(nodeId)) {
+      return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: 'An expanded root ref, an exact member ref and an assertion node ID are required.', retryable: true };
+    }
+    try {
+      return { ok: true, content: jsonToolResult(await this.read({ ref, memberRef, nodeId }, context?.abortSignal)) };
     } catch (error: any) {
       return toolError(error);
     }
@@ -289,10 +430,11 @@ export class FinishMemorySearchTool implements Tool {
   constructor(
     private readonly onFinish: MemorySearchFinishHandler,
     private readonly isDeliveredPoolRef: (ref: string) => boolean = () => false,
+    private readonly isReadLocalRef?: (ref: string) => boolean,
   ) {}
 
   async execute(args: any): Promise<ToolExecutionResult> {
-    const validation = validateFinishArgs(args, this.isDeliveredPoolRef);
+    const validation = validateFinishArgs(args, this.isDeliveredPoolRef, this.isReadLocalRef);
     if (!validation.ok) {
       return this.invalidResult(validation.error);
     }
@@ -341,7 +483,187 @@ export class FinishMemorySearchTool implements Tool {
   }
 }
 
-function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => boolean):
+/**
+ * Publishes one verified claim without ending the investigation. The finish
+ * tool still ends it: a Branch can keep exploring after a publication, and a
+ * later source can correct the earlier claim with `supersedes`.
+ */
+export class PublishMemoryFindingTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'publish_memory_finding',
+    description: [
+      '发布一条已核实的记忆发现；不结束 investigation。',
+      '只用于已经通过 read 工具完整交付的证据；搜索结果本身只是线索。',
+      'subject 是被讨论的对象，claim 是可被主 agent 直接使用的断言，evidence 是支撑它的 canonical refs。',
+      'qualification 写明限制条件（例如“已修复，但该导出未验证”）。',
+      '发现重复或错误时，用 supersedes 指出被更正的 observation_id。',
+      '同一 subject/claim/refs 只会入队一次；重复发布会被拒绝并返回 duplicate。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: '被讨论的对象（项目、导出、版本或事件）。' },
+        claim: { type: 'string', description: '一条可被主 agent 使用的断言。' },
+        evidence: { type: 'array', description: '支撑该断言的 canonical refs；必须已完整读取。', items: { type: 'string' } },
+        qualification: { type: 'string', description: '改变该断言可用方式的限定（可选）。' },
+        supersedes: { type: 'array', description: '被本发现更正的 observation_id 或 claimKey（可选）。', items: { type: 'string' } },
+      },
+      required: ['subject', 'evidence', 'claim'],
+    },
+  };
+
+  private invalidAttempts = 0;
+
+  constructor(
+    private readonly onPublish: (payload: MemoryPublishFindingPayload) => MemoryPublishFindingResult,
+    private readonly isDeliveredPoolRef: (ref: string) => boolean = () => false,
+    private readonly isReadLocalRef?: (ref: string) => boolean,
+  ) {}
+
+  async execute(args: any): Promise<ToolExecutionResult> {
+    const validation = validatePublishFindingArgs(args, this.isDeliveredPoolRef, this.isReadLocalRef);
+    if (!validation.ok) return this.invalidResult(validation.error);
+    this.invalidAttempts = 0;
+    const result = this.onPublish(validation.payload);
+    if (!result.ok) {
+      return {
+        ok: false,
+        errorCode: result.reason === 'duplicate' ? 'DUPLICATE_OBSERVATION' : 'PUBLICATION_REJECTED',
+        message: jsonToolError(`${result.reason || 'publication_rejected'}${result.observation_id ? `: ${result.observation_id}` : ''}`),
+        retryable: result.reason === 'duplicate',
+      };
+    }
+    return {
+      ok: true,
+      content: jsonToolResult({
+        ok: true,
+        observation_id: result.observation_id,
+        verified_through_input: result.verified_through_input,
+        note: 'Published. The investigation continues; finish_memory_search still ends it.',
+      }),
+    };
+  }
+
+  async handleInvalidArguments(message: string): Promise<ToolExecutionResult> {
+    return this.invalidResult(message);
+  }
+
+  private invalidResult(error: string): ToolExecutionResult {
+    this.invalidAttempts += 1;
+    return {
+      ok: false,
+      errorCode: 'INVALID_TOOL_ARGUMENTS',
+      message: jsonToolError([
+        error,
+        `Attempt ${this.invalidAttempts}/${MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS}. Correct format:`,
+        'publish={"subject":"...","claim":"...","evidence":["chat/2026-08-13/demo.jsonl#1"],"qualification":"..."}',
+      ].join(' ')),
+      retryable: this.invalidAttempts < MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS,
+    };
+  }
+}
+
+/**
+ * Resolves an observation published for an older input: after consuming the
+ * new user input the Branch either stands behind the claim (reconfirm) or
+ * withdraws it. Nothing is delivered until this runs.
+ */
+export class ResolveHeldObservationTool implements Tool {
+  definition: ToolDefinition = {
+    name: 'resolve_held_memory_observation',
+    description: [
+      '处理因新用户输入而被 hold 的已发布发现。',
+      '消费新输入后，如果该断言仍然成立，用 decision=reconfirm 推进它的 verified_through_input；',
+      '如果新输入换了话题、取消了该结论或证据已过期，用 decision=withdraw 撤回。',
+      '未处理的 hold 发现不会进入主 agent 的请求。',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        observation_id: { type: 'string', description: 'held_observations 中的 observationId。' },
+        decision: { type: 'string', enum: ['reconfirm', 'withdraw'], description: '仍成立则 reconfirm，否则 withdraw。' },
+        reason: { type: 'string', description: '撤回或确认的简短原因（可选）。' },
+      },
+      required: ['observation_id', 'decision'],
+    },
+  };
+
+  constructor(private readonly resolve: (
+    observationId: string,
+    decision: 'reconfirm' | 'withdraw',
+    reason?: string,
+  ) => MemoryPublishFindingResult) {}
+
+  async execute(args: any): Promise<ToolExecutionResult> {
+    const observationId = String(args?.observation_id || '').trim();
+    const decision = args?.decision;
+    if (!observationId || (decision !== 'reconfirm' && decision !== 'withdraw')) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_TOOL_ARGUMENTS',
+        message: jsonToolError('resolve_held_memory_observation requires observation_id and decision=reconfirm|withdraw'),
+        retryable: true,
+      };
+    }
+    const result = this.resolve(observationId, decision, typeof args?.reason === 'string' ? args.reason : undefined);
+    if (!result.ok) {
+      return {
+        ok: false,
+        errorCode: 'OBSERVATION_NOT_HELD',
+        message: jsonToolError(result.reason || 'observation_not_held'),
+        retryable: false,
+      };
+    }
+    return {
+      ok: true,
+      content: jsonToolResult({ ok: true, observation_id: result.observation_id, decision }),
+    };
+  }
+}
+
+function validatePublishFindingArgs(
+  args: any,
+  isDeliveredPoolRef: (ref: string) => boolean,
+  isReadLocalRef?: (ref: string) => boolean,
+): { ok: true; payload: MemoryPublishFindingPayload } | { ok: false; error: string } {
+  const subject = String(args?.subject || '').trim();
+  const claim = String(args?.claim || '').trim();
+  if (!subject) return { ok: false, error: 'subject must be a non-empty string' };
+  if (!claim) return { ok: false, error: 'claim must be a non-empty string' };
+  const rawEvidence: unknown[] = Array.isArray(args?.evidence) ? args.evidence as unknown[] : [];
+  if (rawEvidence.length === 0) {
+    return { ok: false, error: 'publish_memory_finding requires evidence: string[] with at least one fully read ref' };
+  }
+  if (rawEvidence.some(ref => typeof ref !== 'string')) {
+    return { ok: false, error: 'evidence must contain strings only' };
+  }
+  const refs: string[] = Array.from(new Set((rawEvidence as string[]).map(ref => ref.trim()).filter(Boolean)));
+  for (const ref of refs) {
+    if (CANONICAL_REF_PATTERN.test(ref) && isReadLocalRef && !isReadLocalRef(ref)) {
+      return { ok: false, error: 'Use memory_read_turn or memory_neighbors to read each local evidence ref before publishing.' };
+    }
+    if (!CANONICAL_REF_PATTERN.test(ref)
+      && !((CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) && isDeliveredPoolRef(ref))) {
+      return { ok: false, error: `invalid canonical ref: ${ref}` };
+    }
+  }
+  return {
+    ok: true,
+    payload: {
+      subject,
+      claim,
+      refs,
+      ...(typeof args?.qualification === 'string' && args.qualification.trim()
+        ? { qualification: args.qualification.trim() }
+        : {}),
+      ...(Array.isArray(args?.supersedes)
+        ? { supersedes: (args.supersedes as unknown[]).map(value => String(value || '').trim()).filter(Boolean) }
+        : {}),
+    },
+  };
+}
+
+function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => boolean, isReadLocalRef?: (ref: string) => boolean):
   | { ok: true; payload: MemorySearchFinishPayload }
   | { ok: false; error: string } {
   const summary = String(args?.summary || '').trim();
@@ -361,10 +683,13 @@ function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => bool
   const evidence: string[] = args.evidence.map((ref: string) => ref.trim()).filter(Boolean);
   const uniqueRefs: string[] = Array.from(new Set(evidence));
   for (const ref of uniqueRefs) {
-    // The active local grammar remains unchanged. Pool refs are an explicit
-    // run-local extension, admitted only after complete delivery.
+    if (CANONICAL_REF_PATTERN.test(ref) && isReadLocalRef && !isReadLocalRef(ref)) {
+      return { ok: false, error: 'Use memory_read_turn or memory_neighbors to read each local evidence ref before finishing.' };
+    }
+    // The active local grammar remains unchanged. Pool and Memory node refs are
+    // explicit run-local extensions, admitted only after complete delivery.
     if (!CANONICAL_REF_PATTERN.test(ref)
-      && !(CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) && isDeliveredPoolRef(ref))) {
+      && !((CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) && isDeliveredPoolRef(ref))) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }
@@ -400,6 +725,7 @@ const CATSLOG_STREAM_REF_PATTERN = /^(.+)#(?:[1-9][0-9]*|summary)$/;
 const CATSLOG_SESSION_HASH_REF_PATTERN = /^catslog:session:[a-f0-9]{24}$/;
 const CATSLOG_SKILL_REF_PATTERN = /^catslog:skill:(.+)@([1-9][0-9]*)$/;
 const CATSLOG_REF_HASH_PATTERN = /^catslog:ref:[a-f0-9]{24}$/;
+const CATSLOG_SOURCE_REF_PATTERN = /^catslog:source:[a-f0-9]{64}$/;
 // Local distilled-knowledge citations: managed KB documents and raw source
 // Markdown under the KB store's documents/ tree (see xiaoba-knowledge). The
 // path grammar is deliberately narrower than the store accepts: ASCII
@@ -407,6 +733,30 @@ const CATSLOG_REF_HASH_PATTERN = /^catslog:ref:[a-f0-9]{24}$/;
 // never double as a traversal path or URL.
 const KNOWLEDGE_KB_REF_PATTERN = /^kb:KB-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const KNOWLEDGE_FILE_REF_PATTERN = /^file:documents\/(?:[A-Za-z0-9][A-Za-z0-9 ._-]*\/)*[A-Za-z0-9][A-Za-z0-9 ._-]*\.[mM][dD]$/;
+
+/**
+ * Citable ref for one entry revision of the Agent-private daily knowledge
+ * corpus: `catslog:knowledge:<document_id>:<revision>:<entry_id>`. Segments
+ * use the shared package's opaque-ID charset, so branch refs and
+ * `stream#line` strings can never masquerade as corpus refs. This is a NEW,
+ * distinct identity domain — it does not widen the local-KB grammar.
+ */
+const CATSLOG_KNOWLEDGE_REF_PATTERN = /^catslog:knowledge:([A-Za-z0-9_-]{1,256}):([A-Za-z0-9_-]{1,128}):([A-Za-z0-9_-]{1,256})$/;
+
+/** Build the citable ref for an exact day/document/revision/entry anchor. */
+export function catslogKnowledgeCitationRef(
+  documentId: string,
+  revision: string,
+  entryId: string,
+): string | null {
+  const ref = `catslog:knowledge:${documentId}:${revision}:${entryId}`;
+  return CATSLOG_KNOWLEDGE_REF_PATTERN.test(ref) ? ref : null;
+}
+
+/** True when `ref` is a typed daily-knowledge corpus ref. */
+export function isCatsLogKnowledgeCitationRef(ref: string): boolean {
+  return CATSLOG_KNOWLEDGE_REF_PATTERN.test(ref);
+}
 
 /**
  * Citable ref form of a local distilled-knowledge document: `kb:<KB-ID>` for
@@ -425,6 +775,9 @@ export function isMemoryCitationRef(ref: string): boolean {
   // Server pool-citation refs pass through the branch projection unchanged;
   // the observed-refs tracker still gates any citation of them.
   if (CATSLOG_POOL_CITATION_REF_PATTERN.test(ref)) return true;
+  // Typed daily-knowledge corpus refs (knowledge/1). Identity domains stay
+  // disjoint: the ref carries document/revision/entry exactly as served.
+  if (isCatsLogKnowledgeCitationRef(ref) || CATSLOG_SOURCE_REF_PATTERN.test(ref)) return true;
   const stream = ref.match(CATSLOG_STREAM_REF_PATTERN);
   if (stream && isSafeCatsLogOpaqueIdentifier(stream[1], 256)) return true;
   const skill = ref.match(CATSLOG_SKILL_REF_PATTERN);

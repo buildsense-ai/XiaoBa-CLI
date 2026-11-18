@@ -15,6 +15,12 @@ export interface CreditTaskSnapshot {
   finishPending?: boolean;
   manualResumeGuard?: 'budget' | 'review';
   subagentProgress?: Record<string, { taskDescription: string; messages: Message[]; outputFiles: string[] }>;
+  /** The foreground turn finished; only Branch children may still hold this task. */
+  foregroundCompleted?: boolean;
+  /** Live Branch children counted on the parent (persisted so recovery can settle once). */
+  branchChildren?: number;
+  /** Persistence ordering marker; the newest snapshot is the session's active task. */
+  updatedAtMs?: number;
 }
 
 export interface CreditTaskDecision {
@@ -72,8 +78,18 @@ export const creditAccountingHeaderFailures = new WeakSet<object>();
 export const budgetedCreditResumeResponses = new WeakSet<ChatResponse>();
 
 export class CreditTaskPausedError extends Error {
-  readonly code = 'CATSCO_CREDIT_TASK_PAUSED';
+  readonly code: string = 'CATSCO_CREDIT_TASK_PAUSED';
   constructor(message: string) { super(message); this.name = 'CreditTaskPausedError'; }
+}
+
+/**
+ * A status that was already in flight when the task settled. The work is over
+ * by definition, so an observer (the Memory Branch) exits cleanly instead of
+ * reporting a failure; a foreground turn still cannot continue on it.
+ */
+export class CreditTaskSettledError extends CreditTaskPausedError {
+  override readonly code: string = 'CATSCO_CREDIT_TASK_SETTLED';
+  constructor(message: string) { super(message); this.name = 'CreditTaskSettledError'; }
 }
 
 export function creditTaskHeaders(apiUrl: string): Record<string, string> {
@@ -87,6 +103,7 @@ export class CreditTaskRuntime {
   private startPromise?: Promise<void>;
   private finishPromise?: Promise<void>;
   private children = 0;
+  private branchChildren = 0;
   private parentCompleted = false;
   private revision = 0;
   private latestDecision?: CreditTaskDecision;
@@ -142,7 +159,40 @@ export class CreditTaskRuntime {
     return `任务已暂停，进度已保存（${this.snapshot.reason || '额度或权限检查未通过'}）。${retained}请在无欠款、有可用额度且具备模型权限后手动执行 /resume。`;
   }
 
-  persist(): void { this.save({ ...this.snapshot }); }
+  persist(): void {
+    this.snapshot.updatedAtMs = Date.now();
+    this.save({ ...this.snapshot });
+  }
+
+  /** True once the foreground turn ended; the task may still be held by Branch children. */
+  get foregroundCompleted(): boolean {
+    return this.parentCompleted;
+  }
+
+  get liveBranchChildren(): number {
+    return this.branchChildren;
+  }
+
+  /**
+   * Both input gates use this when deciding whether a new turn may start.
+   * A running task that has nothing left but Branch children no longer owns
+   * the input slot: the next turn gets its own task and snapshot.
+   */
+  canAdmitNextTurn(): boolean {
+    return this.snapshot.state === 'running' && this.hasOnlyBranchChildren();
+  }
+
+  /**
+   * The foreground work is done and nothing but Branch children (possibly
+   * none, mid-settlement) still refers to this task. Such a task has released
+   * the input slot, even while its `finish` acknowledgement is in flight.
+   */
+  hasOnlyBranchChildren(): boolean {
+    // `children` decrements before `branchChildren` when a Branch child exits,
+    // and `finish()` runs in that window: treat the transient as released
+    // rather than blocking the next input on a bookkeeping gap.
+    return this.parentCompleted && this.children <= this.branchChildren;
+  }
 
   pause(reason: string): CreditTaskPausedError {
     this.revision++;
@@ -186,6 +236,8 @@ export class CreditTaskRuntime {
 
   async complete(): Promise<void> {
     this.parentCompleted = true;
+    this.snapshot.foregroundCompleted = true;
+    this.persist();
     if (this.children === 0) await this.finish();
   }
 
@@ -198,6 +250,32 @@ export class CreditTaskRuntime {
     }
   }
 
+  /**
+   * A session-scoped Branch investigation holds its originating task instead
+   * of the session's creditTask slot. The parent still settles exactly once,
+   * when the last child exits; a newer task's state is never touched here.
+   */
+  async childBranch<T>(fn: () => Promise<T>): Promise<T> {
+    this.branchChildren++;
+    this.snapshot.branchChildren = this.branchChildren;
+    this.snapshot.foregroundCompleted = this.parentCompleted;
+    this.persist();
+    try {
+      return await this.child(fn);
+    } finally {
+      this.branchChildren--;
+      this.snapshot.branchChildren = this.branchChildren;
+      this.snapshot.foregroundCompleted = this.parentCompleted;
+      this.persist();
+    }
+  }
+
+  /** True when a recovered snapshot was waiting on Branch children that died with the process. */
+  static needsRecoveredBranchSettlement(snapshot: CreditTaskSnapshot): boolean {
+    return snapshot.state === 'running'
+      && (snapshot.foregroundCompleted === true || (snapshot.branchChildren ?? 0) > 0);
+  }
+
   finish(): Promise<void> {
     if (this.snapshot.state === 'paused' || (this.snapshot.state === 'completed' && !this.snapshot.finishPending)) {
       return Promise.resolve();
@@ -207,6 +285,8 @@ export class CreditTaskRuntime {
       // Work has ended. Persist the acknowledgement gap so recovery never reruns models/tools.
       this.revision++;
       this.snapshot.state = 'completed';
+      this.snapshot.foregroundCompleted = true;
+      this.snapshot.branchChildren = this.branchChildren;
       this.snapshot.finishPending = this.snapshot.enabled !== false;
       this.persist();
       if (this.snapshot.enabled !== false) await this.request('finish');
@@ -244,7 +324,11 @@ export class CreditTaskRuntime {
         throw new Error('Relay 任务门禁响应无效');
       }
       // A stale in-flight status must never undo a concurrent pause (including a 402).
-      if (revision !== this.revision) throw new CreditTaskPausedError(this.pauseMessage);
+      if (revision !== this.revision) {
+        throw (this.snapshot.state as string) === 'completed'
+          ? new CreditTaskSettledError(this.pauseMessage)
+          : new CreditTaskPausedError(this.pauseMessage);
+      }
       if (this.snapshot.enabled === true && decision.enabled === false) throw new Error('Relay 任务门禁状态发生变化');
       this.snapshot.enabled = decision.enabled;
       this.snapshot.retainedTaskId = decision.retained_task_id;

@@ -1,43 +1,26 @@
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
-import {
-  AgentTurnController,
-  DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS,
-} from '../src/core/agent-turn-controller';
+import { AgentTurnController } from '../src/core/agent-turn-controller';
 import {
   BRANCH_AGENTS_ENABLED_ENV,
   MEMORY_SIDECAR_ENABLED_ENV,
 } from '../src/core/branch-agent-settings';
-import { InMemorySyntheticObservationQueue, SYNTHETIC_OBSERVATION_TOOL_NAME, SyntheticObservation } from '../src/core/synthetic-observation';
+import { SessionMemoryBranchStore, normalizeMemoryBranchScope } from '../src/core/session-memory-branch';
+import { SYNTHETIC_OBSERVATION_TOOL_NAME } from '../src/core/synthetic-observation';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
-import { AIService } from '../src/utils/ai-service';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
-
-function memoryObservation(id: string): SyntheticObservation {
-  return {
-    id,
-    source: 'memory',
-    status: 'completed',
-    relevance: 'medium',
-    summary: 'Previous turn found the birthday dinner decision.',
-    metadata: {
-      branchId: `branch-${id}`,
-      branchType: 'memory',
-      refs: ['catscompany/2026-06-16/demo.jsonl#7'],
-    },
-    formattedContent: JSON.stringify({
-      source: 'memory',
-      summary: 'Previous turn found the birthday dinner decision.',
-      refs: ['catscompany/2026-06-16/demo.jsonl#7'],
-    }),
-  };
-}
+const scope = normalizeMemoryBranchScope({
+  sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
+  topicId: 'grp_test',
+  actorUserId: 'usr1',
+});
+const otherScope = { ...scope, actorUserId: 'usr2' };
 
 class CapturingAIService {
   requests: Message[][] = [];
-  responses = ['first done', 'second done', 'third done'];
+  responses: Array<{ content: string | null; toolCalls?: any[] }> = [];
 
   isToolCallingSupported(): boolean {
     return true;
@@ -45,294 +28,236 @@ class CapturingAIService {
 
   async chatStream(messages: Message[]): Promise<any> {
     this.requests.push(JSON.parse(JSON.stringify(messages)));
-    return {
-      content: this.responses.shift() || 'done',
-      toolCalls: [],
-      usage,
-    };
+    const response = this.responses.shift() || { content: 'done' };
+    return { content: response.content, toolCalls: response.toolCalls || [], usage };
   }
 }
 
-function createMemoryBranchController(enabled: boolean): AgentTurnController {
-  const aiService = new AIService({
-    provider: 'openai',
-    apiUrl: 'https://models.example.test/v1',
-    apiKey: 'test-key',
-    model: 'tool-model',
-    modelCapabilities: { toolCalling: true },
-  });
+function createController(options: {
+  store?: SessionMemoryBranchStore;
+  aiService: CapturingAIService;
+  enabled?: boolean;
+}): AgentTurnController {
+  const aiService = options.aiService as any;
   const controller = new AgentTurnController({
-    sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
+    sessionKey: scope.sessionKey,
     sessionType: 'catscompany',
+    ...(options.store ? { memoryBranchStore: options.store } : {}),
     services: {
       aiService,
-      memoryBranch: { enabled, modelSource: 'inherit', aiService },
-      toolManager: {} as any,
+      memoryBranch: { enabled: options.enabled ?? true, modelSource: 'inherit', aiService },
+      toolManager: {
+        getToolDefinitions: () => [{ name: 'continue_work', description: 'continue', parameters: { type: 'object', properties: {} } }],
+        executeTool: async (call: any) => ({ role: 'tool', tool_call_id: call.id, name: call.function.name, content: 'tool completed', ok: true }),
+      } as any,
       skillManager: {} as any,
     },
-    skillRuntime: {} as any,
+    skillRuntime: { reloadSkills: async () => undefined, buildSkillsListMessage: () => null } as any,
     planRuntime: undefined as any,
     turnContextBuilder: new TurnContextBuilder(),
-    turnLogRecorder: {} as any,
+    turnLogRecorder: { startRun: () => undefined, recordEvent: () => undefined, recordTurn: () => undefined } as any,
     workspaceRoot: process.cwd(),
     getCurrentDirectory: () => process.cwd(),
     updateCurrentDirectory: () => undefined,
   });
-  (controller as any).createMemorySidecarHandle = () => ({
-    cancel: () => undefined,
-    done: Promise.resolve(),
-  });
   return controller;
 }
 
-describe('AgentTurnController memory branch carryover', () => {
-  test('defaults repeated memory activation to fifteen minutes', () => {
-    assert.equal(DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS, 15 * 60 * 1000);
-  });
+function memoryPublication(claim = 'The approval covered the picture edit, not the narration track.') {
+  return {
+    subject: 'Meridian delivery',
+    claim,
+    sourceRefs: ['catscompany/2026-11-16/meridian.jsonl#7'],
+    scope,
+    originTurn: 1,
+    originTurnId: 'episode:1',
+    verifiedThroughInput: 1,
+    branchId: 'branch-1',
+  };
+}
 
-  test('uses the persisted Branch switch even when both legacy env switches are disabled', () => {
+function syntheticMessages(request: Message[]): Message[] {
+  return request.filter(message => message.__syntheticObservation);
+}
+
+describe('AgentTurnController session-scoped memory branch', () => {
+  test('honors the persisted Branch switch even when legacy env switches are disabled', () => {
     const previousBranch = process.env[BRANCH_AGENTS_ENABLED_ENV];
     const previousMemory = process.env[MEMORY_SIDECAR_ENABLED_ENV];
     process.env[BRANCH_AGENTS_ENABLED_ENV] = 'false';
     process.env[MEMORY_SIDECAR_ENABLED_ENV] = 'false';
     try {
-      const controller = createMemoryBranchController(true);
-      const slot = (controller as any).startMemorySidecarIfEnabled({
+      const starts: any[] = [];
+      const controller = createController({ aiService: new CapturingAIService(), enabled: true });
+      (controller as any).createMemorySidecarHandle = (options: any) => {
+        starts.push(options);
+        return { branchId: 'branch-x', cancel: () => undefined, done: new Promise<void>(() => undefined), outcome: () => 'running' };
+      };
+      (controller as any).startMemoryInvestigation({
         turnNumber: 1,
+        memoryInput: { sequence: 1, turn: 1, turnId: 'input:1', scope },
+        episodeId: 'episode:1',
         input: 'hello',
         messages: [],
       });
-      assert.notEqual(slot, null);
+      assert.equal(starts.length, 1);
     } finally {
-      if (previousBranch === undefined) {
-        delete process.env[BRANCH_AGENTS_ENABLED_ENV];
-      } else {
-        process.env[BRANCH_AGENTS_ENABLED_ENV] = previousBranch;
-      }
+      if (previousBranch === undefined) delete process.env[BRANCH_AGENTS_ENABLED_ENV];
+      else process.env[BRANCH_AGENTS_ENABLED_ENV] = previousBranch;
       if (previousMemory === undefined) delete process.env[MEMORY_SIDECAR_ENABLED_ENV];
       else process.env[MEMORY_SIDECAR_ENABLED_ENV] = previousMemory;
     }
   });
 
-  test('does not start memory sidecar when the persisted Branch switch is disabled', () => {
-    const controller = createMemoryBranchController(false);
-    const slot = (controller as any).startMemorySidecarIfEnabled({
+  test('does not start a branch when the persisted switch is disabled', () => {
+    const starts: any[] = [];
+    const controller = createController({ aiService: new CapturingAIService(), enabled: false });
+    (controller as any).createMemorySidecarHandle = (options: any) => {
+      starts.push(options);
+      return { branchId: 'branch-x', cancel: () => undefined, done: Promise.resolve(), outcome: () => 'finished' };
+    };
+    (controller as any).startMemoryInvestigation({
       turnNumber: 1,
+      memoryInput: { sequence: 1, turn: 1, turnId: 'input:1', scope },
+      episodeId: 'episode:1',
       input: 'hello',
       messages: [],
     });
-    assert.equal(slot, null);
+    assert.equal(starts.length, 0);
   });
 
-  test('injects previous-turn memory as a legal late synthetic tool pair and expires it after one turn', async () => {
-    const aiService = new CapturingAIService();
-    const queues: InMemorySyntheticObservationQueue[] = [];
-    const cancelled: boolean[] = [];
-    const controller = new AgentTurnController({
-      sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
-      sessionType: 'catscompany',
-      services: {
-        aiService: aiService as any,
-        memoryBranch: { enabled: true, modelSource: 'inherit', aiService: aiService as any },
-        toolManager: {
-          getToolDefinitions: () => [],
-          executeTool: async () => {
-            throw new Error('not expected');
-          },
-        } as any,
-        skillManager: {} as any,
-      },
-      skillRuntime: {
-        reloadSkills: async () => undefined,
-        buildSkillsListMessage: () => null,
-      } as any,
-      planRuntime: undefined as any,
-      turnContextBuilder: new TurnContextBuilder(),
-      turnLogRecorder: {
-        startRun: () => undefined,
-        recordEvent: () => undefined,
-        recordTurn: () => undefined,
-      } as any,
-      workspaceRoot: process.cwd(),
-      getCurrentDirectory: () => process.cwd(),
-      updateCurrentDirectory: () => undefined,
+  test('holds an older verified claim on a new input and delivers it once after reconfirmation', async () => {
+    const store = new SessionMemoryBranchStore();
+    const ai = new CapturingAIService();
+    const controller = createController({ store, aiService: ai });
+    (controller as any).createMemorySidecarHandle = () => ({
+      branchId: 'branch-1',
+      cancel: () => undefined,
+      done: new Promise<void>(() => undefined),
+      outcome: () => 'running',
     });
 
-    (controller as any).startMemorySidecarIfEnabled = (options: { turnNumber: number }) => {
-      const queue = new InMemorySyntheticObservationQueue();
-      const index = queues.length;
-      queues.push(queue);
-      cancelled[index] = false;
-      return {
-        queue,
-        originTurn: options.turnNumber,
-        done: false,
-        handle: {
-          cancel: () => {
-            cancelled[index] = true;
-          },
-          done: new Promise<void>(() => undefined),
-        },
-      };
-    };
-
     let messages: Message[] = [];
-    const runTurn = async (input: string) => {
+    let turn = 0;
+    const runTurn = async (input: string, callbacks?: any) => {
+      turn += 1;
+      const memoryBranchInput = {
+        sequence: store.noteUserInput({ text: input, scope, turn, turnId: `input:${turn}` }),
+        turn,
+        turnId: `input:${turn}`,
+        scope,
+      };
       const result = await controller.run({
         input,
         messages,
         runtimeFeedback: [],
         shouldContinue: () => true,
+        memoryBranchInput,
+        ...(callbacks ? { callbacks } : {}),
       });
       messages = result.messages;
       return result;
     };
 
-    await runTurn('turn one');
-    assert.equal(aiService.requests.length, 1);
-    assert.equal(queues[0].push(memoryObservation('late-one')), true);
+    ai.responses = [{ content: 'first answer' }];
+    await runTurn('What did we decide about the Meridian delivery note?');
+    // The Branch verified this claim against input #1 (the admission sequence).
+    assert.equal(store.publish(memoryPublication()).ok, true);
 
-    await runTurn('turn two continues the same topic');
-    assert.equal(aiService.requests.length, 2);
-
-    const secondRequest = aiService.requests[1];
-    const synthetic = secondRequest.filter(message => message.__syntheticObservation);
-    assert.equal(synthetic.length, 2);
-    assert.equal(synthetic[0].role, 'assistant');
-    assert.equal(synthetic[1].role, 'tool');
-    assert.equal(synthetic[0].tool_calls?.[0].function.name, SYNTHETIC_OBSERVATION_TOOL_NAME);
-    assert.equal(synthetic[1].tool_call_id, synthetic[0].tool_calls?.[0].id);
-
-    const callArgs = JSON.parse(synthetic[0].tool_calls?.[0].function.arguments || '{}');
-    const resultContent = JSON.parse(String(synthetic[1].content));
-    assert.equal(callArgs.timing, 'late_previous_turn');
-    assert.equal(resultContent.timing, 'late_previous_turn');
-    assert.equal(resultContent.summary, 'Previous turn found the birthday dinner decision.');
-
-    const currentUserIndex = secondRequest.findIndex(message => message.role === 'user' && message.content === 'turn two continues the same topic');
-    const syntheticCallIndex = secondRequest.indexOf(synthetic[0]);
-    const syntheticResultIndex = secondRequest.indexOf(synthetic[1]);
-    assert.ok(currentUserIndex >= 0);
-    assert.ok(currentUserIndex < syntheticCallIndex);
-    assert.ok(syntheticCallIndex < syntheticResultIndex);
-    assert.equal(cancelled[0], true, 'previous-turn branch is expired after its carryover turn');
-    assert.equal(queues[0].push(memoryObservation('too-late')), false);
-
-    await runTurn('turn three should not receive turn one memory');
-    const thirdSynthetic = aiService.requests[2].filter(message => message.__syntheticObservation);
-    assert.equal(thirdSynthetic.length, 0);
-  });
-
-  test('starts a repeated branch with only episode progress and advisory previous injections', async () => {
-    const controller = createMemoryBranchController(true);
-    (controller as any).options.memoryBranchRefreshIntervalMs = 0;
-    const starts: any[] = [];
-    (controller as any).createMemorySidecarHandle = (options: any) => {
-      starts.push(options);
-      return {
-        cancel: () => undefined,
-        done: Promise.resolve(),
-      };
-    };
-
-    const runtime = (controller as any).startEpisodeMemoryRuntime({
-      turnNumber: 1,
-      episodeId: 'episode:test',
-      input: '完成长任务',
-      messages: [{ role: 'user', content: '完成长任务', __episodeId: 'episode:test' }],
-    });
-    assert.ok(runtime);
-    assert.equal(starts.length, 1);
-
-    starts[0].queue.push(memoryObservation('first-use'));
-    await Promise.resolve();
-    await Promise.resolve();
-
-    const progress: Message[] = [
-      {
-        role: 'assistant',
-        content: null,
-        __episodeId: 'episode:test',
-        tool_calls: [{
-          id: 'call_1',
-          type: 'function',
-          function: { name: 'inspect_repo', arguments: '{"path":"src"}' },
-        }],
-      },
-      {
-        role: 'tool',
-        name: 'inspect_repo',
-        tool_call_id: 'call_1',
-        content: '发现了新的实现约束',
-        __episodeId: 'episode:test',
-      },
+    ai.responses = [
+      { content: null, toolCalls: [{ id: 'call-1', type: 'function', function: { name: 'continue_work', arguments: '{}' } }] },
+      { content: 'second answer' },
     ];
-    const observations = (controller as any).drainMemoryObservations(null, runtime, progress);
+    await runTurn('Draft it for the 60-second cut.', {
+      onToolStart: () => {
+        // Reconfirmation happens after the first request of the new input and
+        // before the next provider call of the same turn.
+        const entry = store.snapshot().entries[0];
+        const reconfirmed = store.reconfirm({
+          observationId: entry.id,
+          sequence: store.currentInputSequence,
+          scope,
+        });
+        assert.equal(reconfirmed.ok, true);
+      },
+    });
 
-    assert.equal(observations.length, 1);
-    assert.equal(starts.length, 2);
-    assert.equal(starts[1].activationContext.taskAnchor, '完成长任务');
-    assert.deepEqual(starts[1].activationContext.previousInjections, [{
-      summary: 'Previous turn found the birthday dinner decision.',
-      refs: ['catscompany/2026-06-16/demo.jsonl#7'],
-    }]);
-    assert.deepEqual(starts[1].activationContext.deltaSinceLastRun, [
-      {
-        role: 'assistant',
-        tool_calls: [{ name: 'inspect_repo', arguments: '{"path":"src"}' }],
-      },
-      {
-        role: 'tool',
-        name: 'inspect_repo',
-        content: '发现了新的实现约束',
-      },
-    ]);
+    assert.equal(ai.requests.length, 3);
+    assert.equal(syntheticMessages(ai.requests[1]).length, 0, 'claim verified for input #1 is held out of input #2');
+    const injected = syntheticMessages(ai.requests[2]);
+    assert.equal(injected.length, 2, 'reconfirmed claim reaches the next provider call');
+    assert.equal(injected[0].tool_calls?.[0].function.name, SYNTHETIC_OBSERVATION_TOOL_NAME);
+    const args = JSON.parse(injected[0].tool_calls?.[0].function.arguments || '{}');
+    assert.equal(args.timing, 'late_previous_turn');
+    assert.equal(JSON.parse(String(injected[1].content)).claim, memoryPublication().claim);
+
+    const snapshot = store.snapshot();
+    assert.equal(snapshot.entries[0].status, 'delivered');
+    assert.equal(snapshot.entries[0].verifiedThroughInput, 2);
+    assert.equal(snapshot.entries[0].deliveredTurn, 2);
   });
 
-  test('does not repeat without progress, overlap an active branch, or refresh a stopped episode', async () => {
-    const controller = createMemoryBranchController(true);
-    (controller as any).options.memoryBranchRefreshIntervalMs = 0;
+  test('never delivers another sender\'s claim in a group session', async () => {
+    const store = new SessionMemoryBranchStore();
+    const ai = new CapturingAIService();
+    const controller = createController({ store, aiService: ai });
+    (controller as any).createMemorySidecarHandle = () => ({
+      branchId: 'branch-1',
+      cancel: () => undefined,
+      done: new Promise<void>(() => undefined),
+      outcome: () => 'running',
+    });
+
+    store.noteUserInput({ text: 'sender A input', scope: otherScope, turn: 1, turnId: 'input:1' });
+    assert.equal(store.publish({
+      ...memoryPublication('Sender A learned the export is missing narration.'),
+      scope: otherScope,
+    }).ok, true);
+
+    await controller.run({
+      input: 'sender B asks about something else',
+      messages: [],
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+      memoryBranchInput: { sequence: store.noteUserInput({ text: 'sender B input', scope, turn: 2, turnId: 'input:2' }), turn: 2, turnId: 'input:2', scope },
+    });
+
+    assert.equal(syntheticMessages(ai.requests[0]).length, 0, "sender B's request contains no sender A evidence");
+    const entry = store.snapshot().entries[0];
+    assert.equal(entry.status, 'held', "sender A's claim stays held for sender B's input");
+  });
+
+  test('event-driven activation replaces the removed refresh interval and passes prior publications', async () => {
     const starts: any[] = [];
-    let finishActive!: () => void;
+    const controller = createController({ aiService: new CapturingAIService() });
     (controller as any).createMemorySidecarHandle = (options: any) => {
+      const index = starts.length;
       starts.push(options);
       return {
+        branchId: `branch-${index}`,
         cancel: () => undefined,
-        done: starts.length === 1
-          ? Promise.resolve()
-          : new Promise<void>(resolve => { finishActive = resolve; }),
+        done: new Promise<void>(() => undefined),
+        outcome: () => 'running',
       };
     };
-
-    const runtime = (controller as any).startEpisodeMemoryRuntime({
+    const memoryInput = { sequence: 1, turn: 1, turnId: 'input:1', scope };
+    (controller as any).startMemoryInvestigation({
       turnNumber: 1,
-      episodeId: 'episode:test',
-      input: 'root',
-      messages: [{ role: 'user', content: 'root', __episodeId: 'episode:test' }],
+      memoryInput,
+      episodeId: 'episode:1',
+      input: 'root task',
+      messages: [],
     });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    (controller as any).drainMemoryObservations(null, runtime, []);
-    assert.equal(starts.length, 1, 'no progress means no model call');
-
-    const progress: Message[] = [{ role: 'assistant', content: 'new work', __episodeId: 'episode:test' }];
-    (controller as any).drainMemoryObservations(null, runtime, progress);
-    assert.equal(starts.length, 2);
-    (controller as any).drainMemoryObservations(null, runtime, [
-      ...progress,
-      { role: 'assistant', content: 'more work', __episodeId: 'episode:test' },
-    ]);
-    assert.equal(starts.length, 2, 'an in-flight branch prevents overlap');
-
-    finishActive();
-    await Promise.resolve();
-    await Promise.resolve();
-    runtime.stopped = true;
-    (controller as any).drainMemoryObservations(null, runtime, [
-      ...progress,
-      { role: 'assistant', content: 'more work', __episodeId: 'episode:test' },
-    ]);
-    assert.equal(starts.length, 2, 'a stopped episode never schedules another branch');
+    assert.equal(starts.length, 1);
+    // A second event while the first investigation is in flight coalesces.
+    (controller as any).startMemoryInvestigation({
+      turnNumber: 1,
+      memoryInput,
+      episodeId: 'episode:1',
+      input: 'root task',
+      messages: [],
+    });
+    assert.equal(starts.length, 1, 'an active investigation never overlaps another');
+    assert.deepEqual(starts[0].activationContext.deltaSinceLastRun, []);
   });
 });

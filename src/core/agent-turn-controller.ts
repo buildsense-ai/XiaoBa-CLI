@@ -1,6 +1,12 @@
+import type { MemoryBranchEvent } from './memory-branch-presentation';
+import { explicitlyVisibleReference, stripInternalAnnotations } from '../utils/visible-reply-text';
 import type { SessionTranscriptEvent } from '../utils/session-log-schema';
+import { NativeRecallFeedbackOutbox } from './native-recall-feedback-outbox';
+import type { ExecutionGraphOrigin } from './execution-graph-metadata';
+import { randomUUID as feedbackUUID } from 'node:crypto';
 import { ContentBlock, Message } from '../types';
 import { randomUUID } from 'crypto';
+import { createHash } from 'node:crypto';
 import type {
   ExecutionScope,
   ScopedDeviceGrant,
@@ -36,6 +42,7 @@ import { ConversationRunner, RunnerCallbacks, PendingUserInputProvider } from '.
 import { resolveSessionSurface } from './session-surface';
 import { TurnContextBuilder } from './turn-context-builder';
 import { TurnLogRecorder } from './turn-log-recorder';
+import { NativeRecallTracker } from './native-recall-attribution';
 import { PlanRuntime } from './plan-runtime';
 import {
   BranchCitationReport,
@@ -47,19 +54,23 @@ import { getPetService } from '../pet/pet-service';
 import {
   buildSyntheticObservationLifecycleEvent,
   describeSyntheticObservationForLog,
-  InMemorySyntheticObservationQueue,
   SyntheticObservation,
   SyntheticObservationQueue,
-  SyntheticObservationTiming,
-  withSyntheticObservationTiming,
 } from './synthetic-observation';
+import {
+  SessionMemoryBranchStore,
+  normalizeMemoryBranchScope,
+  type MemoryBranchFinding,
+  type MemoryBranchPublishResult,
+  type MemoryBranchScope,
+  type MemoryBranchSessionEvent,
+} from './session-memory-branch';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
+import { currentCreditTask } from './credit-task-runtime';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
-import type { MemoryBranchBudget } from './branch-budget';
+import { normalizeMemoryBranchBudget, type MemoryBranchBudget } from './branch-budget';
 import type { MemoryBranchActivationContext } from './sidecar-memory-branch';
-
-export const DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 
 const EMPTY_FINAL_RESPONSE_MESSAGE = '模型本轮未返回有效内容。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 
@@ -187,6 +198,7 @@ export interface AgentTurnCallbacks {
   onThinking?: (thinking: string) => void;
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
+  onMemoryBranch?: (event: MemoryBranchEvent) => void | Promise<void>;
   onToolDisplay?: (name: string, content: string) => void;
   onRetry?: (attempt: number, maxRetries: number, info?: StreamRetryInfo) => void | Promise<void>;
   confirmToolExecution?: (request: ToolExecutionConfirmationRequest) => Promise<ToolExecutionConfirmationResult>;
@@ -222,6 +234,8 @@ export interface RunAgentTurnParams {
   dispatchedAsTool?: boolean;
   localFileGrants?: ScopedLocalFileGrant[];
   pendingUserInputProvider?: PendingUserInputProvider;
+  /** Admission record from the owning session (sequence + sender scope). */
+  memoryBranchInput?: MemoryBranchTurnInput;
   abortSignal?: AbortSignal;
   shouldContinue: () => boolean;
 }
@@ -250,7 +264,8 @@ export interface AgentTurnControllerOptions {
   getCurrentDirectory: () => string;
   updateCurrentDirectory: (directory: string) => void;
   maxPromptTokens?: number;
-  memoryBranchRefreshIntervalMs?: number;
+  /** Session-owned Memory Branch queue; the session passes its own store. */
+  memoryBranchStore?: SessionMemoryBranchStore;
   checkpointCompactionCoordinator?: CheckpointCompactionCoordinator;
   metrics?: MetricsCollector;
   persistCheckpoint?: (messages: Message[]) => void | Promise<void>;
@@ -267,22 +282,28 @@ export interface AgentTurnControllerOptions {
   ) => void | Promise<void>;
 }
 
-interface MemoryBranchSlot {
-  queue: InMemorySyntheticObservationQueue;
-  handle: MemorySidecarBranchHandle;
-  originTurn: number;
-  done: boolean;
-  completedAt?: number;
+/** What the session admitted for this turn (sender scope + input sequence). */
+export interface MemoryBranchTurnInput {
+  sequence: number;
+  turn: number;
+  turnId: string;
+  scope: MemoryBranchScope;
 }
 
-interface EpisodeMemoryRuntime {
-  turnNumber: number;
-  taskAnchor: string | ContentBlock[];
-  abortSignal?: AbortSignal;
-  activeSlot: MemoryBranchSlot;
-  progressCursor: number;
-  previousInjections: MemoryBranchActivationContext['previousInjections'];
-  stopped: boolean;
+/**
+ * One session-scoped Branch investigation. It consumes new session events
+ * between lookups, publishes each verified claim on its own, and holds its
+ * originating credit task under `childBranch()` until it reaches a terminal
+ * state. It is not tied to the foreground turn's lifetime.
+ */
+interface ActiveMemoryInvestigation {
+  branchId: string;
+  handle: MemorySidecarBranchHandle;
+  originTurn: number;
+  originTurnId: string;
+  scope: MemoryBranchScope;
+  startedAt: number;
+  terminations: number;
 }
 
 /**
@@ -290,12 +311,45 @@ interface EpisodeMemoryRuntime {
  */
 export class AgentTurnController {
   private turnSequence = 0;
-  private memoryBranchCarryover: MemoryBranchSlot | null = null;
+  private memoryInputTurn = 0;
+  private memoryToolEventCursor = 0;
+  private activeMemoryInvestigation: ActiveMemoryInvestigation | null = null;
+  private readonly memoryBranchStore: SessionMemoryBranchStore;
+  private presentationContext?: { turnId: string; callback: AgentTurnCallbacks['onMemoryBranch']; closed: boolean; pending: Set<Promise<unknown>> };
+  private readonly branchPresentations = new Map<string, MemoryBranchEvent>();
+  /** Feedback event IDs already logged as server-acknowledged this process;
+   * dedupe only — the ack itself is authority, never a guess. */
+  private readonly feedbackAckLogged = new Set<string>();
 
-  constructor(private readonly options: AgentTurnControllerOptions) {}
+  /**
+   * Flush queued feedback and log one `native_recall_feedback_ack` row per
+   * event the server actually acknowledged. Queueing stays
+   * `queued_client_claim`; `server_feedback` only becomes `acknowledged`
+   * after a real response.
+   */
+  private flushFeedbackAndLogAcks(feedbackOutbox: NativeRecallFeedbackOutbox | undefined): void {
+    if (!feedbackOutbox) return;
+    void feedbackOutbox.flush().then(acked => {
+      for (const id of acked.acknowledged) {
+        if (this.feedbackAckLogged.has(id)) continue;
+        this.feedbackAckLogged.add(id);
+        Logger.runtimeEvent('INFO', 'native recall source feedback acknowledged', {
+          type: 'native_recall_feedback_ack', payload: { event_id: id, server_feedback: 'acknowledged' },
+        });
+      }
+    }).catch(() => {});
+  }
+
+  constructor(private readonly options: AgentTurnControllerOptions) {
+    this.memoryBranchStore = options.memoryBranchStore ?? new SessionMemoryBranchStore();
+  }
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
     const turnNumber = ++this.turnSequence;
+    const nativeRecall = new NativeRecallTracker();
+    const feedbackOutbox = new NativeRecallFeedbackOutbox(this.options.getCurrentDirectory());
+    // Drained restart leftovers still earn their ack rows.
+    this.flushFeedbackAndLogAcks(feedbackOutbox);
     const turnStartedAt = Date.now();
     const injectionTiming = new TurnInjectionTiming({
       sessionKey: this.options.sessionKey,
@@ -303,6 +357,7 @@ export class AgentTurnController {
       turnStartedAt,
     });
     const episodeId = this.createEpisodeId(turnNumber);
+    this.presentationContext = { turnId: episodeId, callback: params.callbacks?.onMemoryBranch, closed: false, pending: new Set() };
     let turnSkills: Awaited<ReturnType<AgentTurnController['prepareTurnSkills']>> | undefined;
     let outcome: 'completed' | 'failed' | 'cancelled' = 'failed';
     let errorName: string | undefined;
@@ -317,13 +372,12 @@ export class AgentTurnController {
         await mcpToolBridge.ensureReady();
         mcpToolBridge.refreshInBackground();
       }
-      const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
-      const branchAgentsEnabled = this.isMemoryBranchEnabled();
-      const carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
-      this.memoryBranchCarryover = null;
-      if (!branchAgentsEnabled) {
-        this.expireMemoryBranch(previousCarryoverMemoryBranch, 'branch_agents_disabled');
-      }
+      // The session admits the input before any provider call; a direct
+      // controller caller (tests, embedded runtime) gets the same sequence
+      // semantics through this fallback.
+      const memoryInput = params.memoryBranchInput ?? this.noteMemoryBranchInput(params);
+      this.latestMemoryTaskAnchor = params.input;
+      this.memoryToolEventCursor = 0;
 
       turnSkills = await this.prepareTurnSkills();
       params.messages.push({
@@ -354,12 +408,16 @@ export class AgentTurnController {
         dispatchedAsTool: params.dispatchedAsTool,
       });
 
-      const currentMemoryRuntime = this.startEpisodeMemoryRuntime({
-        turnNumber,
-        input: params.input,
-        messages: params.messages,
-        abortSignal: params.abortSignal,
-      });
+      if (!params.runtimeObservationSource) {
+        this.startMemoryInvestigation({
+          turnNumber,
+          memoryInput,
+          episodeId,
+          input: params.input,
+          messages: params.messages,
+          abortSignal: params.abortSignal,
+        });
+      }
 
       // Observations drained here are injected synchronously by the runner
       // right after the provider call, so this list is exactly the set of
@@ -386,14 +444,16 @@ export class AgentTurnController {
         confirmToolExecution: params.callbacks?.confirmToolExecution,
         episodeId,
         syntheticObservationProvider: progressMessages => {
-          const drained = this.drainMemoryObservations(
-            carryoverMemoryBranch,
-            currentMemoryRuntime,
+          const drained = this.deliverMemoryObservations({
+            memoryInput,
+            turnNumber,
+            episodeId,
             progressMessages,
-          );
+          });
           if (drained.length > 0) {
             consumedObservations.push(...drained);
             injectionTiming.recordConsumed(drained);
+            for (const observation of drained) this.publishMemoryInjection(observation);
           }
           return drained;
         },
@@ -407,7 +467,7 @@ export class AgentTurnController {
 
       let result;
       try {
-        result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks, injectionTiming));
+        result = await runner.run(turnContext.messages, this.toRunnerCallbacks(params.callbacks, injectionTiming, nativeRecall, feedbackOutbox));
         this.markEpisodeMessages(result.newMessages, episodeId);
         // Text-only first action: the runner resolves when the final
         // assistant text is complete. When any tool dispatched earlier, the
@@ -422,8 +482,18 @@ export class AgentTurnController {
         // not just the visible reply — e.g. reading a KB document by path is
         // a citation even when the reply never prints the ref literally.
         // Fire-and-forget — telemetry must never break a turn.
-        this.dispatchBranchCitationTelemetry(consumedObservations, result.newMessages, result.response);
+        this.dispatchBranchCitationTelemetry(consumedObservations, result.newMessages, result.response, feedbackOutbox);
+        const visibleAnswer = result.finalResponseVisible && !params.suppressFinalResponse ? stripInternalAnnotations(result.response) : '';
+        for (const id of new Set(consumedObservations.map(item => String(item.metadata?.branchId ?? '')))) {
+          const previous = this.branchPresentations.get(id);
+          if (!previous?.injected_refs.length) continue;
+          const answerRefs = previous.injected_refs.filter(ref => explicitlyVisibleReference(visibleAnswer, ref));
+          this.publishMemoryPresentation({ ...previous, status: 'answered', answer_refs: answerRefs });
+        }
+        this.persistNativeRecallUsage(nativeRecall, result.newMessages, result.response,
+          params.abortSignal?.aborted || !params.shouldContinue() ? 'cancelled' : 'completed', feedbackOutbox);
       } catch (error: any) {
+        this.persistNativeRecallUsage(nativeRecall, turnContext.messages, '', params.abortSignal?.aborted ? 'cancelled' : 'failed', feedbackOutbox);
         const partialMessages = this.options.turnContextBuilder.removeTransientMessages(turnContext.messages);
         this.replaceBase64Images(partialMessages);
         if (partialMessages.length > 0) {
@@ -431,14 +501,9 @@ export class AgentTurnController {
         }
         throw error;
       } finally {
-        if (currentMemoryRuntime) currentMemoryRuntime.stopped = true;
-        const currentMemoryBranch = currentMemoryRuntime?.activeSlot ?? null;
-        this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
-        if (result && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
-          this.memoryBranchCarryover = currentMemoryBranch;
-        } else {
-          this.expireMemoryBranch(currentMemoryBranch, result ? 'current_branch_consumed' : 'turn_failed');
-        }
+        // The investigation is session-scoped: the end of a reply neither
+        // cancels it nor expires its queue. Only explicit cancellation, scope
+        // loss, session closure or budget exhaustion terminate it.
       }
 
       if (this.options.checkpointCandidateBoundary) {
@@ -492,6 +557,16 @@ export class AgentTurnController {
       errorName = error instanceof Error ? error.name : 'Error';
       throw error;
     } finally {
+      const presentation = this.presentationContext;
+      if (presentation?.turnId === episodeId) {
+        for (const event of this.branchPresentations.values()) {
+          if (event.origin_turn_id === episodeId && ['running', 'ready'].includes(event.status)) {
+            this.publishMemoryPresentation({ ...event, status: outcome === 'completed' ? 'deferred' : outcome === 'cancelled' ? 'cancelled' : 'failed' });
+          }
+        }
+        presentation.closed = true;
+        await Promise.allSettled([...presentation.pending]);
+      }
       this.options.turnLogRecorder.recordEvent(episodeId, {
         type: 'run_finished', status: outcome,
         ...(errorName && { error_name: errorName }),
@@ -644,18 +719,58 @@ export class AgentTurnController {
     );
   }
 
-  private startMemorySidecarIfEnabled(options: {
+  private investigationMetrics(): MetricsCollector {
+    this.currentInvestigationMetrics ??= new MetricsCollector();
+    return this.currentInvestigationMetrics;
+  }
+
+  private noteMemoryBranchInput(params: RunAgentTurnParams): MemoryBranchTurnInput {
+    const scope = normalizeMemoryBranchScope({
+      sessionKey: this.options.sessionKey,
+      topicId: params.sessionRoute?.topicId
+        ?? params.executionScope?.topicId
+        ?? this.options.sessionRoute?.topicId
+        ?? this.options.sessionKey,
+      actorUserId: params.sessionRoute?.actorUserId
+        ?? params.executionScope?.actorUserId
+        ?? 'unknown_actor',
+    });
+    if (params.runtimeObservationSource) {
+      return {
+        sequence: this.memoryBranchStore.currentInputSequence,
+        turn: this.memoryInputTurn,
+        turnId: 'runtime_observation',
+        scope,
+      };
+    }
+    const turn = ++this.memoryInputTurn;
+    const turnId = `input:${turn}`;
+    const sequence = this.memoryBranchStore.noteUserInput({ text: params.input, scope, turn, turnId });
+    return { sequence, turn, turnId, scope };
+  }
+
+  /**
+   * Start one session-scoped investigation. A second event that arrives while
+   * it runs does not start a parallel Branch: it stays in the event queue and
+   * is consumed between lookups.
+   */
+  private startMemoryInvestigation(options: {
     turnNumber: number;
+    memoryInput: MemoryBranchTurnInput;
+    episodeId: string;
     input: string | ContentBlock[];
     messages: Message[];
     abortSignal?: AbortSignal;
-    activationContext?: MemoryBranchActivationContext;
-  }): MemoryBranchSlot | null {
-    if (!this.isMemoryBranchEnabled() || options.abortSignal?.aborted) {
-      return null;
+  }): void {
+    if (!this.isMemoryBranchEnabled() || options.abortSignal?.aborted) return;
+    if (this.activeMemoryInvestigation) {
+      Logger.info(
+        `[${this.options.sessionKey}] memory branch already investigating; coalescing input #${options.memoryInput.sequence}`,
+      );
+      return;
     }
     const memoryBranchAiService = this.options.services.memoryBranch?.aiService ?? this.options.services.aiService;
-    if (!(memoryBranchAiService instanceof AIService) || !memoryBranchAiService.isToolCallingSupported()) {
+    if (typeof memoryBranchAiService?.isToolCallingSupported !== 'function' || !memoryBranchAiService.isToolCallingSupported()) {
       // Fail closed, visibly: assess_memory_need / finish_memory_search are
       // the branch's only tool surfaces, so a model without tool calling
       // must not start the branch. The warn names the modelSource so the
@@ -665,190 +780,287 @@ export class AgentTurnController {
         `[${this.options.sessionKey}] memory branch skipped: branch model cannot do tool calling`
         + ` (modelSource=${this.options.services.memoryBranch?.modelSource ?? 'inherit'})`,
       );
-      return null;
+      return;
     }
-    const queue = new InMemorySyntheticObservationQueue();
-    const slot: MemoryBranchSlot = {
-      queue,
-      originTurn: options.turnNumber,
-      done: false,
-      handle: this.createMemorySidecarHandle({
-        input: options.input,
-        messages: options.messages,
-        queue,
-        abortSignal: options.abortSignal,
-        activationContext: options.activationContext,
-      }),
+
+    const pendingEvents = this.memoryBranchStore.takeEvents(options.memoryInput.scope.actorUserId)
+      .filter(event => !(event.kind === 'user_input' && event.sequence === options.memoryInput.sequence));
+    const activationContext: MemoryBranchActivationContext = {
+      taskAnchor: contentToMemoryText(options.input),
+      deltaSinceLastRun: pendingEvents.map(memoryEventLogEntry),
+      previousInjections: this.memoryBranchStore.deliveredInjections(),
     };
-    slot.handle.done.finally(() => {
-      slot.done = true;
-      slot.completedAt = Date.now();
-    });
-    return slot;
-  }
-
-  private startEpisodeMemoryRuntime(options: {
-    turnNumber: number;
-    input: string | ContentBlock[];
-    messages: Message[];
-    abortSignal?: AbortSignal;
-  }): EpisodeMemoryRuntime | null {
-    const activeSlot = this.startMemorySidecarIfEnabled(options);
-    return activeSlot ? {
-      turnNumber: options.turnNumber,
-      taskAnchor: options.input,
+    this.currentInvestigationMetrics = new MetricsCollector();
+    const handle = this.createMemorySidecarHandle({
+      input: options.input,
+      messages: options.messages,
       abortSignal: options.abortSignal,
-      activeSlot,
-      progressCursor: 0,
-      previousInjections: [],
-      stopped: false,
-    } : null;
-  }
-
-  private maybeStartMemoryRefresh(runtime: EpisodeMemoryRuntime, progressMessages: readonly Message[]): void {
-    const previous = runtime.activeSlot;
-    if (runtime.stopped || runtime.abortSignal?.aborted || !previous.done || previous.completedAt === undefined) return;
-    const interval = Math.max(0, this.options.memoryBranchRefreshIntervalMs ?? DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS);
-    if (Date.now() - previous.completedAt < interval) return;
-    // The runner's append-only turn log survives checkpoint replacement of the
-    // live context, so compaction cannot rewind this cursor or lose progress.
-    const delta = progressMessages.slice(runtime.progressCursor)
-      .filter(message => !message.__syntheticObservation)
-      .map(memoryProgressEntry)
-      .filter((entry): entry is Record<string, unknown> => Boolean(entry));
-    if (delta.length === 0) return;
-    const slot = this.startMemorySidecarIfEnabled({
-      turnNumber: runtime.turnNumber,
-      input: runtime.taskAnchor,
-      messages: [],
-      abortSignal: runtime.abortSignal,
-      activationContext: {
-        taskAnchor: contentToMemoryText(runtime.taskAnchor),
-        deltaSinceLastRun: delta,
-        previousInjections: runtime.previousInjections.map(item => ({ summary: item.summary, refs: [...item.refs] })),
-      },
+      activationContext,
+      memoryInput: options.memoryInput,
+      originTurn: options.turnNumber,
+      originTurnId: options.episodeId,
     });
-    if (!slot) return;
-    runtime.progressCursor = progressMessages.length;
-    runtime.activeSlot = slot;
-    Logger.info(`[${this.options.sessionKey}] started repeated memory branch: origin_turn=${runtime.turnNumber} delta_messages=${delta.length} previous_injections=${runtime.previousInjections.length}`);
-  }
+    const investigation: ActiveMemoryInvestigation = {
+      branchId: handle.branchId,
+      handle,
+      originTurn: options.turnNumber,
+      originTurnId: options.episodeId,
+      scope: options.memoryInput.scope,
+      startedAt: Date.now(),
+      terminations: 0,
+    };
+    this.activeMemoryInvestigation = investigation;
 
-  private drainMemoryObservations(
-    carryover: MemoryBranchSlot | null,
-    current: EpisodeMemoryRuntime | null,
-    progressMessages: readonly Message[],
-  ): SyntheticObservation[] {
-    const currentObservations = this.drainMemoryBranch(current?.activeSlot ?? null, 'current_turn');
-    if (current) {
-      this.rememberMemoryInjections(current, currentObservations);
-      this.maybeStartMemoryRefresh(current, progressMessages);
+    // The investigation holds its originating credit task. The parent settles
+    // once, when this child exits; a newer turn already owns its own task.
+    const task = currentCreditTask();
+    if (task) {
+      void task.childBranch(() => handle.done).catch(error => {
+        Logger.warning(`[${this.options.sessionKey}] memory branch child settlement failed: ${error?.message || error}`);
+      });
+      Logger.runtimeEvent('INFO', `[${this.options.sessionKey}] memory branch holds originating credit task`, {
+        type: 'credit_task_branch_child',
+        payload: {
+          task_id: task.snapshot.taskId,
+          branch_id: investigation.branchId,
+          origin_turn: investigation.originTurn,
+          foreground_completed: task.foregroundCompleted,
+        },
+      });
     }
-    return [
-      ...this.drainMemoryBranch(carryover, 'late_previous_turn'),
-      ...currentObservations,
-    ];
-  }
 
-  private rememberMemoryInjections(
-    runtime: EpisodeMemoryRuntime,
-    observations: SyntheticObservation[],
-  ): void {
-    for (const observation of observations) {
-      const summary = String(observation.summary || '').trim();
-      const refs = Array.isArray(observation.metadata?.refs)
-        ? observation.metadata!.refs.map(ref => String(ref || '').trim()).filter(Boolean)
-        : [];
-      if (!summary) continue;
-      runtime.previousInjections.push({ summary, refs });
-    }
-  }
+    void handle.done.then(() => {
+      if (this.activeMemoryInvestigation?.branchId !== investigation.branchId) return;
+      this.activeMemoryInvestigation = null;
+      const outcome = handle.outcome();
+      const spend = this.currentInvestigationMetrics?.getSummary();
+      this.currentInvestigationMetrics = undefined;
+      if (spend) {
+        Logger.runtimeEvent('INFO', `[${this.options.sessionKey}] memory branch spend`, {
+          type: 'memory_branch_spend',
+          payload: {
+            branch_id: investigation.branchId,
+            outcome,
+            provider_calls: spend.aiCalls,
+            prompt_tokens: spend.totalPromptTokens,
+            completion_tokens: spend.totalCompletionTokens,
+            total_tokens: spend.totalTokens,
+            delivered_findings: this.memoryBranchStore
+              .snapshot().entries.filter(entry => entry.branchId === investigation.branchId && entry.status === 'delivered').length,
+            published_findings: this.memoryBranchStore
+              .snapshot().entries.filter(entry => entry.branchId === investigation.branchId).length,
+          },
+        });
+      }
+      if (outcome === 'budget_exhausted') {
+        this.memoryBranchStore.expireBranch(investigation.branchId, 'budget_exhausted');
+      }
+      Logger.runtimeEvent('INFO', `[${this.options.sessionKey}] memory branch investigation finished`, {
+        type: 'memory_branch_investigation_finished',
+        payload: {
+          branch_id: investigation.branchId,
+          outcome,
+          origin_turn: investigation.originTurn,
+          duration_ms: Date.now() - investigation.startedAt,
+          queued_observations: this.memoryBranchStore.size(),
+          input_sequence: this.memoryBranchStore.currentInputSequence,
+        },
+      });
+    }).catch(() => undefined);
 
-  private drainMemoryBranch(
-    slot: MemoryBranchSlot | null,
-    timing: SyntheticObservationTiming,
-  ): SyntheticObservation[] {
-    if (!slot) return [];
-    return slot.queue.drain().map(observation =>
-      this.withMemoryBranchObservationMetadata(observation, timing, slot.originTurn)
+    Logger.info(
+      `[${this.options.sessionKey}] started session memory branch: origin_turn=${options.turnNumber} `
+      + `input_sequence=${options.memoryInput.sequence} delta_events=${pendingEvents.length} `
+      + `previous_injections=${activationContext.previousInjections.length}`,
     );
   }
 
-  private shouldCarryMemoryBranch(slot: MemoryBranchSlot): boolean {
-    return !slot.done || slot.queue.size() > 0;
+  /** Explicit cancellation ends the investigation through its normal settlement path. */
+  cancelMemoryBranch(reason: string): void {
+    const investigation = this.activeMemoryInvestigation;
+    if (!investigation) return;
+    Logger.runtimeEvent('INFO', `[${this.options.sessionKey}] memory branch canceled: ${reason}`, {
+      type: 'memory_branch_investigation_cancelled',
+      payload: { branch_id: investigation.branchId, reason, origin_turn: investigation.originTurn },
+    });
+    // Queued claims from this investigation have no verifier left: expire
+    // them so a later input cannot receive them without reconfirmation.
+    this.memoryBranchStore.expireBranch(investigation.branchId, reason);
+    investigation.handle.cancel();
   }
 
-  private expireMemoryBranch(slot: MemoryBranchSlot | null, reason: string): void {
-    if (!slot) return;
-    slot.handle.cancel();
-    const droppedObservations = slot.queue.cancel()
-      .map(observation => this.withMemoryBranchObservationMetadata(
-        observation,
-        'late_previous_turn',
-        slot.originTurn,
-      ));
-    if (droppedObservations.length > 0) {
-      Logger.info(
-        `[${this.options.sessionKey}] dropped ${droppedObservations.length} unconsumed synthetic runtime observation(s): `
-        + `reason=${reason} origin_turn=${slot.originTurn} `
-        + droppedObservations.map(describeSyntheticObservationForLog).join(' | ')
-      );
-      for (const observation of droppedObservations) {
-        Logger.runtimeEvent(
-          'INFO',
-          `[${this.options.sessionKey}] synthetic_observation_lifecycle dropped id=${observation.id || '(unassigned)'}`,
-          buildSyntheticObservationLifecycleEvent(observation, {
-            outcome: 'dropped',
-            reason,
-            originTurn: slot.originTurn,
-          }),
-        );
-      }
-    } else if (!slot.done && reason === 'carryover_ttl_expired') {
-      Logger.info(
-        `[${this.options.sessionKey}] cancelled unfinished memory branch carryover: `
-        + `reason=${reason} origin_turn=${slot.originTurn}`
-      );
+  /**
+   * The provider-call seam. Tool results wake the Branch (they never advance
+   * eligibility), then the store mechanically decides which published claims
+   * this request may contain.
+   */
+  private deliverMemoryObservations(options: {
+    memoryInput: MemoryBranchTurnInput;
+    turnNumber: number;
+    episodeId: string;
+    progressMessages: readonly Message[];
+  }): SyntheticObservation[] {
+    this.noteMemoryToolResults(options.progressMessages, options);
+    const sequence = this.memoryBranchStore.currentInputSequence;
+    const observations = this.memoryBranchStore.drainEligible({
+      sequence,
+      scope: options.memoryInput.scope,
+      turn: options.turnNumber,
+    });
+    // A finished investigation is restarted by a new user input, never by a
+    // tool result alone (tool results are consumed by a running investigation
+    // between lookups, or by the next input's investigation).
+    if (!this.activeMemoryInvestigation
+      && this.memoryBranchStore.pendingEvents().some(event => event.kind === 'user_input')) {
+      this.startMemoryInvestigation({
+        turnNumber: options.turnNumber,
+        memoryInput: options.memoryInput,
+        episodeId: options.episodeId,
+        input: this.latestMemoryTaskAnchor ?? '',
+        messages: [],
+      });
     }
+    return observations;
+  }
+
+  private latestMemoryTaskAnchor?: string | ContentBlock[];
+  private currentInvestigationMetrics?: MetricsCollector;
+
+  private noteMemoryToolResults(
+    progressMessages: readonly Message[],
+    options: { memoryInput: MemoryBranchTurnInput; turnNumber: number; episodeId: string },
+  ): void {
+    for (let index = this.memoryToolEventCursor; index < progressMessages.length; index += 1) {
+      const message = progressMessages[index];
+      if (message.role !== 'tool' || message.__syntheticObservation || !message.name) continue;
+      this.memoryBranchStore.noteToolResult({
+        turn: options.turnNumber,
+        turnId: options.episodeId,
+        scope: options.memoryInput.scope,
+        toolName: message.name,
+        text: contentToMemoryText(message.content as Message['content']),
+      });
+    }
+    this.memoryToolEventCursor = progressMessages.length;
+  }
+
+  /**
+   * The Branch's publication surface: each verified claim publishes on its
+   * own, with the scope and sequence the investigation actually consumed.
+   */
+  private publishMemoryFinding(
+    investigation: { scope: MemoryBranchScope; originTurn: number; originTurnId: string },
+    finding: MemoryBranchFinding,
+    branchId: string,
+    verifiedThroughInput: number,
+    observation?: SyntheticObservation,
+  ): MemoryBranchPublishResult {
+    return this.memoryBranchStore.publish({
+      ...finding,
+      observation,
+      scope: investigation.scope,
+      originTurn: investigation.originTurn,
+      originTurnId: investigation.originTurnId,
+      verifiedThroughInput,
+      branchId,
+    });
+  }
+
+  private publishMemoryPresentation(event: MemoryBranchEvent, context = this.presentationContext): void {
+    const previous = this.branchPresentations.get(event.branch_run_id);
+    const snapshot = { ...structuredClone(event), origin_turn_id: event.origin_turn_id || previous?.origin_turn_id || context?.turnId || '', sequence: (previous?.sequence ?? 0) + 1 };
+    this.branchPresentations.set(snapshot.branch_run_id, snapshot);
+    while (this.branchPresentations.size > 64) this.branchPresentations.delete(this.branchPresentations.keys().next().value!);
+    if (!context?.closed) try {
+      const pending = Promise.resolve(context?.callback?.(snapshot)).catch(() => {});
+      context?.pending.add(pending);
+      void pending.finally(() => context?.pending.delete(pending));
+    } catch { /* channel failure cannot fail the turn */ }
+    Logger.runtimeEvent('INFO', 'memory branch presentation', { type: 'memory_branch', payload: snapshot });
+  }
+
+  private publishMemoryInjection(observation: SyntheticObservation): void {
+    const candidate = observation.metadata?.memory_branch as MemoryBranchEvent | undefined;
+    if (candidate?.schema !== 'catsco.memory_branch.v1') return;
+    const previous = this.branchPresentations.get(candidate.branch_run_id) ?? candidate;
+    const actual = [observation.metadata?.deliveredLocalRefs, observation.metadata?.deliveredRemoteRefs, observation.metadata?.deliveredMemoryNodeRefs, observation.metadata?.deliveredSessionSourceRefs]
+      .flatMap(value => Array.isArray(value) ? value.filter((ref): ref is string => typeof ref === 'string') : []);
+    const injectedRefs = actual.filter(ref => previous.read_refs.includes(ref));
+    this.publishMemoryPresentation({ ...previous, status: injectedRefs.length ? 'injected' : 'unavailable', consumed_turn_id: this.presentationContext?.turnId,
+      observation_id: observation.id, injected_refs: injectedRefs, answer_refs: [] });
   }
 
   private createMemorySidecarHandle(options: {
     input: string | ContentBlock[];
     messages: Message[];
-    queue: SyntheticObservationQueue;
     abortSignal?: AbortSignal;
     activationContext?: MemoryBranchActivationContext;
+    memoryInput: MemoryBranchTurnInput;
+    originTurn: number;
+    originTurnId: string;
   }): MemorySidecarBranchHandle {
+    const context = this.presentationContext;
+    const scope = options.memoryInput.scope;
+    this.memoryBranchStore.setPublishContext({
+      scope,
+      originTurn: options.originTurn,
+      originTurnId: options.originTurnId,
+      branchId: '',
+      verifiedThroughInput: () => this.memoryBranchStore.currentInputSequence,
+    });
+    const queue: SyntheticObservationQueue = {
+      push: observation => this.memoryBranchStore.push(observation),
+      drain: () => [],
+      cancel: () => [],
+      size: () => this.memoryBranchStore.size(),
+    };
     return startMemorySidecarBranch({
+      onPresentation: event => this.publishMemoryPresentation(event, context),
       sessionKey: this.options.sessionKey,
       input: options.input,
       recentMessages: options.messages,
       workingDirectory: this.options.getCurrentDirectory(),
       aiService: this.options.services.memoryBranch?.aiService ?? this.options.services.aiService,
       catslogMemory: this.options.services.catslogMemory,
-      queue: options.queue,
+      queue,
       signal: options.abortSignal,
       activationContext: options.activationContext,
+      budget: this.options.services.memoryBranch?.budget,
+      metrics: this.investigationMetrics(),
+      session: {
+        inputSequence: options.memoryInput.sequence,
+        originTurn: options.originTurn,
+        originTurnId: options.originTurnId,
+        scope,
+        takeEvents: () => this.memoryBranchStore.takeEvents(scope.actorUserId),
+        heldObservations: () => this.memoryBranchStore.heldFor(
+          this.memoryBranchStore.currentInputSequence,
+          scope,
+        ),
+        currentInputSequence: () => this.memoryBranchStore.currentInputSequence,
+        publish: (finding, branchId, verifiedThroughInput, observation) => this.publishMemoryFinding(
+          { scope, originTurn: options.originTurn, originTurnId: options.originTurnId },
+          finding,
+          branchId,
+          verifiedThroughInput,
+          observation,
+        ),
+        reconfirm: (observationId, sequence) => this.memoryBranchStore.reconfirm({
+          observationId,
+          sequence,
+          scope,
+        }),
+        withdraw: (observationId, reason) => this.memoryBranchStore.withdraw({
+          observationId,
+          reason,
+          scope,
+        }),
+      },
     });
   }
 
   private isMemoryBranchEnabled(): boolean {
     return this.options.services.memoryBranch?.enabled ?? false;
-  }
-
-  private withMemoryBranchObservationMetadata(
-    observation: SyntheticObservation,
-    timing: SyntheticObservationTiming,
-    originTurn: number,
-  ): SyntheticObservation {
-    const timed = withSyntheticObservationTiming(observation, timing);
-    return {
-      ...timed,
-      metadata: {
-        ...(timed.metadata || {}),
-        originTurn,
-      },
-    };
   }
 
   private static readonly BRANCH_CITATIONS_TIMEOUT_MS = 5_000;
@@ -870,10 +1082,46 @@ export class AgentTurnController {
     consumedObservations: readonly SyntheticObservation[],
     newMessages: readonly Message[] | undefined,
     replyText: string | undefined,
+    feedbackOutbox?: NativeRecallFeedbackOutbox,
   ): void {
     try {
       const corpus = collectAssistantCitationText(newMessages, replyText);
-      const { reports, knowledgeRefs } = matchBranchCitations(consumedObservations, corpus);
+      let branchFeedbackQueued = false;
+      for (const observation of consumedObservations) {
+        const metadata = observation.metadata as Record<string, any> | undefined;
+        const sources = metadata?.feedback_sources;
+        if (!Array.isArray(sources) || !sources.length || typeof metadata?.feedback_scope !== 'string') continue;
+        const refs = new Set(metadata.refs ?? []);
+        // Branch injection discloses summaries/refs; do not promote it to full source body delivery.
+        const observed = sources.filter((source: any) => refs.has(source.ref)).map((source: any) => ({ ...source, disclosure: 'metadata' }));
+        const event = { event_id: `feedback-${feedbackUUID()}`, trace_id: `recall-${feedbackUUID()}`, kind: 'branch_source',
+          occurred_at_ms: Date.now(), outcome: 'completed', observed,
+          delivered: observed.map((source: any) => ({ ref: source.ref, disclosure: 'metadata' })),
+          cited: observed.filter((source: any) => corpus.includes(source.ref)).map((source: any) => source.ref),
+          retained: observed.filter((source: any) => replyText?.includes(source.ref)).map((source: any) => source.ref),
+          citation_semantics: 'explicit_ref_match_not_causal_use', delivery_semantics: 'branch_summary_with_refs_not_source_body',
+          retained_semantics: 'final_explicit_ref_match_not_semantic_adoption', lifecycle: 'turn_local_no_carryover' };
+        if ((feedbackOutbox?.enqueue([event], metadata.feedback_scope) ?? 0) > 0) branchFeedbackQueued = true;
+      }
+      this.flushFeedbackAndLogAcks(feedbackOutbox);
+      const { reports, knowledgeRefs, sourceRefs = [] } = matchBranchCitations(consumedObservations, corpus);
+      const retainedMatch = matchBranchCitations(consumedObservations, replyText);
+      const injectedSourceRefs = [...new Set(consumedObservations.flatMap(observation => observation.metadata?.refs ?? [])
+        .filter(ref => /^catslog:source:[a-f0-9]{64}$/.test(ref)))].slice(0, 128);
+      if (injectedSourceRefs.length) {
+        Logger.runtimeEvent('INFO', 'branch source attribution (local)', {
+          type: 'branch_source_usage',
+          payload: {
+            injected_refs: injectedSourceRefs,
+            cited_refs: sourceRefs,
+            retained_refs: retainedMatch.sourceRefs ?? [],
+            delivery_semantics: 'branch_summary_with_refs_not_source_body',
+            citation_semantics: 'assistant_explicit_ref_match_not_causal_use',
+            retained_semantics: 'final_explicit_ref_match_not_semantic_adoption',
+            server_feedback: branchFeedbackQueued ? 'queued_client_claim' : 'not_connected',
+          },
+        });
+      }
       for (const report of reports) {
         void this.reportBranchCitations(report);
       }
@@ -885,14 +1133,16 @@ export class AgentTurnController {
             type: 'branch_knowledge_citations',
             payload: {
               refs: knowledgeRefs,
+              retained_refs: retainedMatch.knowledgeRefs,
             },
           },
         );
       }
       const usage = collectBranchCitationUsage(consumedObservations, corpus);
+      const retainedUsage = collectBranchCitationUsage(consumedObservations, replyText);
       if (usage) {
-        const injectedTotal = usage.injectedByLane.remote_pool + usage.injectedByLane.session + usage.injectedByLane.knowledge;
-        const citedTotal = usage.citedByLane.remote_pool + usage.citedByLane.session + usage.citedByLane.knowledge;
+        const injectedTotal = usage.injectedByLane.remote_pool + usage.injectedByLane.session + usage.injectedByLane.knowledge + usage.injectedByLane.source;
+        const citedTotal = usage.citedByLane.remote_pool + usage.citedByLane.session + usage.citedByLane.knowledge + usage.citedByLane.source;
         Logger.runtimeEvent(
           'INFO',
           `[${this.options.sessionKey}] branch citation usage: injected ${injectedTotal}, cited ${citedTotal}, carryover=${usage.carryover}`,
@@ -902,6 +1152,9 @@ export class AgentTurnController {
               requestIds: usage.requestIds,
               injectedByLane: usage.injectedByLane,
               citedByLane: usage.citedByLane,
+              retainedByLane: retainedUsage?.citedByLane,
+              citationSemantics: 'explicit_ref_match_not_causal_use',
+              serverTypedSourceFeedback: 'not_connected',
               carryover: usage.carryover,
             },
           },
@@ -937,12 +1190,57 @@ export class AgentTurnController {
     }
   }
 
-  private toRunnerCallbacks(callbacks?: AgentTurnCallbacks, injectionTiming?: TurnInjectionTiming): RunnerCallbacks {
+  private persistNativeRecallUsage(
+    tracker: NativeRecallTracker,
+    messages: readonly Message[],
+    finalText: string,
+    outcome: 'completed' | 'failed' | 'cancelled' = 'completed',
+    feedbackOutbox?: NativeRecallFeedbackOutbox,
+  ): void {
+    try {
+      for (const payload of tracker.finish(messages, finalText, outcome)) {
+        const scope = typeof payload.feedback_scope === 'string' ? payload.feedback_scope : undefined;
+        const durable = feedbackOutbox?.enqueue([payload], scope) ?? 0;
+        const { feedback_scope: _bound, ...logged } = payload;
+        Logger.runtimeEvent('INFO', 'native recall source attribution (local)', {
+          type: 'native_recall_source_usage', payload: { ...logged, server_feedback: durable ? 'queued_client_claim' : 'local_only_unbound_or_unavailable' },
+        });
+      }
+      this.flushFeedbackAndLogAcks(feedbackOutbox);
+    } catch { /* Observational logging must never break the turn. */ }
+  }
+
+  private toRunnerCallbacks(callbacks?: AgentTurnCallbacks, injectionTiming?: TurnInjectionTiming, nativeRecall?: NativeRecallTracker, feedbackOutbox?: NativeRecallFeedbackOutbox): RunnerCallbacks {
     const wrapped: RunnerCallbacks = {
       onText: callbacks?.onText,
       onAssistantText: callbacks?.onAssistantText,
       onThinking: callbacks?.onThinking,
       onToolStart: callbacks?.onToolStart,
+      onToolExecutionResult: (result, messages, origin: ExecutionGraphOrigin) => {
+        nativeRecall?.observe(result, messages, feedbackOutbox?.captureScope());
+        Logger.runtimeEvent('INFO', 'execution graph function result', {
+          type: 'execution_graph',
+          payload: {
+            contract_version: 'execution-graph/1',
+            identity_contract: 'execution-identity/1',
+            event_id: randomUUID(),
+            session_id: origin.session_id,
+            episode_id: origin.episode_id,
+            model_call_id: origin.model_call_id,
+            type: 'function_result',
+            provider_call_id: result.tool_call_id,
+            call_node_ref: `provider-call:${result.tool_call_id}`,
+            result_node_ref: `provider-result:${result.tool_call_id}`,
+            result_sha256: createHash('sha256').update(JSON.stringify(result.content)).digest('hex'),
+            result_state: 'captured',
+          },
+        });
+      },
+      onModelInput: messages => nativeRecall?.deliver(messages),
+      onExecutionGraphEvent: (event, submittedMessages) => {
+        nativeRecall?.bindConsumerModelCall(String(event.model_call_id || ''), submittedMessages);
+        Logger.runtimeEvent('INFO', 'execution graph model call', { type: 'execution_graph', payload: event });
+      },
       onToolEnd: callbacks?.onToolEnd,
       onToolDisplay: callbacks?.onToolDisplay,
       onRetry: callbacks?.onRetry,
@@ -999,17 +1297,11 @@ function contentToMemoryText(content: string | ContentBlock[] | null | undefined
   return content.map(block => block.type === 'text' ? block.text : '[image]').join('\n');
 }
 
-function memoryProgressEntry(message: Message): Record<string, unknown> | null {
-  const content = contentToMemoryText(message.content);
-  const toolCalls = message.tool_calls?.map(call => ({
-    name: call.function.name,
-    arguments: call.function.arguments,
-  }));
-  if (!content.trim() && (!toolCalls || toolCalls.length === 0)) return null;
+function memoryEventLogEntry(event: MemoryBranchSessionEvent): Record<string, unknown> {
   return {
-    role: message.role,
-    ...(message.name ? { name: message.name } : {}),
-    ...(content.trim() ? { content } : {}),
-    ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
+    kind: event.kind,
+    sequence: event.sequence,
+    turn: event.turn,
+    ...(event.kind === 'user_input' ? { user: event.text } : { tool: event.toolName, result: event.text }),
   };
 }

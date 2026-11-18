@@ -305,10 +305,11 @@ export function consolidateMemoryEvidencePack(
     knowledgeEnvelope.entries = deduped.kept;
   }
   let knowledgeTextBounded = 0;
-  if (refineKnowledgeTextChars !== undefined && laneCharSize(knowledgeEnvelope) > maxKnowledgeChars) {
-    knowledgeTextBounded = boundKnowledgeExcerptTexts(knowledgeEnvelope, refineKnowledgeTextChars);
-  }
-  const cappedKnowledge = capArrayLane(knowledgeEnvelope, 'entries', maxKnowledgeChars);
+  const knowledgeNeedsRefine = refineKnowledgeTextChars !== undefined && laneCharSize(knowledgeEnvelope) > maxKnowledgeChars;
+  const cappedKnowledge = knowledgeNeedsRefine
+    ? capKnowledgeMetadataFirst(knowledgeEnvelope, maxKnowledgeChars, refineKnowledgeTextChars!)
+    : capArrayLane(knowledgeEnvelope, 'entries', maxKnowledgeChars);
+  if (knowledgeNeedsRefine && 'textBounded' in cappedKnowledge) knowledgeTextBounded = cappedKnowledge.textBounded as number;
 
   const evidencePack: Record<string, unknown> = {
     content_trust: 'untrusted_branch_evidence',
@@ -566,6 +567,80 @@ function tailCapArrayLane(
     if (items.length === 0) return { omitted, overflow: true };
     omitted += countMembersOf(items.pop());
   }
+}
+
+/**
+ * A secondary KB view keeps the metadata floor before spending spare space on
+ * optional excerpts. Work only from the full presentation: no omitted source
+ * entry or body is reintroduced into refine, and refs/revisions never change.
+ */
+function capKnowledgeMetadataFirst(
+  envelope: Record<string, unknown>, maxChars: number, textCap: number,
+): { envelope: Record<string, unknown>; omitted: number; textBounded?: number } {
+  const entries = Array.isArray(envelope.entries) ? envelope.entries.filter(isRecord) : [];
+  const excerpts = new Map<Record<string, unknown>, Record<string, unknown>>();
+  for (const entry of entries) {
+    if (isRecord(entry.excerpt)) excerpts.set(entry, entry.excerpt);
+    delete entry.excerpt;
+  }
+  const optionalKeys = ['excerpts_requested', 'excerpts_retained', 'excerpts_projected',
+    'excerpt_projection_capped', 'excerpt_diagnostics_omitted', 'excerpt_gaps'];
+  const diagnostics = new Map(optionalKeys.map(key => [key, envelope[key]]));
+  for (const key of optionalKeys) delete envelope[key];
+  const floor = capArrayLane(envelope, 'entries', maxChars);
+  if (floor.envelope !== envelope) return floor;
+  const fits = () => laneCharSize(envelope) <= maxChars;
+  const add = (key: string, value: unknown): boolean => {
+    if (value === undefined) return true;
+    envelope[key] = value;
+    if (fits()) return true;
+    delete envelope[key];
+    return false;
+  };
+  // Reserve counters before filling excerpts; final values only shrink.
+  let diagnosticsOmitted = false;
+  for (const key of ['excerpts_requested', 'excerpts_retained', 'excerpt_gaps']) {
+    if (!add(key, diagnostics.get(key))) diagnosticsOmitted = true;
+  }
+  if (!add('excerpts_projected', (envelope.entries as unknown[]).length)) diagnosticsOmitted = true;
+  if (!add('excerpt_projection_capped', true)) diagnosticsOmitted = true;
+  if (diagnosticsOmitted || diagnostics.get('excerpt_diagnostics_omitted')) add('excerpt_diagnostics_omitted', true);
+  let count = 0;
+  let bounded = 0;
+  let capped = floor.omitted > 0 || diagnostics.get('excerpt_projection_capped') === true;
+  for (const entry of envelope.entries as Record<string, unknown>[]) {
+    const excerpt = excerpts.get(entry);
+    if (!excerpt || typeof excerpt.text !== 'string') continue;
+    const text = excerpt.text;
+    const candidate = (length: number): Record<string, unknown> => {
+      if (length === text.length) return { ...excerpt };
+      // A prefix stays a prefix of the full view, with a visible marker and
+      // accurate source coordinates (the marker is not original KB text).
+      let end = length;
+      if (end > 0 && /[\uD800-\uDBFF]/.test(text[end - 1])) end -= 1;
+      return { ...excerpt, text: text.slice(0, end) + REFINE_TEXT_TRUNCATION_SUFFIX,
+        ...(typeof excerpt.char_start === 'number' ? { char_end: excerpt.char_start + end } : {}),
+        omitted_after: true, truncated: true, projection_shortened: true };
+    };
+    const maxPrefix = text.length <= textCap ? text.length : Math.max(0, textCap - REFINE_TEXT_TRUNCATION_SUFFIX.length);
+    // Try the unshortened form first: its smaller marker overhead can fit
+    // even when a shortened candidate would not (binary search needs monotonic costs).
+    entry.excerpt = candidate(maxPrefix);
+    if (fits() && maxPrefix === text.length && text.length > 0) { count += 1; continue; }
+    let lo = 0, hi = Math.min(maxPrefix, text.length - 1), best = -1;
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      entry.excerpt = candidate(mid);
+      if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    if (best <= 0) { delete entry.excerpt; capped = true; continue; }
+    entry.excerpt = candidate(best);
+    count += 1;
+    if (best < text.length) { bounded += 1; capped = true; }
+  }
+  if ('excerpts_projected' in envelope) envelope.excerpts_projected = count;
+  if (!capped) delete envelope.excerpt_projection_capped;
+  return { ...floor, textBounded: bounded };
 }
 
 /** Knowledge-lane cap: tail drops with in-loop markers, then bounded overflow. */

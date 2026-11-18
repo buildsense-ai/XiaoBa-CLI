@@ -2,7 +2,8 @@ import { beforeEach, afterEach, describe, test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { AgentTurnController } from '../src/core/agent-turn-controller';
 import { Logger } from '../src/utils/logger';
-import { InMemorySyntheticObservationQueue, SyntheticObservation } from '../src/core/synthetic-observation';
+import { SyntheticObservation } from '../src/core/synthetic-observation';
+import { SessionMemoryBranchStore, normalizeMemoryBranchScope } from '../src/core/session-memory-branch';
 import { TurnContextBuilder } from '../src/core/turn-context-builder';
 import { Message } from '../src/types';
 import { ToolCall, ToolDefinition } from '../src/types/tool';
@@ -56,13 +57,13 @@ function call(id: string, name: string, args: unknown): ToolCall {
   };
 }
 
-function memoryObservation(id: string): SyntheticObservation {
+function memoryObservation(id: string, summary = OBS_SUMMARY): SyntheticObservation {
   return {
     id,
     source: 'memory',
     status: 'completed',
     relevance: 'medium',
-    summary: OBS_SUMMARY,
+    summary,
     metadata: {
       branchId: `branch-${id}`,
       branchType: 'memory',
@@ -70,7 +71,7 @@ function memoryObservation(id: string): SyntheticObservation {
     },
     formattedContent: JSON.stringify({
       source: 'memory',
-      summary: OBS_SUMMARY,
+      summary,
       refs: [OBS_REF],
     }),
   };
@@ -142,19 +143,30 @@ function createTimingController(
     updateCurrentDirectory: () => undefined,
   });
 
-  const queues: InMemorySyntheticObservationQueue[] = [];
-  (controller as any).startMemorySidecarIfEnabled = (slotOptions: { turnNumber: number }) => {
-    const queue = new InMemorySyntheticObservationQueue();
+  const queues: Array<{ push: (observation: SyntheticObservation) => boolean }> = [];
+  // The Branch itself is not under test here: publications enter the session
+  // store exactly as the Branch tools would, at this turn's input sequence.
+  (controller as any).createMemorySidecarHandle = (slotOptions: any) => {
+    const store = (controller as any).memoryBranchStore as SessionMemoryBranchStore;
+    const queue = {
+      push: (observation: SyntheticObservation) => store.push({
+        ...observation,
+        metadata: {
+          ...(observation.metadata || {}),
+          originTurn: slotOptions.originTurn,
+          originTurnId: slotOptions.episodeId,
+          verifiedThroughInput: slotOptions.memoryInput.sequence,
+          memoryBranchScope: slotOptions.memoryInput.scope,
+        },
+      }),
+    };
     queues.push(queue);
-    options?.onQueueCreated?.(queue, slotOptions.turnNumber);
+    options?.onQueueCreated?.(queue as any, slotOptions.turnNumber);
     return {
-      queue,
-      originTurn: slotOptions.turnNumber,
-      done: false,
-      handle: {
-        cancel: () => undefined,
-        done: new Promise<void>(() => undefined),
-      },
+      branchId: 'timing-branch',
+      done: new Promise<void>(() => undefined),
+      outcome: () => 'idle' as const,
+      cancel: () => undefined,
     };
   };
   return { controller, queues };
@@ -190,7 +202,20 @@ describe('AgentTurnController injection timing', () => {
     assert.equal(runtime.byType('injection_consumed').length, 0);
     assert.equal(queues[0].push(memoryObservation('obs-carry')), true);
 
-    await runTurn('turn two continues the same topic');
+    // The newer input makes the earlier claim stale until the Branch
+    // reconfirms it for this input; only then may the request contain it.
+    const store = (controller as any).memoryBranchStore as SessionMemoryBranchStore;
+    const scope = normalizeMemoryBranchScope({ sessionKey: SESSION_KEY, topicId: SESSION_KEY, actorUserId: 'unknown_actor' });
+    const sequence = store.noteUserInput({ text: 'turn two continues the same topic', scope, turn: 2, turnId: 'input:2' });
+    const observationId = store.snapshot().entries[0].id;
+    assert.equal(store.reconfirm({ observationId, sequence, scope }).ok, true);
+    await controller.run({
+      input: 'turn two continues the same topic',
+      messages: [],
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+      memoryBranchInput: { sequence, turn: 2, turnId: 'input:2', scope },
+    });
 
     const events = runtime.byType('injection_consumed');
     assert.equal(events.length, 1);
@@ -220,8 +245,8 @@ describe('AgentTurnController injection timing', () => {
     const aiService = new ScriptedChatStreamAI([{ content: 'first done' }]);
     const { controller } = createTimingController(aiService, {
       onQueueCreated: queue => {
-        queue.push(memoryObservation('obs-now-a'));
-        queue.push(memoryObservation('obs-now-b'));
+        queue.push(memoryObservation('obs-now-a', 'The first current-turn claim.'));
+        queue.push(memoryObservation('obs-now-b', 'A different current-turn claim.'));
       },
     });
 
@@ -299,23 +324,26 @@ describe('AgentTurnController injection timing', () => {
     assert.equal(events[0].event.payload.kind, 'text');
   });
 
-  test('dropped observations stay out of the timing timeline', async () => {
+  test('expired observations stay out of the timing timeline', async () => {
     const aiService = new ScriptedChatStreamAI([{ content: 'unused' }]);
     const { controller } = createTimingController(aiService);
-    const queue = new InMemorySyntheticObservationQueue();
-    queue.push(memoryObservation('obs-dropped'));
-    const slot = {
-      queue,
+    const store = (controller as any).memoryBranchStore as SessionMemoryBranchStore;
+    const scope = normalizeMemoryBranchScope({ sessionKey: SESSION_KEY, topicId: SESSION_KEY, actorUserId: 'unknown_actor' });
+    store.publish({
+      subject: 'dropped subject',
+      claim: 'A claim that will be dropped.',
+      sourceRefs: [OBS_REF],
+      scope,
       originTurn: 3,
-      done: false,
-      handle: { cancel: () => undefined, done: Promise.resolve() },
-    };
+      originTurnId: 'episode:3',
+      verifiedThroughInput: 0,
+      branchId: 'timing-branch',
+    });
 
-    (controller as any).expireMemoryBranch(slot, 'test_drop');
+    store.expireBranch('timing-branch', 'test_drop');
 
-    const dropped = runtime.byType('synthetic_observation_lifecycle')
-      .filter(entry => entry.event.payload.outcome === 'dropped');
-    assert.equal(dropped.length, 1, 'existing lifecycle telemetry stays intact');
+    const dropped = runtime.byType('memory_branch_observation_expired');
+    assert.equal(dropped.length, 1, 'cancellation expires the queued claims');
     assert.equal(runtime.byType('injection_consumed').length, 0);
     assert.equal(runtime.byType('injection_first_action_ms').length, 0);
   });
@@ -332,7 +360,18 @@ describe('AgentTurnController injection timing', () => {
 
     await runTurn('turn one');
     queues[0].push(memoryObservation('obs-privacy'));
-    await runTurn('turn two that mentions birthday dinner plans');
+    const store = (controller as any).memoryBranchStore as SessionMemoryBranchStore;
+    const scope = normalizeMemoryBranchScope({ sessionKey: SESSION_KEY, topicId: SESSION_KEY, actorUserId: 'unknown_actor' });
+    const sequence = store.noteUserInput({ text: 'turn two that mentions birthday dinner plans', scope, turn: 2, turnId: 'input:2' });
+    const observationId = store.snapshot().entries[0].id;
+    store.reconfirm({ observationId, sequence, scope });
+    await controller.run({
+      input: 'turn two that mentions birthday dinner plans',
+      messages: [],
+      runtimeFeedback: [],
+      shouldContinue: () => true,
+      memoryBranchInput: { sequence, turn: 2, turnId: 'input:2', scope },
+    });
 
     const timingEvents = runtime.captured.filter(entry => TIMING_EVENT_TYPES.has(entry.event?.type));
     assert.ok(timingEvents.length > 0);
