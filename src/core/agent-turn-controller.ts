@@ -1,3 +1,5 @@
+import type { MemoryBranchEvent } from './memory-branch-presentation';
+import { explicitlyVisibleReference, stripInternalAnnotations } from '../utils/visible-reply-text';
 import type { SessionTranscriptEvent } from '../utils/session-log-schema';
 import { NativeRecallFeedbackOutbox } from './native-recall-feedback-outbox';
 import type { ExecutionGraphOrigin } from './execution-graph-metadata';
@@ -192,6 +194,7 @@ export interface AgentTurnCallbacks {
   onThinking?: (thinking: string) => void;
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
+  onMemoryBranch?: (event: MemoryBranchEvent) => void | Promise<void>;
   onToolDisplay?: (name: string, content: string) => void;
   onRetry?: (attempt: number, maxRetries: number, info?: StreamRetryInfo) => void | Promise<void>;
   confirmToolExecution?: (request: ToolExecutionConfirmationRequest) => Promise<ToolExecutionConfirmationResult>;
@@ -296,6 +299,8 @@ interface EpisodeMemoryRuntime {
 export class AgentTurnController {
   private turnSequence = 0;
   private memoryBranchCarryover: MemoryBranchSlot | null = null;
+  private presentationContext?: { turnId: string; callback: AgentTurnCallbacks['onMemoryBranch']; closed: boolean; pending: Set<Promise<unknown>> };
+  private readonly branchPresentations = new Map<string, MemoryBranchEvent>();
   /** Feedback event IDs already logged as server-acknowledged this process;
    * dedupe only — the ack itself is authority, never a guess. */
   private readonly feedbackAckLogged = new Set<string>();
@@ -334,6 +339,7 @@ export class AgentTurnController {
       turnStartedAt,
     });
     const episodeId = this.createEpisodeId(turnNumber);
+    this.presentationContext = { turnId: episodeId, callback: params.callbacks?.onMemoryBranch, closed: false, pending: new Set() };
     let turnSkills: Awaited<ReturnType<AgentTurnController['prepareTurnSkills']>> | undefined;
     let outcome: 'completed' | 'failed' | 'cancelled' = 'failed';
     let errorName: string | undefined;
@@ -425,6 +431,7 @@ export class AgentTurnController {
           if (drained.length > 0) {
             consumedObservations.push(...drained);
             injectionTiming.recordConsumed(drained);
+            for (const observation of drained) this.publishMemoryInjection(observation);
           }
           return drained;
         },
@@ -454,6 +461,13 @@ export class AgentTurnController {
         // a citation even when the reply never prints the ref literally.
         // Fire-and-forget — telemetry must never break a turn.
         this.dispatchBranchCitationTelemetry(consumedObservations, result.newMessages, result.response, feedbackOutbox);
+        const visibleAnswer = result.finalResponseVisible && !params.suppressFinalResponse ? stripInternalAnnotations(result.response) : '';
+        for (const id of new Set(consumedObservations.map(item => String(item.metadata?.branchId ?? '')))) {
+          const previous = this.branchPresentations.get(id);
+          if (!previous?.injected_refs.length) continue;
+          const answerRefs = previous.injected_refs.filter(ref => explicitlyVisibleReference(visibleAnswer, ref));
+          this.publishMemoryPresentation({ ...previous, status: 'answered', answer_refs: answerRefs });
+        }
         this.persistNativeRecallUsage(nativeRecall, result.newMessages, result.response,
           params.abortSignal?.aborted || !params.shouldContinue() ? 'cancelled' : 'completed', feedbackOutbox);
       } catch (error: any) {
@@ -526,6 +540,16 @@ export class AgentTurnController {
       errorName = error instanceof Error ? error.name : 'Error';
       throw error;
     } finally {
+      const presentation = this.presentationContext;
+      if (presentation?.turnId === episodeId) {
+        for (const event of this.branchPresentations.values()) {
+          if (event.origin_turn_id === episodeId && ['running', 'ready'].includes(event.status)) {
+            this.publishMemoryPresentation({ ...event, status: outcome === 'completed' ? 'deferred' : outcome === 'cancelled' ? 'cancelled' : 'failed' });
+          }
+        }
+        presentation.closed = true;
+        await Promise.allSettled([...presentation.pending]);
+      }
       this.options.turnLogRecorder.recordEvent(episodeId, {
         type: 'run_finished', status: outcome,
         ...(errorName && { error_name: errorName }),
@@ -846,6 +870,30 @@ export class AgentTurnController {
     }
   }
 
+  private publishMemoryPresentation(event: MemoryBranchEvent, context = this.presentationContext): void {
+    const previous = this.branchPresentations.get(event.branch_run_id);
+    const snapshot = { ...structuredClone(event), origin_turn_id: event.origin_turn_id || previous?.origin_turn_id || context?.turnId || '', sequence: (previous?.sequence ?? 0) + 1 };
+    this.branchPresentations.set(snapshot.branch_run_id, snapshot);
+    while (this.branchPresentations.size > 64) this.branchPresentations.delete(this.branchPresentations.keys().next().value!);
+    if (!context?.closed) try {
+      const pending = Promise.resolve(context?.callback?.(snapshot)).catch(() => {});
+      context?.pending.add(pending);
+      void pending.finally(() => context?.pending.delete(pending));
+    } catch { /* channel failure cannot fail the turn */ }
+    Logger.runtimeEvent('INFO', 'memory branch presentation', { type: 'memory_branch', payload: snapshot });
+  }
+
+  private publishMemoryInjection(observation: SyntheticObservation): void {
+    const candidate = observation.metadata?.memory_branch as MemoryBranchEvent | undefined;
+    if (candidate?.schema !== 'catsco.memory_branch.v1') return;
+    const previous = this.branchPresentations.get(candidate.branch_run_id) ?? candidate;
+    const actual = [observation.metadata?.deliveredLocalRefs, observation.metadata?.deliveredRemoteRefs, observation.metadata?.deliveredMemoryNodeRefs, observation.metadata?.deliveredSessionSourceRefs]
+      .flatMap(value => Array.isArray(value) ? value.filter((ref): ref is string => typeof ref === 'string') : []);
+    const injectedRefs = actual.filter(ref => previous.read_refs.includes(ref));
+    this.publishMemoryPresentation({ ...previous, status: injectedRefs.length ? 'injected' : 'unavailable', consumed_turn_id: this.presentationContext?.turnId,
+      observation_id: observation.id, injected_refs: injectedRefs, answer_refs: [] });
+  }
+
   private createMemorySidecarHandle(options: {
     input: string | ContentBlock[];
     messages: Message[];
@@ -853,7 +901,9 @@ export class AgentTurnController {
     abortSignal?: AbortSignal;
     activationContext?: MemoryBranchActivationContext;
   }): MemorySidecarBranchHandle {
+    const context = this.presentationContext;
     return startMemorySidecarBranch({
+      onPresentation: event => this.publishMemoryPresentation(event, context),
       sessionKey: this.options.sessionKey,
       input: options.input,
       recentMessages: options.messages,

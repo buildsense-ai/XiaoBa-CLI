@@ -1,5 +1,5 @@
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
-import { jsonToolError, jsonToolResult, MemoryLogStore } from '../core/memory-log-store';
+import { jsonToolError, jsonToolResult, MemoryLogStore, type ArchiveTurnPin } from '../core/memory-log-store';
 
 import {
   CATSLOG_POOL_CITATION_REF_PATTERN,
@@ -103,14 +103,16 @@ export class MemoryReadTurnTool implements Tool {
     },
   };
 
-  constructor(private readonly store: MemoryLogStore) {}
+  constructor(private readonly store: MemoryLogStore, private readonly onRead?: (ref: string, archive?: ArchiveTurnPin) => void) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
       const result = await this.store.readTurn(String(args?.ref || ''), {
         budgetChars: args?.budget_chars,
       }, context.abortSignal);
-      return { ok: true, content: jsonToolResult(result) };
+      const {archive, ...visible} = result;
+      this.onRead?.(result.ref, archive);
+      return { ok: true, content: jsonToolResult(visible) };
     } catch (error: any) {
       return toolError(error);
     }
@@ -148,7 +150,7 @@ export class MemoryNeighborsTool implements Tool {
     },
   };
 
-  constructor(private readonly store: MemoryLogStore) {}
+  constructor(private readonly store: MemoryLogStore, private readonly onRead?: (ref: string, archive?: ArchiveTurnPin) => void) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
@@ -157,7 +159,11 @@ export class MemoryNeighborsTool implements Tool {
         next: args?.next,
         budgetChars: args?.budget_chars,
       }, context.abortSignal);
-      return { ok: true, content: jsonToolResult(result) };
+      const turns = result.turns.map(({archive, ...visible}) => {
+        this.onRead?.(visible.ref, archive);
+        return visible;
+      });
+      return { ok: true, content: jsonToolResult({...result, turns}) };
     } catch (error: any) {
       return toolError(error);
     }
@@ -406,10 +412,11 @@ export class FinishMemorySearchTool implements Tool {
   constructor(
     private readonly onFinish: MemorySearchFinishHandler,
     private readonly isDeliveredPoolRef: (ref: string) => boolean = () => false,
+    private readonly isReadLocalRef?: (ref: string) => boolean,
   ) {}
 
   async execute(args: any): Promise<ToolExecutionResult> {
-    const validation = validateFinishArgs(args, this.isDeliveredPoolRef);
+    const validation = validateFinishArgs(args, this.isDeliveredPoolRef, this.isReadLocalRef);
     if (!validation.ok) {
       return this.invalidResult(validation.error);
     }
@@ -458,7 +465,7 @@ export class FinishMemorySearchTool implements Tool {
   }
 }
 
-function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => boolean):
+function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => boolean, isReadLocalRef?: (ref: string) => boolean):
   | { ok: true; payload: MemorySearchFinishPayload }
   | { ok: false; error: string } {
   const summary = String(args?.summary || '').trim();
@@ -478,6 +485,9 @@ function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => bool
   const evidence: string[] = args.evidence.map((ref: string) => ref.trim()).filter(Boolean);
   const uniqueRefs: string[] = Array.from(new Set(evidence));
   for (const ref of uniqueRefs) {
+    if (CANONICAL_REF_PATTERN.test(ref) && isReadLocalRef && !isReadLocalRef(ref)) {
+      return { ok: false, error: 'Use memory_read_turn or memory_neighbors to read each local evidence ref before finishing.' };
+    }
     // The active local grammar remains unchanged. Pool and Memory node refs are
     // explicit run-local extensions, admitted only after complete delivery.
     if (!CANONICAL_REF_PATTERN.test(ref)

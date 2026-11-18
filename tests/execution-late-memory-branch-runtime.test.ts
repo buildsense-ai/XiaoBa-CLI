@@ -50,7 +50,7 @@ function toolCall(id: string): ChatResponse {
   return { content: null, toolCalls: [{ id, type: 'function', function: { name: tool.name, arguments: '{}' } }], usage };
 }
 
-async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
+async function actualAgentTurn(options: { localOnly?: boolean; failFirstDispatch?: boolean; qualifiers?: boolean; cite?: boolean | 'hidden'; carryover?: boolean }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'execution-late-memory-branch-'));
   const sessionId = `late-memory-branch-${options.failFirstDispatch ? 'failed' : 'success'}-${Date.now()}`;
   const mainDispatch = deferred<void>();
@@ -59,6 +59,11 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
   const prefetchResponse = deferred<any>();
   const observationQueued = deferred<void>();
   const events: any[] = [];
+  // UI transport failure modes, specified before implementation: reads/queue
+  // publication must not claim injection; only the next request may consume
+  // late evidence; internal refs must not count as visible-answer citations;
+  // public graph messages must never contain source body text/capabilities.
+  const presentationEvents: any[] = [];
   const mainRequests: Array<{ messages: Message[]; tools: ToolDefinition[] }> = [];
   const mainRequestHashes: string[] = [];
   const branchRequests: Message[][] = [];
@@ -99,7 +104,7 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
     }
     const mainAi = new ScriptedAIService(
       { provider: 'openai', apiUrl: 'http://127.0.0.1:1/v1', apiKey: 'fake', model: 'scripted', modelCapabilities: { toolCalling: true } },
-      async (messages, tools, options) => {
+      async (messages, tools, dispatchOptions) => {
         const index = mainRequests.length;
         const snapshot = structuredClone({ messages, tools: tools ?? [] });
         mainRequests.push(snapshot);
@@ -107,11 +112,11 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
         if (index === 0) {
           mainDispatch.resolve();
           return new Promise((resolve, reject) => {
-            options?.signal?.addEventListener('abort', () => reject(new Error('scripted request aborted during cleanup')), { once: true });
+            dispatchOptions?.signal?.addEventListener('abort', () => reject(new Error('scripted request aborted during cleanup')), { once: true });
             firstResponse.promise.then(resolve, reject);
           });
         }
-        return { content: 'The next request received the late branch result.', toolCalls: [], usage };
+        return { content: `The next request received the late branch result.${options.cite === 'hidden' ? ` [续聊凭据 ${projectionRef}]` : options.cite ? ` ${projectionRef}` : ''}`, toolCalls: [], usage };
       },
     );
     const branchAi = new ScriptedAIService(
@@ -119,6 +124,13 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
       async messages => {
         branchTurn++;
         branchRequests.push(structuredClone(messages));
+        if (options.localOnly) {
+          const ref = 'chat/2026-11-18/fixture.jsonl#1';
+          const read = branchTurn === 2;
+          const args = read ? { ref } : { summary: 'local-summary-7445', evidence: [ref], inject: true };
+          return { content: null, toolCalls: [{id: 'local-' + branchTurn, type:'function', function:{name: read ? 'memory_read_turn' : 'finish_memory_search', arguments:JSON.stringify(args)}}], usage };
+        }
+        if (options.carryover && branchTurn > 3) return { content: null, toolCalls: [{ id: 'next-branch-empty', type: 'function', function: { name: 'finish_memory_search', arguments: JSON.stringify({ summary: 'No new evidence in this run.', evidence: [], inject: false }) } }], usage };
         if (branchTurn === 1) {
           branchOperations.push('memory_remote_search');
           return { content: null, toolCalls: [{ id: 'branch-search', type: 'function', function: { name: 'memory_remote_search', arguments: JSON.stringify({ keywords: ['Meridian'] }) } }], usage };
@@ -135,6 +147,14 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
     projectionRead.projection.Document.nodes = [{ id: nodeId, kind: 'assertion', text: 'A typed projection node returned by the controlled local source oracle.' }];
     projectionRead.projection.Document.edges = [];
     projectionRead.projection.Document.mappings = [{ node_id: nodeId, source_ref: projectionRef, source_digest: 'b'.repeat(64) }];
+    if (options.qualifiers) {
+      const condition = { id: createHash('sha256').update('branch-condition').digest('hex'), kind: 'condition', text: 'Only audited production releases are covered.' };
+      const omission = { id: createHash('sha256').update('branch-omission').digest('hex'), kind: 'omission', text: 'External rollback behavior was not observed.' };
+      projectionRead.projection.Document.nodes.push(condition, omission, ...Array.from({ length: 6 }, (_, i) => ({ id: createHash('sha256').update(`branch-sibling-${i}`).digest('hex'), kind: 'assertion', text: `Independent synthetic fixture assertion ${i + 1}.` })));
+      projectionRead.projection.Document.edges = [{ from: condition.id, to: nodeId, kind: 'qualifies' }, { from: omission.id, to: nodeId, kind: 'omits' }];
+      projectionRead.projection.Document.conditions = [condition.text]; projectionRead.projection.Document.omissions = [omission.text];
+      projectionRead.projection.Document.mappings = projectionRead.projection.Document.nodes.map((node: any) => ({ node_id: node.id, source_ref: projectionRef, source_digest: 'b'.repeat(64) }));
+    }
     projectionRead.projection.Document.aggregate.leaves = [{ leaf_kind: 'result_synthesis', leaf_ref: projectionRef, leaf_revision: revision }];
     const backend = {
       isAvailable: () => true,
@@ -153,6 +173,10 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
         return projectionRead;
       },
     };
+    if (options.localOnly) {
+      const dir = path.join(root,'logs/sessions/chat/2026-11-18'); fs.mkdirSync(dir,{recursive:true});
+      fs.writeFileSync(path.join(dir,'fixture.jsonl'), JSON.stringify({entry_type:'turn',turn:1,timestamp:'2026-11-18T00:00:00Z',session_id:'demo',session_type:'chat',user:{text:'unfinished'},assistant:{text:'check',tool_calls:[]},tokens:{prompt:0,completion:0}})+'\n');
+    }
     const controller = new agent.AgentTurnController({
       sessionKey: sessionId, sessionType: 'cli',
       services: {
@@ -190,6 +214,7 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
     running = loggerModule.Logger.withSessionContext(sessionId, logger, () => controller.run({
       input: 'Continue the Meridian retention review.', messages: [], runtimeFeedback: [], shouldContinue: () => true,
       abortSignal: abortController!.signal,
+      callbacks: { onMemoryBranch: (event: any) => { presentationEvents.push(structuredClone(event)); } } as any,
     }));
     running.then(() => { runSettled = true; }, () => { runSettled = true; });
     await waitFor('main provider call 1 dispatch', mainDispatch.promise);
@@ -200,12 +225,26 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
       firstResponse.reject(new Error('scripted dispatch failure after branch completed'));
       await assert.rejects(waitFor('failed controller dispatch settlement', running), /scripted dispatch failure/);
     } else {
-      firstResponse.resolve(toolCall('main-work'));
-      await waitFor('controller completion after next eligible provider call', running);
+      firstResponse.resolve(options.carryover ? { content: 'First turn completed before accepting the queued memory.', toolCalls: [], usage } : toolCall('main-work'));
+      const firstTurn = await waitFor('controller completion after next eligible provider call', running);
+      if (options.carryover) {
+        runSettled = false;
+        running = loggerModule.Logger.withSessionContext(sessionId, logger, () => controller.run({
+          input: 'Continue in the next user turn.', messages: firstTurn.messages, runtimeFeedback: [], shouldContinue: () => true,
+          abortSignal: abortController!.signal,
+          callbacks: { onMemoryBranch: (event: any) => { presentationEvents.push(structuredClone(event)); } },
+        }));
+        await waitFor('next user turn consumes the carried Branch', running);
+        runSettled = true;
+      }
+    }
+    if (options.carryover) {
+      const pendingSidecar = (controller as any).memoryBranchCarryover?.handle?.done;
+      if (pendingSidecar) await waitFor('follow-up sidecar settles before fixture cleanup', pendingSidecar);
     }
     const rawLoggerBytes = fs.existsSync(logger.getLogFilePath()) ? fs.readFileSync(logger.getLogFilePath()) : Buffer.alloc(0);
     const rawLogBytes = extractExecutionGraphLogRecords(rawLoggerBytes);
-    return { sessionId, events, mainRequests, mainRequestHashes, branchRequests, branchCallCount, branchOperations, nodeAnchor: sourceAnchor, rawLogBytes };
+    return { sessionId, events, presentationEvents, mainRequests, mainRequestHashes, branchRequests, branchCallCount, branchOperations, nodeAnchor: sourceAnchor, rawLogBytes };
   } finally {
     if (!runSettled) {
       abortController?.abort();
@@ -216,6 +255,25 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean }) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+
+test('grp_7445 local-only: rejects unread evidence, records summary consumption at dispatch, exposes no file path', async () => {
+  const run = await actualAgentTurn({localOnly:true});
+  assert.equal(run.branchRequests.length,3);
+  assert.ok(JSON.stringify(run.mainRequests[1]).includes('local-summary-7445'));
+  const event = run.presentationEvents.find(event => event.consumed_turn_id);
+  assert.equal(event.status, 'injected');
+  assert.match(event.injected_refs[0], /^local:[a-f0-9]{64}$/);
+  assert.equal(event.nodes[0].reader.kind,'archive_turn');
+  assert.equal(event.nodes[0].reader.archive.offset,0);
+  assert.match(event.nodes[0].reader.archive.digest,/^[a-f0-9]{64}$/);
+  assert.deepEqual(event.read_refs,event.injected_refs);
+  assert.equal(JSON.stringify(event).includes('fixture.jsonl'), false);
+  const dir = process.env.CATSLOG_EXECUTION_EVIDENCE_DIR;
+  if (dir) {
+    fs.mkdirSync(path.join(dir,'reports'),{recursive:true});
+    fs.writeFileSync(path.join(dir,'reports','local-only-7445.json'), JSON.stringify(event,null,2));
+  }
+});
 
 test('D5: actual MemorySearchBranchSession late result is excluded from call 1 and bound only to the next submitted call', async () => {
   // Failure assertions defined before production edits:
@@ -275,7 +333,38 @@ test('D5: actual MemorySearchBranchSession late result is excluded from call 1 a
     assert.equal(failed.events.filter(event => event.type === 'successful_model_call').length, 0,
       'failed provider dispatch cannot create successful consumption evidence');
 
+    const presentation = successful.presentationEvents;
+    assert.ok(presentation.some(event => event.status === 'running'), 'Branch startup reaches the channel callback');
+    const injected = presentation.find(event => event.status === 'injected');
+    assert.ok(injected, 'actual drained observation publishes its injected graph');
+    assert.ok(injected.consumed_turn_id && injected.observation_id);
+    assert.ok(injected.nodes.some((node: any) => node.kind === 'assertion'));
+    assert.deepEqual(injected.injected_refs, [projectionRef]);
+    assert.ok(presentation.every(event => !JSON.stringify(event).includes('A typed projection node returned')),
+      'source bodies stay out of public presentation events');
+    assert.deepEqual(presentation.at(-1).answer_refs, [], 'tool/internal refs are not final visible answer references');
+    assert.equal(failed.presentationEvents.some(event => event.status === 'injected'), false,
+      'queue publication before failed main dispatch does not claim injection');
+
+    const qualified = await actualAgentTurn({ qualifiers: true, cite: true });
+    const qualifiedGraph = qualified.presentationEvents.find(event => event.status === 'injected');
+    assert.deepEqual(qualifiedGraph.edges.map((edge: any) => edge.kind).sort(), ['omits', 'qualifies']);
+    assert.ok(Buffer.byteLength(JSON.stringify(qualifiedGraph)) > 2000, 'typed graph exceeds the old string clip boundary');
+    assert.deepEqual(qualified.presentationEvents.at(-1).answer_refs, [projectionRef], 'only an exact visible final reference earns its marker');
+
+    const hidden = await actualAgentTurn({ cite: 'hidden' });
+    assert.deepEqual(hidden.presentationEvents.find(event => event.status === 'answered').answer_refs, [], 'an annotation removed at the actual reply boundary cannot count as a visible reference');
+    const carried = await actualAgentTurn({ carryover: true });
+    const carryInjection = carried.presentationEvents.find(event => event.status === 'injected');
+    assert.ok(carryInjection, 'late prior-turn observation reaches the next user turn');
+    assert.notEqual(carryInjection.origin_turn_id, carryInjection.consumed_turn_id);
+    assert.ok(carried.presentationEvents.some(event => event.status === 'deferred' && event.branch_run_id === carryInjection.branch_run_id), 'origin turn ends with an explicit deferred state');
+    assert.equal(carried.presentationEvents.filter(event => event.status === 'injected' && event.consumed_turn_id === event.origin_turn_id).length, 0, 'origin answer is never decorated as consuming the late result');
+
     const report = {
+      carryover_presentation_events: carried.presentationEvents,
+      qualified_presentation_events: qualified.presentationEvents,
+      presentation_events: presentation,
       schema: 'catslog.execution_late_memory_branch.v1',
       path: 'actual AgentTurnController -> ConversationRunner -> startMemorySidecarBranch -> MemorySearchBranchSession',
       external_provider_calls: 0,
@@ -315,6 +404,7 @@ test('D5: actual MemorySearchBranchSession late result is excluded from call 1 a
       memory_input: binding,
     }, null, 2)}\n`, { mode: 0o600 });
     fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+    fs.writeFileSync(path.join(evidenceDir, 'reports', 'qualified-presentation.json'), `${JSON.stringify(qualified.presentationEvents, null, 2)}\n`, { mode: 0o600 });
   } finally {
     fs.rmSync(isolatedDataRoot, { recursive: true, force: true });
     if (previousDataRoot === undefined) delete process.env.XIAOBA_USER_DATA_DIR;

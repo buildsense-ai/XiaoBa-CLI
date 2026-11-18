@@ -164,6 +164,7 @@ export interface SessionCallbacks {
   onToolStart?: (name: string, toolUseId: string, input: any) => void;
   onToolEnd?: (name: string, toolUseId: string, result: string) => void;
   onToolDisplay?: (name: string, content: string) => void;
+  onMemoryBranch?: (event: import('./memory-branch-presentation').MemoryBranchEvent) => void | Promise<void>;
   onRetry?: (attempt: number, maxRetries: number, info?: StreamRetryInfo) => void | Promise<void>;
   confirmToolExecution?: (request: ToolExecutionConfirmationRequest) => Promise<ToolExecutionConfirmationResult>;
 }
