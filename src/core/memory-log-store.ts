@@ -1,7 +1,8 @@
 import * as fs from 'fs';
+import { createHash } from 'crypto';
 import * as path from 'path';
 import type { SessionToolCallLog, SessionTurnLogEntry } from '../utils/session-log-schema';
-import { parseSessionLogContent } from '../utils/session-log-schema';
+import { isSessionTurnEntry, parseSessionLogContent } from '../utils/session-log-schema';
 import { projectSessionLog } from '../utils/session-log-projection';
 import { stripAssistantTranscriptArtifacts } from '../utils/transcript-artifacts';
 import { PathResolver } from '../utils/path-resolver';
@@ -12,7 +13,9 @@ export interface MemorySearchMatch {
   timestamp: string;
 }
 
+export interface ArchiveTurnPin { day: string; offset: number; digest: string }
 export interface MemoryTurnRecord {
+  archive?: ArchiveTurnPin;
   ref: string;
   entry: SessionTurnLogEntry;
   ordinal: number;
@@ -33,6 +36,7 @@ export interface ReadMemoryTurnOptions {
 }
 
 export interface MemoryReadResult {
+  archive?: ArchiveTurnPin;
   ref: string;
   text: string;
   truncated?: boolean;
@@ -135,7 +139,7 @@ export class MemoryLogStore {
     const parsed = parseCanonicalRef(ref);
     const filePath = this.resolveFilePath(parsed);
     const root = this.rootForFile(filePath);
-    const records = (await this.readTurnsFromFile(root, filePath, signal))
+    const records = (await this.readTurnsFromFile(root, filePath, signal, true))
       .filter(record => record.searchable !== false || record.ref === ref);
     const targetIndex = records.findIndex(record => record.ref === ref);
     if (targetIndex < 0) {
@@ -190,7 +194,7 @@ export class MemoryLogStore {
     const parsed = parseCanonicalRef(ref);
     const filePath = this.resolveFilePath(parsed);
     const root = this.rootForFile(filePath);
-    const records = await this.readTurnsFromFile(root, filePath, signal);
+    const records = await this.readTurnsFromFile(root, filePath, signal, true);
     const record = records.find(item => item.ref === ref);
     if (!record) {
       throw createToolInputError(`memory ref not found: ${ref}`);
@@ -216,7 +220,7 @@ export class MemoryLogStore {
     return root.root;
   }
 
-  private async readTurnsFromFile(root: string, filePath: string, signal?: AbortSignal): Promise<MemoryTurnRecord[]> {
+  private async readTurnsFromFile(root: string, filePath: string, signal?: AbortSignal, pinTurns = false): Promise<MemoryTurnRecord[]> {
     throwIfAborted(signal);
     let content = '';
     try {
@@ -229,12 +233,31 @@ export class MemoryLogStore {
     const parts = relative.split('/');
     if (parts.length !== 3) return [];
     const [sessionType, date, fileName] = parts;
-    return projectSessionLog(parseSessionLogContent(content, { tolerant: true }))
+    // Pin the original summary line, including for run-based transcripts. An
+    // input without a turn summary can still deliver a summary-only receipt.
+    const pins = new Map<string, () => ArchiveTurnPin>();
+    const entries = pinTurns ? [] : parseSessionLogContent(content, { tolerant: true });
+    if (pinTurns) {
+      let offset = 0, ordinal = 0, legacy = 0;
+      for (const line of content.split('\n')) {
+        const [entry] = parseSessionLogContent(line, { tolerant: true });
+        if (entry) entries.push(entry);
+        if (entry && isSessionTurnEntry(entry)) {
+          const lineOffset = offset;
+          const pin = () => ({ day: date, offset: lineOffset, digest: createHash('sha256').update(line).digest('hex') });
+          pins.set(entry.entry_type === 'turn' ? String(++ordinal) : 'legacy:' + ++legacy, pin);
+          if (entry.run_id) pins.set('run:' + entry.run_id, pin);
+        }
+        offset += Buffer.byteLength(line) + 1;
+      }
+    }
+    return projectSessionLog(entries)
       .sort((a, b) => a.entry.timestamp.localeCompare(b.entry.timestamp))
       .map((projection, index) => ({
         ref: `${sessionType}/${date}/${fileName}#${projection.ref}`,
         entry: projection.entry,
         ordinal: index + 1,
+        get archive() { return pins.get(projection.ref)?.(); },
         filePath,
         transcript: projection.transcript,
         searchable: projection.searchable,
@@ -357,7 +380,7 @@ function formatTurnRecord(record: MemoryTurnRecord, budgetChars: number): Memory
   builder.appendLine(`REF: ${record.ref}`);
   if (record.transcript) {
     builder.appendSection('SESSION_TRANSCRIPT', record.transcript);
-    return { ref: record.ref, text: builder.toString(), ...(builder.truncated && { truncated: true }) };
+    return { ref: record.ref, archive: record.archive, text: builder.toString(), ...(builder.truncated && { truncated: true }) };
   }
   builder.appendSection('USER', record.entry.user?.text || '');
   builder.appendSection(
@@ -366,7 +389,7 @@ function formatTurnRecord(record: MemoryTurnRecord, budgetChars: number): Memory
   );
   builder.appendSection('TOOL_CALLS_AND_RESULTS', formatToolCalls(record.entry.assistant?.tool_calls || []));
   return {
-    ref: record.ref,
+    ref: record.ref, archive: record.archive,
     text: builder.toString(),
     ...(builder.truncated && { truncated: true }),
   };

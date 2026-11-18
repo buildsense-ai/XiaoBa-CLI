@@ -1,9 +1,11 @@
+import type { ArchiveTurnPin } from './memory-log-store';
 import { createHash } from 'crypto';
 import type { CatsLogKnowledgeAnchor } from '../utils/catslog-knowledge-types';
 
 /** A body-free channel contract. Exact source text is only fetched by the owner reader. */
 export interface MemoryBranchReader {
-  kind: 'source' | 'projection' | 'assertion';
+  kind: 'source' | 'projection' | 'assertion' | 'archive_turn';
+  archive?: ArchiveTurnPin;
   projection_ref?: string;
   revision?: string;
   member_ref?: string;
@@ -71,6 +73,11 @@ export class MemoryBranchPresentation {
     this.event.edges.push({ id, from, to, kind, ...(linkId ? { link_id: linkId } : {}) });
   }
   private remember(ref: string): void { if (!this.event.read_refs.includes(ref)) this.event.read_refs.push(ref); }
+  localRead(receipt: string, archive?: ArchiveTurnPin): void {
+    this.remember(receipt);
+    if (archive) this.addNode({ id: key(receipt), kind: 'archive_turn', label: '会话摘录', ref: receipt, reader: {kind:'archive_turn', archive} });
+    this.publish();
+  }
   source(handle: string, anchor: CatsLogKnowledgeAnchor, context?: any): void {
     this.remember(handle);
     const rows = Array.isArray(context?.nodes) && context.nodes.length ? context.nodes : [{ id: anchor.id, kind: anchor.kind }];

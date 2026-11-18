@@ -42,7 +42,10 @@ class MemoryBranchAI {
     }
 
     const searchResult = JSON.parse(String(lastTool.content));
-    const ref = searchResult.matches[0].ref;
+    if (searchResult.matches) {
+      return { content: null, toolCalls: [makeToolCall('read_1', 'memory_read_turn', { ref: searchResult.matches[0].ref })], usage };
+    }
+    const ref = searchResult.ref;
     return {
       content: null,
       toolCalls: [makeToolCall('finish_1', 'finish_memory_search', {
@@ -224,7 +227,7 @@ describe('memory sidecar branch', () => {
     assert.equal(injected.source, 'memory');
     assert.equal(injected.summary, 'Prior memory says dashboard filters should stay compact.');
     assert.deepEqual(injected.refs, ['chat/2026-06-09/demo.jsonl#1']);
-    assert.equal(aiService.calls.length, 2);
+    assert.equal(aiService.calls.length, 3);
   });
 
   test('suppresses observations when branch finishes with inject false', async () => {

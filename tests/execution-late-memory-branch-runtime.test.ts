@@ -50,7 +50,7 @@ function toolCall(id: string): ChatResponse {
   return { content: null, toolCalls: [{ id, type: 'function', function: { name: tool.name, arguments: '{}' } }], usage };
 }
 
-async function actualAgentTurn(options: { failFirstDispatch?: boolean; qualifiers?: boolean; cite?: boolean | 'hidden'; carryover?: boolean }) {
+async function actualAgentTurn(options: { localOnly?: boolean; failFirstDispatch?: boolean; qualifiers?: boolean; cite?: boolean | 'hidden'; carryover?: boolean }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'execution-late-memory-branch-'));
   const sessionId = `late-memory-branch-${options.failFirstDispatch ? 'failed' : 'success'}-${Date.now()}`;
   const mainDispatch = deferred<void>();
@@ -124,6 +124,12 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean; qualifier
       async messages => {
         branchTurn++;
         branchRequests.push(structuredClone(messages));
+        if (options.localOnly) {
+          const ref = 'chat/2026-11-18/fixture.jsonl#1';
+          const read = branchTurn === 2;
+          const args = read ? { ref } : { summary: 'local-summary-7445', evidence: [ref], inject: true };
+          return { content: null, toolCalls: [{id: 'local-' + branchTurn, type:'function', function:{name: read ? 'memory_read_turn' : 'finish_memory_search', arguments:JSON.stringify(args)}}], usage };
+        }
         if (options.carryover && branchTurn > 3) return { content: null, toolCalls: [{ id: 'next-branch-empty', type: 'function', function: { name: 'finish_memory_search', arguments: JSON.stringify({ summary: 'No new evidence in this run.', evidence: [], inject: false }) } }], usage };
         if (branchTurn === 1) {
           branchOperations.push('memory_remote_search');
@@ -167,6 +173,10 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean; qualifier
         return projectionRead;
       },
     };
+    if (options.localOnly) {
+      const dir = path.join(root,'logs/sessions/chat/2026-11-18'); fs.mkdirSync(dir,{recursive:true});
+      fs.writeFileSync(path.join(dir,'fixture.jsonl'), JSON.stringify({entry_type:'turn',turn:1,timestamp:'2026-11-18T00:00:00Z',session_id:'demo',session_type:'chat',user:{text:'unfinished'},assistant:{text:'check',tool_calls:[]},tokens:{prompt:0,completion:0}})+'\n');
+    }
     const controller = new agent.AgentTurnController({
       sessionKey: sessionId, sessionType: 'cli',
       services: {
@@ -245,6 +255,25 @@ async function actualAgentTurn(options: { failFirstDispatch?: boolean; qualifier
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+
+test('grp_7445 local-only: rejects unread evidence, records summary consumption at dispatch, exposes no file path', async () => {
+  const run = await actualAgentTurn({localOnly:true});
+  assert.equal(run.branchRequests.length,3);
+  assert.ok(JSON.stringify(run.mainRequests[1]).includes('local-summary-7445'));
+  const event = run.presentationEvents.find(event => event.consumed_turn_id);
+  assert.equal(event.status, 'injected');
+  assert.match(event.injected_refs[0], /^local:[a-f0-9]{64}$/);
+  assert.equal(event.nodes[0].reader.kind,'archive_turn');
+  assert.equal(event.nodes[0].reader.archive.offset,0);
+  assert.match(event.nodes[0].reader.archive.digest,/^[a-f0-9]{64}$/);
+  assert.deepEqual(event.read_refs,event.injected_refs);
+  assert.equal(JSON.stringify(event).includes('fixture.jsonl'), false);
+  const dir = process.env.CATSLOG_EXECUTION_EVIDENCE_DIR;
+  if (dir) {
+    fs.mkdirSync(path.join(dir,'reports'),{recursive:true});
+    fs.writeFileSync(path.join(dir,'reports','local-only-7445.json'), JSON.stringify(event,null,2));
+  }
+});
 
 test('D5: actual MemorySearchBranchSession late result is excluded from call 1 and bound only to the next submitted call', async () => {
   // Failure assertions defined before production edits:

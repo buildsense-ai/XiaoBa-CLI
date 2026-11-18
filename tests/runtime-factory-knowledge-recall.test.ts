@@ -116,7 +116,8 @@ describe('RuntimeFactory knowledge recall lifecycle', () => {
     assert.equal(after.ok, true, `expected success after login, got: ${String(after.message ?? after.content).slice(0, 200)}`);
     const parsed = JSON.parse(String(after.content));
     assert.equal(parsed.exhausted, true);
-    assert.equal(httpCalls, 1);
+    assert.deepEqual(parsed.any_of, ['sparse', 'attention']);
+    assert.equal(httpCalls, 3); // one literal miss, then two scoped alternatives
   });
 
   test('recall kill switch and inspector-cat role fail closed per call — still no HTTP', async () => {
