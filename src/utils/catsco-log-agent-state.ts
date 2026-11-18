@@ -49,6 +49,8 @@ export interface CatscoLogAgentState {
   memoryRecallUrl?: string;
   memoryNotesUrl?: string;
   sessionsUrl?: string;
+  sessionNameUrl?: string;
+  sessionNameSearchUrl?: string;
   /** Agent-facing branch retrieval endpoint (ADR 0019). */
   branchUrl?: string;
   knowledgeSearchUrl?: string;
@@ -142,6 +144,8 @@ export function clearCatscoSkillToken(state: CatscoLogAgentState): void {
   delete state.memoryUrl;
   delete state.memoryRecallUrl;
   delete state.sessionsUrl;
+  delete state.sessionNameUrl;
+  delete state.sessionNameSearchUrl;
   delete state.branchUrl;
   delete state.knowledgeSearchUrl;
   delete state.knowledgeGraphUrl;

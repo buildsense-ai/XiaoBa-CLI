@@ -61,6 +61,8 @@ function copyCatscoReadCapability(
   target.memoryUrl = source.memoryUrl;
   target.memoryRecallUrl = source.memoryRecallUrl;
   target.sessionsUrl = source.sessionsUrl;
+  target.sessionNameUrl = source.sessionNameUrl;
+  target.sessionNameSearchUrl = source.sessionNameSearchUrl;
 }
 
 function copyCatscoWriteCapability(
@@ -92,6 +94,10 @@ function applyReadCapabilityResponse(
     ? response.skill_graph_url as string : undefined;
   state.sessionsUrl = isSafeCatsLogPath(typeof response.sessions_url === 'string' ? response.sessions_url : undefined)
     ? response.sessions_url as string : undefined;
+  state.sessionNameUrl = isSafeCatsLogPath(typeof response.session_name_url === 'string' ? response.session_name_url : undefined)
+    ? response.session_name_url as string : undefined;
+  state.sessionNameSearchUrl = isSafeCatsLogPath(typeof response.session_name_search_url === 'string' ? response.session_name_search_url : undefined)
+    ? response.session_name_search_url as string : undefined;
   state.memoryUrl = isSafeCatsLogPath(typeof response.memory_url === 'string' ? response.memory_url : undefined)
     ? response.memory_url as string : undefined;
   state.memoryRecallUrl = isSafeCatsLogPath(typeof response.memory_recall_url === 'string' ? response.memory_recall_url : undefined)

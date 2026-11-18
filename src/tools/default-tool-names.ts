@@ -26,6 +26,8 @@ export const DEFAULT_TOOL_NAMES = [
   // never a fake-empty result). Explicit profile allowlists that omit the
   // name keep it off.
   'catslog_knowledge_recall',
+  // Explicit name <-> directory locator lookup; never a per-turn request.
+  'catslog_session_lookup',
 ] as const;
 
 export type DefaultToolName = typeof DEFAULT_TOOL_NAMES[number];

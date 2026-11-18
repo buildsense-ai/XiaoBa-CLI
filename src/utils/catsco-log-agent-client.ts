@@ -1,4 +1,6 @@
 import { DEFAULT_KNOWLEDGE_GRAPH_URL, validateKnowledgeGraphQuery, validateKnowledgeGraph, type CatsLogKnowledgeGraphQuery, type CatsLogKnowledgeGraph } from './catslog-knowledge-graph';
+import { decodeSessionName, decodeSessionNameSearchResult, normalizeSessionNameQuery, normalizeSessionNameSearchQuery,
+  type CatscoSessionNameQuery, type CatscoSessionNameSearchQuery, type CatscoSessionName, type CatscoSessionNameSearchResult } from './catslog-session-name';
 import type { NativeRecallFeedbackEvent } from '../core/native-recall-feedback-outbox';
 import { decodeKnowledgeSourcePage } from '../core/canonical-memory-graph';
 import * as fs from 'fs';
@@ -67,6 +69,8 @@ export interface CatscoBootstrapResponse {
   skills_url?: string;
   skill_graph_url?: string;
   sessions_url?: string;
+  session_name_url?: string;
+  session_name_search_url?: string;
   memory_url?: string;
   memory_recall_url?: string;
   /** Agent-facing branch retrieval endpoint (ADR 0019), same device-bound token. */
@@ -476,6 +480,8 @@ export interface CatscoMemoryNote {
 export const DEFAULT_SKILLS_URL = '/catsco/agent/skills';
 export const DEFAULT_SKILL_GRAPH_URL = '/catsco/agent/skill-graph';
 export const DEFAULT_SESSIONS_URL = '/catsco/agent/query/v1/sessions';
+export const DEFAULT_SESSION_NAME_URL = '/catsco/agent/query/v1/session-name';
+export const DEFAULT_SESSION_NAME_SEARCH_URL = DEFAULT_SESSION_NAME_URL + '/search';
 export const DEFAULT_MEMORY_URL = '/catsco/agent/memory/retrieve';
 export const DEFAULT_MEMORY_RECALL_URL = '/catsco/agent/memory/recall';
 export const DEFAULT_BRANCH_URL = '/catsco/agent/branch';
@@ -683,6 +689,26 @@ export class CatscoAppendConflictError extends Error {
 
 export class CatscoLogAgentClient {
   constructor(private readonly apiBaseUrl: string) {}
+
+  /** Explicit directory metadata reads; never called by a turn prefetch. */
+  async readSessionName(input: CatscoSessionNameQuery & {
+    token: string; sessionNameUrl?: string; signal?: AbortSignal;
+  }): Promise<CatscoSessionName> {
+    const query = normalizeSessionNameQuery(input);
+    const result = await this.postCapabilityJSON<unknown>(input.sessionNameUrl || DEFAULT_SESSION_NAME_URL,
+      requireCapabilityToken(input.token), { session_id: query.sessionId, ...(query.sessionType ? { session_type: query.sessionType } : {}) },
+      'CatsLog session name lookup failed', input.signal);
+    return decodeSessionName(result);
+  }
+
+  async searchSessionNames(input: CatscoSessionNameSearchQuery & {
+    token: string; sessionNameSearchUrl?: string; signal?: AbortSignal;
+  }): Promise<CatscoSessionNameSearchResult> {
+    const query = normalizeSessionNameSearchQuery(input);
+    const result = await this.postCapabilityJSON<unknown>(input.sessionNameSearchUrl || DEFAULT_SESSION_NAME_SEARCH_URL,
+      requireCapabilityToken(input.token), query, 'CatsLog session name search failed', input.signal);
+    return decodeSessionNameSearchResult(result, query.limit);
+  }
 
   async bootstrap(input: CatscoBootstrapInput): Promise<CatscoBootstrapResponse> {
     const response = await fetch(this.buildUrl('/catsco/agent/bootstrap'), {

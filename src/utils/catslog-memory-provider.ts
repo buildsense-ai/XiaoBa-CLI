@@ -1,4 +1,5 @@
 import { DEFAULT_KNOWLEDGE_GRAPH_URL, type CatsLogKnowledgeGraphQuery, type CatsLogKnowledgeGraph } from './catslog-knowledge-graph';
+import type { CatscoSessionNameQuery, CatscoSessionNameSearchQuery, CatscoSessionName, CatscoSessionNameSearchResult } from './catslog-session-name';
 import * as os from 'os';
 import { APP_VERSION } from '../version';
 import {
@@ -8,6 +9,8 @@ import {
   DEFAULT_MEMORY_RECALL_URL,
   DEFAULT_MEMORY_URL,
   DEFAULT_SESSIONS_URL,
+  DEFAULT_SESSION_NAME_URL,
+  DEFAULT_SESSION_NAME_SEARCH_URL,
   DEFAULT_SKILL_GRAPH_URL,
   DEFAULT_SKILLS_URL,
   DEFAULT_SOURCE_READ_URL,
@@ -91,6 +94,9 @@ export interface CatsLogMemoryBackend {
     query: CatscoSessionQuery,
     signal?: AbortSignal,
   ): Promise<CatscoSessionQueryResult>;
+  /** Explicit metadata lookup, independent of automatic Branch retrieval. */
+  readSessionName?(query: CatscoSessionNameQuery, signal?: AbortSignal): Promise<CatscoSessionName>;
+  searchSessionNames?(query: CatscoSessionNameSearchQuery, signal?: AbortSignal): Promise<CatscoSessionNameSearchResult>;
   /**
    * Optional downstream citation telemetry for the branch endpoint: reports
    * which pool refs the parent agent cited after consuming an injection.
@@ -169,6 +175,8 @@ interface CatsLogReadCapability {
   token: string;
   skillsUrl: string;
   sessionsUrl: string;
+  sessionNameUrl: string;
+  sessionNameSearchUrl: string;
   branchUrl: string;
   knowledgeSearchUrl: string;
   knowledgeGraphUrl: string;
@@ -293,6 +301,21 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       },
       signal,
     );
+  }
+
+  /** Metadata uses the explicit read surface, including its role/disable gate. */
+  async readSessionName(query: CatscoSessionNameQuery, signal?: AbortSignal): Promise<CatscoSessionName> {
+    if (!this.isKnowledgeRecallAvailable()) throw new CatsLogMemoryUnavailableError('CatsLog explicit reads unavailable');
+    return this.withReadCapability((capability, client) => client.readSessionName({
+      ...query, token: capability.token, sessionNameUrl: capability.sessionNameUrl, signal,
+    }), signal);
+  }
+
+  async searchSessionNames(query: CatscoSessionNameSearchQuery, signal?: AbortSignal): Promise<CatscoSessionNameSearchResult> {
+    if (!this.isKnowledgeRecallAvailable()) throw new CatsLogMemoryUnavailableError('CatsLog explicit reads unavailable');
+    return this.withReadCapability((capability, client) => client.searchSessionNames({
+      ...query, token: capability.token, sessionNameSearchUrl: capability.sessionNameSearchUrl, signal,
+    }), signal);
   }
 
   /** Report downstream branch citations through the read capability. */
@@ -679,6 +702,8 @@ export class CatsLogMemoryProvider implements CatsLogMemoryBackend {
       latest.skillsUrl = safePathOrDefault(response.skills_url, DEFAULT_SKILLS_URL);
       latest.skillGraphUrl = safePathOrDefault(response.skill_graph_url, DEFAULT_SKILL_GRAPH_URL);
       latest.sessionsUrl = safePathOrDefault(response.sessions_url, DEFAULT_SESSIONS_URL);
+      latest.sessionNameUrl = safePathOrDefault(response.session_name_url, DEFAULT_SESSION_NAME_URL);
+      latest.sessionNameSearchUrl = safePathOrDefault(response.session_name_search_url, DEFAULT_SESSION_NAME_SEARCH_URL);
       latest.memoryUrl = safePathOrDefault(response.memory_url, DEFAULT_MEMORY_URL);
       latest.memoryRecallUrl = safePathOrDefault(response.memory_recall_url, DEFAULT_MEMORY_RECALL_URL);
       latest.branchUrl = safePathOrDefault(response.branch_url, DEFAULT_BRANCH_URL);
@@ -762,6 +787,8 @@ function capabilitiesFromResponse(response: any, now: number): CatsLogCapabiliti
       token: clean(response?.skill_token)!,
       skillsUrl: safePathOrDefault(response?.skills_url, DEFAULT_SKILLS_URL),
       sessionsUrl: safePathOrDefault(response?.sessions_url, DEFAULT_SESSIONS_URL),
+      sessionNameUrl: safePathOrDefault(response?.session_name_url, DEFAULT_SESSION_NAME_URL),
+      sessionNameSearchUrl: safePathOrDefault(response?.session_name_search_url, DEFAULT_SESSION_NAME_SEARCH_URL),
       branchUrl: safePathOrDefault(response?.branch_url, DEFAULT_BRANCH_URL),
       knowledgeSearchUrl: safePathOrDefault(response?.knowledge_search_url, DEFAULT_KNOWLEDGE_SEARCH_URL),
       knowledgeGraphUrl: safePathOrDefault(response?.knowledge_graph_url, DEFAULT_KNOWLEDGE_GRAPH_URL),
@@ -783,6 +810,8 @@ function readCapabilityFromState(state: CatscoLogAgentState, now: number): CatsL
     token,
     skillsUrl: safePathOrDefault(state.skillsUrl, DEFAULT_SKILLS_URL),
     sessionsUrl: safePathOrDefault(state.sessionsUrl, DEFAULT_SESSIONS_URL),
+    sessionNameUrl: safePathOrDefault(state.sessionNameUrl, DEFAULT_SESSION_NAME_URL),
+    sessionNameSearchUrl: safePathOrDefault(state.sessionNameSearchUrl, DEFAULT_SESSION_NAME_SEARCH_URL),
     branchUrl: safePathOrDefault(state.branchUrl, DEFAULT_BRANCH_URL),
     knowledgeSearchUrl: safePathOrDefault(state.knowledgeSearchUrl, DEFAULT_KNOWLEDGE_SEARCH_URL),
     knowledgeGraphUrl: safePathOrDefault(state.knowledgeGraphUrl, DEFAULT_KNOWLEDGE_GRAPH_URL),

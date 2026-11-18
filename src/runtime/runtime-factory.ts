@@ -94,6 +94,7 @@ export class RuntimeFactory {
     // its own availability per call.
     const catslogMemory = branchConfig.branches.memorySearch.enabled
       || profile.tools.enabled.includes('catslog_knowledge_recall')
+      || profile.tools.enabled.includes('catslog_session_lookup')
       || CatsLogMemoryProvider.shouldExposeKnowledgeRecall(
         PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory),
       )

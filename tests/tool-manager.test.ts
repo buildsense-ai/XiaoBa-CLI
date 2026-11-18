@@ -175,7 +175,7 @@ describe('ToolManager', () => {
 
     // The capability-gated recall tool registers only with a supplied
     // device-bound provider; without one it is absent (never a stub).
-    const expected = DEFAULT_TOOL_NAMES.filter(name => name !== 'catslog_knowledge_recall');
+    const expected = DEFAULT_TOOL_NAMES.filter(name => name !== 'catslog_knowledge_recall' && name !== 'catslog_session_lookup');
     assert.deepStrictEqual(
       manager.getToolDefinitions().map(definition => definition.name),
       expected,

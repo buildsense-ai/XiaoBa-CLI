@@ -27,6 +27,7 @@ import { mergeToolExecutionContext } from '../utils/tool-context';
 import { confirmLocalToolExecution } from './local-tool-risk';
 import { buildToolTargetContext, operationForToolTargetContext } from './tool-target-context';
 import { CatsLogKnowledgeRecallTool, CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from './catslog-knowledge-recall-tool';
+import { CatsLogSessionLookupTool, CATSLOG_SESSION_LOOKUP_TOOL_NAME } from './catslog-session-lookup-tool';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import { getDeviceTargetResolutionFailure } from './execution-router';
 
@@ -119,6 +120,9 @@ export class ToolManager implements ToolExecutor {
       // from the surface entirely (no stub that could fake-empty).
       if (enabled.has(CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME) && catslogKnowledge) {
         this.registerTool(new CatsLogKnowledgeRecallTool(catslogKnowledge));
+      }
+      if (enabled.has(CATSLOG_SESSION_LOOKUP_TOOL_NAME) && catslogKnowledge) {
+        this.registerTool(new CatsLogSessionLookupTool(catslogKnowledge));
       }
       const knownTools = new Set<string>([
         ...(DEFAULT_TOOL_NAMES as readonly string[]),

@@ -25,6 +25,7 @@ const LOW_RISK_TOOLS = new Set([
   'skill',
   // Read-only Diary recall and branch-local reads share scoped capabilities.
   CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME,
+  'catslog_session_lookup',
   'memory_search',
   'memory_read_turn',
   'memory_neighbors',

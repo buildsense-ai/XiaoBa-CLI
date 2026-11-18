@@ -340,5 +340,5 @@ function getCurrentToolManagerNames(): string[] {
   // a bare ToolManager registers it only when a provider is supplied.
   return [...new ToolManager('/tmp/xiaoba-runtime-profile-tools')
     .getToolDefinitions()
-    .map(definition => definition.name), 'catslog_knowledge_recall'];
+    .map(definition => definition.name), 'catslog_knowledge_recall', 'catslog_session_lookup'];
 }

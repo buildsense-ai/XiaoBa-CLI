@@ -1,6 +1,7 @@
 import { MemoryBranchPresentation, type MemoryBranchEvent } from './memory-branch-presentation';
 import { isCatsLogKnowledgeCitationRef } from '../tools/memory-branch-tools';
 import { CATSLOG_KNOWLEDGE_RECALL_TOOL_NAME } from '../tools/catslog-knowledge-recall-tool';
+import { CatsLogSessionLookupTool } from '../tools/catslog-session-lookup-tool';
 import { stripToolTargetContextForDisplay } from '../tools/tool-target-context';
 import { canonicalProjectionAnchorMatches, validateCanonicalProjectionSourceContent, validateCanonicalSourceToolBody } from './canonical-memory-graph';
 import { sourceRecallRef } from './native-recall-attribution';
@@ -187,6 +188,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     };
     const tools: Tool[] = [new MemorySearchTool(this.store), new MemoryReadTurnTool(this.store, recordRead), new MemoryNeighborsTool(this.store, recordRead)];
     const backend = this.availableCatsLogMemory();
+    if (backend?.readSessionName && backend.searchSessionNames) tools.push(new CatsLogSessionLookupTool(backend));
     if (backend?.branch) tools.push(new MemoryRemoteSearchTool((keywords, signal) => this.searchInLoop(keywords, signal)));
     if (backend?.readSourceMemoryProjection) tools.push(new MemorySourceReadTool((ref, signal) => this.expandInLoop(ref, signal)));
     if (backend?.readSourceMemoryProjection && backend.readSourceAssertionClosure) {
