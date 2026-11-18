@@ -2,22 +2,25 @@ import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { CreditTaskRuntime, CreditTaskPausedError, checkCreditTask, currentCreditTask, isCatsCoCreditProvider } from '../src/core/credit-task-runtime';
+import { CreditTaskRuntime, CreditTaskPausedError, checkCreditTask, currentCreditTask, isCatsCoCreditProvider, LEGACY_CREDIT_GATE_PAUSE, CREDIT_ACCOUNTING_PAUSE } from '../src/core/credit-task-runtime';
 import { AIService } from '../src/utils/ai-service';
 import { AgentSession } from '../src/core/agent-session';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
 import { SessionStore } from '../src/utils/session-store';
-import type { ChatConfig } from '../src/types';
+import type { ChatConfig, Message } from '../src/types';
 
 async function relay(t: TestContext) {
   const actions: Array<{ action: string; task_id: string; headers: IncomingHttpHeaders }> = [];
-  const calls: Array<{ path: string; headers: IncomingHttpHeaders; body: any }> = [];
+  const calls: Array<{ path: string; headers: IncomingHttpHeaders; body: any; wireBytes: number }> = [];
   const control = { enabled: true, allowed: true, spendable: 10, debt: 0, status: 200,
     modelStatus: 200, finishStatus: 200, retained: '', reason: '余额不足', modelReply: undefined as any,
+    respond: undefined as undefined | ((body: any, headers: IncomingHttpHeaders, res: import('node:http').ServerResponse) => boolean),
     decide: undefined as undefined | ((action: string, id: string) => Partial<Record<string, any>>) };
   const server = createServer(async (req, res) => {
-    let raw = '';
-    for await (const chunk of req) raw += chunk;
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const wire = Buffer.concat(chunks);
+    const raw = wire.toString('utf8');
     const body = JSON.parse(raw || '{}');
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/v1/credit-tasks') {
@@ -29,7 +32,8 @@ async function relay(t: TestContext) {
         spendable_units: control.spendable, debt_units: control.debt, ...control.decide?.(body.action, body.task_id) }));
       return;
     }
-    calls.push({ path: req.url!, headers: req.headers, body });
+    calls.push({ path: req.url!, headers: req.headers, body, wireBytes: wire.length });
+    if (control.respond?.(body, req.headers, res)) return;
     res.statusCode = control.modelStatus;
     if (control.modelStatus !== 200) { res.end(JSON.stringify({ error: { message: 'budget exceeded' } })); return; }
     const response = { id: 'resp-test', status: 'completed', output: [{ type: 'message', role: 'assistant',
@@ -518,3 +522,157 @@ test('finish acknowledgement failures persist separately and retry idempotently 
   assert.equal(SessionStore.getInstance().loadRuntimeState(first.key).creditTask!.finishPending, false);
   for (const action of f.actions) assert.equal(action.task_id, snapshot.taskId);
 });
+
+const relayAccountingError = { error: { type: 'api_error', param: null, code: 'credit_request_failed',
+  message: 'credit request could not be accounted' } };
+
+for (const outcome of ['success', 'gate recovers after reload', 'required too large', 'unclosed legacy turn', 'missing tool result',
+  'repeated tool', 'new tool', 'textual replay', 'partial stream', 'accounting 402', 'ordinary 402', 'ordinary 409'] as const) {
+  test(`manual budget resume: ${outcome}`, async t => {
+    const f = await relay(t);
+    const config: ChatConfig = { ...f.config, model: 'deepseek-flash', openaiApiMode: 'responses',
+      maxTokens: 24_000, contextWindowTokens: 1_000_000 };
+    const root = `saved-${randomUUID()}`;
+    const pending = outcome === 'required too large' ? '现'.repeat(22_000) : 'Continue the original goal unchanged';
+    const old = '合'.repeat(Math.ceil(519 * 1024 / 3)); // Synthetic fixture; UTF-8 bytes, not JS code units.
+    const history: Message[] = [
+      { role: 'system', content: 'Test system prompt' },
+      { role: 'user', content: 'Prior completed text-only discussion' },
+      { role: 'assistant', content: old },
+      ...(outcome === 'unclosed legacy turn' ? [{ role: 'assistant' as const, content: 'Still working on that turn' }] : []),
+      { role: 'user', content: pending },
+      { role: 'assistant', content: 'Saving progress', tool_calls: [{ id: 'saved-tool', type: 'function',
+        function: { name: 'noop', arguments: '{"a":1,"b":2}' } }] },
+      ...(outcome === 'missing tool result' ? [] : [{ role: 'tool' as const,
+        tool_call_id: 'saved-tool', name: 'noop', content: 'Saved, do not repeat' }]),
+    ];
+    const key = `credit-task-${randomUUID()}`;
+    const store = SessionStore.getInstance();
+    const reason = outcome === 'ordinary 409' || outcome === 'ordinary 402' || outcome === 'accounting 402'
+      ? '模型请求的额度或权限门禁未通过，需手动恢复' : LEGACY_CREDIT_GATE_PAUSE;
+    assert.ok(store.saveContext(key, history));
+    assert.ok(store.saveRuntimeState(key, { creditTask: { taskId: root, enabled: true, startSent: true, state: 'paused', reason, pendingInput: pending } }));
+    let dispatched = 0;
+    const createSession = () => session(config, key, {
+      getToolDefinitions: () => [
+        { name: 'noop', description: 'Save progress', parameters: { type: 'object', properties: {} } },
+        { name: 'send_file', description: 'Send a file', parameters: { type: 'object', properties: {} }, transcriptMode: 'outbound_file' },
+      ],
+      executeTool: async () => { dispatched++; throw Error('must not execute twice'); },
+    });
+    let s = createSession();
+    s.restoreFromStore();
+    f.control.spendable = 89_000_000;
+    f.control.decide = () => ({ plan_tier: 1 });
+    let legacyCalls = 0;
+    f.control.respond = (body, headers, res) => {
+      // This fake user has legacy entitlement, but a supplied root always
+      // uses the credit ledger and its original task binding.
+      if (!headers['x-catsco-root-task-id']) { legacyCalls++; return false; }
+      if (headers['x-catsco-root-task-id'] !== root) { res.statusCode = 403; res.end('{}'); return true; }
+      if (outcome === 'ordinary 409' || outcome === 'ordinary 402'
+        || (Buffer.byteLength(JSON.stringify(body)) + body.max_output_tokens) * 1512 > f.control.spendable) {
+        res.statusCode = outcome === 'ordinary 409' ? 409 : 402;
+        res.end(JSON.stringify(outcome === 'ordinary 402' ? { error: { message: 'model forbidden' } } : relayAccountingError));
+        return true;
+      }
+      if (!['repeated tool', 'new tool', 'partial stream', 'textual replay'].includes(outcome)) return false;
+      res.setHeader('Content-Type', 'text/event-stream');
+      const event = (type: string, payload: any) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+      if (outcome === 'partial stream') {
+        res.end(event('response.output_text.delta', { delta: 'partial' }) + event('response.failed', {
+          response: { status: 'failed', error: relayAccountingError.error },
+        }));
+      } else if (outcome === 'textual replay') {
+        const replay = '[历史工具调用已转为摘要：DeepSeek thinking replay 缓存缺失，工具=send_file，id=saved-file，参数={"file_name":"old.txt","file_path":"old.txt"}]';
+        res.end(event('response.completed', { response: { status: 'completed', output: [
+          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: replay }] },
+        ] } }));
+      } else {
+        res.end(event('response.completed', { response: { id: 'repeat-response', status: 'completed', output: [
+          { type: 'function_call', call_id: 'new-tool-id', name: 'noop',
+            arguments: outcome === 'new tool' ? '{"a":2}' : '{"b":2,"a":1}' },
+        ] } }));
+      }
+      return true;
+    };
+    assert.match((await s.handleMessage('not a resume')).text, /任务已暂停/);
+    assert.equal(f.calls.length, 0);
+    if (outcome === 'gate recovers after reload') {
+      f.control.allowed = false;
+      assert.match((await s.handleCommand('resume', [])).reply!, /任务已暂停/);
+      assert.equal(f.calls.length, 0);
+      assert.equal(store.loadRuntimeState(key).creditTask!.manualResumeGuard, 'budget');
+      assert.notEqual(store.loadRuntimeState(key).creditTask!.reason, LEGACY_CREDIT_GATE_PAUSE);
+      s = createSession();
+      s.restoreFromStore();
+      f.control.allowed = true;
+    }
+    if (outcome === 'accounting 402') {
+      assert.match((await s.handleCommand('resume', [])).reply!, /任务已暂停/);
+      assert.equal(f.calls.length, 1); // No automatic resize on the ambiguous Relay 402.
+      assert.ok(f.calls[0].wireBytes >= 519 * 1024);
+      assert.equal(store.loadRuntimeState(s.key).creditTask!.reason, CREDIT_ACCOUNTING_PAUSE);
+    }
+    const { reply } = await s.handleCommand('resume', []);
+    assert.equal(dispatched, 0);
+    assert.equal(legacyCalls, 0);
+    assert.ok(f.actions.length > 0 && f.actions.every(action => action.task_id === root));
+    assert.equal(f.actions.some(action => action.action === 'start'), false);
+    const snapshot = store.loadRuntimeState(s.key).creditTask!;
+    const retained = store.loadContext(s.key)!;
+    for (const original of history.slice(1)) {
+      assert.ok(retained.some(message => message.role === original.role && message.content === original.content), original.role);
+    }
+    assert.equal(retained.filter(message => message.content === pending).length, 1);
+    if (outcome === 'success' || outcome === 'gate recovers after reload' || outcome === 'accounting 402') {
+      assert.equal(reply, 'done');
+      assert.equal(snapshot.state, 'completed');
+      assert.equal(snapshot.manualResumeGuard, undefined);
+      assert.equal(f.actions.filter(action => action.action === 'finish').length, 1);
+    } else {
+      assert.match(reply!, /任务已暂停/);
+      assert.equal(snapshot.state, 'paused');
+      assert.equal(snapshot.pendingInput, pending);
+      if (outcome === 'repeated tool') assert.match(snapshot.reason!, /重复了已保存的工具调用/);
+      if (outcome === 'new tool') assert.match(snapshot.reason!, /不能确认新工具调用安全/);
+      if (outcome === 'textual replay') assert.match(snapshot.reason!, /文本形式的工具回放/);
+      assert.equal(f.actions.some(action => action.action === 'finish'), false);
+      if (['partial stream', 'repeated tool', 'new tool', 'textual replay'].includes(outcome)) {
+        assert.equal(snapshot.manualResumeGuard, 'review');
+        const restarted = createSession();
+        restarted.restoreFromStore();
+        const gateActions = f.actions.length;
+        assert.match((await restarted.handleCommand('resume', [])).reply!, /不会重发/);
+        assert.equal(f.actions.length, gateActions);
+        assert.equal(f.calls.length, 1);
+        assert.equal(dispatched, 0);
+        assert.equal(store.loadRuntimeState(key).creditTask!.pendingInput, pending);
+      }
+    }
+    if (outcome === 'required too large' || outcome === 'unclosed legacy turn' || outcome === 'missing tool result') {
+      assert.equal(snapshot.reason, LEGACY_CREDIT_GATE_PAUSE);
+      assert.equal(f.calls.length, 0);
+    } else {
+      assert.equal(f.calls.length, outcome === 'accounting 402' ? 2 : 1);
+      const { body, wireBytes, headers } = f.calls.at(-1)!;
+      assert.equal(headers.authorization, 'Bearer test-relay-key');
+      assert.equal(body.model, 'deepseek-flash');
+      assert.match(body.instructions, /^Test system prompt\b/);
+      assert.match(body.instructions, /transient_runtime_observation_rules/);
+      if (outcome === 'ordinary 409' || outcome === 'ordinary 402') {
+        assert.ok(wireBytes >= 519 * 1024);
+        assert.equal(body.max_output_tokens, 24_000);
+        assert.notEqual(snapshot.reason, CREDIT_ACCOUNTING_PAUSE);
+      } else {
+        assert.equal(body.max_output_tokens, 4096);
+        assert.ok(wireBytes + 4096 + body.max_output_tokens <= Math.floor(89_000_000 * 0.9 / 1512));
+        assert.ok(JSON.stringify(body).includes(pending));
+        assert.ok(body.tools.some((tool: any) => tool.name === 'noop'));
+        const exchange = body.input.filter((item: any) => item.call_id === 'saved-tool');
+        assert.deepEqual(exchange.map((item: any) => item.type), ['function_call', 'function_call_output']);
+        assert.equal(exchange[1].output, 'Saved, do not repeat');
+      }
+    }
+  });
+}

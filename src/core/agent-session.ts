@@ -1,4 +1,4 @@
-import { CreditTaskRuntime, CreditTaskPausedError, currentCreditTask, isCatsCoCreditProvider } from './credit-task-runtime';
+import { CreditTaskRuntime, CreditTaskPausedError, currentCreditTask, isCatsCoCreditProvider, isManualCreditResume } from './credit-task-runtime';
 import type { SessionInputMetadata } from '../utils/session-log-schema';
 import { Message } from '../types';
 import type {
@@ -750,6 +750,10 @@ export class AgentSession {
     resumeTask?: CreditTaskRuntime,
   ): Promise<HandleMessageResult> {
     const config = this.services.aiService.getConfig?.() ?? {};
+    if (this.creditTask?.snapshot.state === 'paused' && this.creditTask.snapshot.manualResumeGuard
+      && (!resumeTask || !isCatsCoCreditProvider(config))) {
+      return { text: this.creditTask.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
+    }
     if (!isCatsCoCreditProvider(config)) {
       return this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse);
     }
@@ -778,9 +782,12 @@ export class AgentSession {
     this.creditTurnInFlight = true;
     this.interruptRequested = false;
     const admissionGeneration = this.lifecycleGeneration;
-    return task.run(async () => {
+    const execute = async (): Promise<HandleMessageResult> => {
       try {
         if (resumeTask) {
+          if (task.snapshot.manualResumeGuard === 'budget' && !isManualCreditResume(this.key)) {
+            throw task.pause('原任务的预算检查不可用，请检查原模型和会话状态');
+          }
           await task.resume();
           if (this.checkpointBlockedReason && !await this.resumeCheckpoint()) {
             throw task.pause('检查点尚未恢复，请稍后手动执行 /resume');
@@ -808,7 +815,11 @@ export class AgentSession {
         return { text: error instanceof CreditTaskPausedError ? error.message : String((error as Error).message || error),
           visibleToUser: true, taskOutcome: 'failed' };
       } finally { this.creditTurnInFlight = false; }
-    });
+    };
+    return task.run(() => resumeTask && !this.checkpointBlockedReason
+      && config.model === 'deepseek-flash' && config.openaiApiMode === 'responses'
+      ? task.runManualResume(this.key, this.messages.length ? this.messages : this.lifecycleManager.loadContextForResume(), execute)
+      : execute());
   }
 
   private async executeInput(
@@ -1641,6 +1652,7 @@ export class AgentSession {
     promptOverheadTokens = 0,
     finalizeOnly = false,
   ): Promise<Message[]> {
+    if (isManualCreditResume(this.key)) return messages;
     const messagesBeforeCompaction = stripAssistantArtifactsFromMessages(messages);
     const getBoundaryUsage = (candidateMessages: Message[]) => this.getContextUsageInfo(
       candidateMessages,
@@ -2178,6 +2190,7 @@ export class AgentSession {
     force = false,
     toolTokens = this.getToolDefinitionTokens(),
   ): Promise<{ messages: Message[]; compacted: boolean }> {
+    if (isManualCreditResume(this.key)) return { messages, compacted: false };
     // Restore/history hydration is not a user goal. Defer paid compaction until admission.
     if (phase === 'restore' && !currentCreditTask()
       && isCatsCoCreditProvider(this.services.aiService.getConfig?.() ?? {})) {

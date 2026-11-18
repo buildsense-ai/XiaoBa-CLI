@@ -1,4 +1,4 @@
-import { checkCreditTask, currentCreditTask, CreditTaskPausedError, isCatsCoCreditProvider } from '../core/credit-task-runtime';
+import { checkCreditTask, currentCreditTask, CreditTaskPausedError, isCatsCoCreditProvider, creditAccountingHeaderFailures, CREDIT_ACCOUNTING_PAUSE } from '../core/credit-task-runtime';
 import { Message, ChatConfig, ChatResponse } from '../types';
 import { ConfigManager } from './config';
 import { ToolDefinition } from '../types/tool';
@@ -502,7 +502,8 @@ export class AIService {
         const root = currentCreditTask();
         if (root?.snapshot.enabled === true && isCatsCoCreditProvider(this.config)
           && [402, 409].includes(this.extractStatus(error) ?? 0)) {
-          error = root.pause('额度或模型权限不足，需手动恢复');
+          error = root.pause(creditAccountingHeaderFailures.has(error)
+            ? CREDIT_ACCOUNTING_PAUSE : '模型请求的额度或权限门禁未通过，需手动恢复');
         }
         if (this.isAbortError(error) || signal?.aborted) {
           const policy = this.resolveRetryPolicy(error, retryProfile);

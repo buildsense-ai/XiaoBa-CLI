@@ -1,5 +1,6 @@
-import { checkCreditTask } from './credit-task-runtime';
+import { budgetedCreditResumeResponses, checkCreditTask, currentCreditTask, isManualCreditResume } from './credit-task-runtime';
 import { randomUUID } from 'crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { SessionTranscriptEvent } from '../utils/session-log-schema';
 import { sessionTranscriptContent, sessionToolTranscriptContent } from '../utils/session-transcript-content';
 import { setTimeout as abortableDelay } from 'node:timers/promises';
@@ -88,6 +89,11 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 
 function normalizeToolName(name: string): string {
   return TOOL_NAME_ALIASES[name] ?? name;
+}
+
+function sameToolArguments(a: string, b: string): boolean {
+  try { return isDeepStrictEqual(JSON.parse(a), JSON.parse(b)); }
+  catch { return a === b; }
 }
 
 const MIN_MESSAGE_BUDGET = 2000;
@@ -479,6 +485,7 @@ export class ConversationRunner {
         };
       }
       this.injectSyntheticObservations(messages, turns, newMessages);
+      const manualCreditResume = isManualCreditResume(this.toolExecutionContext?.sessionId);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);
       if (this.onCheckpointCandidateBoundary) {
@@ -490,7 +497,7 @@ export class ConversationRunner {
       }
       // Includes the incoming root/pending input, which was not yet present in
       // AgentSession's pre-turn check. Compact before mechanical budget trimming.
-      await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
+      if (!manualCreditResume) await this.compactMidTurnIfNeeded(messages, requestTools, turns, callbacks);
       if (requestTools.length < activeTools.length && !notifiedToolBudgetDisabled) {
         notifiedToolBudgetDisabled = true;
         if (callbacks?.onThinking) {
@@ -562,6 +569,7 @@ export class ConversationRunner {
       const needsPromptOverheadCompaction = this.checkpointCompactionCoordinator
         ?.needsCompaction;
       if (
+        !manualCreditResume &&
         promptOverheadTokens > 0
         && typeof needsPromptOverheadCompaction === 'function'
         && needsPromptOverheadCompaction.call(
@@ -594,6 +602,9 @@ export class ConversationRunner {
       if (promptTrimmed && callbacks?.onThinking) {
         await callbacks.onThinking(PROMPT_BUDGET_TRIM_MESSAGE);
       }
+      if (manualCreditResume && (promptTrimmed || requestTools.length < activeTools.length)) {
+        throw currentCreditTask()!.pause('恢复请求无法完整保留必要上下文，需手动检查原任务');
+      }
       this.logProviderMessagesForDebug(requestMessages, requestTools, turns);
       this.runObservation(() => this.promptTraceLogger.recordRequest(turns, requestMessages, requestTools));
       const aiStartTime = Date.now();
@@ -602,6 +613,24 @@ export class ConversationRunner {
       let response: ChatResponse;
       try {
         response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
+        if (budgetedCreditResumeResponses.has(response)) {
+          const savedCalls = messages.flatMap(message => message.tool_calls ?? []);
+          if (response.toolCalls?.some(call => savedCalls.some(prior => prior.id === call.id || (
+            normalizeToolName(prior.function.name) === normalizeToolName(call.function.name)
+            && sameToolArguments(prior.function.arguments, call.function.arguments)
+          )))) throw currentCreditTask()!.pause('恢复请求重复了已保存的工具调用，未执行');
+          // A shorter view cannot prove a new-looking call is not a repeated side effect.
+          if (response.toolCalls?.length) {
+            throw currentCreditTask()!.pause('缩减上下文的恢复请求不能确认新工具调用安全，未执行');
+          }
+          const text = response.content || '';
+          if (restoreProviderReplayToolCalls(text, this.buildRestorableReplayToolNameSet(requestTools)).toolCalls.length) {
+            throw currentCreditTask()!.pause('恢复请求返回了文本形式的工具回放，未执行');
+          }
+          if (!stripAssistantTranscriptArtifacts(text).trim()) {
+            throw currentCreditTask()!.pause('恢复请求未返回可用文本，需手动检查原任务');
+          }
+        }
       } catch (error: any) {
         this.observeTranscript({ type: 'model_failed', model_call: turns, error_name: error?.name || 'Error' });
         this.runObservation(() => this.promptTraceLogger.recordError(turns, error));
@@ -663,7 +692,7 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
         const observeProviderPromptUsage = this.checkpointCompactionCoordinator
           ?.observeProviderPromptUsage;
-        if (typeof observeProviderPromptUsage === 'function') {
+        if (typeof observeProviderPromptUsage === 'function' && !budgetedCreditResumeResponses.has(response)) {
           observeProviderPromptUsage.call(
             this.checkpointCompactionCoordinator,
             response.usage.promptTokens,
