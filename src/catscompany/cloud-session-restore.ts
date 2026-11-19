@@ -8,6 +8,7 @@ import {
 } from '../core/checkpoint-compaction';
 import { estimateMessagesTokens } from '../core/token-estimator';
 import { formatSpeakerLabel } from './speaker-label';
+import { findLastAppliedClearBoundaryIndex } from './agent-context-history';
 import type {
   CatsAgentContextMessage,
   CatsAgentContextPage,
@@ -118,7 +119,7 @@ export class CatsCompanyCloudSessionRestorer {
   }> {
     let beforeId = request.currentSeq;
     let fetchedMessages = 0;
-    let rawMessages: CatsAgentContextMessage[] = [];
+    let collected: CatsAgentContextMessage[] = [];
     const seenMessageIds = new Set<number>();
 
     for (;;) {
@@ -138,12 +139,16 @@ export class CatsCompanyCloudSessionRestorer {
           seenMessageIds.add(id);
           return true;
         });
-      const clearBoundaryIndex = findLastClearBoundaryIndex(orderedPage, request);
-      const pageMessages = clearBoundaryIndex >= 0
-        ? orderedPage.slice(clearBoundaryIndex + 1)
-        : orderedPage;
-      rawMessages = [...pageMessages, ...rawMessages];
-      if (clearBoundaryIndex >= 0 || !page.has_more) break;
+      // 判定 /clear 是否真的生效，要看本 Agent 在命令之后发出的回复，而回复永远比命令
+      // 新；所以分页往回翻时不能只看当前这一页，必须在已拉取的整个窗口上判定。
+      const window = [...orderedPage, ...collected];
+      const clearBoundaryIndex = findLastAppliedClearBoundaryIndex(window, request.topicType, request.agentId);
+      if (clearBoundaryIndex >= 0) {
+        collected = window.slice(clearBoundaryIndex + 1);
+        break;
+      }
+      collected = window;
+      if (!page.has_more) break;
       if (page.next_before_id <= 0 || page.next_before_id >= beforeId) {
         throw new Error(`agent context pagination did not advance: ${page.next_before_id}`);
       }
@@ -152,7 +157,7 @@ export class CatsCompanyCloudSessionRestorer {
     }
 
     const messages = coalesceAssistantSegments(normalizeAgentContextMessages(
-      [...rawMessages].sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right)),
+      [...collected].sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right)),
       request,
     ));
     return { messages, fetchedMessages };
@@ -283,28 +288,6 @@ function normalizedAgentContextRole(
     return message.context_role;
   }
   return undefined;
-}
-
-function findLastClearBoundaryIndex(
-  messages: CatsAgentContextMessage[],
-  request: Pick<CloudSessionRestoreRequest, 'agentId' | 'topicType'>,
-): number {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    const clearReasonMatches = request.topicType === 'group'
-      ? message.context_reason === 'group_message_targets_agent'
-      : message.context_reason === undefined || message.context_reason === 'participant_message';
-    if (
-      message.context_eligible === true
-      && message.context_role === 'user'
-      && normalizeUID(message.agent_id || message.agent_uid) === normalizeUID(request.agentId)
-      && clearReasonMatches
-      && /^\/clear(?:\s|$)/i.test(cloudMessageText(message))
-    ) {
-      return index;
-    }
-  }
-  return -1;
 }
 
 function agentContextMessageSeq(message: CatsAgentContextMessage): number {

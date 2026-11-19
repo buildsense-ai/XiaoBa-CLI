@@ -208,9 +208,11 @@ test('clear fences an older restore before awaiting its own provenance lookup', 
   await started;
   const clear = h.bot.onMessage({ ...input, text: '/clear', content: '/clear', seq: 11 });
   finishRestore({ status: 'empty' });
-  await oldInput;
+  await new Promise<void>(resolve => setImmediate(resolve));
   const createsBeforeClear = h.creates();
   finishLookup();
   await clear;
+  await oldInput;
+  assert.equal(h.creates(), 1);
   assert.equal(createsBeforeClear, 0, 'older restore must not initialize or run while clear lookup is pending');
 });

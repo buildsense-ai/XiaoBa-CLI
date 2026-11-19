@@ -251,6 +251,11 @@ test('denied new task preserves pending input for manual resume and never auto-s
   assert.equal((await s.handleCommand('resume', [])).reply, 'done');
   assert.equal(f.actions.filter(a => a.action === 'start').length, 1);
   assert.ok(JSON.stringify(f.calls[0].body).includes('queued original goal'));
+  const original = SessionStore.getInstance().loadContext(s.key)
+    .find(message => message.content === 'queued original goal');
+  assert.equal(original?.role, 'user');
+  assert.equal(original?.__episodeInputKind, 'root');
+  assert.equal(original?.__runtimeObservation, undefined);
 });
 
 test('nested async scopes cannot replace root; finish waits for actual SubAgentManager children', async t => {
@@ -521,6 +526,73 @@ test('finish acknowledgement failures persist separately and retry idempotently 
   assert.deepEqual(f.actions.filter(a => a.action !== 'status').map(a => a.action), ['start', 'finish', 'finish']);
   assert.equal(SessionStore.getInstance().loadRuntimeState(first.key).creditTask!.finishPending, false);
   for (const action of f.actions) assert.equal(action.task_id, snapshot.taskId);
+});
+
+test('lost budget resume context keeps the same paused root without calling Relay or the model', async t => {
+  const f = await relay(t);
+  const config: ChatConfig = { ...f.config, model: 'deepseek-flash', openaiApiMode: 'responses', maxTokens: 24_000 };
+  const first = session(config);
+  const store = SessionStore.getInstance();
+  const root = randomUUID();
+  const pending = 'original request';
+  const history: Message[] = [
+    ...[pending, 'continue the original task'].map((content, index): Message => ({
+      role: 'user', content, __episodeId: `resume-${index}`, __episodeInputKind: 'root',
+      __runtimeObservation: true, runtimeObservationSource: 'credit_resume',
+    })),
+    { role: 'user', content: pending, __remoteContextSource: 'catscompany.agent_context' },
+  ];
+  store.saveContext(first.key, history);
+  const savedHistory = store.loadContext(first.key);
+  store.saveRuntimeState(first.key, { creditTask: { taskId: root, enabled: true, state: 'paused',
+    startSent: true, pendingInput: pending, manualResumeGuard: 'budget' } });
+  for (const spendable of [23_000_000, 1_000_000_000]) {
+    f.control.spendable = spendable;
+    const restored = session(config, first.key);
+    assert.match((await restored.handleCommand('resume', [])).reply!, /无法在保存的会话中定位原输入/);
+    assert.match((await restored.handleMessage('new request')).text, /无法在保存的会话中定位原输入/);
+    assert.deepEqual(store.loadContext(first.key), savedHistory);
+  }
+  assert.equal(f.actions.length, 0);
+  assert.equal(f.calls.length, 0);
+  const saved = store.loadRuntimeState(first.key).creditTask!;
+  assert.equal(saved.taskId, root);
+  assert.equal(saved.pendingInput, pending);
+  assert.equal(saved.state, 'paused');
+  assert.equal(saved.manualResumeGuard, 'budget');
+});
+
+test('clear keeps the paused task until explicit abandonment is acknowledged for its original root', async t => {
+  const f = await relay(t);
+  f.control.modelStatus = 402;
+  const first = session(f.config);
+  await first.handleMessage('original request');
+  const store = SessionStore.getInstance();
+  const oldRoot = store.loadRuntimeState(first.key).creditTask!.taskId;
+  const history = store.loadContext(first.key);
+  assert.ok(history?.some(message => message.content === 'original request'));
+  const actionsBefore = f.actions.length;
+  for (const args of [[], ['--all']]) {
+    assert.equal((await first.handleCommand('clear', args)).clearRefused, true);
+    assert.deepEqual(store.loadContext(first.key), history);
+  }
+  assert.equal(f.actions.length, actionsBefore);
+  f.control.finishStatus = 503;
+  assert.equal((await first.handleCommand('clear', ['--abandon'])).clearRefused, true);
+  assert.deepEqual(store.loadContext(first.key), history);
+  const saved = store.loadRuntimeState(first.key).creditTask!;
+  assert.equal(saved.finishPending, true);
+  assert.equal(saved.pendingInput, 'original request');
+  const restored = session(f.config, first.key);
+  assert.match((await restored.handleMessage('new request')).text, /结束状态尚未同步/);
+  f.control.finishStatus = 200;
+  f.control.modelStatus = 200;
+  assert.equal((await restored.handleCommand('clear', ['--all', '--abandon'])).reply, '历史已清空，文件已删除');
+  assert.equal((await restored.handleMessage('new request')).text, 'done');
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(f.actions.filter(action => action.task_id === oldRoot && action.action === 'finish').length, 2);
+  assert.equal(f.actions.filter(action => action.action === 'resume').length, 0);
+  assert.notEqual(f.calls[1].headers['x-catsco-root-task-id'], oldRoot);
 });
 
 const relayAccountingError = { error: { type: 'api_error', param: null, code: 'credit_request_failed',

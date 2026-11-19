@@ -248,7 +248,7 @@ test('the latest clear command cuts off older cloud history on every device', as
   const client = new FakeHistoryClient([
     page([
       contextMessage({ id: 4, seq_id: 4, content: 'new question' }),
-      contextMessage({ id: 5, seq_id: 5, from_uid: 42, content: 'new answer', context_role: 'assistant' }),
+      contextMessage({ id: 5, seq_id: 5, reply_to: 3, from_uid: 42, content: '历史已清空', context_role: 'assistant' }),
     ], { has_more: true, next_before_id: 4 }),
     page([
       contextMessage({ id: 1, seq_id: 1, content: 'old question' }),
@@ -270,7 +270,7 @@ test('the latest clear command cuts off older cloud history on every device', as
   assert.deepEqual(client.calls.map(call => call.beforeId), [6, 4]);
   assert.deepEqual(store.sessions.get('cleared-session')?.map(message => message.content), [
     'new question',
-    'new answer',
+    '历史已清空',
   ]);
 });
 
@@ -305,7 +305,9 @@ test('a group clear targeting the agent truncates older group history', async ()
   const store = new MemorySessionStore();
   const client = new FakeHistoryClient([
     page([
-      contextMessage({ id: 3, seq_id: 3, topic_id: 'grp_80', content: 'new discussion' }),
+      contextMessage({ id: 4, seq_id: 4, topic_id: 'grp_80', content: 'new discussion' }),
+      contextMessage({ id: 3, seq_id: 3, topic_id: 'grp_80', reply_to: 2, from_uid: 42,
+        content: '历史已清空，文件已删除', context_role: 'assistant' }),
       contextMessage({
         id: 2,
         seq_id: 2,
@@ -323,11 +325,12 @@ test('a group clear targeting the agent truncates older group history', async ()
     topicId: 'grp_80',
     topicType: 'group',
     agentId: 'usr42',
-    currentSeq: 4,
+    currentSeq: 5,
   });
 
   assert.equal(result.status, 'restored');
   assert.deepEqual(store.sessions.get('targeted-clear-group')?.map(message => message.content), [
+    '历史已清空，文件已删除',
     '[发言人: usr7]\nnew discussion',
   ]);
 });
@@ -630,4 +633,178 @@ test('an aborted cloud restore cannot recreate a session after clear', async () 
   assert.equal(result.status, 'failed');
   assert.equal(store.hasSession('cleared-during-restore'), false);
   assert.equal(store.saveCalls, 0);
+});
+
+const CLEAR_REFUSED_REPLY = '原任务尚未结束，历史已保留。可用 /resume 恢复，或确认放弃后执行 /clear --abandon。';
+
+test('a refused clear keeps the protected history on every device', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([
+      contextMessage({ id: 6, seq_id: 6, content: 'next question' }),
+    ], { has_more: true, next_before_id: 6 }),
+    page([
+      contextMessage({ id: 3, seq_id: 3, content: 'old question' }),
+      contextMessage({ id: 4, seq_id: 4, content: '/clear' }),
+      contextMessage({
+        id: 5,
+        seq_id: 5,
+        reply_to: 4,
+        from_uid: 42,
+        content: CLEAR_REFUSED_REPLY,
+        context_role: 'assistant',
+      }),
+    ], { next_before_id: 3 }),
+  ]);
+  const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+
+  const result = await restorer.restoreIfMissing({
+    sessionKey: 'refused-clear-session',
+    topicId: 'p2p_7_42',
+    topicType: 'p2p',
+    agentId: 'usr42',
+    currentSeq: 7,
+  });
+
+  assert.equal(result.status, 'restored');
+  assert.deepEqual(client.calls.map(call => call.beforeId), [7, 6]);
+  assert.deepEqual(store.sessions.get('refused-clear-session')?.map(message => message.content), [
+    'old question',
+    '/clear',
+    CLEAR_REFUSED_REPLY,
+    'next question',
+  ]);
+});
+
+test('a refusal ack found on a newer page also blocks the clear boundary', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([
+      contextMessage({
+        id: 5,
+        seq_id: 5,
+        reply_to: 4,
+        from_uid: 42,
+        content: CLEAR_REFUSED_REPLY,
+        context_role: 'assistant',
+      }),
+      contextMessage({ id: 6, seq_id: 6, content: 'next question' }),
+    ], { has_more: true, next_before_id: 5 }),
+    page([
+      contextMessage({ id: 2, seq_id: 2, content: 'old question' }),
+      contextMessage({ id: 4, seq_id: 4, content: '/clear' }),
+    ], { next_before_id: 2 }),
+  ]);
+  const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+
+  const result = await restorer.restoreIfMissing({
+    sessionKey: 'cross-page-refusal',
+    topicId: 'p2p_7_42',
+    topicType: 'p2p',
+    agentId: 'usr42',
+    currentSeq: 7,
+  });
+
+  assert.equal(result.status, 'restored');
+  assert.deepEqual(client.calls.map(call => call.beforeId), [7, 5]);
+  assert.deepEqual(store.sessions.get('cross-page-refusal')?.map(message => message.content), [
+    'old question',
+    '/clear',
+    CLEAR_REFUSED_REPLY,
+    'next question',
+  ]);
+});
+
+test('a successful clear ack still cuts older cloud history', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([
+      contextMessage({ id: 5, seq_id: 5, content: 'new question' }),
+      contextMessage({
+        id: 4,
+        seq_id: 4,
+        from_uid: 42,
+        content: '历史已清空',
+        context_role: 'assistant',
+      }),
+      contextMessage({ id: 3, seq_id: 3, content: '/clear' }),
+      contextMessage({ id: 2, seq_id: 2, content: 'old question' }),
+    ]),
+  ]);
+  const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+
+  const result = await restorer.restoreIfMissing({
+    sessionKey: 'applied-clear-session',
+    topicId: 'p2p_7_42',
+    topicType: 'p2p',
+    agentId: 'usr42',
+    currentSeq: 6,
+  });
+
+  assert.equal(result.status, 'restored');
+  assert.deepEqual(store.sessions.get('applied-clear-session')?.map(message => message.content), [
+    '历史已清空',
+    'new question',
+  ]);
+});
+
+test('another agent reply cannot resolve this agent clear command', async () => {
+  const store = new MemorySessionStore();
+  const client = new FakeHistoryClient([
+    page([
+      contextMessage({ id: 5, seq_id: 5, content: 'new question' }),
+      contextMessage({
+        id: 4,
+        seq_id: 4,
+        from_uid: 43,
+        reply_to: 3,
+        agent_uid: 43,
+        agent_id: 'usr43',
+        content: '历史已清空',
+        context_role: 'other_agent',
+        context_reason: 'other_agent_message',
+      }),
+      contextMessage({ id: 3, seq_id: 3, content: '/clear' }),
+      contextMessage({ id: 2, seq_id: 2, content: 'old question' }),
+    ]),
+  ]);
+  const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+
+  const result = await restorer.restoreIfMissing({
+    sessionKey: 'foreign-ack-session',
+    topicId: 'p2p_7_42',
+    topicType: 'p2p',
+    agentId: 'usr42',
+    currentSeq: 6,
+  });
+
+  assert.equal(result.status, 'restored');
+  // No confirmation from this Agent: preserve the history.
+  assert.deepEqual(store.sessions.get('foreign-ack-session')?.map(message => message.content), [
+    'old question',
+    '/clear',
+    'new question',
+  ]);
+});
+
+test('an unrelated reply or a persistence failure cannot confirm a clear', async () => {
+  for (const [replyTo, reply] of [
+    [1, '历史已清空'],
+    [2, '历史已在当前进程清空，但本地持久化失败，请立即重试 /clear。'],
+    [undefined, undefined],
+  ] as const) {
+    const store = new MemorySessionStore();
+    const client = new FakeHistoryClient([page([
+      contextMessage({ id: 1, seq_id: 1, content: 'protected input' }),
+      contextMessage({ id: 2, seq_id: 2, content: '/clear' }),
+      ...(reply ? [contextMessage({ id: 3, seq_id: 3, reply_to: replyTo,
+        from_uid: 42, content: reply, context_role: 'assistant' })] : []),
+    ])]);
+    const restorer = new CatsCompanyCloudSessionRestorer(client, fakeAIService, store);
+    const result = await restorer.restoreIfMissing({
+      sessionKey: 'unconfirmed-clear', topicId: 'p2p_7_42', topicType: 'p2p', agentId: 'usr42', currentSeq: 4,
+    });
+    assert.equal(result.status, 'restored');
+    assert.equal(store.sessions.get('unconfirmed-clear')?.[0]?.content, 'protected input');
+  }
 });

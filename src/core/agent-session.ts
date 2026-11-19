@@ -1,4 +1,4 @@
-import { CreditTaskRuntime, CreditTaskPausedError, currentCreditTask, isCatsCoCreditProvider, isManualCreditResume } from './credit-task-runtime';
+import { CREDIT_RESUME_INPUT_NOT_FOUND, CreditTaskRuntime, CreditTaskPausedError, currentCreditTask, findSavedCreditInput, isCatsCoCreditProvider, isManualCreditResume } from './credit-task-runtime';
 import type { SessionInputMetadata } from '../utils/session-log-schema';
 import { Message } from '../types';
 import type {
@@ -233,6 +233,7 @@ export interface HandleRuntimeObservationOptions extends HandleMessageOptions {
 export interface CommandResult {
   handled: boolean;
   reply?: string;
+  clearRefused?: true;
 }
 
 export interface HandleMessageResult {
@@ -1299,13 +1300,18 @@ export class AgentSession {
           }
           const pending = task.snapshot.pendingInput;
           const stored = this.messages.length ? this.messages : this.lifecycleManager.loadContextForResume();
-          const submitted = pending !== undefined && stored.some(message => message.role === 'user'
-            && JSON.stringify(message.content) === JSON.stringify(pending));
+          const submitted = findSavedCreditInput(stored, pending) >= 0;
+          if (task.snapshot.manualResumeGuard === 'review') return { handled: true, reply: task.pauseMessage };
+          if (!submitted && task.snapshot.manualResumeGuard === 'budget') {
+            return { handled: true, reply: task.pause(CREDIT_RESUME_INPUT_NOT_FOUND).message };
+          }
           const childProgress = task.snapshot.subagentProgress;
           const input = childProgress && Object.keys(childProgress).length
             ? `请继续原任务，保留以下子步骤已完成的工作，避免重复执行已成功的操作。\n${JSON.stringify(childProgress)}`
             : !submitted && pending != null ? pending : '请从已保存的进度继续完成原任务，不启动新目标。';
-          const result = await this.handleInput(input, { ...this.creditResumeOptions, ...resumeOptions, callbacks }, 'credit_resume', false, task);
+          const firstSubmission = !submitted && pending != null && !Object.keys(childProgress ?? {}).length;
+          const result = await this.handleInput(input, { ...this.creditResumeOptions, ...resumeOptions, callbacks },
+            firstSubmission ? 'credit_resume_first_input' : 'credit_resume', false, task);
           return { handled: true, reply: result.text };
         }
         const resumed = await this.resumeCheckpoint();
@@ -1319,6 +1325,26 @@ export class AgentSession {
 
       // /clear
       if (commandName === 'clear') {
+        const task = this.creditTask;
+        if (task && task.snapshot.enabled !== false
+          && (task.snapshot.state !== 'completed' || task.snapshot.finishPending)) {
+          const refuse = (reply: string): CommandResult => ({ handled: true, clearRefused: true, reply });
+          if (!args.includes('--abandon')) {
+            return refuse('原任务尚未结束，历史已保留。可用 /resume 恢复，或确认放弃后执行 /clear --abandon。');
+          }
+          if (this.isBusy() || SubAgentManager.getInstance().hasActiveForParent(this.key)) {
+            return refuse('原任务仍在执行或保存进度，历史已保留。请等待结束后再清空。');
+          }
+          this.creditTurnInFlight = true;
+          try {
+            await task.finish(true);
+          } catch {
+            return refuse('原任务结束状态未确认，历史已保留。请重试 /clear --abandon。');
+          } finally {
+            this.creditTurnInFlight = false;
+          }
+        }
+        this.creditResumeOptions = undefined;
         this.requestInterrupt();
         if (args.includes('--all')) {
           const persisted = this.clear();

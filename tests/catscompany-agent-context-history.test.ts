@@ -210,6 +210,17 @@ describe('CatsCompany native Feishu group context', () => {
       {
         id: 12,
         seq_id: 12,
+        reply_to: 11,
+        from_uid: 42,
+        content: '历史已清空',
+        context_eligible: true,
+        context_role: 'assistant',
+        agent_uid: 42,
+        agent_id: 'usr42',
+      },
+      {
+        id: 13,
+        seq_id: 13,
         content: '清空后的新讨论',
         context_eligible: true,
         context_role: 'user',
@@ -220,7 +231,7 @@ describe('CatsCompany native Feishu group context', () => {
       },
     ], 0);
 
-    assert.deepEqual(context, ['[发言人: 林益]\n清空后的新讨论']);
+    assert.deepEqual(context, ['历史已清空', '[发言人: 林益]\n清空后的新讨论']);
   });
 
   test('hydrates complete missed group history before processing the current trigger', async () => {

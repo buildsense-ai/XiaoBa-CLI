@@ -42,9 +42,8 @@ export function selectNativeFeishuGroupContextEntries(
   currentTriggerSeq = 0,
 ): NativeFeishuGroupContextEntry[] {
   const ordered = [...history].sort((a, b) => agentContextMessageSeq(a) - agentContextMessageSeq(b));
-  const clearBoundarySeq = ordered.reduce((latest, message) => (
-    isNativeFeishuClearBoundary(message) ? Math.max(latest, agentContextMessageSeq(message)) : latest
-  ), 0);
+  const clearBoundary = findLastAppliedClearBoundaryIndex(ordered, 'group');
+  const clearBoundarySeq = clearBoundary < 0 ? 0 : agentContextMessageSeq(ordered[clearBoundary]);
   const effectiveAfterSeq = Math.max(afterSeq, clearBoundarySeq);
   return ordered
     .filter(message => {
@@ -91,11 +90,42 @@ function normalizedContextRole(
   return undefined;
 }
 
-export function isNativeFeishuClearBoundary(message: CatsAgentContextMessage): boolean {
-  return message.context_eligible === true
-    && message.context_role === 'user'
-    && message.context_reason === 'group_message_targets_agent'
-    && /^\/clear(?:\s|$)/i.test(extractMessageText(message));
+function agentUid(value: string | number): string {
+  return String(value).trim().replace(/^usr/i, '');
+}
+
+export function findLastAppliedClearBoundaryIndex(
+  ordered: CatsAgentContextMessage[],
+  topicType: 'group' | 'p2p',
+  expectedAgent?: string,
+): number {
+  const replies = new Map<number, CatsAgentContextMessage>();
+  let nextLegacy: CatsAgentContextMessage | undefined;
+  for (let index = ordered.length - 1; index >= 0; index--) {
+    const message = ordered[index];
+    const agent = agentUid(message.agent_id || message.agent_uid);
+    if (!agent || (expectedAgent && agent !== agentUid(expectedAgent))) continue;
+    const text = extractMessageText(message);
+    if (!text || !message.context_eligible) continue;
+    if (message.context_role === 'assistant' && agent === agentUid(message.from_uid)) {
+      if (message.reply_to && !replies.has(message.reply_to)) replies.set(message.reply_to, message);
+      nextLegacy = message;
+    } else if (message.context_role === 'user') {
+      const targetsAgent = topicType === 'group'
+        ? message.context_reason === 'group_message_targets_agent'
+        : !message.context_reason || message.context_reason === 'participant_message';
+      if (targetsAgent && /^\/clear(?:\s|$)/i.test(text)) {
+        const linked = replies.get(agentContextMessageSeq(message));
+        const reply = linked ?? (nextLegacy?.reply_to ? undefined : nextLegacy);
+        if (reply && agentUid(reply.from_uid) === agent) {
+          const success = text.split(/\s+/).includes('--all') ? '历史已清空，文件已删除' : '历史已清空';
+          if (extractMessageText(reply) === success) return index;
+        }
+      }
+      nextLegacy = undefined;
+    }
+  }
+  return -1;
 }
 
 function formatParticipantMessage(message: CatsAgentContextMessage): string {
