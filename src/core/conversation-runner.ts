@@ -1,4 +1,4 @@
-import { budgetedCreditResumeResponses, checkCreditTask, currentCreditTask, isManualCreditResume } from './credit-task-runtime';
+import { checkCreditTask, currentCreditTask, isManualCreditResume } from './credit-task-runtime';
 import { randomUUID } from 'crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SessionTranscriptEvent } from '../utils/session-log-schema';
@@ -613,8 +613,7 @@ export class ConversationRunner {
       let response: ChatResponse;
       try {
         response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
-        const shortenedResume = budgetedCreditResumeResponses.has(response);
-        if (shortenedResume || (manualCreditResume && currentCreditTask()?.dispatchBilling)) {
+        if (manualCreditResume) {
           if (restoreProviderReplayToolCalls(response.content || '', this.buildRestorableReplayToolNameSet(requestTools)).toolCalls.length) {
             throw currentCreditTask()!.pause('恢复请求返回了文本形式的工具回放，未执行');
           }
@@ -623,15 +622,6 @@ export class ConversationRunner {
             normalizeToolName(prior.function.name) === normalizeToolName(call.function.name)
             && sameToolArguments(prior.function.arguments, call.function.arguments)
           )))) throw currentCreditTask()!.pause('恢复请求重复了已保存的工具调用，未执行');
-        }
-        if (shortenedResume) {
-          // A shorter view cannot prove a new-looking call is not a repeated side effect.
-          if (response.toolCalls?.length) {
-            throw currentCreditTask()!.pause('缩减上下文的恢复请求不能确认新工具调用安全，未执行');
-          }
-          if (!stripAssistantTranscriptArtifacts(response.content || '').trim()) {
-            throw currentCreditTask()!.pause('恢复请求未返回可用文本，需手动检查原任务');
-          }
         }
       } catch (error: any) {
         this.observeTranscript({ type: 'model_failed', model_call: turns, error_name: error?.name || 'Error' });
@@ -694,7 +684,7 @@ export class ConversationRunner {
         Logger.info(`[${this.sessionLabel}Turn ${turns}] AI返回 tokens: ${response.usage.promptTokens}+${response.usage.completionTokens}=${response.usage.totalTokens}`);
         const observeProviderPromptUsage = this.checkpointCompactionCoordinator
           ?.observeProviderPromptUsage;
-        if (typeof observeProviderPromptUsage === 'function' && !budgetedCreditResumeResponses.has(response)) {
+        if (typeof observeProviderPromptUsage === 'function') {
           observeProviderPromptUsage.call(
             this.checkpointCompactionCoordinator,
             response.usage.promptTokens,

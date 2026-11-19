@@ -793,8 +793,8 @@ export class AgentSession {
     const execute = async (): Promise<HandleMessageResult> => {
       try {
         if (resumeTask) {
-          if (!task.dispatchBilling && task.snapshot.manualResumeGuard === 'budget' && !isManualCreditResume(this.key)) {
-            throw task.pause('原任务的预算检查不可用，请检查原模型和会话状态');
+          if (task.snapshot.manualResumeGuard === 'budget' && !isManualCreditResume(this.key)) {
+            throw task.pause('无法校验原任务的会话上下文，请检查原模型和会话状态');
           }
           await task.resume();
           if (this.checkpointBlockedReason && !await this.resumeCheckpoint()) {

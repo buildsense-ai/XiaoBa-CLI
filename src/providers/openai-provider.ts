@@ -1,5 +1,5 @@
-import { budgetedCreditResumeResponses, CREDIT_RESUME_CONTEXT_TOO_LARGE, CREDIT_RESUME_INPUT_NOT_FOUND,
-  creditAccountingHeaderFailures, creditTaskHeaders, findSavedCreditInput, takeManualCreditResumeBudget } from '../core/credit-task-runtime';
+import { CREDIT_RESUME_INPUT_NOT_FOUND, creditAccountingHeaderFailures, creditTaskHeaders,
+  findSavedCreditInput, takeManualCreditResume } from '../core/credit-task-runtime';
 import { isDeepStrictEqual } from 'node:util';
 import axios from 'axios';
 import { createHash } from 'crypto';
@@ -35,10 +35,6 @@ const MAX_RESPONSES_HEADERS_TIMEOUT_MS = 10 * 60 * 1000;
 // gets 630s; the client must leave room for the final response/error to arrive.
 const CATS_RELAY_RESPONSES_TIMEOUT_MS = 660_000;
 const MAX_RESPONSES_STREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
-// Relay pricing catalog v5: maximum DeepSeek Flash rate across tiers/periods.
-const FLASH_RESERVE_UNITS_PER_TOKEN = 1512;
-const RESUME_MAX_OUTPUT_TOKENS = 4096;
-const RESUME_WIRE_HEADROOM_BYTES = 4096;
 
 type ResponsesFailurePhase = 'headers' | 'stream' | 'terminal_event';
 
@@ -296,8 +292,8 @@ export class OpenAIProvider implements AIProvider {
    */
   async chat(messages: Message[], tools?: ToolDefinition[], options?: AIRequestOptions): Promise<ChatResponse> {
     if (this.openaiApiMode === 'responses') {
-      return this.withResponsesResumeBudget(messages, tools, false, options,
-        (body, bounded) => this.chatResponses(messages, tools, options, body, bounded));
+      return this.withResponsesResumeContext(messages, tools, false, options,
+        body => this.chatResponses(messages, tools, options, body));
     }
     const body = this.buildRequestBody(messages, tools, false);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
@@ -344,8 +340,8 @@ export class OpenAIProvider implements AIProvider {
     options?: AIRequestOptions,
   ): Promise<ChatResponse> {
     if (this.openaiApiMode === 'responses') {
-      return this.withResponsesResumeBudget(messages, tools, true, options,
-        (body, wire) => this.chatStreamResponses(messages, tools, wire ? undefined : callbacks, options, body, wire));
+      return this.withResponsesResumeContext(messages, tools, true, options,
+        body => this.chatStreamResponses(messages, tools, callbacks, options, body));
     }
     const body = this.buildRequestBody(messages, tools, true);
 
@@ -1314,182 +1310,30 @@ export class OpenAIProvider implements AIProvider {
     return isDeepStrictEqual(expected, actual);
   }
 
-  private closedResumeEpisode(messages: Message[]): boolean {
-    const first = messages[0];
-    const last = messages[messages.length - 1];
-    if (first.role !== 'user' || first.__episodeInputKind !== 'root'
-      || last?.role !== 'assistant' || last.tool_calls?.length || typeof last.content !== 'string'
-      || !last.content.trim()) return false;
-    const calls = new Set<string>();
-    const outstanding = new Set<string>();
-    for (const message of messages) {
-      if (message.__checkpointSummary || message.__checkpointBoundary || message.__runtimeObservation
-        || this.isTurnDeltaMessage(message) || message.role === 'system'
-        || (message !== first && message.role === 'user' && message.__episodeInputKind !== 'pending')) return false;
-      if (message.role === 'tool') {
-        if (!message.tool_call_id || !outstanding.delete(message.tool_call_id)) return false;
-        continue;
-      }
-      if (outstanding.size) return false;
-      for (const call of message.tool_calls ?? []) {
-        if (message.role !== 'assistant' || !call.id || calls.has(call.id)) return false;
-        calls.add(call.id);
-        outstanding.add(call.id);
-      }
-    }
-    return outstanding.size === 0;
-  }
-
-  private async withResponsesResumeBudget(
+  private async withResponsesResumeContext(
     messages: Message[], tools: ToolDefinition[] | undefined, stream: boolean, options: AIRequestOptions | undefined,
-    invoke: (body?: any, wire?: Buffer) => Promise<ChatResponse>,
+    invoke: (body?: any) => Promise<ChatResponse>,
   ): Promise<ChatResponse> {
     const cache = options?.promptCacheContext;
     const credit = this.model === 'deepseek-flash' && cache?.phase === 'normal'
       && Boolean(creditTaskHeaders(this.apiUrl)['X-CatsCo-Root-Task-ID']);
     if (!credit) return invoke();
-    const budget = takeManualCreditResumeBudget(this.responsesUrl, cache!.sessionKey, this.apiKey);
-    const bytes = (body: any) => Buffer.byteLength(JSON.stringify(body), 'utf8');
+    const resume = takeManualCreditResume(this.responsesUrl, cache.sessionKey);
     let body: any;
-    let wire: Buffer | undefined;
-    if (budget?.dispatchBilling) {
-      if (findSavedCreditInput(messages, budget.pendingInput) < 0) {
-        throw budget.keepPaused(CREDIT_RESUME_INPUT_NOT_FOUND);
+    if (resume) {
+      if (findSavedCreditInput(messages, resume.pendingInput) < 0) {
+        throw resume.keepPaused(CREDIT_RESUME_INPUT_NOT_FOUND);
       }
       body = this.buildResponsesRequestBody(messages, tools, stream, options);
-      if (!this.preservesSavedResponsesTools(budget.toolHistory, body.input)) {
-        throw budget.keepPaused('恢复请求无法完整保留工具结果，需手动检查原任务');
-      }
-    } else if (budget) {
-      const spendable = budget.spendableUnits;
-      if (spendable === undefined || spendable <= 0) throw budget.keepPaused();
-      body = this.buildResponsesRequestBody(messages, tools, stream, options);
-      const originalBytes = bytes(body);
-      const originalOutput = body.max_output_tokens;
-      if (originalBytes + originalOutput > Math.floor(spendable / FLASH_RESERVE_UNITS_PER_TOKEN)) {
-        const output = Math.min(originalOutput, RESUME_MAX_OUTPUT_TOKENS);
-        // Leave 10% of the spendable balance plus fixed space for Relay normalization.
-        const cap = Math.floor(spendable * 0.9 / FLASH_RESERVE_UNITS_PER_TOKEN) - output - RESUME_WIRE_HEADROOM_BYTES;
-        if (cap <= 0) throw budget.keepPaused();
-        const pendingIndex = findSavedCreditInput(messages, budget.pendingInput);
-        if (pendingIndex < 0) throw budget.keepPaused(CREDIT_RESUME_INPUT_NOT_FOUND);
-        const root = messages[pendingIndex];
-        const anchored = Boolean(root.__episodeId && root.__episodeInputKind === 'root');
-        // Legacy histories without episode boundaries only allow removing plain text pairs.
-        const plain = (message: Message) => typeof message.content === 'string'
-          && Object.entries(message).every(([key, value]) => value === undefined
-            || ['role', 'content', '__episodeId', '__episodeInputKind'].includes(key));
-        const episodeCounts = new Map<string, number>();
-        for (const { __episodeId: id } of messages) {
-          if (id) episodeCounts.set(id, (episodeCounts.get(id) ?? 0) + 1);
-        }
-        const dropped = new Set<number>();
-        let estimatedBytes = originalBytes;
-        for (let i = 0; estimatedBytes > cap && i + 1 < pendingIndex; i++) {
-          const user = messages[i];
-          const assistant = messages[i + 1];
-          const next = messages[i + 2];
-          if (user.role !== 'user' || assistant.role !== 'assistant'
-            || !plain(user) || !plain(assistant) || user.__episodeInputKind === 'pending'
-            || user.__episodeId !== assistant.__episodeId
-            || (user.__episodeId && (episodeCounts.get(user.__episodeId) !== 2 || next.__episodeId === user.__episodeId))
-            || next.role !== 'user' || (next.__episodeInputKind === 'pending' && i + 2 !== pendingIndex)
-            || this.isTurnDeltaMessage(next) || next.__checkpointSummary || next.__runtimeObservation) continue;
-          dropped.add(i);
-          dropped.add(++i);
-          estimatedBytes -= bytes(this.convertResponsesMessages([user, assistant]));
-        }
-        let expectedTools = budget.toolHistory;
-        const rebuild = (view: Message[]) => {
-          const candidate = this.buildResponsesRequestBody(view, tools, stream, options);
-          candidate.max_output_tokens = output;
-          return candidate;
-        };
-        body = rebuild(messages.filter((_, i) => !dropped.has(i)));
-        const checkpoint = messages.slice(0, pendingIndex).find(message => message.__checkpointSummary);
-        if (bytes(body) > cap && anchored && checkpoint) {
-          const toolIdCounts = new Map<string, number>();
-          for (const message of messages) {
-            const ids = message.role === 'tool' ? [message.tool_call_id] : message.tool_calls?.map(call => call.id) ?? [];
-            for (const id of ids) if (id) toolIdCounts.set(id, (toolIdCounts.get(id) ?? 0) + 1);
-          }
-          // Only drop complete, separately marked older episodes from this one request.
-          const omittedCalls = new Set<string>();
-          for (let start = 0; start < pendingIndex;) {
-            const id = messages[start].__episodeId;
-            let end = start + 1;
-            while (id && end < pendingIndex && messages[end].__episodeId === id) end++;
-            const episode = messages.slice(start, end);
-            const calls = episode.flatMap(message => message.tool_calls ?? []);
-            if (id && id !== root.__episodeId && episodeCounts.get(id) === episode.length
-              && calls.every(call => toolIdCounts.get(call.id) === 2) && this.closedResumeEpisode(episode)) {
-              for (let i = start; i < end; i++) dropped.add(i);
-              for (const call of calls) omittedCalls.add(call.id);
-            }
-            start = end;
-          }
-          expectedTools = budget.toolHistory.filter(message => message.role === 'tool'
-            ? !omittedCalls.has(message.tool_call_id ?? '')
-            : !message.tool_calls?.every(call => omittedCalls.has(call.id)));
-          body = rebuild(messages.filter((_, i) => !dropped.has(i)));
-          if (bytes(body) > cap && checkpoint.__episodeId && checkpoint.__episodeId !== root.__episodeId) {
-            const excerptById = new Map<string, string>();
-            const checkpointCalls = new Set(messages.slice(0, pendingIndex)
-              .filter(message => message.__episodeId === checkpoint.__episodeId)
-              .flatMap(message => (message.tool_calls ?? []).map(call => call.id)));
-            for (const message of messages.slice(0, pendingIndex)) {
-              const id = message.tool_call_id;
-              if (message.role !== 'tool' || message.__episodeId !== checkpoint.__episodeId
-                || !id || !checkpointCalls.has(id) || toolIdCounts.get(id) !== 2
-                || typeof message.content !== 'string' || Buffer.byteLength(message.content) <= 256) continue;
-              const excerpt = Array.from(message.content.slice(0, 128)).slice(0, 32).join('');
-              excerptById.set(id, `${excerpt}\n[Historical result excerpt. Full result retained in the saved session.]`);
-            }
-            const excerptResult = (message: Message): Message => {
-              const excerpt = message.role === 'tool' ? excerptById.get(message.tool_call_id ?? '') : undefined;
-              return excerpt === undefined ? message : { ...message, content: excerpt };
-            };
-            expectedTools = expectedTools.map(excerptResult);
-            const view = messages.flatMap((message, index) => {
-              if (dropped.has(index)) return [];
-              if (index < pendingIndex && message.__episodeId === checkpoint.__episodeId
-                && message.role === 'assistant' && message.tool_calls?.length
-                && message.tool_calls.every(call => excerptById.has(call.id))
-                && typeof message.content === 'string' && Buffer.byteLength(message.content) > 256) {
-                const excerpt = Array.from(message.content.slice(0, 128)).slice(0, 32).join('');
-                return [{ ...message, content: `${excerpt}\n[Historical tool commentary excerpt.]` }];
-              }
-              return [excerptResult(message)];
-            });
-            body = rebuild(view);
-            // The bounded recovery path only accepts a final text answer. Sending
-            // current tool definitions here would reserve budget for unusable actions.
-            delete body.tools;
-            delete body.tool_choice;
-          }
-          body.instructions = `${body.instructions || ''}\n\nCompleted historical episodes may be omitted or excerpted for this recovery. Answer the saved active input using the retained evidence. Do not repeat historical actions or assume details that are missing.`;
-        }
-        // Compare against the saved exchanges so request normalization cannot silently drop a retained result.
-        if (!this.preservesSavedResponsesTools(expectedTools, body.input)) throw budget.keepPaused();
-        wire = Buffer.from(JSON.stringify(body), 'utf8');
-        if (wire.length > cap || wire.length + output >= originalBytes + originalOutput) {
-          throw budget.keepPaused(CREDIT_RESUME_CONTEXT_TOO_LARGE);
-        }
-        budget.beginBoundedAttempt();
+      if (!this.preservesSavedResponsesTools(resume.toolHistory, body.input)) {
+        throw resume.keepPaused('恢复请求无法完整保留工具结果，需手动检查原任务');
       }
     }
     try {
-      const result = await invoke(body, wire);
-      if (wire) {
-        // Incomplete/empty responses cannot fall back to a larger request.
-        if (!['completed', 'tool_calls'].includes(result.stopReason ?? '')
-          || (!result.content?.trim() && !result.toolCalls?.length)) throw new Error('Unusable bounded Responses result');
-        budgetedCreditResumeResponses.add(result);
-      }
-      return result;
+      return await invoke(body);
     } catch (error: any) {
-      if (wire) throw budget!.stopAttempt();
       if (options?.signal?.aborted || isProviderAbortError(error)) throw error;
+      if (error?.failurePhase === 'stream' || error?.failurePhase === 'terminal_event') resume?.requireReview();
       const details = error?.response?.data?.error;
       if (error?.response?.status === 402 && details?.type === 'api_error' && details.param === null
         && details.code === 'credit_request_failed' && details.message === 'credit request could not be accounted') {
@@ -1504,7 +1348,6 @@ export class OpenAIProvider implements AIProvider {
     tools?: ToolDefinition[],
     options?: AIRequestOptions,
     preparedBody?: any,
-    wire?: Buffer,
   ): Promise<ChatResponse> {
     let body = preparedBody ?? this.buildResponsesRequestBody(messages, tools, false, options);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
@@ -1516,10 +1359,10 @@ export class OpenAIProvider implements AIProvider {
     let response;
     try {
       response = await this.postProviderRequest(
-        this.responsesUrl, wire ?? body, false, options, requestHeaders, Boolean(wire),
+        this.responsesUrl, body, false, options, requestHeaders,
       );
     } catch (error) {
-      if (wire || !this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
+      if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
       this.responsesExplicitAnchorSupported = false;
       Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying once without it.');
       body = this.buildResponsesRequestBody(messages, tools, false, options, true);
@@ -1556,7 +1399,6 @@ export class OpenAIProvider implements AIProvider {
     callbacks?: StreamCallbacks,
     options?: AIRequestOptions,
     preparedBody?: any,
-    wire?: Buffer,
   ): Promise<ChatResponse> {
     let body = preparedBody ?? this.buildResponsesRequestBody(messages, tools, true, options);
     ContextDebugLogger.dumpSdkBoundary('before', undefined, {
@@ -1568,10 +1410,10 @@ export class OpenAIProvider implements AIProvider {
     let response: Awaited<ReturnType<typeof this.postProviderRequest>>;
     try {
       response = await this.postProviderRequest(
-        this.responsesUrl, wire ?? body, true, options, requestHeaders, Boolean(wire),
+        this.responsesUrl, body, true, options, requestHeaders,
       );
     } catch (error) {
-      if (wire || !this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
+      if (!this.shouldRetryWithoutExplicitAnchor(error, body)) throw error;
       this.responsesExplicitAnchorSupported = false;
       Logger.warning('Responses endpoint rejected the explicit S cache anchor; retrying stream once without it.');
       body = this.buildResponsesRequestBody(messages, tools, true, options, true);
@@ -1617,7 +1459,7 @@ export class OpenAIProvider implements AIProvider {
         if (settled) return;
         cleanup();
         if (
-          !wire && !streamedVisibleText
+          !streamedVisibleText
           && !outputItems.some(Boolean)
           && this.shouldRetryWithoutExplicitAnchor(error, body)
         ) {
@@ -1818,7 +1660,6 @@ export class OpenAIProvider implements AIProvider {
     stream: boolean,
     options?: AIRequestOptions,
     headers: Record<string, string> = this.headers,
-    bounded = false,
   ): Promise<any> {
     const headersTimeoutMs = url === this.responsesUrl && (stream || isCatsRelayApiBase(url))
       ? this.responsesHeadersTimeoutMs()
@@ -1841,7 +1682,6 @@ export class OpenAIProvider implements AIProvider {
     try {
       return await axios.post(url, body, {
         headers,
-        ...(bounded ? { maxRedirects: 0, transformRequest: [(data: Buffer) => data] } : {}),
         ...(stream ? { responseType: 'stream' as const } : {}),
         signal: watchdogController?.signal ?? options?.signal,
       });
