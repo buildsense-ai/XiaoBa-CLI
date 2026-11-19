@@ -37,6 +37,8 @@ export const isCatsCoCreditProvider = (config: Partial<ChatConfig>): boolean =>
 // opting into a fresh budget check during explicit /resume, not as a diagnosis.
 export const LEGACY_CREDIT_GATE_PAUSE = '额度或模型权限不足，需手动恢复';
 export const CREDIT_ACCOUNTING_PAUSE = 'Relay 点数账务未通过，需手动恢复';
+export const CREDIT_RESUME_INPUT_NOT_FOUND = '无法在保存的会话中定位原输入';
+export const CREDIT_RESUME_CONTEXT_TOO_LARGE = '保留原任务所需的上下文后，本次恢复仍超过可预留点数';
 const manualBudgetScope = new AsyncLocalStorage<{
   task: CreditTaskRuntime;
   sessionKey: string;
@@ -60,7 +62,7 @@ export function takeManualCreditResumeBudget(apiUrl: string, sessionKey: string,
     pendingInput: resume.pendingInput,
     toolHistory: resume.toolHistory,
     spendableUnits: resume.task.manualResumeSpendableUnits(apiKey),
-    keepPaused: () => resume.task.pause(resume.reason),
+    keepPaused: (reason = resume.reason) => resume.task.pause(reason),
     beginBoundedAttempt: () => resume.task.requireManualResumeReview(),
     stopAttempt: () => resume.task.pause('恢复请求未安全完成，需手动检查原任务'),
   };
@@ -138,6 +140,9 @@ export class CreditTaskRuntime {
     const retained = this.snapshot.retainedTaskId ? ` 当前保留任务：${this.snapshot.retainedTaskId}。` : '';
     if (this.snapshot.manualResumeGuard === 'review') {
       return `任务已暂停，进度已保存（${this.snapshot.reason || '恢复结果尚未确认'}）。${retained}需人工检查原任务，/resume 不会重发。`;
+    }
+    if (this.snapshot.reason === CREDIT_RESUME_INPUT_NOT_FOUND || this.snapshot.reason === CREDIT_RESUME_CONTEXT_TOO_LARGE) {
+      return `任务已暂停，进度已保存（${this.snapshot.reason}）。${retained}`;
     }
     return `任务已暂停，进度已保存（${this.snapshot.reason || '额度或权限检查未通过'}）。${retained}请在无欠款、有可用额度且具备模型权限后手动执行 /resume。`;
   }
