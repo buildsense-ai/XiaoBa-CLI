@@ -134,9 +134,8 @@ for (const status of [404, 500, 503]) {
     const f = await relay(t);
     f.control.status = status;
     const s = session(f.config);
-    assert.match((await s.handleMessage('new goal')).text, /任务已暂停/);
+    assert.match((await s.handleMessage('new goal')).text, /Relay 任务检查失败/);
     assert.equal(f.calls.length, 0);
-    assert.equal((await s.handleMessage('try again automatically')).taskOutcome, 'failed');
     assert.deepEqual(f.actions.map(a => a.action), ['start']);
   });
 }
@@ -172,9 +171,10 @@ test('parallel original tasks use distinct roots and obey server retained select
   await Promise.all([first.start(), second.start()]);
   assert.notEqual(first.snapshot.taskId, second.snapshot.taskId);
   f.control.decide = (action, id) => action === 'status' && id === first.snapshot.taskId
-    ? { allowed: false, state: 'paused', retained_task_id: second.snapshot.taskId } : {};
+    ? { allowed: false, state: 'paused', reason: 'retained_task_other', retained_task_id: second.snapshot.taskId } : {};
   await assert.rejects(first.status(), CreditTaskPausedError);
-  assert.match(first.pauseMessage, new RegExp(second.snapshot.taskId));
+  assert.match(first.pauseMessage, /只允许已获准继续的任务/);
+  assert.equal(first.snapshot.retainedTaskId, second.snapshot.taskId);
   await second.status();
   await second.complete();
   const count = f.actions.length;
@@ -200,7 +200,7 @@ test('402 persists paused/root across restart; only manual resume passes current
   f.control.modelStatus = 402;
   const original = session(f.config);
   const paused = await original.handleMessage('original task');
-  assert.match(paused.text, /任务已暂停/);
+  assert.match(paused.text, /点数检查未通过/);
   const snapshot = SessionStore.getInstance().loadRuntimeState(original.key).creditTask!;
   assert.equal(snapshot.state, 'paused');
   assert.equal(f.calls.length, 1);
@@ -208,12 +208,12 @@ test('402 persists paused/root across restart; only manual resume passes current
   f.control.modelStatus = 200;
   const restored = session(f.config, original.key);
   restored.restoreFromStore();
-  assert.match((await restored.handleMessage('unrelated new task')).text, /任务已暂停/);
+  assert.match((await restored.handleMessage('tool dispatch', { dispatchedAsTool: true })).text, /点数检查未通过/);
   assert.equal(f.calls.length, 1);
   for (const condition of [{ debt: 5, spendable: 20, allowed: true }, { debt: 0, spendable: 0, allowed: true },
     { debt: 0, spendable: 20, allowed: false }]) {
     Object.assign(f.control, condition);
-    assert.match((await restored.handleCommand('resume', [])).reply!, /任务已暂停/);
+    assert.match((await restored.handleCommand('resume', [])).reply!, /可用点数不足/);
     assert.equal(f.calls.length, 1);
   }
   Object.assign(f.control, { debt: 0, spendable: 20, allowed: true });
@@ -232,12 +232,12 @@ test('a concurrent reserve 409 preserves the root as paused without retry or fin
   const f = await relay(t);
   f.control.modelStatus = 409;
   const original = session(f.config);
-  assert.match((await original.handleMessage('original task')).text, /任务已暂停/);
+  assert.match((await original.handleMessage('original task')).text, /点数检查未通过/);
   const snapshot = SessionStore.getInstance().loadRuntimeState(original.key).creditTask!;
   assert.equal(snapshot.state, 'paused');
   assert.equal(f.calls.length, 1);
   assert.equal(f.actions.some(a => a.action === 'finish'), false);
-  assert.match((await original.handleMessage('automatic retry')).text, /任务已暂停/);
+  assert.match((await original.handleMessage('tool dispatch', { dispatchedAsTool: true })).text, /点数检查未通过/);
   assert.equal(f.calls.length, 1);
 });
 
@@ -315,7 +315,7 @@ test('iteration gate saves successful tool progress and blocks the next model ca
       return { role: 'tool', tool_call_id: call.id, name: 'noop', content: 'durable success', ok: true };
     },
   });
-  assert.match((await s.handleMessage('multi-step goal')).text, /任务已暂停/);
+  assert.match((await s.handleMessage('multi-step goal')).text, /可用点数不足/);
   assert.equal(f.calls.length, 1);
   assert.ok(JSON.stringify(SessionStore.getInstance().loadContext(s.key)).includes('durable success'));
   assert.equal(f.actions.some(a => a.action === 'finish'), false);
@@ -368,14 +368,14 @@ test('standalone compact has admission and persists its command across a credit 
     };
   };
   installCheckpoint(first);
-  assert.match((await first.handleCommand('compact', [])).reply!, /任务已暂停/);
+  assert.match((await first.handleCommand('compact', [])).reply!, /点数检查未通过/);
   const snapshot = SessionStore.getInstance().loadRuntimeState(first.key).creditTask!;
   assert.equal(snapshot.pendingCommand, 'compact');
   assert.equal(f.actions.some(a => a.action === 'finish'), false);
   f.control.modelStatus = 200;
   const restored = session(f.config, first.key);
   installCheckpoint(restored);
-  assert.match((await restored.handleCommand('compact', [])).reply!, /任务已暂停/);
+  assert.match((await restored.handleCommand('compact', [])).reply!, /点数检查未通过/);
   assert.equal(f.calls.length, 1);
   assert.match((await restored.handleCommand('resume', [])).reply!, /无需压缩/);
   assert.equal(f.actions.filter(a => a.action === 'start').length, 1);
@@ -507,28 +507,34 @@ test('finish acknowledgement failures persist separately and retry idempotently 
     return {};
   };
   const first = session(f.config);
-  assert.match((await first.handleMessage('one original goal')).text, /结束状态尚未同步/);
+  assert.equal((await first.handleMessage('one original goal')).text, 'done');
   const snapshot = SessionStore.getInstance().loadRuntimeState(first.key).creditTask!;
   assert.equal(snapshot.state, 'completed');
   assert.equal(snapshot.finishPending, true);
   assert.equal(f.calls.length, 1);
   const restored = session(f.config, first.key);
-  assert.match((await restored.handleMessage('new goal before sync')).text, /结束状态尚未同步/);
   assert.match((await restored.handleCommand('compact', [])).reply!, /结束状态尚未同步/);
   f.control.finishStatus = 200;
   f.control.decide = (action, id) => {
     if (action === 'finish') ended.add(id);
     return action === 'finish' ? { state: 'completed', allowed: false, spendable_units: 0, debt_units: 10 } : {};
   };
+  assert.equal((await restored.handleMessage('new goal before old sync')).text, 'done');
+  assert.equal(f.calls.length, 2);
+  const nextRoot = f.calls[1].headers['x-catsco-root-task-id'];
+  assert.notEqual(nextRoot, snapshot.taskId);
+  const store = SessionStore.getInstance();
+  assert.deepEqual(store.loadRuntimeState(first.key).parkedCreditTasks, [snapshot]);
   assert.match((await restored.handleCommand('resume', [])).reply!, /结束状态已同步/);
-  assert.equal(ended.size, 1);
-  assert.equal(f.calls.length, 1);
-  assert.deepEqual(f.actions.filter(a => a.action !== 'status').map(a => a.action), ['start', 'finish', 'finish']);
-  assert.equal(SessionStore.getInstance().loadRuntimeState(first.key).creditTask!.finishPending, false);
-  for (const action of f.actions) assert.equal(action.task_id, snapshot.taskId);
+  assert.equal(ended.size, 2);
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(f.actions.filter(a => a.task_id === snapshot.taskId && a.action !== 'status').map(a => a.action),
+    ['start', 'finish', 'finish']);
+  assert.equal(store.loadRuntimeState(first.key).creditTask!.taskId, nextRoot);
+  assert.deepEqual(store.loadRuntimeState(first.key).parkedCreditTasks, []);
 });
 
-test('lost budget resume context keeps the same paused root without calling Relay or the model', async t => {
+test('lost budget resume context preserves the old checkpoint and allows new chat on a fresh root', async t => {
   const f = await relay(t);
   const config: ChatConfig = { ...f.config, model: 'deepseek-flash', openaiApiMode: 'responses', maxTokens: 24_000 };
   const first = session(config);
@@ -550,7 +556,7 @@ test('lost budget resume context keeps the same paused root without calling Rela
     f.control.spendable = spendable;
     const restored = session(config, first.key);
     assert.match((await restored.handleCommand('resume', [])).reply!, /无法在保存的会话中定位原输入/);
-    assert.match((await restored.handleMessage('new request')).text, /无法在保存的会话中定位原输入/);
+    assert.match((await restored.handleMessage('tool dispatch', { dispatchedAsTool: true })).text, /无法在保存的会话中定位原输入/);
     assert.deepEqual(store.loadContext(first.key), savedHistory);
   }
   assert.equal(f.actions.length, 0);
@@ -560,6 +566,18 @@ test('lost budget resume context keeps the same paused root without calling Rela
   assert.equal(saved.pendingInput, pending);
   assert.equal(saved.state, 'paused');
   assert.equal(saved.manualResumeGuard, 'budget');
+  const restored = session(config, first.key);
+  restored.restoreFromStore();
+  assert.equal((await restored.handleMessage('new request', { dispatchedAsTool: false })).text, 'done');
+  assert.equal(f.calls.length, 1);
+  assert.ok(f.actions.every(a => a.task_id !== root));
+  assert.ok(f.actions.some(a => a.action === 'start'));
+  assert.ok(f.actions.some(a => a.action === 'finish'));
+  assert.deepEqual(store.loadRuntimeState(first.key).parkedCreditTasks, [saved]);
+  const restarted = session(config, first.key);
+  assert.equal((await restarted.handleCommand('clear', [])).clearRefused, true);
+  assert.match((await restarted.handleCommand('resume', [])).reply!, /检查点已保留/);
+  assert.equal(f.calls.length, 1);
 });
 
 test('clear keeps the paused task until explicit abandonment is acknowledged for its original root', async t => {
@@ -584,7 +602,7 @@ test('clear keeps the paused task until explicit abandonment is acknowledged for
   assert.equal(saved.finishPending, true);
   assert.equal(saved.pendingInput, 'original request');
   const restored = session(f.config, first.key);
-  assert.match((await restored.handleMessage('new request')).text, /结束状态尚未同步/);
+  assert.match((await restored.handleMessage('tool dispatch', { dispatchedAsTool: true })).text, /结束状态尚未同步/);
   f.control.finishStatus = 200;
   f.control.modelStatus = 200;
   assert.equal((await restored.handleCommand('clear', ['--all', '--abandon'])).reply, '历史已清空，文件已删除');
@@ -715,11 +733,11 @@ for (const outcome of ['success', 'restored duplicate input', 'unpaired historic
       }
       return true;
     };
-    assert.match((await s.handleMessage('not a resume')).text, /任务已暂停/);
+    assert.match((await s.handleMessage('tool dispatch', { dispatchedAsTool: true })).text, /点数账务未通过/);
     assert.equal(f.calls.length, 0);
     if (outcome === 'gate recovers after reload') {
       f.control.allowed = false;
-      assert.match((await s.handleCommand('resume', [])).reply!, /任务已暂停/);
+      assert.match((await s.handleCommand('resume', [])).reply!, /可用点数不足/);
       assert.equal(f.calls.length, 0);
       assert.equal(store.loadRuntimeState(key).creditTask!.manualResumeGuard, 'budget');
       assert.notEqual(store.loadRuntimeState(key).creditTask!.reason, LEGACY_CREDIT_GATE_PAUSE);
@@ -728,7 +746,7 @@ for (const outcome of ['success', 'restored duplicate input', 'unpaired historic
       f.control.allowed = true;
     }
     if (outcome === 'accounting 402') {
-      assert.match((await s.handleCommand('resume', [])).reply!, /任务已暂停/);
+      assert.match((await s.handleCommand('resume', [])).reply!, /点数账务未通过/);
       assert.equal(f.calls.length, 1); // No automatic resize on the ambiguous Relay 402.
       assert.ok(f.calls[0].wireBytes >= 519 * 1024);
       assert.equal(store.loadRuntimeState(s.key).creditTask!.reason, CREDIT_ACCOUNTING_PAUSE);
@@ -750,7 +768,7 @@ for (const outcome of ['success', 'restored duplicate input', 'unpaired historic
       assert.equal(snapshot.manualResumeGuard, undefined);
       assert.equal(f.actions.filter(action => action.action === 'finish').length, 1);
     } else {
-      assert.match(reply!, /任务已暂停/);
+      assert.match(reply!, /恢复结果尚未确认|超过可预留点数|点数(?:检查|账务)未通过|恢复请求未安全完成/);
       assert.equal(snapshot.state, 'paused');
       assert.equal(snapshot.pendingInput, pending);
       if (outcome === 'repeated tool') assert.match(snapshot.reason!, /重复了已保存的工具调用/);
