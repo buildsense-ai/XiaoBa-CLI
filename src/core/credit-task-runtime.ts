@@ -161,17 +161,32 @@ export class CreditTaskRuntime {
 
   get pauseMessage(): string {
     if (this.snapshot.finishPending) return '原任务已完成，结束状态尚未同步，请手动执行 /resume 重试。';
-    const retained = this.snapshot.retainedTaskId ? ` 当前保留任务：${this.snapshot.retainedTaskId}。` : '';
-    if (this.snapshot.manualResumeGuard === 'review') {
-      return `任务已暂停，进度已保存（${this.snapshot.reason || '恢复结果尚未确认'}）。${retained}需人工检查原任务，/resume 不会重发。`;
+    if (this.snapshot.manualResumeGuard === 'review') return '原任务的恢复结果尚未确认，需检查已保存的进度，系统不会重发。';
+    switch (this.snapshot.reason) {
+      case 'quota_exhausted':
+      case '余额不足':
+        return '当前可用点数不足。';
+      case 'debt_outstanding':
+        return '账户点数有欠款，请先补足欠款。';
+      case 'entitlement_expired':
+        return '当前套餐没有可用的模型调用权益。';
+      case 'plan_tier_unavailable':
+        return '暂时无法确认套餐计费档位，请稍后再试。';
+      case 'retained_task_other':
+        return '账户当前只允许已获准继续的任务使用剩余额度。';
+      case 'task_completed':
+        return 'Relay 已结束原任务，不能继续执行其剩余步骤。';
+      case 'manual_resume_required':
+        return 'Relay 尚未批准原任务继续执行。';
+      case CREDIT_ACCOUNTING_PAUSE:
+      case LEGACY_CREDIT_GATE_PAUSE:
+      case '模型请求的额度或权限门禁未通过，需手动恢复':
+        return '本次模型调用的点数账务未通过，请稍后再试。';
+      case CREDIT_RESUME_INPUT_NOT_FOUND:
+        return '无法在保存的会话中定位原输入，原任务的检查点已保留。';
+      default:
+        return this.snapshot.reason || '本次任务状态无法确认，原进度已保留。';
     }
-    if (this.snapshot.reason === CREDIT_RESUME_INPUT_NOT_FOUND) {
-      return `任务已暂停（${this.snapshot.reason}）。${retained}恢复需要原会话历史。若确认放弃原任务，可用 /clear --abandon 后重新发送需求。`;
-    }
-    if (this.snapshot.reason === CREDIT_RESUME_CONTEXT_TOO_LARGE) {
-      return `任务已暂停，进度已保存（${this.snapshot.reason}）。${retained}`;
-    }
-    return `任务已暂停，进度已保存（${this.snapshot.reason || '额度或权限检查未通过'}）。${retained}请在无欠款、有可用额度且具备模型权限后手动执行 /resume。`;
   }
 
   persist(): void { this.save({ ...this.snapshot }); }
@@ -262,11 +277,11 @@ export class CreditTaskRuntime {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` },
         body: JSON.stringify({ action, task_id: this.snapshot.taskId }),
-        // Never follow redirects carrying the model credential to another origin.
         redirect: 'error',
         signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok) throw new Error(`Relay 任务门禁不可用 (${response.status})`);
+      }).catch(() => { throw new Error('暂时无法连接 Relay，请稍后再试。'); });
+      if ([401, 403].includes(response.status)) throw new Error('Relay 访问授权未通过，请检查模型服务配置。');
+      if (!response.ok) throw new Error(`Relay 任务检查失败（HTTP ${response.status}），请稍后再试。`);
       const decision = await response.json() as CreditTaskDecision;
       if (typeof decision.enabled !== 'boolean' || typeof decision.allowed !== 'boolean'
         || decision.task_id !== this.snapshot.taskId
@@ -283,7 +298,10 @@ export class CreditTaskRuntime {
       this.snapshot.retainedTaskId = decision.retained_task_id;
       if (decision.enabled && action !== 'finish' && (!decision.allowed || decision.state !== 'running'
         || (action === 'resume' && (decision.debt_units > 0 || decision.spendable_units <= 0)))) {
-        throw this.pause(decision.reason || '额度或模型权限不足');
+        const reason = decision.reason;
+        throw this.pause(reason && ['quota_exhausted', 'debt_outstanding', 'entitlement_expired', 'retained_task_other',
+          'task_completed', 'manual_resume_required', 'plan_tier_unavailable', '余额不足'].includes(reason)
+          ? reason : 'Relay 未确认本次任务可执行，请稍后再试。');
       }
       if (action === 'finish' && decision.enabled && decision.state !== 'completed') {
         throw new Error('Relay 尚未确认原任务结束');

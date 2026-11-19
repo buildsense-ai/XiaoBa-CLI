@@ -107,11 +107,31 @@ export class SessionLifecycleManager {
     return this.pendingRestore ?? this.sessionStore.loadContext(this.resolveExistingSessionKey() ?? this.options.sessionKey);
   }
 
+  loadParkedCreditTasks(): import('./credit-task-runtime').CreditTaskSnapshot[] {
+    return this.sessionStore.loadRuntimeState(this.options.sessionKey).parkedCreditTasks ?? [];
+  }
+
   saveCreditTask(creditTask: import('./credit-task-runtime').CreditTaskSnapshot): void {
-    const saved = this.sessionStore.saveRuntimeState(this.options.sessionKey, {
-      ...this.sessionStore.loadRuntimeState(this.options.sessionKey), creditTask,
+    const state = this.sessionStore.loadRuntimeState(this.options.sessionKey);
+    const parked = state.parkedCreditTasks;
+    const saved = this.sessionStore.saveRuntimeState(this.options.sessionKey,
+      parked?.some(task => task.taskId === creditTask.taskId) ? {
+        ...state,
+        parkedCreditTasks: parked.flatMap(task => task.taskId !== creditTask.taskId ? [task]
+          : creditTask.state === 'completed' && !creditTask.finishPending ? [] : [creditTask]),
+      } : { ...state, creditTask });
+    if (!saved) throw new Error('会话状态保存失败，本次消息未能完成。');
+  }
+
+  parkCreditTask(taskId: string): boolean {
+    const state = this.sessionStore.loadRuntimeState(this.options.sessionKey);
+    const task = state.creditTask;
+    if (task?.taskId !== taskId || (task.state !== 'paused' && !task.finishPending)) return false;
+    return this.sessionStore.saveRuntimeState(this.options.sessionKey, {
+      ...state,
+      parkedCreditTasks: [...(state.parkedCreditTasks ?? []), task],
+      creditTask: undefined,
     });
-    if (!saved) throw new Error('原任务状态保存失败，已停止后续模型调用');
   }
 
   loadCurrentDirectory(): string | undefined {

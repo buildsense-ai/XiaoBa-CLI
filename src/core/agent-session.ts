@@ -751,23 +751,30 @@ export class AgentSession {
     resumeTask?: CreditTaskRuntime,
   ): Promise<HandleMessageResult> {
     const config = this.services.aiService.getConfig?.() ?? {};
-    if (this.creditTask?.snapshot.state === 'paused' && this.creditTask.snapshot.manualResumeGuard
-      && (!resumeTask || !isCatsCoCreditProvider(config))) {
-      return { text: this.creditTask.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
-    }
-    if (!isCatsCoCreditProvider(config)) {
-      return this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse);
-    }
+    const creditProvider = isCatsCoCreditProvider(config);
+    const inherited = currentCreditTask();
+    const newUserInput = !resumeTask && !runtimeObservationSource && !inherited
+      && (callbacksOrOptions as HandleMessageOptions | undefined)?.dispatchedAsTool !== true;
     if (this.busy || this.creditTurnInFlight || this.manualCompactionInFlight) {
       return { text: BUSY_MESSAGE, visibleToUser: true };
     }
-    if (this.creditTask?.snapshot.finishPending) {
-      return { text: this.creditTask.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
+    if (newUserInput && this.checkpointBlockedReason) {
+      return this.executeInput(text, callbacksOrOptions);
     }
-    if (this.creditTask?.snapshot.state === 'paused' && !resumeTask) {
-      return { text: this.creditTask.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
+    const previous = this.creditTask;
+    if (previous && (previous.snapshot.state === 'paused' || previous.snapshot.finishPending) && !resumeTask) {
+      if (!newUserInput || SubAgentManager.getInstance().hasActiveForParent(this.key)) {
+        return { text: previous.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
+      }
+      if (!this.lifecycleManager.parkCreditTask(previous.snapshot.taskId)) {
+        return { text: '会话状态保存失败，本次消息未执行。', visibleToUser: true, taskOutcome: 'failed' };
+      }
+      this.creditTask = undefined;
+      this.creditResumeOptions = undefined;
     }
-    const inherited = currentCreditTask();
+    if (!creditProvider) {
+      return this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse);
+    }
     if (runtimeObservationSource && !resumeTask
       && (inherited?.snapshot.state === 'completed' || this.creditTask?.snapshot.state === 'completed')) {
       return { text: '', visibleToUser: false, taskOutcome: 'completed' };
@@ -804,11 +811,15 @@ export class AgentSession {
           return { text: '已停止当前请求。', visibleToUser: true, taskOutcome: 'cancelled' };
         }
         const result = await this.executeInput(text, callbacksOrOptions, runtimeObservationSource, suppressFinalResponse);
-        if (task.snapshot.state === 'paused') return { text: task.pauseMessage, visibleToUser: true, taskOutcome: 'failed' };
-        if (result.taskOutcome === 'completed' || result.taskOutcome === 'cancelled' || task.snapshot.enabled === false) {
-          if (!inherited || resumeTask) await task.complete();
-        } else {
-          throw task.pause('执行已中断，请检查后手动恢复原任务');
+        if (task.snapshot.state !== 'paused') {
+          if (result.taskOutcome === 'completed' || result.taskOutcome === 'cancelled' || task.snapshot.enabled === false) {
+            if (!inherited || resumeTask) {
+              try { await task.complete(); }
+              catch { Logger.warning('任务结束确认待同步，保留本轮回复。'); }
+            }
+          } else {
+            task.pause(result.text || '本次消息处理失败，已保留进度。');
+          }
         }
         return result;
       } catch (error) {
@@ -1291,9 +1302,8 @@ export class AgentSession {
 
       // /resume - retry a recoverable checkpoint without deleting history
       if (commandName === 'resume') {
-        if (this.busy) return { handled: true, reply: BUSY_MESSAGE };
+        if (this.busy || this.creditTurnInFlight) return { handled: true, reply: BUSY_MESSAGE };
         if (this.creditTask?.snapshot.state === 'paused') {
-          if (this.creditTurnInFlight) return { handled: true, reply: BUSY_MESSAGE };
           const task = this.creditTask;
           if (SubAgentManager.getInstance().hasActiveForParent(this.key)) {
             return { handled: true, reply: '子步骤正在保存进度，请稍后手动执行 /resume。' };
@@ -1314,6 +1324,20 @@ export class AgentSession {
             firstSubmission ? 'credit_resume_first_input' : 'credit_resume', false, task);
           return { handled: true, reply: result.text };
         }
+        const parked = this.lifecycleManager.loadParkedCreditTasks();
+        const unsettled = parked.filter(task => task.finishPending);
+        if (unsettled.length && isCatsCoCreditProvider(config)) {
+          this.creditTurnInFlight = true;
+          try {
+            for (const snapshot of unsettled) await this.createCreditTask(config, snapshot).finish();
+          } catch {
+            return { handled: true, reply: '原任务的结束状态尚未同步。' };
+          } finally { this.creditTurnInFlight = false; }
+          return { handled: true, reply: '原任务已完成，结束状态已同步。' };
+        }
+        if (parked.length && !this.checkpointBlockedReason) {
+          return { handled: true, reply: '旧任务的检查点已保留。继续对话后，无法在当前上下文安全重放旧任务。' };
+        }
         const resumed = await this.resumeCheckpoint();
         return {
           handled: true,
@@ -1325,9 +1349,11 @@ export class AgentSession {
 
       // /clear
       if (commandName === 'clear') {
-        const task = this.creditTask;
-        if (task && task.snapshot.enabled !== false
-          && (task.snapshot.state !== 'completed' || task.snapshot.finishPending)) {
+        const parked = this.lifecycleManager.loadParkedCreditTasks();
+        const active = this.creditTask;
+        const unfinished = active && active.snapshot.enabled !== false
+          && (active.snapshot.state !== 'completed' || active.snapshot.finishPending);
+        if (unfinished || parked.length) {
           const refuse = (reply: string): CommandResult => ({ handled: true, clearRefused: true, reply });
           if (!args.includes('--abandon')) {
             return refuse('原任务尚未结束，历史已保留。可用 /resume 恢复，或确认放弃后执行 /clear --abandon。');
@@ -1337,7 +1363,9 @@ export class AgentSession {
           }
           this.creditTurnInFlight = true;
           try {
-            await task.finish(true);
+            if (!isCatsCoCreditProvider(config)) return refuse('当前模型服务无法确认旧任务结束，历史已保留。');
+            if (unfinished) await active.finish(true);
+            for (const snapshot of parked) await this.createCreditTask(config, snapshot).finish(true);
           } catch {
             return refuse('原任务结束状态未确认，历史已保留。请重试 /clear --abandon。');
           } finally {
