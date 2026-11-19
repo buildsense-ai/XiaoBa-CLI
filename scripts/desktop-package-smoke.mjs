@@ -66,7 +66,8 @@ async function packageVersion(version) {
       directories: { output: path.join(scratch, version) },
       extraMetadata: { name: 'catsco-desktop-smoke', version, main: 'electron/desktop-smoke-bootstrap.cjs' },
       extraResources: [{ from: configFile, to: 'desktop-smoke.json' }],
-      nsis: { ...base.nsis, createDesktopShortcut: false, createStartMenuShortcut: false, runAfterFinish: false },
+      // NSIS can reuse an existing Start Menu link even with shortcut creation disabled.
+      nsis: { ...base.nsis, shortcutName: 'CatsCoSmoke', createDesktopShortcut: false, createStartMenuShortcut: false, runAfterFinish: false },
       mac: { ...base.mac, identity: null },
       afterSign: undefined,
   };
