@@ -48,7 +48,7 @@ test('restored Memory ignores retired pipeline limits and exposes autonomous too
   }
   assert.equal((branch as any).options.parallelToolExecution, false);
   assert.deepEqual((branch as any).buildTools().map((t: any) => t.definition.name),
-    ['memory_search', 'memory_read_turn', 'memory_neighbors', 'finish_memory_search']);
+    ['finish_memory_search']);
   const messages = await (branch as any).buildInitialMessages();
   assert.match(messages[0].content, /evidence/);
   assert.doesNotMatch(messages[0].content, /assess_memory_need|session_graph/);

@@ -62,7 +62,7 @@ Observation is event-driven. Coalesce events that arrive during a lookup, reasse
 - The main agent never waits for, polls, or calls the Branch.
 - The quality of the first answer to an explicit retrospective belongs to the main agent's recall tool.
 - No additional model call on the provider path, including topic classification.
-- The opt-in local-log lane and the text transient context lane are unchanged.
+- The Branch retrieves historical evidence exclusively from CatsLog. If CatsLog is unavailable it ends with zero findings.
 
 ## Open decisions
 

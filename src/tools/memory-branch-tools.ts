@@ -398,7 +398,7 @@ export class FinishMemorySearchTool implements Tool {
       'inject 是必填布尔值，不得省略。',
       '找到有新增价值的记忆时设置 inject:true，并必须提供支撑 summary 的 evidence。',
       '如果只找到 recent context 已覆盖的信息，或没有值得注入给主 agent 的额外记忆，设置 inject:false 并传空 evidence。',
-      '示例：有证据时 {"summary":"...","evidence":["chat/2026-08-13/demo.jsonl#1"],"inject":true}；无新增记忆时 {"summary":"No useful memory.","evidence":[],"inject":false}。',
+      '示例：有证据时 {"summary":"...","evidence":["<完整读取返回的 CatsLog ref>"],"inject":true}；无新增记忆时 {"summary":"No useful memory.","evidence":[],"inject":false}。',
       '调用成功后 branch 会立刻结束。',
     ].join(' '),
     controlMode: 'pause_turn',
@@ -473,7 +473,7 @@ export class FinishMemorySearchTool implements Tool {
       message: jsonToolError([
         error,
         `Attempt ${this.invalidAttempts}/${MEMORY_FINISH_MAX_INVALID_ATTEMPTS}. Correct format:`,
-        'publish={"summary":"...","evidence":["chat/2026-08-13/demo.jsonl#1"],"inject":true}',
+        'publish={"summary":"...","evidence":["<完整读取返回的 CatsLog ref>"],"inject":true}',
         'suppress={"summary":"No useful memory.","evidence":[],"inject":false}',
       ].join(' ')),
       retryable: true,
@@ -554,7 +554,7 @@ export class PublishMemoryFindingTool implements Tool {
       message: jsonToolError([
         error,
         `Attempt ${this.invalidAttempts}/${MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS}. Correct format:`,
-        'publish={"subject":"...","claim":"...","evidence":["chat/2026-08-13/demo.jsonl#1"],"qualification":"..."}',
+        'publish={"subject":"...","claim":"...","evidence":["<完整读取返回的 CatsLog ref>"],"qualification":"..."}',
       ].join(' ')),
       retryable: this.invalidAttempts < MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS,
     };

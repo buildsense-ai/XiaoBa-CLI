@@ -1,3 +1,4 @@
+import {fixtureBranch, fixtureRead, fixtureRef} from './helpers/catslog-projection-reference-fixture';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -46,21 +47,21 @@ async function poll(label: string, predicate: () => boolean, ms = 10_000): Promi
   }
 }
 
-function writeMemoryFixture(): { refA: string; refB: string } {
-  const dir = path.join(dataRoot, 'logs', 'sessions', 'chat', '2026-11-18');
-  fs.mkdirSync(dir, { recursive: true });
-  const turns = [
-    'The picture edit for the 60-second film was approved.',
-    'Narration was still open; the repair note says speech synthesis worked again.',
-  ];
-  fs.writeFileSync(path.join(dir, 'fixture.jsonl'), turns.map((text, index) => JSON.stringify({
-    entry_type: 'turn', turn: index + 1, timestamp: `2026-11-18T0${index + 1}:00:00Z`,
-    session_id: 'meridian', session_type: 'chat',
-    user: { text: `question ${index + 1}` }, assistant: { text, tool_calls: [] },
-    tokens: { prompt: 0, completion: 0 },
-  })).join('\n') + '\n');
-  return { refA: 'chat/2026-11-18/fixture.jsonl#1', refB: 'chat/2026-11-18/fixture.jsonl#2' };
-}
+const refs = {refA: fixtureRef('a'.repeat(64)), refB: fixtureRef('b'.repeat(64))};
+const catslogFixture = {
+  isAvailable: () => true,
+  async branch() {
+    const response = fixtureBranch(refs.refA);
+    response.branches[0].items.push({...response.branches[0].items[0], ref: refs.refB});
+    return response;
+  },
+  async readSourceMemoryProjection({projectionRef}: {projectionRef: string}) {
+    const second = projectionRef === refs.refB;
+    const response = fixtureRead((second ? 'b' : 'a').repeat(64));
+    response.projection.Document.summary = second ? 'Narration verified for delivered export.' : 'Repair report approved.';
+    return response;
+  },
+};
 
 class ScriptedAI extends AIService {
   requests: Message[][] = [];
@@ -135,7 +136,7 @@ function createSession(options: {
   key: string;
 }): AgentSession {
   const session = new AgentSession(options.key, {
-    aiService: options.mainAi,
+    aiService: options.mainAi, catslogMemory: catslogFixture,
     memoryBranch: { enabled: true, modelSource: 'catalog', aiService: options.branchAi },
     toolManager: toolManager(),
     skillManager: {
@@ -166,7 +167,7 @@ function captureRuntimeEvents(): { events: any[]; restore: () => void } {
 
 test('a completed read batch uses the next existing Branch request for its evidence decision', async t => {
   const { MemorySearchBranchSession } = await import('../src/core/memory-search-branch-session');
-  const { refA, refB } = writeMemoryFixture();
+  const { refA, refB } = refs;
   const calls: string[] = [];
   const publications: any[] = [];
   const events: any[] = [];
@@ -176,7 +177,7 @@ test('a completed read batch uses the next existing Branch request for its evide
     calls.push(last?.name ?? 'start');
     if (!step) {
       events.push({kind:'user_input',sequence:2,turn:2,text:'Does the export contain narration?'});
-      return toolCall('clip', 'memory_read_turn', { ref: refA, budget_chars: 1 });
+      return toolCall('clip', 'memory_source_read', { ref: 'ref_' + 'c'.repeat(64) });
     }
     if (step === 1) {
       assert.ok(JSON.stringify(messages).includes('Does the export contain narration?'));
@@ -184,18 +185,18 @@ test('a completed read batch uses the next existing Branch request for its evide
       return toolCall('invalid', 'publish_memory_finding', { subject:'export',claim:'approved',evidence:[refA] });
     }
     if (step === 2) {
-      assert.match(String(last?.content), /read|完整/i);
-      return toolCall('full', 'memory_read_turn', {ref:refB});
+      assert.match(String(last?.content), /read|完整|invalid canonical/i);
+      return toolCall('full', 'memory_source_read', {ref:refB});
     }
     if (step === 3) return toolCall('report', 'publish_memory_finding', {subject:'export',claim:'Narration remains open',evidence:[refB]});
     if (step === 4) return toolCall('end', 'finish_memory_search', {summary:'No more evidence',evidence:[],inject:false});
     return {content:'done',toolCalls:[],usage};
   });
-  const branch = new MemorySearchBranchSession({workingDirectory:dataRoot, aiService:ai, input:'Draft note',recentMessages:[], queue:{push:()=>true} as any,
+  const branch = new MemorySearchBranchSession({catslogMemory: catslogFixture as any, workingDirectory:dataRoot, aiService:ai, input:'Draft note',recentMessages:[], queue:{push:()=>true} as any,
     session:{inputSequence:1, originTurn:1, originTurnId:'one',scope:executionScope('usr275'),currentInputSequence:()=>2,
       takeEvents:()=>events.splice(0), heldObservations:()=>[], publish:(finding: any,_id: string,seq: number,observation: any)=>{
         assert.equal(observation.metadata.memory_branch.schema, 'catsco.memory_branch.v1');
-        assert.deepEqual(observation.metadata.deliveredLocalRefs, observation.metadata.memory_branch.read_refs.slice(-1));
+        assert.deepEqual(observation.metadata.deliveredRemoteRefs, observation.metadata.memory_branch.read_refs.slice(-1));
         publications.push({finding,seq}); return {ok:true,verifiedThroughInput:seq};
       } } as any } as any);
   await branch.run();
@@ -206,7 +207,7 @@ test('a completed read batch uses the next existing Branch request for its evide
 
 test('19:12 replay: the reply ends, the Branch keeps running and terminalizes, the follow-up is admitted immediately, A settles once', async t => {
   const relay = await startCreditRelay(t);
-  const { refA, refB } = writeMemoryFixture();
+  const { refA, refB } = refs;
   const sessionKey = `session:v2:catscompany:group:grp_7445:agent:usr1:${Date.now()}`;
   const capture = captureRuntimeEvents();
   const mainReplyGate = deferred<void>();
@@ -230,11 +231,11 @@ test('19:12 replay: the reply ends, the Branch keeps running and terminalizes, t
   const branchAi = new ScriptedAI(relay.config, async (messages) => {
     branchCall += 1;
     const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-    if (!lastTool) return toolCall('read-a', 'memory_read_turn', { ref: refA });
-    if (lastTool.name === 'memory_read_turn' && !String(lastTool.content).includes('Narration')) {
-      return toolCall('read-b', 'memory_read_turn', { ref: refB });
+    if (!lastTool) return toolCall('read-a', 'memory_source_read', { ref: refA });
+    if (lastTool.name === 'memory_source_read' && !String(lastTool.content).includes('Narration')) {
+      return toolCall('read-b', 'memory_source_read', { ref: refB });
     }
-    if (lastTool.name === 'memory_read_turn') {
+    if (lastTool.name === 'memory_source_read') {
       // Two reads are done while the main reply is still pending: this is the
       // 19:12 shape (two reads, zero injections on the first answer).
       await branchPublishGate.promise;
@@ -462,7 +463,7 @@ function controllerHarness(options: {
     sessionType: 'catscompany',
     memoryBranchStore: store,
     services: {
-      aiService: mainAi,
+      aiService: mainAi, catslogMemory: catslogFixture as any,
       memoryBranch: { enabled: true, modelSource: 'catalog', aiService: branchAi },
       toolManager: options.toolManager ?? toolManager(),
       skillManager: {
@@ -554,7 +555,7 @@ test('an observation published before the next provider request appears exactly 
 test('a held finding is reconfirmed through the Branch tool after a same-topic follow-up and only then reaches the request', async () => {
   const scope = normalizeMemoryBranchScope({ sessionKey: 'session:controller', topicId: 'grp_7445', actorUserId: 'usr1' });
   const store = new SessionMemoryBranchStore();
-  const { refA, refB } = writeMemoryFixture();
+  const { refA, refB } = refs;
   let mainTurn = 0;
   let mainCall = 0;
   const reconfirmed = deferred<void>();
@@ -573,7 +574,7 @@ test('a held finding is reconfirmed through the Branch tool after a same-topic f
     branchHandler: async (messages) => {
       branchCall += 1;
       const lastTool = [...messages].reverse().find(message => message.role === 'tool');
-      if (branchCall === 1) return toolCall('read-a', 'memory_read_turn', { ref: refA });
+      if (branchCall === 1) return toolCall('read-a', 'memory_source_read', { ref: refA });
       if (branchCall === 2) {
         return toolCall('publish-a', 'publish_memory_finding', {
           subject: 'Meridian picture edit',
@@ -699,7 +700,7 @@ test('project A to project B: B\'s request contains no A evidence; the trace sho
 test('a narrowing question retargets the next lookup to the export, and only a later inspection resolves it', async () => {
   const scope = normalizeMemoryBranchScope({ sessionKey: 'session:controller', topicId: 'grp_7445', actorUserId: 'usr1' });
   const store = new SessionMemoryBranchStore();
-  const { refA, refB } = writeMemoryFixture();
+  const { refA, refB } = refs;
   let branchCall = 0;
   let turn = 1;
   let turnTwoCalls = 0;
@@ -731,7 +732,7 @@ test('a narrowing question retargets the next lookup to the export, and only a l
       const narrowed = messages.some(message => typeof message.content === 'string'
         && message.content.toLowerCase().includes('does this export have narration'));
       if (narrowed) sawNarrowing = 'narrowed input present';
-      if (branchCall === 1) return toolCall('read-repair', 'memory_read_turn', { ref: refA });
+      if (branchCall === 1) return toolCall('read-repair', 'memory_source_read', { ref: refA });
       if (branchCall === 2) {
         return toolCall('publish-repair', 'publish_memory_finding', {
           subject: 'Speech repair report',
@@ -755,9 +756,9 @@ test('a narrowing question retargets the next lookup to the export, and only a l
         });
       }
       if (branchCall === 5) {
-        return toolCall('search-export', 'memory_search', { keywords: ['export', 'narration'] });
+        return toolCall('search-export', 'memory_remote_search', { keywords: ['export'] });
       }
-      if (branchCall === 6) return toolCall('read-export', 'memory_read_turn', { ref: refB });
+      if (branchCall === 6) return toolCall('read-export', 'memory_source_read', { ref: refB });
       if (branchCall === 7) {
         return toolCall('publish-export', 'publish_memory_finding', {
           subject: 'Delivered 60-second export',
@@ -855,7 +856,7 @@ test('a duplicated repair report enters context once and a correction supersedes
 test('two senders in one group session: sender A\'s evidence never enters sender B\'s provider request', async t => {
   const relay = await startCreditRelay(t);
   const sessionKey = `session:v2:catscompany:group:grp_7445:agent:usr1:${Date.now()}`;
-  const { refA } = writeMemoryFixture();
+  const { refA } = refs;
   let mainCall = 0;
   const mainAi = new ScriptedAI(relay.config, async () => {
     mainCall += 1;
@@ -864,7 +865,7 @@ test('two senders in one group session: sender A\'s evidence never enters sender
   let branchCall = 0;
   const branchAi = new ScriptedAI(relay.config, async () => {
     branchCall += 1;
-    if (branchCall === 1) return toolCall('read-a', 'memory_read_turn', { ref: refA });
+    if (branchCall === 1) return toolCall('read-a', 'memory_source_read', { ref: refA });
     if (branchCall === 2) {
       return toolCall('publish-a', 'publish_memory_finding', {
         subject: 'Sender A project',

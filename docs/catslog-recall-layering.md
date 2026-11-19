@@ -5,7 +5,7 @@ CatsLog keeps three layers: Session Graph (what happened), Memory Graph (cleaned
 | Agent | Layer | Purpose | Surface |
 | --- | --- | --- | --- |
 | Main agent | Wiki/Diary documents | Converge on maintained, revision-pinned knowledge | `catslog_knowledge_recall` with `search`, `read`, `graph` |
-| Memory Branch | Memory and sessions | Bounded divergence into surrounding context | local `memory_search`/`memory_read_turn`/`memory_neighbors`, remote `memory_remote_search`/`memory_source_read`/`memory_assertion_read`, cited `memory_node_read`, graph `memory_links` |
+| Memory Branch | Memory and sessions | Bounded divergence into surrounding context | CatsLog `memory_remote_search`/`memory_source_read`/`memory_assertion_read`, cited `memory_node_read`, graph `memory_links` |
 
 The layers meet through citations the server already stores: a Diary entry's `source_anchors` pin exact Memory nodes (`source_memory_projection_node`: projection ref, revision, node id). When the main agent has read Diary entries, the Branch receives those anchors as **seed candidates only**. It never receives the document bodies. `memory_node_read` reads one seeded node as its canonical `memory-graph/3` view (selected node, conditions, omissions, mappings), whole or not at all, sharing the two-read cap with discovered projections. Node views have their own 32 KiB whole-or-nothing allowance: a canonical view carries the node's closure, generation contexts and output proofs, and a real two-turn adapter node measured 15,908 bytes, at the edge of the 16,000-byte projection budget. Reading the cited node rather than its whole projection is what keeps real Memory deliverable at all.
 

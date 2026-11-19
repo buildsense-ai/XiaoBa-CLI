@@ -45,6 +45,7 @@ async function scenario(options: { hidePrefetch?: boolean; read?: (input: any, s
   const ai = {
     isToolCallingSupported: () => true,
     async chat(messages: any[], tools: any[]) {
+      assert.ok(!tools.some(t => ['memory_search', 'memory_read_turn', 'memory_neighbors'].includes(t.name)));
       modelInputs.push(JSON.parse(JSON.stringify(messages)));
       const objects = messages.flatMap(message => { try { const parsed = JSON.parse(message.content); return parsed && typeof parsed === 'object' ? [parsed] : []; } catch { return []; } });
       const expansions = objects.filter(o => o.status === 'expanded');
@@ -76,6 +77,20 @@ async function scenario(options: { hidePrefetch?: boolean; read?: (input: any, s
     return { branchCalls, reads, modelInputs, observations, mainInput, refs };
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
+
+test('CatsLog unavailable finishes without reading local history or invoking a model', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'offline-branch-'));
+  const queue = new InMemorySyntheticObservationQueue();
+  let calls = 0;
+  try {
+    const handle = startMemorySidecarBranch({sessionKey: 'offline', input: question, recentMessages: [], workingDirectory: root,
+      aiService: {chat: async () => { calls++; throw Error('unexpected provider call'); }} as any, queue, logEnabled: false});
+    await handle.done;
+    assert.equal(calls, 0);
+    assert.equal(handle.outcome(), 'idle');
+    assert.equal(queue.size(), 0);
+  } finally { fs.rmSync(root, {recursive:true, force:true}); }
+});
 
 test('actual sidecar tools -> executor -> finish -> observation -> main request preserves qualifiers', async () => {
   const run = await scenario();
