@@ -415,12 +415,12 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
     const deadline = boundedSignal(PREFETCH_TIMEOUT_MS, this.remoteAbort.signal, this.memoryOptions.signal, external);
     try {
       const response = await abortable(backend.branch({
-        queryText: keyword, sources: ['agent_memory'],
+        queryText: keyword, sources: ['agent_memory'], preferSourceReferences: true,
         budgets: { perBranchMaxItems: MAX_REMOTE_ITEMS, perBranchTimeoutMs: 2500, totalDeadlineMs: 2800 },
       }, deadline.signal), deadline.signal);
       if (deadline.signal.aborted || !this.shouldContinue()) return { status: 'unavailable', reason: 'aborted', items: [] };
       const requestId = safeRequestId(response?.request_id);
-      const items = discoverSourceReferenceItems(response);
+      const items = discoverSourceReferenceItems(response, MAX_TOTAL_PROJECTION_VIEW_CHARS - this.contextBytes());
       // A document seed carries no request; the first request that issues it owns it.
       for (const item of items) if (this.candidates.get(item.ref) === undefined) this.candidates.set(item.ref, requestId);
       return { status: response?.status ?? 'unknown', request_id: requestId,

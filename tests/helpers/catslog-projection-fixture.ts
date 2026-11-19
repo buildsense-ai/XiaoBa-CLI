@@ -34,6 +34,8 @@ export interface FixtureOptions {
   networkFailure?: boolean;
   document?: any;
   count?: number;
+  firstLarge?: boolean;
+  sizeHints?: number[];
   hideRecency?: boolean;
   delayRead?: boolean;
   rotateOnRead?: boolean;
@@ -57,7 +59,7 @@ export async function startCatsLogProjectionFixture(options: FixtureOptions = {}
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
-    requests.push({ method: req.method, path: req.url, body, tokenMatched: req.headers.authorization === `Bearer ${token}`, rotatedMatched: req.headers.authorization === `Bearer ${rotatedToken}` });
+    requests.push({ method: req.method, path: req.url, body, prefer: req.headers.prefer, tokenMatched: req.headers.authorization === `Bearer ${token}`, rotatedMatched: req.headers.authorization === `Bearer ${rotatedToken}` });
     const json = (status: number, value: any) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (req.url === '/catsco/agent/bootstrap') {
       bootstraps++;
@@ -73,7 +75,7 @@ export async function startCatsLogProjectionFixture(options: FixtureOptions = {}
       const matches = terms.every(term => haystack.includes(term)) && !(options.hideRecency && terms.length === 0);
       return json(200, { schema_version: 1, request_id: `req-${requests.length}`, status: 'partial', branches: [{
         source: options.branchSource ?? 'agent_memory', status: 'error', truncated: true,
-        items: matches ? identities.map(identity => ({ source: options.itemSource ?? 'agent_memory', kind: options.itemKind ?? 'source_reference',
+        items: matches ? identities.map((identity, index) => ({ estimated_retained_bytes: options.sizeHints?.[index], source: options.itemSource ?? 'agent_memory', kind: options.itemKind ?? 'source_reference',
           ref: options.advertisedRef ?? identity.ref, text: `Metadata only; read_required; locator ${identity.ref}`, score_hint: 0.5 })) : [],
       }] });
     }
@@ -91,7 +93,8 @@ export async function startCatsLogProjectionFixture(options: FixtureOptions = {}
         schema_version: 1, content_trust: 'derived_memory_projection',
         projection: { PrincipalID: 'private-principal-sentinel', MemoryScopeID: 'private-scope-sentinel',
           Revision: options.stale ? digest('stale') : identity.revision, StreamID: identity.stream,
-          Document: options.malformed ? { ...document, nodes: [] } : document },
+          Document: options.malformed ? { ...document, nodes: [] } : options.firstLarge && identity === identities[0]
+            ? { ...document, summary: '归档'.repeat(4000) } : document },
         sources: [{ text: 'RAW_SOURCE_PAGE_REPROOF_ONLY_SENTINEL', status: 'read', coverage: 'full' }],
       });
     }

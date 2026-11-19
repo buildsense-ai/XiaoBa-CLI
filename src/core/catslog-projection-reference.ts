@@ -56,20 +56,35 @@ export function recomputeSourceProjectionRef(revision: unknown, streamId: unknow
 }
 
 /** Known wire positions only: prose containing a ref never discovers a candidate. */
-export function discoverSourceReferenceItems(response: CatscoBranchResponse | unknown): SourceReferenceItem[] {
-  const items: SourceReferenceItem[] = [];
+export function discoverSourceReferenceItems(response: CatscoBranchResponse | unknown, remainingBytes = MAX_TOTAL_PROJECTION_VIEW_CHARS): SourceReferenceItem[] {
+  const candidates: { item: SourceReferenceItem; score?: number; overBudget: boolean }[] = [];
   const seen = new Set<string>();
   const branches = record(response)?.branches;
-  for (const branch of Array.isArray(branches) ? branches.slice(0, 8) : []) {
+  branchesLoop: for (const branch of Array.isArray(branches) ? branches.slice(0, 8) : []) {
     if (record(branch)?.source !== 'agent_memory' || !Array.isArray(branch.items)) continue;
     for (const item of branch.items.slice(0, 50)) {
       if (!record(item) || item.source !== 'agent_memory' || item.kind !== 'source_reference'
         || !isCatsLogPoolCitationRef(item.ref) || seen.has(item.ref)) continue;
       seen.add(item.ref);
       // Never copy free producer text as a fact; the locator is a fixed client label.
-      items.push({ ref: item.ref, kind: 'source_reference', text: 'Metadata locator only; read_required.' });
-      if (items.length >= MAX_CANDIDATES) return items;
+      const estimate = item.estimated_retained_bytes;
+      candidates.push({
+        item: { ref: item.ref, kind: 'source_reference', text: 'Metadata locator only; read_required.' },
+        score: Number.isFinite(item.score_hint) ? item.score_hint : undefined,
+        overBudget: Number.isSafeInteger(estimate) && estimate > 0 && estimate > remainingBytes,
+      });
+      if (candidates.length >= MAX_CANDIDATES) break branchesLoop;
     }
+  }
+  // Only reorder within a contiguous relevance tier. Unknown or missing sizes
+  // keep the producer's order alongside candidates that appear to fit.
+  const items: SourceReferenceItem[] = [];
+  for (let i = 0; i < candidates.length;) {
+    let end = i + 1;
+    while (end < candidates.length && candidates[end].score === candidates[i].score) end++;
+    const tier = candidates.slice(i, end).sort((a, b) => Number(a.overBudget) - Number(b.overBudget));
+    items.push(...tier.map(candidate => candidate.item));
+    i = end;
   }
   return items;
 }

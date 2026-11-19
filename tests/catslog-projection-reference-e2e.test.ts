@@ -29,9 +29,18 @@ function suppressed(run: any) { active(run); assert.equal(run.delivered.size, 0)
 test('actual session -> real provider/client HTTP -> full branch and MAIN input; uppercase Go envelope', async () => {
   await scenario({}, {}, (run, fixture) => { assertPositiveFlow(run, question, DEFAULT_ROOT_REF); assert.equal(fixture.bootstraps, 0); });
 });
+test('size hint saves an over-budget read and delivers the same verified citation', async () => {
+  for (const hinted of [false, true]) {
+    await scenario({ count: 2, firstLarge: true, sizeHints: hinted ? [24000, 4000] : undefined }, {}, (run, fixture) => {
+      assert.deepEqual(run.cited, [fixture.identities[1].ref]);
+      assert.equal(fixture.reads, hinted ? 1 : 2);
+    });
+  }
+});
 test('natural full question misses literal ILIKE; fake model keyword search discovers and reads an actual ref', async () => {
   await scenario({ hideRecency: true }, { forceSearch: true }, (run, fixture) => {
     assertPositiveFlow(run, question, DEFAULT_ROOT_REF);
+    assert.ok(fixture.requests.filter((r: any) => r.path.endsWith('/branch')).every((r: any) => r.prefer === 'catslog-source-references'));
     assert.deepEqual(fixture.requests.filter((r: any) => r.path.endsWith('/branch')).map((r: any) => r.body.query_text), ['', 'Meridian']);
     assert.equal(run.branchCalls[0].tools.includes('memory_remote_search'), true);
   });

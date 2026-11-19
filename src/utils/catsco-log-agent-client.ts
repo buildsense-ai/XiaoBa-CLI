@@ -365,6 +365,7 @@ export interface CatscoActor {
  * the server derives the principal from the device-bound bearer token.
  */
 export interface CatscoBranchQuery {
+  preferSourceReferences?: boolean;
   requestId?: string;
   queryText?: string;
   sources?: string[];
@@ -382,6 +383,7 @@ export interface CatscoBranchQuery {
 }
 
 export interface CatscoBranchItem {
+  estimated_retained_bytes?: number;
   source?: string;
   ref?: string;
   kind?: string;
@@ -1174,7 +1176,7 @@ export class CatscoLogAgentClient {
       token,
       body,
       'CatsLog branch retrieval failed',
-      input.signal,
+      input.signal, undefined, CAPABILITY_RESPONSE_MAX_BYTES, input.preferSourceReferences,
     );
   }
 
@@ -1441,11 +1443,16 @@ export class CatscoLogAgentClient {
     signal?: AbortSignal,
     ifNoneMatch?: string,
     maxResponseBytes: number = CAPABILITY_RESPONSE_MAX_BYTES,
+    preferSourceReferences = false,
   ): Promise<T> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     };
+    if (preferSourceReferences) {
+      headers.Prefer = 'catslog-source-references';
+      headers['Catslog-Discovery'] = 'directory-v1';
+    }
     if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
     const response = await fetch(this.buildUrl(requestPath), {
       method: 'POST',
