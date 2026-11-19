@@ -168,6 +168,8 @@ export interface UserDevice {
 }
 
 export interface ScopedDeviceGrant {
+  shareId?: string;
+  shareRevision?: number;
   targetScope?: 'explicit_device';
   selectionRevision?: string;
   kind: 'user_device_grant';
@@ -193,6 +195,9 @@ export interface ScopedDeviceGrant {
 }
 
 export interface DeviceSelectionCandidate {
+  ownerDisplayName?: string;
+  ownerUserId?: string;
+  shareId?: string;
   os?: string;
   status?: 'ready' | 'unavailable';
   deviceId: string;
@@ -202,6 +207,7 @@ export interface DeviceSelectionCandidate {
 }
 
 export interface ScopedDeviceSelection {
+  selectedOwnerUserId?: string;
   revision?: string;
   kind: 'user_device_selection';
   source: MessageSource;

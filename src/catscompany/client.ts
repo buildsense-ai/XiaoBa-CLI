@@ -143,6 +143,8 @@ export interface CatsDeviceRpcError {
 }
 
 export interface CatsDeviceRpcMessage {
+  share_id?: string;
+  share_revision?: number;
   target_scope?: 'explicit_device';
   id?: string;
   type: 'request' | 'result';
@@ -170,6 +172,12 @@ export interface CatsDeviceRpcMessage {
 }
 
 export interface CatsThinToolRpcMessage {
+  topic_id?: string;
+  topic_type?: string;
+  agent_id?: string;
+  share_id?: string;
+  share_revision?: number;
+  identity_source?: string;
   target_scope?: 'explicit_device';
   id?: string;
   type: 'request' | 'result';
@@ -297,7 +305,7 @@ const CATSCOMPANY_PROTOCOL_VERSION = '0.1.0';
 const CATSCOMPANY_CLIENT_UA = 'CatsCo/1.0';
 // This is an additive handshake capability, not a server protocol version. A
 // server that does not recognize it simply ignores the field.
-const CATSCOMPANY_RUNTIME_CAPABILITIES = ['device-targets.v1'];
+const CATSCOMPANY_RUNTIME_CAPABILITIES = ['device-targets.v1', 'group-device-share.v1'];
 const DEFAULT_WS_CONNECT_TIMEOUT_MS = 20_000;
 const DEFAULT_WS_READY_TIMEOUT_MS = 20_000;
 const DEFAULT_RECONNECT_BASE_DELAY_MS = 1_000;
@@ -1577,6 +1585,15 @@ export class CatsClient extends EventEmitter {
       this.endpointCandidates = this.resolveEndpointCandidates();
     }
     return [...this.endpointCandidates];
+  }
+
+  async requestGroupDeviceAccess(payload: Record<string, unknown>): Promise<unknown> {
+    const response = await fetch(this.getHttpBaseUrl().replace(/\/$/, '') + '/api/groups/device-share-requests', {
+      method: 'POST', headers: { Authorization: `ApiKey ${this.config.apiKey || ''}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload), signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error('Device sharing request was rejected');
+    return response.json();
   }
 
   /** 当前 HTTP 基地址；跟随已选中的域名族，避免 WS 与 HTTP 落在不同域名。 */

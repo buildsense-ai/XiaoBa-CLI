@@ -12,7 +12,7 @@ import {
 } from '../bot-skills/trusted-script-execution';
 import { Logger } from '../utils/logger';
 import { remoteShellTiming } from './remote-shell-policy';
-import { getDeviceAuthorizationSessionKey, resolveDeviceGrant } from '../core/device-grants';
+import { getDeviceAuthorizationSessionKey, resolveDeviceGrant, isDelegatedDeviceGrant } from '../core/device-grants';
 
 export type ExecutionTargetId = 'agent_self' | string;
 
@@ -294,10 +294,10 @@ function authorizeRemoteRoute(
   // An exact target prefers its independent authorization. Aliases/defaults
   // can never consume explicit capabilities, even if the device IDs coincide.
   if (explicitDevice) eligibleGrants.sort((a, b) => Number(b.targetScope === 'explicit_device') - Number(a.targetScope === 'explicit_device'));
-  const decision = resolveDeviceGrant({ ...context, deviceGrants: eligibleGrants }, { deviceId: route.targetDeviceId, operation });
+  const decision = resolveDeviceGrant({ ...context, deviceGrants: eligibleGrants }, { deviceId: route.targetDeviceId, ownerUserId: route.targetOwnerUserId, operation });
   if (!decision.ok) return decision;
   const grant = decision.grant;
-  const explicitGrant = grant.targetScope === 'explicit_device' && grant.ownerUserId === scope.actorUserId;
+  const explicitGrant = grant.targetScope === 'explicit_device' && (grant.ownerUserId === scope.actorUserId || isDelegatedDeviceGrant(grant));
   if (grant.targetScope === 'explicit_device' && (!selection || typeof selection.revision !== 'string'
     || (grant.selectionRevision || '') !== selection.revision)) {
     return { ok: false, errorCode: 'PERMISSION_DENIED', message: '设备授权与当前默认选择版本不一致，请重新获取本轮授权。' };
@@ -525,7 +525,7 @@ function findRuntimeTargetRoute(context: ToolExecutionContext, target: string): 
       return { ok: false, reason: selection.status === 'needs_selection' ? 'ambiguous' : 'unavailable',
         message: '当前会话尚未选定可用电脑。请确认目标设备；不会自动切换到另一台电脑。' };
     }
-    const selected = targetRoutes.routes.find(route => route.ownerUserId === owner && route.deviceId === selection.selectedDeviceId);
+    const selected = targetRoutes.routes.find(route => route.ownerUserId === (selection.selectedOwnerUserId || owner) && route.deviceId === selection.selectedDeviceId);
     if (!selected || selected.status !== 'ready') {
       return { ok: false, reason: 'unavailable', message: `选定电脑 ${selection.selectedDeviceDisplayName || selection.selectedDeviceId} 暂时不可用。不会改用其他电脑执行。` };
     }
@@ -596,7 +596,7 @@ function findSpeakerRemoteTarget(context: ToolExecutionContext): {
       }
     : undefined;
   const selectedGrant = selected
-    ? context.deviceGrants?.find(grant => grant.deviceId === selected.deviceId)
+    ? context.deviceGrants?.find(grant => grant.deviceId === selected.deviceId && grant.ownerUserId === (context.deviceSelection?.selectedOwnerUserId || context.deviceSelection?.actorUserId))
     : undefined;
   if (selected) {
     return {

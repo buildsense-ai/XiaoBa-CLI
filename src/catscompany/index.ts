@@ -1,3 +1,4 @@
+import { RequestDeviceAccessTool } from '../tools/request-device-access-tool';
 import {
   CatsClient,
   MessageContext,
@@ -770,6 +771,9 @@ export class CatsCompanyBot {
     this.agentServices = runtime.services;
     this.cloudSessionRestorer = new CatsCompanyCloudSessionRestorer(this.bot, this.agentServices.aiService);
     const { toolManager } = this.agentServices;
+    if (!config.connectorToken) {
+      toolManager.registerTool(new RequestDeviceAccessTool(payload => this.bot.requestGroupDeviceAccess(payload)));
+    }
 
     Logger.info(`已注册 ${toolManager.getToolCount()} 个基础工具 (message mode)`);
     Logger.info(`运行时可用工具数量将根据 skill toolPolicy 动态过滤`);
@@ -1359,6 +1363,9 @@ export class CatsCompanyBot {
     if (!toolName) {
       return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: 'Thin tool RPC request missing tool_name.' };
     }
+    if (request.identity_source === 'group_device_share' && (!request.share_id || !Number.isSafeInteger(request.share_revision) || Number(request.share_revision) <= 0 || request.topic_type !== 'group')) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: '共享设备请求缺少可信许可版本。' };
+    }
     const context = this.buildThinToolRpcToolContext(request);
     const args = this.extractDeviceRpcToolArgs(request.payload);
     let result: ToolExecutionResult;
@@ -1414,8 +1421,8 @@ export class CatsCompanyBot {
       executionContext: {
         schema: 'xiaoba.execution_context.v1',
         conversation: {
-          type: 'p2p',
-          currentSpeaker: { id: String(request.target_owner_user_id || 'remote_user'), role: 'user' },
+          type: request.topic_type === 'group' ? 'group' : 'p2p',
+          currentSpeaker: { id: String(request.actor_user_id || request.target_owner_user_id || 'remote_user'), role: 'user' },
           participants: [],
         },
         executionTargets: [{
@@ -1634,6 +1641,7 @@ export class CatsCompanyBot {
       status: 'active',
       identityTrust: 'server_canonical',
       identitySource: String(request.identity_source || 'device_rpc_forward'),
+      shareId: request.share_id, shareRevision: request.share_revision,
       deviceId: String(request.device_id || this.localDeviceGrant?.deviceId || ''),
       deviceBodyId: request.device_body_id || this.localDeviceGrant?.bodyId,
       deviceInstallationId: request.device_installation_id || this.localDeviceGrant?.installationId,
@@ -1684,6 +1692,9 @@ export class CatsCompanyBot {
   }
 
   private validateDeviceRpcToolRequest(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    if (request.identity_source === 'group_device_share' && (!request.share_id || !Number.isSafeInteger(request.share_revision) || Number(request.share_revision) <= 0 || request.topic_type !== 'group')) {
+      return { code: 'invalid_shared_authorization', message: '共享设备请求缺少可信许可版本。' };
+    }
     const targetError = this.validateDeviceRpcTarget(request);
     if (targetError) return targetError;
 

@@ -207,7 +207,7 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
   const conversationType = toConversationType(source, topicType);
   const selected = params.deviceSelection;
   const speakerGrant = selected?.status === 'selected' && selected.selectedDeviceId
-    ? params.deviceGrants?.find(grant => grant.deviceId === selected.selectedDeviceId)
+    ? params.deviceGrants?.find(grant => grant.deviceId === selected.selectedDeviceId && grant.ownerUserId === (selected.selectedOwnerUserId || actorUserId))
     : selected ? undefined : params.deviceGrants?.find(grant => grant.status === 'active') || params.deviceGrants?.[0];
   const speakerDeviceReady = selected ? selected.status === 'selected' && Boolean(selected.selectedDeviceId) : Boolean(speakerGrant?.deviceId);
   const speakerDeviceLabel = (selected?.status === 'selected' ? selected.selectedDeviceDisplayName : undefined)

@@ -60,6 +60,7 @@ function normalizeDeviceSelection(record: UnknownRecord, scope: ExecutionScope):
     identityTrust: scope.identityTrust,
     identitySource: 'metadata.catsco_identity',
     selectedDeviceId,
+    selectedOwnerUserId: stringField(selectedDevice, 'ownerUserId') || stringField(record, 'ownerUserId'),
     selectedDeviceDisplayName: stringField(record, 'selectedDeviceDisplayName')
       || stringField(record, 'selected_device_display_name')
       || stringField(selectedDevice, 'displayName')
@@ -101,6 +102,9 @@ function normalizeCandidates(value: unknown): DeviceSelectionCandidate[] | undef
         os: stringField(record, 'os'),
         status: record.active === true && record.routeConnected === true && record.routable === true ? 'ready' : 'unavailable',
         deviceId,
+        ownerUserId: stringField(record, 'ownerUserId'),
+        ownerDisplayName: stringField(record, 'ownerDisplayName'),
+        shareId: stringField(record, 'shareId'),
         displayName: stringField(record, 'displayName') || stringField(record, 'display_name'),
         operations: normalizeOperations(record.operations),
         lastSeenAt: numberField(record, 'lastSeenAt') ?? numberField(record, 'last_seen_at'),
