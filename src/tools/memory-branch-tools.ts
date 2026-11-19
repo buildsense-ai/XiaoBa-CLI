@@ -37,7 +37,7 @@ export type MemoryPublishFindingResult = {
 
 export const MEMORY_PUBLISH_MAX_INVALID_ATTEMPTS = 3;
 
-const CANONICAL_REF_PATTERN = /^[^/\\#]+\/\d{4}-\d{2}-\d{2}\/[^/\\#]+\.jsonl#(?:\d+|(?:run|input|legacy):[a-zA-Z0-9:_-]+)$/;
+const CANONICAL_REF_PATTERN = /^[^/\\#]+\/\d{4}-\d{2}-\d{2}\/[^/\\#]+\.jsonl#(?:exchange:)?(?:\d+|(?:run|input|legacy):[a-zA-Z0-9:_-]+)$/;
 
 export class MemorySearchTool implements Tool {
   definition: ToolDefinition = {
@@ -101,7 +101,7 @@ export class MemorySearchTool implements Tool {
 export class MemoryReadTurnTool implements Tool {
   definition: ToolDefinition = {
     name: 'memory_read_turn',
-    description: '按 canonical ref 读取一个历史 episode。返回紧凑 JSON，包含 ref、text，以及可选的 truncated 标记。',
+    description: '读取历史 episode。长记录可返回 coverage=user_and_final_only 的完整问答。只可引用返回的 ref，该问答不能证明工具执行结果。',
     parameters: {
       type: 'object',
       properties: {
@@ -124,7 +124,7 @@ export class MemoryReadTurnTool implements Tool {
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
       const result = await this.store.readTurn(String(args?.ref || ''), {
-        budgetChars: args?.budget_chars,
+        allowExchange: true, budgetChars: args?.budget_chars,
       }, context.abortSignal);
       const {archive, ...visible} = result;
       this.onRead?.(result.ref, archive, result.truncated);

@@ -18,6 +18,7 @@ export interface MemorySearchMatch {
 
 export interface ArchiveTurnPin { day: string; offset: number; digest: string }
 export interface MemoryTurnRecord {
+  exchange?: { user: string; final: string };
   archive?: ArchiveTurnPin;
   ref: string;
   entry: SessionTurnLogEntry;
@@ -37,9 +38,11 @@ export interface MemorySearchParams {
 
 export interface ReadMemoryTurnOptions {
   budgetChars?: number;
+  allowExchange?: boolean;
 }
 
 export interface MemoryReadResult {
+  coverage?: 'user_and_final_only';
   archive?: ArchiveTurnPin;
   ref: string;
   text: string;
@@ -141,12 +144,18 @@ export class MemoryLogStore {
   }
 
   async readTurn(ref: string, options: ReadMemoryTurnOptions = {}, signal?: AbortSignal): Promise<MemoryReadResult> {
-    const record = await this.resolveRef(ref, signal);
-    return formatTurnRecord(record, clampPositiveInteger(
-      options.budgetChars,
-      DEFAULT_READ_BUDGET_CHARS,
-      MAX_READ_BUDGET_CHARS,
-    ));
+    const exchangeOnly = ref.includes('#exchange:');
+    const record = await this.resolveRef(exchangeOnly ? ref.replace('#exchange:', '#') : ref, signal);
+    const budget = clampPositiveInteger(options.budgetChars, DEFAULT_READ_BUDGET_CHARS, MAX_READ_BUDGET_CHARS);
+    const full = formatTurnRecord(record, budget);
+    if (!exchangeOnly && (!full.truncated || !options.allowExchange)) return full;
+    if (record.exchange?.final.trim() && record.archive) {
+      const exchangeRef = record.ref.replace('#', '#exchange:');
+      const text = `REF: ${exchangeRef}\nUSER:\n${record.exchange.user}\n\nASSISTANT_FINAL:\n${record.exchange.final}`;
+      if (text.length <= budget) return {ref: exchangeRef, text, coverage: 'user_and_final_only', archive: record.archive};
+    }
+    if (exchangeOnly) throw createToolInputError('complete exchange unavailable within read budget');
+    return full;
   }
 
   async readNeighbors(
@@ -253,6 +262,7 @@ export class MemoryLogStore {
     const [sessionType, date, fileName] = parts;
     // Pin the original summary line, including for run-based transcripts. An
     // input without a turn summary can still deliver a summary-only receipt.
+    const exchanges = new Map<string, NonNullable<MemoryTurnRecord['exchange']>>();
     const pins = new Map<string, () => ArchiveTurnPin>();
     const entries = pinTurns ? [] : parseSessionLogContent(content, { tolerant: true });
     if (pinTurns) {
@@ -263,8 +273,14 @@ export class MemoryLogStore {
         if (entry && isSessionTurnEntry(entry)) {
           const lineOffset = offset;
           const pin = () => ({ day: date, offset: lineOffset, digest: createHash('sha256').update(line).digest('hex') });
-          pins.set(entry.entry_type === 'turn' ? String(++ordinal) : 'legacy:' + ++legacy, pin);
-          if (entry.run_id) pins.set('run:' + entry.run_id, pin);
+          const key = entry.entry_type === 'turn' ? String(++ordinal) : 'legacy:' + ++legacy;
+          const exchange = {user: entry.user.text, final: stripAssistantTranscriptArtifacts(entry.assistant.text)};
+          pins.set(key, pin);
+          exchanges.set(key, exchange);
+          if (entry.run_id) {
+            pins.set('run:' + entry.run_id, pin);
+            exchanges.set('run:' + entry.run_id, exchange);
+          }
         }
         offset += Buffer.byteLength(line) + 1;
       }
@@ -275,6 +291,7 @@ export class MemoryLogStore {
         ref: `${sessionType}/${date}/${fileName}#${projection.ref}`,
         entry: projection.entry,
         ordinal: index + 1,
+        exchange: exchanges.get(projection.ref),
         get archive() { return pins.get(projection.ref)?.(); },
         filePath,
         transcript: projection.transcript,

@@ -61,6 +61,26 @@ describe('memory branch tools', () => {
     assert.equal('score' in parsed.matches[0], false);
   });
 
+  test('long completed turn delivers a separately verifiable exchange, preserving the full-turn truncation fence', async () => {
+    const large = turn(1, '2026-06-16T10:00:00.000Z', 'What is the runtime pain point?', 'The retry loop loses its checkpoint.');
+    writeSessionLog(testRoot, [{...large, assistant: {...large.assistant, tool_calls: [{id: 'shell', name: 'shell', arguments: '{}', result: 'raw'.repeat(20000)}]}}]);
+    const ref = 'chat/2026-06-16/demo.jsonl#1';
+    const store = new MemoryLogStore(testRoot);
+    const complete = new Set<string>();
+    const reader = new MemoryReadTurnTool(store, (key, pin, partial) => { if (pin && !partial) complete.add(key); });
+    const ctx = {workingDirectory: testRoot, conversationHistory: []};
+    const result = await reader.execute({ref, budget_chars: 2000}, ctx);
+    const delivered = JSON.parse(String(result.content));
+    assert.notEqual(delivered.ref, ref);
+    assert.match(delivered.text, /The retry loop loses its checkpoint/);
+    assert.equal(delivered.coverage, 'user_and_final_only');
+    assert.ok(!complete.has(ref) && complete.has(delivered.ref));
+    const reread = await store.readTurn(delivered.ref, {budgetChars: 2000});
+    assert.equal(reread.text, delivered.text);
+    const again = await store.readTurn(ref, {budgetChars: 2000});
+    assert.equal(again.truncated, true);
+  });
+
   test('read and neighbors accept manually edited adjacent refs', async () => {
     writeSessionLog(testRoot, [
       turn(1, '2026-06-16T10:00:00.000Z', 'episode one manual_neighbor_unique', 'first answer'),
