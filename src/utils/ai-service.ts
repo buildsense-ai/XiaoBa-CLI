@@ -505,6 +505,8 @@ export class AIService {
           const codes = this.extractProviderSemanticCodes(error);
           if (codes.includes('credit_settlement_failed')) {
             error = root.pause('本次模型调用的点数结算未确认，已保留任务记录。');
+          } else if (status === 402 && codes.includes('insufficient_balance')) {
+            error = root.pause('余额不足');
           } else if (status === 403) {
             error = root.pause('当前账号没有使用该模型的权限。');
           } else if (status === 402 || status === 409 || codes.includes('credit_request_failed')
