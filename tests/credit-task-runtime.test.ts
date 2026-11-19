@@ -526,8 +526,9 @@ test('finish acknowledgement failures persist separately and retry idempotently 
 const relayAccountingError = { error: { type: 'api_error', param: null, code: 'credit_request_failed',
   message: 'credit request could not be accounted' } };
 
-for (const outcome of ['success', 'gate recovers after reload', 'required too large', 'unclosed legacy turn', 'missing tool result',
-  'repeated tool', 'new tool', 'textual replay', 'partial stream', 'accounting 402', 'ordinary 402', 'ordinary 409'] as const) {
+for (const outcome of ['success', 'restored duplicate input', 'unpaired historical episode', 'gate recovers after reload',
+  'required too large', 'unclosed legacy turn', 'missing tool result', 'repeated tool', 'new tool', 'textual replay',
+  'partial stream', 'accounting 402', 'ordinary 402', 'ordinary 409'] as const) {
   test(`manual budget resume: ${outcome}`, async t => {
     const f = await relay(t);
     const config: ChatConfig = { ...f.config, model: 'deepseek-flash', openaiApiMode: 'responses',
@@ -535,23 +536,69 @@ for (const outcome of ['success', 'gate recovers after reload', 'required too la
     const root = `saved-${randomUUID()}`;
     const pending = outcome === 'required too large' ? '现'.repeat(22_000) : 'Continue the original goal unchanged';
     const old = '合'.repeat(Math.ceil(519 * 1024 / 3)); // Synthetic fixture; UTF-8 bytes, not JS code units.
-    const history: Message[] = [
-      { role: 'system', content: 'Test system prompt' },
+    const structured = outcome === 'restored duplicate input' || outcome === 'unpaired historical episode';
+    const denseHistory = outcome === 'restored duplicate input';
+    const historicalToolCall = (id: string) => ({ id, type: 'function' as const,
+      function: { name: 'noop', arguments: '{}' } });
+    const historical: Message[] = structured ? [
+      { role: 'user', content: 'Earlier continuity checkpoint\n' + '摘'.repeat(1770),
+        __checkpointSummary: true, __episodeId: 'checkpoint' },
+      ...Array.from({ length: denseHistory ? 36 : 1 }, (_, index): Message[] => {
+        const id = `checkpoint-tool-${index}`;
+        return [
+          { role: 'assistant', content: 'Historical operation ' + 'a'.repeat(650), __episodeId: 'checkpoint',
+            tool_calls: [historicalToolCall(id)] },
+          { role: 'tool', content: '旧'.repeat(denseHistory ? 1100 : 40_000), __episodeId: 'checkpoint', tool_call_id: id, name: 'noop' },
+        ];
+      }).flat(),
+      ...Array.from({ length: denseHistory ? 41 : 2 }, (_, index): Message[] => {
+        const id = `old-${index}`;
+        const pairs = Array.from({ length: denseHistory ? (index < 35 ? 4 : 2) : 1 }, (_, pair) => `${id}-call-${pair}`);
+        const batches = denseHistory && index < 35 ? [pairs.slice(0, 2), ...pairs.slice(2).map(call => [call])] : pairs.map(call => [call]);
+        return [
+          { role: 'user', content: index === 10 || index === 23 || !denseHistory ? pending : 'Earlier request',
+            __episodeId: id, __episodeInputKind: 'root' },
+          ...(denseHistory && index < 11 ? [{ role: 'user' as const, content: 'Earlier turn follow-up',
+            __episodeId: id, __episodeInputKind: 'pending' as const }] : []),
+          ...batches.flatMap((calls): Message[] => [
+            { role: 'assistant', content: 'Historical operation', __episodeId: id, tool_calls: calls.map(historicalToolCall) },
+            ...(denseHistory ? calls.map(call => ({ role: 'tool' as const, content: '合'.repeat(980),
+              __episodeId: id, tool_call_id: call, name: 'noop' })) : []),
+          ]),
+          { role: 'assistant', content: denseHistory ? 'Prior reply' : old, __episodeId: id },
+        ];
+      }).flat(),
+    ] : [
       { role: 'user', content: 'Prior completed text-only discussion' },
       { role: 'assistant', content: old },
+    ];
+    const active = structured ? { __episodeId: 'active' } : {};
+    const history: Message[] = [
+      { role: 'system', content: 'Test system prompt' },
+      ...historical,
       ...(outcome === 'unclosed legacy turn' ? [{ role: 'assistant' as const, content: 'Still working on that turn' }] : []),
-      { role: 'user', content: pending },
-      { role: 'assistant', content: 'Saving progress', tool_calls: [{ id: 'saved-tool', type: 'function',
+      { role: 'user', content: pending, ...active, ...(structured ? { __episodeInputKind: 'root' as const } : {}) },
+      { role: 'assistant', content: 'Saving progress', ...active, tool_calls: [{ id: 'saved-tool', type: 'function',
         function: { name: 'noop', arguments: '{"a":1,"b":2}' } }] },
       ...(outcome === 'missing tool result' ? [] : [{ role: 'tool' as const,
-        tool_call_id: 'saved-tool', name: 'noop', content: 'Saved, do not repeat' }]),
+        tool_call_id: 'saved-tool', name: 'noop', content: 'Saved, do not repeat', ...active }]),
+      ...Array.from({ length: denseHistory ? 7 : structured ? 1 : 0 }, (_, index): Message => ({
+        role: 'user', content: `Saved runtime observation ${index} ${'示'.repeat(60)}`, __runtimeObservation: true,
+        __episodeInputKind: 'root', __episodeId: `observation-${index}`,
+      })),
     ];
+    if (denseHistory) {
+      assert.equal(history.length - 1, 445); // Exclude the separately supplied system prompt.
+      const savedBytes = Buffer.byteLength(JSON.stringify(history));
+      assert.ok(savedBytes >= 600_000 && savedBytes <= 670_000, `saved bytes: ${savedBytes}`);
+    }
     const key = `credit-task-${randomUUID()}`;
     const store = SessionStore.getInstance();
     const reason = outcome === 'ordinary 409' || outcome === 'ordinary 402' || outcome === 'accounting 402'
       ? '模型请求的额度或权限门禁未通过，需手动恢复' : LEGACY_CREDIT_GATE_PAUSE;
     assert.ok(store.saveContext(key, history));
-    assert.ok(store.saveRuntimeState(key, { creditTask: { taskId: root, enabled: true, startSent: true, state: 'paused', reason, pendingInput: pending } }));
+    assert.ok(store.saveRuntimeState(key, { creditTask: { taskId: root, enabled: true, startSent: true, state: 'paused',
+      reason, pendingInput: pending, ...(structured ? { manualResumeGuard: 'budget' as const } : {}) } }));
     let dispatched = 0;
     const createSession = () => session(config, key, {
       getToolDefinitions: () => [
@@ -562,7 +609,7 @@ for (const outcome of ['success', 'gate recovers after reload', 'required too la
     });
     let s = createSession();
     s.restoreFromStore();
-    f.control.spendable = 89_000_000;
+    f.control.spendable = structured ? 83_673_167 : 89_000_000;
     f.control.decide = () => ({ plan_tier: 1 });
     let legacyCalls = 0;
     f.control.respond = (body, headers, res) => {
@@ -624,8 +671,8 @@ for (const outcome of ['success', 'gate recovers after reload', 'required too la
     for (const original of history.slice(1)) {
       assert.ok(retained.some(message => message.role === original.role && message.content === original.content), original.role);
     }
-    assert.equal(retained.filter(message => message.content === pending).length, 1);
-    if (outcome === 'success' || outcome === 'gate recovers after reload' || outcome === 'accounting 402') {
+    assert.equal(retained.filter(message => message.content === pending).length, structured ? 3 : 1);
+    if (outcome === 'success' || outcome === 'restored duplicate input' || outcome === 'gate recovers after reload' || outcome === 'accounting 402') {
       assert.equal(reply, 'done');
       assert.equal(snapshot.state, 'completed');
       assert.equal(snapshot.manualResumeGuard, undefined);
@@ -650,8 +697,13 @@ for (const outcome of ['success', 'gate recovers after reload', 'required too la
         assert.equal(store.loadRuntimeState(key).creditTask!.pendingInput, pending);
       }
     }
-    if (outcome === 'required too large' || outcome === 'unclosed legacy turn' || outcome === 'missing tool result') {
-      assert.equal(snapshot.reason, LEGACY_CREDIT_GATE_PAUSE);
+    if (outcome === 'required too large' || outcome === 'unclosed legacy turn' || outcome === 'missing tool result' || outcome === 'unpaired historical episode') {
+      if (outcome === 'required too large' || outcome === 'unclosed legacy turn') {
+        assert.match(snapshot.reason!, /仍超过可预留点数/);
+      } else {
+        if (outcome === 'unpaired historical episode') assert.equal(snapshot.manualResumeGuard, 'budget');
+        assert.equal(snapshot.reason, LEGACY_CREDIT_GATE_PAUSE);
+      }
       assert.equal(f.calls.length, 0);
     } else {
       assert.equal(f.calls.length, outcome === 'accounting 402' ? 2 : 1);
@@ -666,9 +718,21 @@ for (const outcome of ['success', 'gate recovers after reload', 'required too la
         assert.notEqual(snapshot.reason, CREDIT_ACCOUNTING_PAUSE);
       } else {
         assert.equal(body.max_output_tokens, 4096);
-        assert.ok(wireBytes + 4096 + body.max_output_tokens <= Math.floor(89_000_000 * 0.9 / 1512));
+        assert.ok(wireBytes + 4096 + body.max_output_tokens <= Math.floor(f.control.spendable * 0.9 / 1512));
+        if (structured) {
+          assert.match(body.instructions, /historical episodes may be omitted or excerpted/);
+          assert.ok(JSON.stringify(body).includes('Earlier continuity checkpoint'));
+          assert.ok(JSON.stringify(body).includes('Saved runtime observation'));
+          assert.equal(body.input.some((item: any) => item.call_id?.startsWith('old-')), false);
+          const checkpointOutputs = body.input.filter((item: any) => item.type === 'function_call_output'
+            && item.call_id?.startsWith('checkpoint-tool-'));
+          assert.equal(checkpointOutputs.length, 36);
+          assert.ok(checkpointOutputs.every((item: any) => /Historical result excerpt/.test(item.output)));
+          assert.equal(body.tools, undefined);
+          t.diagnostic(`serialized request: ${wireBytes} bytes, conservative reserve incl. headroom: ${(wireBytes + 8192) * 1512} units`);
+        }
         assert.ok(JSON.stringify(body).includes(pending));
-        assert.ok(body.tools.some((tool: any) => tool.name === 'noop'));
+        if (!structured) assert.ok(body.tools.some((tool: any) => tool.name === 'noop'));
         const exchange = body.input.filter((item: any) => item.call_id === 'saved-tool');
         assert.deepEqual(exchange.map((item: any) => item.type), ['function_call', 'function_call_output']);
         assert.equal(exchange[1].output, 'Saved, do not repeat');
