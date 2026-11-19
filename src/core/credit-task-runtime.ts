@@ -85,7 +85,8 @@ export function takeManualCreditResumeBudget(apiUrl: string, sessionKey: string,
   return {
     pendingInput: resume.pendingInput,
     toolHistory: resume.toolHistory,
-    spendableUnits: resume.task.manualResumeSpendableUnits(apiKey),
+    dispatchBilling: resume.task.dispatchBilling,
+    spendableUnits: resume.task.dispatchBilling ? undefined : resume.task.manualResumeSpendableUnits(apiKey),
     keepPaused: (reason = resume.reason) => resume.task.pause(reason),
     beginBoundedAttempt: () => resume.task.requireManualResumeReview(),
     stopAttempt: () => resume.task.pause('恢复请求未安全完成，需手动检查原任务'),
@@ -104,13 +105,16 @@ export class CreditTaskPausedError extends Error {
 
 export function creditTaskHeaders(apiUrl: string): Record<string, string> {
   const task = currentCreditTask();
-  return task?.snapshot.enabled !== false && task?.matches(apiUrl)
-    ? { 'X-CatsCo-Root-Task-ID': task.snapshot.taskId } : {};
+  if (!task?.matches(apiUrl)) return {};
+  const root = { 'X-CatsCo-Root-Task-ID': task.snapshot.taskId };
+  if (task.dispatchBilling) return { ...root, 'X-CatsCo-Billing-Dispatch': '1' };
+  return task.snapshot.enabled === false ? {} : root;
 }
 
 /** One original goal, including all necessary in-process descendants. No credentials are persisted. */
 export class CreditTaskRuntime {
   readonly snapshot: CreditTaskSnapshot;
+  readonly dispatchBilling: boolean;
   private startPromise?: Promise<void>;
   private finishPromise?: Promise<void>;
   private children = 0;
@@ -124,6 +128,7 @@ export class CreditTaskRuntime {
     private readonly save: (snapshot: CreditTaskSnapshot) => void = () => {},
     private readonly fetchImpl: typeof fetch = fetch,
   ) {
+    this.dispatchBilling = process.env.CATSCO_RELAY_BILLING_DISPATCH === '1' && isCatsCoCreditProvider(config);
     this.snapshot = snapshot ? { ...snapshot } : { taskId: randomUUID(), state: 'running' };
   }
 
@@ -145,7 +150,8 @@ export class CreditTaskRuntime {
 
   runManualResume<T>(sessionKey: string, history: Message[], fn: () => T): T {
     const { state, enabled, startSent, reason, pendingInput, pendingCommand, finishPending, subagentProgress, manualResumeGuard } = this.snapshot;
-    const accountingPause = reason === LEGACY_CREDIT_GATE_PAUSE || reason === CREDIT_ACCOUNTING_PAUSE;
+    const accountingPause = reason === LEGACY_CREDIT_GATE_PAUSE || reason === CREDIT_ACCOUNTING_PAUSE
+      || (this.dispatchBilling && reason === '余额不足');
     if (currentCreditTask() !== this || state !== 'paused' || enabled !== true || startSent !== true
       || pendingInput == null || pendingCommand || finishPending || Object.keys(subagentProgress ?? {}).length
       || manualResumeGuard === 'review' || (!accountingPause && manualResumeGuard !== 'budget')) return fn();
@@ -206,6 +212,13 @@ export class CreditTaskRuntime {
 
   start(): Promise<void> {
     if (this.startPromise) return this.startPromise;
+    if (this.dispatchBilling) {
+      if (this.snapshot.startSent) return this.status();
+      this.snapshot.startSent = true;
+      this.snapshot.enabled = true;
+      this.persist();
+      return this.startPromise = Promise.resolve();
+    }
     if (this.snapshot.startSent) return this.status();
     this.snapshot.startSent = true;
     this.persist();
@@ -217,16 +230,26 @@ export class CreditTaskRuntime {
     if (this.snapshot.state === 'paused') throw new CreditTaskPausedError(this.pauseMessage);
     if (this.snapshot.state === 'completed') throw new CreditTaskPausedError('原任务已结束，不能附着新步骤继续调用。');
     if (!this.snapshot.startSent) return this.start();
-    if (this.snapshot.enabled === false) return;
+    if (this.dispatchBilling || this.snapshot.enabled === false) return;
     await this.request('status');
   }
 
   async resume(): Promise<void> {
-    // Only the explicit user resume path calls this; status never auto-resumes.
+    // Resuming the saved input is explicit. Relay checks funding when inference starts.
     if (this.snapshot.manualResumeGuard === 'review') throw new CreditTaskPausedError(this.pauseMessage);
+    if (this.snapshot.state === 'completed') throw new CreditTaskPausedError('原任务已结束，不能继续调用。');
     this.parentCompleted = false;
     this.revision++;
-    await this.request('resume');
+    if (this.dispatchBilling) {
+      this.snapshot.state = 'running';
+      this.snapshot.enabled = true;
+      this.snapshot.startSent = true;
+      this.snapshot.reason = undefined;
+      this.snapshot.manualResumeGuard = undefined;
+      this.persist();
+    } else {
+      await this.request('resume');
+    }
     this.finishPromise = undefined;
     this.startPromise = Promise.resolve();
   }
@@ -255,9 +278,9 @@ export class CreditTaskRuntime {
       // Work has ended. Persist the acknowledgement gap so recovery never reruns models/tools.
       this.revision++;
       this.snapshot.state = 'completed';
-      this.snapshot.finishPending = this.snapshot.enabled !== false;
+      this.snapshot.finishPending = this.dispatchBilling || this.snapshot.enabled !== false;
       this.persist();
-      if (this.snapshot.enabled !== false) await this.request('finish');
+      if (this.snapshot.finishPending) await this.request('finish');
       this.snapshot.finishPending = false;
       this.snapshot.pendingInput = undefined;
       this.snapshot.manualResumeGuard = undefined;
@@ -276,7 +299,10 @@ export class CreditTaskRuntime {
       const model = action === 'start' ? this.config.model?.trim() : undefined;
       const response = await this.fetchImpl(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` },
+        headers: {
+          'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}`,
+          ...(this.dispatchBilling && action === 'finish' ? { 'X-CatsCo-Billing-Dispatch': '1' } : {}),
+        },
         body: JSON.stringify({ action, task_id: this.snapshot.taskId, ...(model && { model }) }),
         redirect: 'error',
         signal: AbortSignal.timeout(10_000),
@@ -294,7 +320,10 @@ export class CreditTaskRuntime {
       }
       // A stale in-flight status must never undo a concurrent pause (including a 402).
       if (revision !== this.revision) throw new CreditTaskPausedError(this.pauseMessage);
-      if (this.snapshot.enabled === true && decision.enabled === false) throw new Error('Relay 任务门禁状态发生变化');
+      const dispatchFinish = this.dispatchBilling && action === 'finish';
+      if (this.snapshot.enabled === true && decision.enabled === false && !dispatchFinish) {
+        throw new Error('Relay 任务门禁状态发生变化');
+      }
       this.snapshot.enabled = decision.enabled;
       this.snapshot.retainedTaskId = decision.retained_task_id;
       if (decision.enabled && action !== 'finish' && (!decision.allowed || decision.state !== 'running'
@@ -304,7 +333,7 @@ export class CreditTaskRuntime {
           'task_completed', 'manual_resume_required', 'plan_tier_unavailable', '余额不足'].includes(reason)
           ? reason : 'Relay 未确认本次任务可执行，请稍后再试。');
       }
-      if (action === 'finish' && decision.enabled && decision.state !== 'completed') {
+      if (action === 'finish' && (decision.enabled || dispatchFinish) && decision.state !== 'completed') {
         throw new Error('Relay 尚未确认原任务结束');
       }
       if (action === 'finish') this.revision++;

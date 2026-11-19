@@ -613,21 +613,23 @@ export class ConversationRunner {
       let response: ChatResponse;
       try {
         response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
-        if (budgetedCreditResumeResponses.has(response)) {
+        const shortenedResume = budgetedCreditResumeResponses.has(response);
+        if (shortenedResume || (manualCreditResume && currentCreditTask()?.dispatchBilling)) {
+          if (restoreProviderReplayToolCalls(response.content || '', this.buildRestorableReplayToolNameSet(requestTools)).toolCalls.length) {
+            throw currentCreditTask()!.pause('恢复请求返回了文本形式的工具回放，未执行');
+          }
           const savedCalls = messages.flatMap(message => message.tool_calls ?? []);
           if (response.toolCalls?.some(call => savedCalls.some(prior => prior.id === call.id || (
             normalizeToolName(prior.function.name) === normalizeToolName(call.function.name)
             && sameToolArguments(prior.function.arguments, call.function.arguments)
           )))) throw currentCreditTask()!.pause('恢复请求重复了已保存的工具调用，未执行');
+        }
+        if (shortenedResume) {
           // A shorter view cannot prove a new-looking call is not a repeated side effect.
           if (response.toolCalls?.length) {
             throw currentCreditTask()!.pause('缩减上下文的恢复请求不能确认新工具调用安全，未执行');
           }
-          const text = response.content || '';
-          if (restoreProviderReplayToolCalls(text, this.buildRestorableReplayToolNameSet(requestTools)).toolCalls.length) {
-            throw currentCreditTask()!.pause('恢复请求返回了文本形式的工具回放，未执行');
-          }
-          if (!stripAssistantTranscriptArtifacts(text).trim()) {
+          if (!stripAssistantTranscriptArtifacts(response.content || '').trim()) {
             throw currentCreditTask()!.pause('恢复请求未返回可用文本，需手动检查原任务');
           }
         }

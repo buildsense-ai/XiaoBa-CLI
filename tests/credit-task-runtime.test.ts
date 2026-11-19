@@ -105,6 +105,65 @@ for (const protocol of ['chat', 'responses', 'anthropic'] as const) {
   }
 }
 
+function enableBillingDispatch(t: TestContext) {
+  const key = 'CATSCO_RELAY_BILLING_DISPATCH';
+  const previous = process.env[key];
+  process.env[key] = '1';
+  t.after(() => {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  });
+}
+
+for (const protocol of ['chat_completions', 'responses', 'anthropic'] as const) {
+  test(`Relay billing dispatch sends ${protocol} directly with the root even without a local balance decision`, async t => {
+    enableBillingDispatch(t);
+    const f = await relay(t);
+    const config: ChatConfig = { ...f.config, provider: protocol === 'anthropic' ? 'anthropic' : 'openai',
+      openaiApiMode: protocol === 'responses' ? 'responses' : 'chat_completions' };
+    Object.assign(f.control, { status: 503, enabled: false, spendable: 0, debt: 100 });
+    const s = session(config);
+    assert.equal((await s.handleMessage('plain chat')).text, 'done');
+    assert.equal(f.calls.length, 1);
+    const taskId = f.calls[0].headers['x-catsco-root-task-id'];
+    assert.ok(taskId);
+    assert.equal(f.calls[0].headers['x-catsco-billing-dispatch'], '1');
+    assert.deepEqual(f.actions.map(a => [a.action, a.task_id, a.headers['x-catsco-billing-dispatch']]),
+      [['finish', taskId, '1']]);
+    assert.equal(SessionStore.getInstance().loadRuntimeState(s.key).creditTask?.finishPending, false);
+  });
+}
+
+test('Relay billing dispatch resumes a saved root with its full tool context and no control admission', async t => {
+  enableBillingDispatch(t);
+  const f = await relay(t);
+  const config: ChatConfig = { ...f.config, model: 'deepseek-flash', openaiApiMode: 'responses',
+    maxTokens: 24_000, contextWindowTokens: 1_000_000 };
+  Object.assign(f.control, { status: 503, spendable: 0, debt: 100 });
+  const key = `credit-task-${randomUUID()}`;
+  const pending = 'continue original request';
+  const root = randomUUID();
+  const store = SessionStore.getInstance();
+  const previousResult = 'Saved result must be retained';
+  assert.ok(store.saveContext(key, [
+    { role: 'user', content: pending, __episodeId: 'old-root', __episodeInputKind: 'root' },
+    { role: 'assistant', content: '', __episodeId: 'old-root', tool_calls: [{ id: 'old-tool', type: 'function',
+      function: { name: 'noop', arguments: '{}' } }] },
+    { role: 'tool', content: previousResult, __episodeId: 'old-root', tool_call_id: 'old-tool', name: 'noop' },
+  ]));
+  assert.ok(store.saveRuntimeState(key, { creditTask: { state: 'paused', enabled: true,
+    taskId: root, pendingInput: pending, startSent: true, manualResumeGuard: 'budget' } }));
+  const s = session(config, key);
+  s.restoreFromStore();
+  assert.equal((await s.handleCommand('resume', [])).reply, 'done');
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].headers['x-catsco-root-task-id'], root);
+  assert.equal(f.calls[0].headers['x-catsco-billing-dispatch'], '1');
+  assert.ok(f.calls[0].body.input.some((item: any) => item.type === 'function_call_output' && item.output === previousResult));
+  assert.equal(f.calls[0].body.max_output_tokens, 24_000);
+  assert.deepEqual(f.actions.map(a => [a.action, a.task_id]), [['finish', root]]);
+});
+
 test('ordinary providers never call the gate; lookalike host names do not establish CatsCo identity', async t => {
   const f = await relay(t);
   const config = { ...f.config, catsCoRelay: false };

@@ -1352,7 +1352,15 @@ export class OpenAIProvider implements AIProvider {
     const bytes = (body: any) => Buffer.byteLength(JSON.stringify(body), 'utf8');
     let body: any;
     let wire: Buffer | undefined;
-    if (budget) {
+    if (budget?.dispatchBilling) {
+      if (findSavedCreditInput(messages, budget.pendingInput) < 0) {
+        throw budget.keepPaused(CREDIT_RESUME_INPUT_NOT_FOUND);
+      }
+      body = this.buildResponsesRequestBody(messages, tools, stream, options);
+      if (!this.preservesSavedResponsesTools(budget.toolHistory, body.input)) {
+        throw budget.keepPaused('恢复请求无法完整保留工具结果，需手动检查原任务');
+      }
+    } else if (budget) {
       const spendable = budget.spendableUnits;
       if (spendable === undefined || spendable <= 0) throw budget.keepPaused();
       body = this.buildResponsesRequestBody(messages, tools, stream, options);
