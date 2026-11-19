@@ -331,7 +331,9 @@ export class AgentTurnController {
         content: params.input,
         __episodeId: episodeId,
         __episodeInputKind: 'root',
-        ...(params.runtimeObservationSource && {
+        // The first admitted execution uses the actual queued user input. Keep
+        // resume's approval semantics, but persist that input as a real anchor.
+        ...(params.runtimeObservationSource && params.runtimeObservationSource !== 'credit_resume_first_input' && {
           __runtimeObservation: true,
           runtimeObservationSource: params.runtimeObservationSource,
         }),

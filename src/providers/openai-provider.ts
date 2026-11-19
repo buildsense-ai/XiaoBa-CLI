@@ -1,5 +1,5 @@
 import { budgetedCreditResumeResponses, CREDIT_RESUME_CONTEXT_TOO_LARGE, CREDIT_RESUME_INPUT_NOT_FOUND,
-  creditAccountingHeaderFailures, creditTaskHeaders, takeManualCreditResumeBudget } from '../core/credit-task-runtime';
+  creditAccountingHeaderFailures, creditTaskHeaders, findSavedCreditInput, takeManualCreditResumeBudget } from '../core/credit-task-runtime';
 import { isDeepStrictEqual } from 'node:util';
 import axios from 'axios';
 import { createHash } from 'crypto';
@@ -1363,18 +1363,10 @@ export class OpenAIProvider implements AIProvider {
         // Leave 10% of the spendable balance plus fixed space for Relay normalization.
         const cap = Math.floor(spendable * 0.9 / FLASH_RESERVE_UNITS_PER_TOKEN) - output - RESUME_WIRE_HEADROOM_BYTES;
         if (cap <= 0) throw budget.keepPaused();
-        const pending = JSON.stringify(budget.pendingInput);
-        const isUserInput = (message: Message) => message.role === 'user'
-          && !this.isTurnDeltaMessage(message) && !message.__checkpointSummary && !message.__checkpointBoundary
-          && !message.__runtimeObservation;
-        const lastRoot = messages.reduce((last, message, i) =>
-          isUserInput(message) && message.__episodeInputKind === 'root' ? i : last, -1);
-        const root = messages[lastRoot];
-        const anchored = Boolean(root?.__episodeId && JSON.stringify(root.content) === pending);
-        const pendingIndices = messages.flatMap((message, i) => isUserInput(message)
-          && JSON.stringify(message.content) === pending ? [i] : []);
-        const pendingIndex = anchored ? lastRoot : pendingIndices.length === 1 ? pendingIndices[0] : -1;
+        const pendingIndex = findSavedCreditInput(messages, budget.pendingInput);
         if (pendingIndex < 0) throw budget.keepPaused(CREDIT_RESUME_INPUT_NOT_FOUND);
+        const root = messages[pendingIndex];
+        const anchored = Boolean(root.__episodeId && root.__episodeInputKind === 'root');
         // Legacy histories without episode boundaries only allow removing plain text pairs.
         const plain = (message: Message) => typeof message.content === 'string'
           && Object.entries(message).every(([key, value]) => value === undefined

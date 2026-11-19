@@ -39,6 +39,30 @@ export const LEGACY_CREDIT_GATE_PAUSE = '额度或模型权限不足，需手动
 export const CREDIT_ACCOUNTING_PAUSE = 'Relay 点数账务未通过，需手动恢复';
 export const CREDIT_RESUME_INPUT_NOT_FOUND = '无法在保存的会话中定位原输入';
 export const CREDIT_RESUME_CONTEXT_TOO_LARGE = '保留原任务所需的上下文后，本次恢复仍超过可预留点数';
+
+/** A prompt produced by the runtime or reconstructed from cloud chat is not a saved input. */
+function isSavedCreditInput(message: Message): boolean {
+  return message.role === 'user' && !message.__checkpointSummary && !message.__checkpointBoundary
+    && !message.__runtimeObservation && !message.__runtimeFeedback && !message.__syntheticObservation
+    && !message.__injected && !message.__remoteContextSource && message.__cacheScope !== 'dynamic';
+}
+
+export function findSavedCreditInput(messages: Message[], pendingInput: Message['content'] | undefined): number {
+  if (pendingInput == null) return -1;
+  const pending = JSON.stringify(pendingInput);
+  let lastRoot = -1;
+  const matches: number[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (!isSavedCreditInput(message)) continue;
+    if (message.__episodeInputKind === 'root') lastRoot = index;
+    if (JSON.stringify(message.content) === pending) matches.push(index);
+  }
+  if (messages[lastRoot]?.__episodeId && JSON.stringify(messages[lastRoot].content) === pending) return lastRoot;
+  if (matches.length !== 1) return -1;
+  const match = matches[0];
+  // Do not mistake a unique match in an older structured turn for the current root.
+  return messages[match].__episodeId || messages[match].__episodeInputKind === 'pending' ? -1 : match;
+}
 const manualBudgetScope = new AsyncLocalStorage<{
   task: CreditTaskRuntime;
   sessionKey: string;
@@ -141,7 +165,10 @@ export class CreditTaskRuntime {
     if (this.snapshot.manualResumeGuard === 'review') {
       return `任务已暂停，进度已保存（${this.snapshot.reason || '恢复结果尚未确认'}）。${retained}需人工检查原任务，/resume 不会重发。`;
     }
-    if (this.snapshot.reason === CREDIT_RESUME_INPUT_NOT_FOUND || this.snapshot.reason === CREDIT_RESUME_CONTEXT_TOO_LARGE) {
+    if (this.snapshot.reason === CREDIT_RESUME_INPUT_NOT_FOUND) {
+      return `任务已暂停（${this.snapshot.reason}）。${retained}恢复需要原会话历史。若确认放弃原任务，可用 /clear --abandon 后重新发送需求。`;
+    }
+    if (this.snapshot.reason === CREDIT_RESUME_CONTEXT_TOO_LARGE) {
       return `任务已暂停，进度已保存（${this.snapshot.reason}）。${retained}`;
     }
     return `任务已暂停，进度已保存（${this.snapshot.reason || '额度或权限检查未通过'}）。${retained}请在无欠款、有可用额度且具备模型权限后手动执行 /resume。`;
@@ -203,8 +230,9 @@ export class CreditTaskRuntime {
     }
   }
 
-  finish(): Promise<void> {
-    if (this.snapshot.state === 'paused' || (this.snapshot.state === 'completed' && !this.snapshot.finishPending)) {
+  finish(abandon = false): Promise<void> {
+    if (abandon && this.children > 0) return Promise.reject(new Error('子步骤尚未结束'));
+    if ((!abandon && this.snapshot.state === 'paused') || (this.snapshot.state === 'completed' && !this.snapshot.finishPending)) {
       return Promise.resolve();
     }
     if (this.finishPromise) return this.finishPromise;

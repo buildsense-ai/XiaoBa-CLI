@@ -249,6 +249,7 @@ export interface CatsAgentContextMessage {
   seq_id: number;
   topic_id: string;
   from_uid: number;
+  reply_to?: number;
   content?: unknown;
   content_blocks?: unknown[];
   type?: string;

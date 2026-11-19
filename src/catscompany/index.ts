@@ -99,7 +99,7 @@ import {
 import {
   agentContextMessageSeq,
   isNativeFeishuGroupTrigger,
-  isNativeFeishuClearBoundary,
+  findLastAppliedClearBoundaryIndex,
   selectNativeFeishuGroupContextEntries,
 } from './agent-context-history';
 import {
@@ -624,6 +624,7 @@ export class CatsCompanyBot {
   private agentServices: AgentServices;
   private cloudSessionRestorer: CatsCompanyCloudSessionRestorer;
   private cloudSessionRestorePromises = new Map<string, Promise<CloudSessionRestoreResult>>();
+  private sessionClearCommands?: Map<string, Promise<void>>;
   /** 等待用户后续指令的附件队列，key 为 sessionKey */
   private pendingAttachments = new Map<string, PendingAttachment[]>();
   /** 主会话忙时的消息队列，key = sessionKey */
@@ -2214,10 +2215,31 @@ export class CatsCompanyBot {
   }
 
   private async processParsedMessage(msg: ParsedCatsMessage, key: string): Promise<void> {
+    if (!isClearCommand(msg.text)) return this.processSessionMessage(msg, key);
+
+    const commands = this.sessionClearCommands ??= new Map();
+    const previous = commands.get(key);
+    let resolve!: () => void;
+    const decision = new Promise<void>(done => { resolve = done; });
+    commands.set(key, decision);
+    const release = () => {
+      if (commands.get(key) === decision) commands.delete(key);
+      resolve();
+    };
+    try {
+      await previous;
+      await this.processSessionMessage(msg, key, release);
+    } finally {
+      release();
+    }
+  }
+
+  private async processSessionMessage(msg: ParsedCatsMessage, key: string, clearDecided?: () => void): Promise<void> {
+    const clearCommand = isClearCommand(msg.text);
     // Any real user message supersedes an interrupted turn: they either
     // already retried by hand or moved on. Dropping the marker here also keeps
     // the startup scan from replaying a turn the user has visibly taken over.
-    if (msg.senderId && normalizeCatsUid(msg.senderId) !== normalizeCatsUid(this.botUid)) {
+    if (!clearCommand && msg.senderId && normalizeCatsUid(msg.senderId) !== normalizeCatsUid(this.botUid)) {
       this.clearInterruptedTurn(key);
     }
     // Stop is control input: it must reach the same boundary as the web button
@@ -2261,20 +2283,23 @@ export class CatsCompanyBot {
       })];
 
     let cloudRestoreResult: CloudSessionRestoreResult | undefined;
-    if (sessionRoute && isClearCommand(msg.text)) {
-      // Fence older work before the provenance lookup can yield to it.
-      this.bumpSessionClearGeneration(key);
-      this.cloudSessionRestoreAbortControllers?.get(key)?.abort();
-      this.cloudSessionRestorePromises.delete(key);
+    if (sessionRoute && clearCommand) {
       try {
         await this.assertForkLocalContextAvailable(sessionRoute);
       } catch (error: any) {
         Logger.warning(`[${key}] Missing fork context; clear refused: ${error?.message || error}`);
+        clearDecided?.();
+        await this.sender.reply(msg.topic, '本机缺少可验证的分叉上下文，历史已保留。', { replyTo: msg.seq }).catch(() => undefined);
         return;
       }
     }
-    if (sessionRoute && !isClearCommand(msg.text)) {
+    if (sessionRoute && !clearCommand) {
       cloudRestoreResult = await this.ensureCloudSessionRestored(msg, sessionRoute);
+      // A restore may finish while /clear is awaiting provenance or task finish.
+      // Wait for the decision, so a refused clear can let the original input continue.
+      while (this.sessionClearCommands?.has(key)) {
+        await this.sessionClearCommands.get(key)?.catch(() => undefined);
+      }
       if (entryClearGeneration !== this.getSessionClearGeneration(key)
         || entryStopGeneration !== this.getSessionStopGeneration(key)) return;
       if (cloudRestoreResult.status === 'failed' || cloudRestoreResult.status === 'skipped') {
@@ -2296,23 +2321,6 @@ export class CatsCompanyBot {
       const args = parts.slice(1);
       const isClear = command.toLowerCase() === 'clear';
       const isCompact = command.toLowerCase() === 'compact';
-
-      if (isClear) {
-        this.pendingAttachments.delete(key);
-        this.messageQueue.delete(key);
-        if (!sessionRoute) this.bumpSessionClearGeneration(key);
-        const completionBatch = this.subAgentCompletionBatches.get(key);
-        if (completionBatch?.timer) clearTimeout(completionBatch.timer);
-        this.subAgentCompletionBatches.delete(key);
-        this.cloudSessionRestoreAbortControllers?.get(key)?.abort();
-        this.cloudSessionRestorePromises.delete(key);
-        // /clear means the user wants this conversation empty. Leaving the
-        // interruption marker behind would auto-resume a turn into the very
-        // history they just wiped, so retire it here as well.
-        this.clearInterruptedTurn(key);
-        session.requestInterrupt?.();
-        this.cancelConversationTask(key);
-      }
 
       // /compact follows the normal slash-command/reply path, with the
       // existing Working-style thinking callback for checkpoint progress. It
@@ -2341,17 +2349,38 @@ export class CatsCompanyBot {
         deviceRpc: this.buildDeviceRpcTransport(),
         thinToolRpc: this.maybeBuildThinToolRpcTransport(),
       } : undefined);
+      // 普通 /clear 会被拒绝（例如信用任务未结束时历史必须保留，需显式 --abandon）。
+      // 只有真正执行了清空的命令才允许销毁队列、附件、中断标记、运行中的回合
+      // 以及本地的空历史哨兵；拒绝路径必须原样保留。
+      const clearApplied = isClear && result.handled && result.clearRefused !== true;
+      if (clearApplied) {
+        this.pendingAttachments.delete(key);
+        this.messageQueue.delete(key);
+        this.bumpSessionClearGeneration(key);
+        const completionBatch = this.subAgentCompletionBatches.get(key);
+        if (completionBatch?.timer) clearTimeout(completionBatch.timer);
+        this.subAgentCompletionBatches.delete(key);
+        this.cloudSessionRestoreAbortControllers?.get(key)?.abort();
+        this.cloudSessionRestorePromises.delete(key);
+        // /clear means the user wants this conversation empty. Leaving the
+        // interruption marker behind would auto-resume a turn into the very
+        // history they just wiped, so retire it here as well.
+        this.clearInterruptedTurn(key);
+        session.requestInterrupt?.();
+        this.cancelConversationTask(key);
+      }
       let commandReply = result.reply;
-      if (result.handled && isClear && !args.includes('--all')) {
+      if (clearApplied && !args.includes('--all')) {
         const clearPersisted = this.cloudSessionRestorer.markLocalSessionCleared(sessionRoute?.sessionKey || key);
         if (!clearPersisted) {
           commandReply = '历史已在当前进程清空，但本地持久化失败，请立即重试 /clear。';
           Logger.error(`[${key}] /clear 哨兵连续两次落盘失败，禁止误报持久清空成功`);
         }
       }
+      clearDecided?.();
       if (result.handled && commandReply) {
         try {
-          await this.sender.reply(msg.topic, commandReply);
+          await this.sender.reply(msg.topic, commandReply, isClear ? { replyTo: msg.seq } : undefined);
         } catch (err: any) {
           Logger.warning(`命令回复发送失败: ${err.message}`);
         }
@@ -2690,15 +2719,16 @@ export class CatsCompanyBot {
       const pageMessages = page.messages || [];
       const reachedPreviousCursor = afterSeq > 0
         && pageMessages.some(message => agentContextMessageSeq(message) <= afterSeq);
-      const reachedClearBoundary = pageMessages.some(isNativeFeishuClearBoundary);
+      const ordered = [...messagesBySeq.values()]
+        .sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right));
+      const reachedClearBoundary = findLastAppliedClearBoundaryIndex(ordered, 'group', this.botUid ?? undefined) >= 0;
       if (
         reachedPreviousCursor
         || reachedClearBoundary
         || !page.has_more
         || page.next_before_id <= 0
       ) {
-        return [...messagesBySeq.values()]
-          .sort((left, right) => agentContextMessageSeq(left) - agentContextMessageSeq(right));
+        return ordered;
       }
       if (page.next_before_id >= pageBeforeId) {
         throw new Error(`agent context pagination did not advance: ${page.next_before_id}`);
