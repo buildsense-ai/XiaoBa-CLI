@@ -171,31 +171,60 @@ describe('Windows Node staging', () => {
     assert.strictEqual(options.fetchMock.mock.callCount(), 0);
   });
 
-  test('re-extracts a ZIP when Expand-Archive reports success without node.exe', { skip: process.platform !== 'win32' }, async (t) => {
-    const root = makeRuntimeFixtureRoot(t);
-    const fixture = path.join(root, 'fixture');
-    fs.mkdirSync(fixture);
-    fs.writeFileSync(path.join(fixture, 'node.exe'), 'fixture node');
-    const archive = path.join(root, 'fixture.zip');
-    execFileSync('tar', ['-acf', archive, '-C', root, 'fixture']);
-    const options = configureWindowsNodeFixture(t, root, 'zip', fs.readFileSync(archive), true);
+  for (const status of [0, 1]) {
+    test(`re-extracts a partial ZIP after Expand-Archive exits ${status}`, { skip: process.platform !== 'win32' }, async (t) => {
+      const root = makeRuntimeFixtureRoot(t);
+      const fixture = path.join(root, 'fixture');
+      fs.mkdirSync(fixture);
+      fs.writeFileSync(path.join(fixture, 'node.exe'), 'fixture node');
+      const archive = path.join(root, 'fixture.zip');
+      execFileSync('tar', ['-acf', archive, '-C', root, 'fixture']);
+      const options = configureWindowsNodeFixture(t, root, 'zip', fs.readFileSync(archive), true);
 
-    const spawnSync = childProcess.spawnSync;
-    const spawn = t.mock.method(childProcess, 'spawnSync', (command, args, spawnOptions) => {
-      if (command !== 'powershell.exe') return spawnSync(command, args, spawnOptions);
-      const probe = args.at(-1).startsWith('Get-Command');
-      return { status: 0, signal: null, stdout: probe ? 'Expand-Archive\r\n' : '', stderr: '' };
+      const spawnSync = childProcess.spawnSync;
+      const spawn = t.mock.method(childProcess, 'spawnSync', (command, args, spawnOptions) => {
+        if (command !== 'powershell.exe') return spawnSync(command, args, spawnOptions);
+        const script = args.at(-1);
+        if (script.startsWith('Get-Command')) return commandResult(0, 'Expand-Archive\r\n');
+        const [, destination] = script.match(/-DestinationPath '((?:''|[^'])+)' -Force/);
+        const partial = path.join(destination.replaceAll("''", "'"), 'fixture');
+        fs.mkdirSync(partial);
+        fs.writeFileSync(path.join(partial, 'incomplete.txt'), 'partial extraction');
+        return commandResult(status, '', status ? 'Cannot find an overload for ExtractToDirectory' : '');
+      });
+      syncBuiltinESMExports();
+      t.after(() => { spawn.mock.restore(); syncBuiltinESMExports(); });
+
+      // The fixture ends after Node, before preparing Python or copying Git.
+      await assert.rejects(prepareRuntime(options), /Runtime python is not defined/);
+      const stagedNode = path.join(options.runtimeRoot, 'node');
+      assert.strictEqual(fs.readFileSync(path.join(stagedNode, 'node.exe'), 'utf8'), 'fixture node');
+      assert.strictEqual(fs.existsSync(path.join(stagedNode, 'incomplete.txt')), false);
+      assert.deepStrictEqual(spawn.mock.calls.map(call => call.arguments[0]), ['powershell.exe', 'powershell.exe', 'tar']);
+      assert.strictEqual(options.fetchMock.mock.callCount(), 0);
+    });
+  }
+
+  test('reports both ZIP extraction errors when tar also fails', { skip: process.platform !== 'win32' }, async (t) => {
+    const root = makeRuntimeFixtureRoot(t);
+    const options = configureWindowsNodeFixture(t, root, 'zip', Buffer.from('not a zip'), true);
+    const spawn = t.mock.method(childProcess, 'spawnSync', (command, args) => {
+      if (command === 'tar') return commandResult(2, '', 'tar extraction error');
+      if (args.at(-1).startsWith('Get-Command')) return commandResult(0, 'Expand-Archive\r\n');
+      return commandResult(1, '', 'PowerShell extraction error');
     });
     syncBuiltinESMExports();
     t.after(() => { spawn.mock.restore(); syncBuiltinESMExports(); });
 
-    // The fixture ends after Node, before preparing Python or copying Git.
-    await assert.rejects(prepareRuntime(options), /Runtime python is not defined/);
-    assert.strictEqual(fs.readFileSync(path.join(options.runtimeRoot, 'node', 'node.exe'), 'utf8'), 'fixture node');
-    assert.deepStrictEqual(spawn.mock.calls.map(call => call.arguments[0]), ['powershell.exe', 'powershell.exe', 'tar']);
-    assert.strictEqual(options.fetchMock.mock.callCount(), 0);
+    await assert.rejects(prepareRuntime(options), /status=1.*PowerShell extraction error\ntar .*status=2.*tar extraction error/);
+    assert.strictEqual(fs.existsSync(path.join(options.runtimeRoot, 'node')), false);
+    assert.strictEqual(fs.existsSync(path.join(options.runtimeRoot, 'manifest.json')), false);
   });
 });
+
+function commandResult(status: number, stdout: string, stderr = '') {
+  return { status, signal: null, stdout, stderr };
+}
 
 function makeRuntimeFixtureRoot(t: TestContext): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-stage-'));

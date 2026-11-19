@@ -357,13 +357,25 @@ function extractArchive(archivePath, extractRoot, archiveType, useWindowsTar) {
           'Get-Command Expand-Archive -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name',
         ], { encoding: 'utf8', windowsHide: true });
         if (probe.status === 0 && String(probe.stdout || '').trim() === 'Expand-Archive') {
-          runCommand('powershell.exe', [
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            `$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath ${quotePowerShellPath(archivePath)} -DestinationPath ${quotePowerShellPath(extractRoot)} -Force -ErrorAction Stop`,
-          ]);
-          return 'Expand-Archive';
+          try {
+            runCommand('powershell.exe', [
+              '-NoProfile',
+              '-NonInteractive',
+              '-Command',
+              `$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath ${quotePowerShellPath(archivePath)} -DestinationPath ${quotePowerShellPath(extractRoot)} -Force -ErrorAction Stop`,
+            ]);
+            return 'Expand-Archive';
+          } catch (expandError) {
+            console.warn(`  Expand-Archive failed for ${archivePath}; retrying extraction with tar`);
+            fs.rmSync(extractRoot, { recursive: true, force: true });
+            fs.mkdirSync(extractRoot);
+            try {
+              runCommand('tar', ['-xf', archivePath, '-C', extractRoot]);
+            } catch (tarError) {
+              throw new Error(`${expandError.message}\n${tarError.message}`, { cause: tarError });
+            }
+            return;
+          }
         }
         runCommand('tar', ['-xf', archivePath, '-C', extractRoot]);
       } else {
