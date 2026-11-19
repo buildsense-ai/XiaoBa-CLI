@@ -56,6 +56,18 @@ test('compiled knowledge runtime works from isolated CLI, desktop and Worker res
             assert.equal(call('search','Updated').total,1);
             assert.ok(fs.existsSync(path.join(data,'knowledge/.history',created.id,created.revision+'.md')));
             assert.equal(fs.existsSync(path.join(app,'knowledge')),false);
+            // A synchronized copy takes precedence over the bundled Skill. Exercise the actual tool.
+            const copy=path.join(data,'skills/xiaoba-knowledge');
+            fs.cpSync(path.dirname(skill.filePath),copy,{recursive:true});
+            const {SkillTool}=require(path.join(app,'dist/tools/skill-tool'));
+            const invoke=()=>new SkillTool().execute({skill:'xiaoba-knowledge'},{workingDirectory:cwdForTool,sessionId:'test-session'});
+            const cwdForTool=process.cwd();
+            const result=await invoke();assert.ok(result.ok);assert.ok(result.content.includes('Skill directory: '+copy));
+            assert.ok(result.content.includes('本实例知识目录：'+path.join(data,'knowledge')));
+            assert.ok(!result.content.includes('<KNOWLEDGE_'));
+            assert.equal(JSON.parse(execFileSync(process.execPath,[path.join(copy,'scripts/knowledge.cjs'),'--root',path.join(data,'knowledge'),'index'],{encoding:'utf8'})).total,1);
+            fs.appendFileSync(path.join(copy,'SKILL.md'),'\\nCustom instructions: <KNOWLEDGE_ROOT>\\n');
+            assert.ok((await invoke()).content.includes('Custom instructions: <KNOWLEDGE_ROOT>'));
             console.log('PACKAGED_KNOWLEDGE_OK');
           })().catch(e=>{console.error(e);process.exitCode=1});
         `;

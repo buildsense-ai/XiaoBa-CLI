@@ -19,7 +19,10 @@ export function loadBuiltinKnowledgeSkill(): Skill {
 
 // Resolve runtime paths only on invocation, never in the cached Skill listing.
 export function renderKnowledgePaths(skill: Skill, context?: { sessionId?: string }): Skill {
-  if (!isBuiltinKnowledgeSkillFile(skill.filePath)) return skill;
+  // A bot can select a synchronized copy of the bundled instructions. Keep
+  // its own script directory, but resolve the instance paths on invocation.
+  if (!isBuiltinKnowledgeSkillFile(skill.filePath) &&
+      (skill.metadata.name !== KNOWLEDGE_SKILL_NAME || skill.content !== loadBuiltinKnowledgeSkill().content)) return skill;
   return {
     ...skill,
     content: skill.content
