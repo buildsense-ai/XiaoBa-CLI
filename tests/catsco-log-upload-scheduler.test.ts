@@ -130,6 +130,29 @@ describe('CatscoLogUploadScheduler', () => {
     assert.equal(requests.filter(item => item.url === '/catsco/logs/upload').length, 3);
   });
 
+  test('quarantine survives restart and mtime changes but releases changed content', async t => {
+    const key = ['logs', 'sessions', 'chat', '2026-05-14', 'replay.jsonl'].join('/');
+    const file = path.join(testRoot, key);
+    writeLog(key, '{"value":1}\n', true);
+    const statePath = configureV1Upload();
+    let calls = 0;
+    t.mock.method(CatscoLogAgentClient.prototype, 'uploadLog', async () => {
+      calls++;
+      return { upload_id: 'receipt-' + calls, status: calls === 1 ? 'quarantined' : 'created' };
+    });
+    const cycle = () => new CatscoLogUploadScheduler(testRoot).runPendingUploadCycle('manual');
+    await cycle();
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).uploaded[key], undefined);
+    await cycle();
+    fs.utimesSync(file, new Date(0), new Date(0));
+    await cycle();
+    assert.equal(calls, 1);
+    writeLog(key, '{"value":2}\n', true);
+    await cycle();
+    assert.equal(calls, 2);
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).uploaded[key].uploadId, 'receipt-2');
+  });
+
   for (const appendTiming of ['before client read', 'after client read']) {
     for (const includeResponseHash of [false, true]) {
       test(`v1 keeps appended bytes pending ${appendTiming} (response hash: ${includeResponseHash})`, async t => {

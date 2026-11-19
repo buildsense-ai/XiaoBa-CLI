@@ -222,11 +222,12 @@ export class CatscoLogUploadScheduler {
           if (appendUrl) {
             const appended = await this.appendV2(item, state, client, { ...uploadSession, appendUrl }, config.stateFilePath);
             if (!appended) {
-              await this.uploadV1(item, state, client, uploadSession.token);
+              if (!await this.uploadV1(item, state, client, uploadSession.token)) return;
             }
           } else {
-            await this.uploadV1(item, state, client, uploadSession.token);
+            if (!await this.uploadV1(item, state, client, uploadSession.token)) return;
           }
+          delete state.quarantined?.[item.stateKey];
           uploadedCount++;
         } catch (error: any) {
           if (Number(error?.status) === 401) {
@@ -404,7 +405,7 @@ export class CatscoLogUploadScheduler {
     state: CatscoLogAgentState,
     client: CatscoLogAgentClient,
     token: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // The client reads filePath itself, so freeze the bytes before handing it
     // over. Keep the basename because v1 uses it as the multipart filename.
     const sourceStats = fs.statSync(item.absolutePath);
@@ -419,6 +420,16 @@ export class CatscoLogUploadScheduler {
         token,
         logDate: item.logDate,
       });
+      if ([result.status, result.parse_status].some(status => status?.toLowerCase() === 'quarantined')) {
+        state.quarantined ||= {};
+        state.quarantined[item.stateKey] = {
+          size, ctimeMs: sourceStats.ctimeMs, sha256: snapshotSha256,
+          uploadId: result.upload_id || result.record_id, userId: state.userId, deviceId: state.deviceId,
+        };
+        saveCatscoLogAgentState(getCatscoLogAgentConfig(this.workingDirectory).stateFilePath, state);
+        Logger.warning(`[CatsLog] quarantined snapshot for ${item.stateKey}; recorded for review`);
+        return false;
+      }
       if (result.status && !['created', 'appended', 'duplicate'].includes(result.status.toLowerCase())) {
         throw new Error(`CatsLog v1 fallback was not accepted (${String(result.status || 'unknown')})`);
       }
@@ -433,6 +444,7 @@ export class CatscoLogUploadScheduler {
         uploadId: result.upload_id || result.record_id,
         sha256: snapshotSha256,
       };
+      return true;
     } finally {
       fs.rmSync(snapshotDirectory, { recursive: true, force: true });
     }
@@ -656,6 +668,12 @@ export class CatscoLogUploadScheduler {
       return false;
     }
 
+    const conflict = state.quarantined?.[candidate.stateKey];
+    if (conflict && conflict.userId === state.userId && conflict.deviceId === state.deviceId) {
+      if (stats.size !== conflict.size) return true;
+      if (stats.ctimeMs === conflict.ctimeMs) return false;
+      return sha256FilePrefix(candidate.absolutePath, stats.size) !== conflict.sha256;
+    }
     const uploaded = state.uploaded[candidate.stateKey];
     return !uploaded
       || (uploaded.append !== undefined && uploaded.append.acceptedOffset !== stats.size)

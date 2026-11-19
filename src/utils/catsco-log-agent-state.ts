@@ -63,6 +63,7 @@ export interface CatscoLogAgentState {
   memoryWriteToken?: string;
   memoryWriteTokenExpiresAt?: string;
   stateCorrupt?: boolean;
+  quarantined?: Record<string, { size: number; ctimeMs: number; sha256: string; uploadId?: string; userId?: string; deviceId?: string }>;
   uploaded: Record<string, CatscoUploadedFileState>;
 }
 
