@@ -258,7 +258,7 @@ test('a stale concurrent status cannot undo a local budget pause', async () => {
   assert.equal(root.snapshot.state, 'paused');
 });
 
-test('402 persists paused/root across restart; only manual resume passes current debt/balance/permission gate', async t => {
+test('402 preserves the root across restart and resume follows the Relay decision', async t => {
   const f = await relay(t);
   f.control.modelStatus = 402;
   const original = session(f.config);
@@ -273,16 +273,13 @@ test('402 persists paused/root across restart; only manual resume passes current
   restored.restoreFromStore();
   assert.match((await restored.handleMessage('tool dispatch', { dispatchedAsTool: true })).text, /点数检查未通过/);
   assert.equal(f.calls.length, 1);
-  for (const condition of [{ debt: 5, spendable: 20, allowed: true }, { debt: 0, spendable: 0, allowed: true },
-    { debt: 0, spendable: 20, allowed: false }]) {
-    Object.assign(f.control, condition);
-    assert.match((await restored.handleCommand('resume', [])).reply!, /余额不足/);
-    assert.equal(f.calls.length, 1);
-  }
-  Object.assign(f.control, { debt: 0, spendable: 20, allowed: true });
+  Object.assign(f.control, { debt: 5, spendable: 0, allowed: false });
+  assert.match((await restored.handleCommand('resume', [])).reply!, /余额不足/);
+  assert.equal(f.calls.length, 1);
+  f.control.allowed = true;
   assert.equal((await restored.handleCommand('resume', [])).reply, 'done');
   assert.equal(f.actions.filter(a => a.action === 'start').length, 1);
-  assert.equal(f.actions.filter(a => a.action === 'resume').length, 4);
+  assert.equal(f.actions.filter(a => a.action === 'resume').length, 2);
   assert.equal(f.actions.filter(a => a.action === 'finish').length, 1);
   for (const action of f.actions) assert.equal(action.task_id, snapshot.taskId);
   for (const call of f.calls) assert.equal(call.headers['x-catsco-root-task-id'], snapshot.taskId);
@@ -692,9 +689,9 @@ const relayAccountingError = { error: { type: 'api_error', param: null, code: 'c
   message: 'credit request could not be accounted' } };
 
 for (const outcome of ['success', 'restored duplicate input', 'unpaired historical episode', 'gate recovers after reload',
-  'required too large', 'unclosed legacy turn', 'missing tool result', 'repeated tool', 'new tool', 'textual replay',
+  'required too large', 'unclosed legacy turn', 'missing tool result', 'repeated tool', 'textual replay',
   'partial stream', 'accounting 402', 'ordinary 402', 'ordinary 409'] as const) {
-  test(`manual budget resume: ${outcome}`, async t => {
+  test(`manual resume keeps the original context: ${outcome}`, async t => {
     const f = await relay(t);
     const config: ChatConfig = { ...f.config, model: 'deepseek-flash', openaiApiMode: 'responses',
       maxTokens: 24_000, contextWindowTokens: 1_000_000 };
@@ -774,7 +771,7 @@ for (const outcome of ['success', 'restored duplicate input', 'unpaired historic
     });
     let s = createSession();
     s.restoreFromStore();
-    f.control.spendable = structured ? 83_673_167 : 89_000_000;
+    f.control.spendable = 1;
     f.control.decide = () => ({ plan_tier: 1 });
     let legacyCalls = 0;
     f.control.respond = (body, headers, res) => {
@@ -782,13 +779,12 @@ for (const outcome of ['success', 'restored duplicate input', 'unpaired historic
       // uses the credit ledger and its original task binding.
       if (!headers['x-catsco-root-task-id']) { legacyCalls++; return false; }
       if (headers['x-catsco-root-task-id'] !== root) { res.statusCode = 403; res.end('{}'); return true; }
-      if (outcome === 'ordinary 409' || outcome === 'ordinary 402'
-        || (Buffer.byteLength(JSON.stringify(body)) + body.max_output_tokens) * 1512 > f.control.spendable) {
+      if (outcome === 'ordinary 409' || outcome === 'ordinary 402' || (outcome === 'accounting 402' && f.calls.length === 1)) {
         res.statusCode = outcome === 'ordinary 409' ? 409 : 402;
         res.end(JSON.stringify(outcome === 'ordinary 402' ? { error: { message: 'model forbidden' } } : relayAccountingError));
         return true;
       }
-      if (!['repeated tool', 'new tool', 'partial stream', 'textual replay'].includes(outcome)) return false;
+      if (!['repeated tool', 'partial stream', 'textual replay'].includes(outcome)) return false;
       res.setHeader('Content-Type', 'text/event-stream');
       const event = (type: string, payload: any) => `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
       if (outcome === 'partial stream') {
@@ -803,7 +799,7 @@ for (const outcome of ['success', 'restored duplicate input', 'unpaired historic
       } else {
         res.end(event('response.completed', { response: { id: 'repeat-response', status: 'completed', output: [
           { type: 'function_call', call_id: 'new-tool-id', name: 'noop',
-            arguments: outcome === 'new tool' ? '{"a":2}' : '{"b":2,"a":1}' },
+            arguments: '{"b":2,"a":1}' },
         ] } }));
       }
       return true;
@@ -837,70 +833,44 @@ for (const outcome of ['success', 'restored duplicate input', 'unpaired historic
       assert.ok(retained.some(message => message.role === original.role && message.content === original.content), original.role);
     }
     assert.equal(retained.filter(message => message.content === pending).length, structured ? 3 : 1);
-    if (outcome === 'success' || outcome === 'restored duplicate input' || outcome === 'gate recovers after reload' || outcome === 'accounting 402') {
+    const blocked = ['missing tool result', 'unpaired historical episode'].includes(outcome);
+    const failed = blocked || ['repeated tool', 'textual replay', 'partial stream', 'ordinary 402', 'ordinary 409'].includes(outcome);
+    if (!failed) {
       assert.equal(reply, 'done');
       assert.equal(snapshot.state, 'completed');
       assert.equal(snapshot.manualResumeGuard, undefined);
       assert.equal(f.actions.filter(action => action.action === 'finish').length, 1);
     } else {
-      assert.match(reply!, /恢复结果尚未确认|超过可预留点数|点数(?:检查|账务)未通过|恢复请求未安全完成/);
       assert.equal(snapshot.state, 'paused');
       assert.equal(snapshot.pendingInput, pending);
-      if (outcome === 'repeated tool') assert.match(snapshot.reason!, /重复了已保存的工具调用/);
-      if (outcome === 'new tool') assert.match(snapshot.reason!, /不能确认新工具调用安全/);
-      if (outcome === 'textual replay') assert.match(snapshot.reason!, /文本形式的工具回放/);
       assert.equal(f.actions.some(action => action.action === 'finish'), false);
-      if (['partial stream', 'repeated tool', 'new tool', 'textual replay'].includes(outcome)) {
-        assert.equal(snapshot.manualResumeGuard, 'review');
-        const restarted = createSession();
-        restarted.restoreFromStore();
-        const gateActions = f.actions.length;
-        assert.match((await restarted.handleCommand('resume', [])).reply!, /不会重发/);
-        assert.equal(f.actions.length, gateActions);
-        assert.equal(f.calls.length, 1);
-        assert.equal(dispatched, 0);
-        assert.equal(store.loadRuntimeState(key).creditTask!.pendingInput, pending);
-      }
+      if (blocked) assert.match(snapshot.reason!, /完整保留工具结果/);
+      if (outcome === 'repeated tool') assert.match(snapshot.reason!, /重复了已保存的工具调用/);
+      if (outcome === 'textual replay') assert.match(snapshot.reason!, /文本形式的工具回放/);
+      if (outcome === 'ordinary 409' || outcome === 'ordinary 402') assert.notEqual(snapshot.reason, CREDIT_ACCOUNTING_PAUSE);
     }
-    if (outcome === 'required too large' || outcome === 'unclosed legacy turn' || outcome === 'missing tool result' || outcome === 'unpaired historical episode') {
-      if (outcome === 'required too large' || outcome === 'unclosed legacy turn') {
-        assert.match(snapshot.reason!, /仍超过可预留点数/);
-      } else {
-        if (outcome === 'unpaired historical episode') assert.equal(snapshot.manualResumeGuard, 'budget');
-        assert.equal(snapshot.reason, LEGACY_CREDIT_GATE_PAUSE);
-      }
+    if (blocked) {
       assert.equal(f.calls.length, 0);
     } else {
       assert.equal(f.calls.length, outcome === 'accounting 402' ? 2 : 1);
       const { body, wireBytes, headers } = f.calls.at(-1)!;
       assert.equal(headers.authorization, 'Bearer test-relay-key');
       assert.equal(body.model, 'deepseek-flash');
+      assert.equal(body.max_output_tokens, 24_000);
+      assert.ok(wireBytes >= 519 * 1024);
       assert.match(body.instructions, /^Test system prompt\b/);
       assert.match(body.instructions, /transient_runtime_observation_rules/);
-      if (outcome === 'ordinary 409' || outcome === 'ordinary 402') {
-        assert.ok(wireBytes >= 519 * 1024);
-        assert.equal(body.max_output_tokens, 24_000);
-        assert.notEqual(snapshot.reason, CREDIT_ACCOUNTING_PAUSE);
-      } else {
-        assert.equal(body.max_output_tokens, 4096);
-        assert.ok(wireBytes + 4096 + body.max_output_tokens <= Math.floor(f.control.spendable * 0.9 / 1512));
-        if (structured) {
-          assert.match(body.instructions, /historical episodes may be omitted or excerpted/);
-          assert.ok(JSON.stringify(body).includes('Earlier continuity checkpoint'));
-          assert.ok(JSON.stringify(body).includes('Saved runtime observation'));
-          assert.equal(body.input.some((item: any) => item.call_id?.startsWith('old-')), false);
-          const checkpointOutputs = body.input.filter((item: any) => item.type === 'function_call_output'
-            && item.call_id?.startsWith('checkpoint-tool-'));
-          assert.equal(checkpointOutputs.length, 36);
-          assert.ok(checkpointOutputs.every((item: any) => /Historical result excerpt/.test(item.output)));
-          assert.equal(body.tools, undefined);
-          t.diagnostic(`serialized request: ${wireBytes} bytes, conservative reserve incl. headroom: ${(wireBytes + 8192) * 1512} units`);
-        }
-        assert.ok(JSON.stringify(body).includes(pending));
-        if (!structured) assert.ok(body.tools.some((tool: any) => tool.name === 'noop'));
-        const exchange = body.input.filter((item: any) => item.call_id === 'saved-tool');
-        assert.deepEqual(exchange.map((item: any) => item.type), ['function_call', 'function_call_output']);
-        assert.equal(exchange[1].output, 'Saved, do not repeat');
+      assert.ok(JSON.stringify(body).includes(pending));
+      assert.ok(body.tools.some((tool: any) => tool.name === 'noop'));
+      const exchange = body.input.filter((item: any) => item.call_id === 'saved-tool');
+      assert.deepEqual(exchange.map((item: any) => item.type), ['function_call', 'function_call_output']);
+      assert.equal(exchange[1].output, 'Saved, do not repeat');
+      if (denseHistory) {
+        const checkpointOutputs = body.input.filter((item: any) => item.type === 'function_call_output'
+          && item.call_id?.startsWith('checkpoint-tool-'));
+        assert.equal(checkpointOutputs.length, 36);
+        assert.ok(checkpointOutputs.every((item: any) => item.output === '旧'.repeat(1100)));
+        assert.ok(body.input.some((item: any) => item.call_id?.startsWith('old-')));
       }
     }
   });

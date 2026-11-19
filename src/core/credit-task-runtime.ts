@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
-import type { ChatConfig, ChatResponse, Message } from '../types';
+import type { ChatConfig, Message } from '../types';
 import { isCatsRelayApiBase } from '../utils/catsco-domains';
 
 export interface CreditTaskSnapshot {
@@ -33,12 +33,10 @@ export const currentCreditTask = (): CreditTaskRuntime | undefined => scope.getS
 export const isCatsCoCreditProvider = (config: Partial<ChatConfig>): boolean =>
   config.catsCoRelay === true || isCatsRelayApiBase(config.apiUrl);
 
-// 1.6.8 persisted one reason for both HTTP 402 and 409. It is useful only for
-// opting into a fresh budget check during explicit /resume, not as a diagnosis.
+// Historical 1.6.8 reason shared by HTTP 402 and 409. It marks saved recovery context.
 export const LEGACY_CREDIT_GATE_PAUSE = '额度或模型权限不足，需手动恢复';
 export const CREDIT_ACCOUNTING_PAUSE = 'Relay 点数账务未通过，需手动恢复';
 export const CREDIT_RESUME_INPUT_NOT_FOUND = '无法在保存的会话中定位原输入';
-export const CREDIT_RESUME_CONTEXT_TOO_LARGE = '保留原任务所需的上下文后，本次恢复仍超过可预留点数';
 
 /** A prompt produced by the runtime or reconstructed from cloud chat is not a saved input. */
 function isSavedCreditInput(message: Message): boolean {
@@ -63,7 +61,7 @@ export function findSavedCreditInput(messages: Message[], pendingInput: Message[
   // Do not mistake a unique match in an older structured turn for the current root.
   return messages[match].__episodeId || messages[match].__episodeInputKind === 'pending' ? -1 : match;
 }
-const manualBudgetScope = new AsyncLocalStorage<{
+const manualResumeScope = new AsyncLocalStorage<{
   task: CreditTaskRuntime;
   sessionKey: string;
   reason: string;
@@ -73,30 +71,26 @@ const manualBudgetScope = new AsyncLocalStorage<{
 }>();
 
 export function isManualCreditResume(sessionKey: string | undefined): boolean {
-  const resume = manualBudgetScope.getStore();
+  const resume = manualResumeScope.getStore();
   return Boolean(resume && resume.sessionKey === sessionKey && resume.task === currentCreditTask());
 }
 
-export function takeManualCreditResumeBudget(apiUrl: string, sessionKey: string, apiKey: string) {
-  const resume = manualBudgetScope.getStore();
+export function takeManualCreditResume(apiUrl: string, sessionKey: string) {
+  const resume = manualResumeScope.getStore();
   if (!resume || resume.consumed || resume.task !== currentCreditTask()
     || resume.sessionKey !== sessionKey || !resume.task.matches(apiUrl)) return;
   resume.consumed = true;
   return {
     pendingInput: resume.pendingInput,
     toolHistory: resume.toolHistory,
-    dispatchBilling: resume.task.dispatchBilling,
-    spendableUnits: resume.task.dispatchBilling ? undefined : resume.task.manualResumeSpendableUnits(apiKey),
     keepPaused: (reason = resume.reason) => resume.task.pause(reason),
-    beginBoundedAttempt: () => resume.task.requireManualResumeReview(),
-    stopAttempt: () => resume.task.pause('恢复请求未安全完成，需手动检查原任务'),
+    requireReview: () => resume.task.requireManualResumeReview(),
   };
 }
 
 // Mark only HTTP-header failures of the matching Responses provider, never SSE
 // or settlement errors. Even this Relay envelope does NOT prove reserve failed.
 export const creditAccountingHeaderFailures = new WeakSet<object>();
-export const budgetedCreditResumeResponses = new WeakSet<ChatResponse>();
 
 export class CreditTaskPausedError extends Error {
   readonly code = 'CATSCO_CREDIT_TASK_PAUSED';
@@ -120,7 +114,6 @@ export class CreditTaskRuntime {
   private children = 0;
   private parentCompleted = false;
   private revision = 0;
-  private latestDecision?: CreditTaskDecision;
 
   constructor(
     private readonly config: Partial<ChatConfig>,
@@ -142,26 +135,19 @@ export class CreditTaskRuntime {
     catch { return false; }
   }
 
-  manualResumeSpendableUnits(apiKey: string): number | undefined {
-    const d = this.latestDecision;
-    if (apiKey && apiKey === this.config.apiKey && this.snapshot.state === 'running' && this.snapshot.enabled === true
-      && d?.enabled && d.allowed && d.state === 'running' && d.debt_units === 0) return d.spendable_units;
-  }
-
   runManualResume<T>(sessionKey: string, history: Message[], fn: () => T): T {
     const { state, enabled, startSent, reason, pendingInput, pendingCommand, finishPending, subagentProgress, manualResumeGuard } = this.snapshot;
     const accountingPause = reason === LEGACY_CREDIT_GATE_PAUSE || reason === CREDIT_ACCOUNTING_PAUSE
-      || (this.dispatchBilling && reason === '余额不足');
+      || reason === '余额不足';
     if (currentCreditTask() !== this || state !== 'paused' || enabled !== true || startSent !== true
       || pendingInput == null || pendingCommand || finishPending || Object.keys(subagentProgress ?? {}).length
       || manualResumeGuard === 'review' || (!accountingPause && manualResumeGuard !== 'budget')) return fn();
     const toolHistory = structuredClone(history.filter(message => message.role === 'tool' || message.tool_calls?.length));
     this.snapshot.manualResumeGuard = 'budget';
-    return manualBudgetScope.run({ task: this, sessionKey, reason: reason || CREDIT_ACCOUNTING_PAUSE, pendingInput, toolHistory, consumed: false }, fn);
+    return manualResumeScope.run({ task: this, sessionKey, reason: reason || CREDIT_ACCOUNTING_PAUSE, pendingInput, toolHistory, consumed: false }, fn);
   }
 
   requireManualResumeReview(): void {
-    // Persist before sending: interruption must not replay an uncertain inference on restart.
     this.snapshot.manualResumeGuard = 'review';
     this.persist();
   }
@@ -326,8 +312,7 @@ export class CreditTaskRuntime {
       }
       this.snapshot.enabled = decision.enabled;
       this.snapshot.retainedTaskId = decision.retained_task_id;
-      if (decision.enabled && action !== 'finish' && (!decision.allowed || decision.state !== 'running'
-        || (action === 'resume' && (decision.debt_units > 0 || decision.spendable_units <= 0)))) {
+      if (decision.enabled && action !== 'finish' && (!decision.allowed || decision.state !== 'running')) {
         const reason = decision.reason;
         throw this.pause(reason && ['quota_exhausted', 'debt_outstanding', 'entitlement_expired', 'retained_task_other',
           'task_completed', 'manual_resume_required', 'plan_tier_unavailable', '余额不足'].includes(reason)
@@ -337,7 +322,6 @@ export class CreditTaskRuntime {
         throw new Error('Relay 尚未确认原任务结束');
       }
       if (action === 'finish') this.revision++;
-      this.latestDecision = decision;
       this.snapshot.state = action === 'finish' ? 'completed' : 'running';
       this.snapshot.reason = undefined;
       this.persist();
