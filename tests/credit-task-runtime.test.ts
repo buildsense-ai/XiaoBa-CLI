@@ -10,7 +10,7 @@ import { SessionStore } from '../src/utils/session-store';
 import type { ChatConfig, Message } from '../src/types';
 
 async function relay(t: TestContext) {
-  const actions: Array<{ action: string; task_id: string; headers: IncomingHttpHeaders }> = [];
+  const actions: Array<{ action: string; task_id: string; model?: string; headers: IncomingHttpHeaders }> = [];
   const calls: Array<{ path: string; headers: IncomingHttpHeaders; body: any; wireBytes: number }> = [];
   const control = { enabled: true, allowed: true, spendable: 10, debt: 0, status: 200,
     modelStatus: 200, finishStatus: 200, retained: '', reason: '余额不足', modelReply: undefined as any,
@@ -95,6 +95,8 @@ for (const protocol of ['chat', 'responses', 'anthropic'] as const) {
         await Promise.all([root.complete(), root.complete()]);
       });
       assert.equal(f.actions.filter(a => a.action === 'start').length, 1);
+      assert.equal(f.actions.find(a => a.action === 'start')?.model, config.model);
+      assert.ok(f.actions.filter(a => a.action !== 'start').every(a => a.model === undefined));
       assert.equal(f.actions.filter(a => a.action === 'finish').length, 1);
       assert.equal(f.actions.filter(a => a.action === 'status').length, 2);
       for (const call of f.calls) assert.equal(call.headers['x-catsco-root-task-id'], root.snapshot.taskId);
@@ -127,6 +129,8 @@ test('explicit enabled:false keeps legacy budget behavior and skips per-call cre
     await root.complete();
   });
   assert.deepEqual(f.actions.map(a => a.action), ['start']);
+  assert.equal(f.actions[0].model, f.config.model);
+  assert.ok(f.calls.every(call => call.headers['x-catsco-root-task-id'] === undefined));
 });
 
 for (const status of [404, 500, 503]) {
@@ -213,7 +217,7 @@ test('402 persists paused/root across restart; only manual resume passes current
   for (const condition of [{ debt: 5, spendable: 20, allowed: true }, { debt: 0, spendable: 0, allowed: true },
     { debt: 0, spendable: 20, allowed: false }]) {
     Object.assign(f.control, condition);
-    assert.match((await restored.handleCommand('resume', [])).reply!, /可用点数不足/);
+    assert.match((await restored.handleCommand('resume', [])).reply!, /余额不足/);
     assert.equal(f.calls.length, 1);
   }
   Object.assign(f.control, { debt: 0, spendable: 20, allowed: true });
@@ -315,7 +319,7 @@ test('iteration gate saves successful tool progress and blocks the next model ca
       return { role: 'tool', tool_call_id: call.id, name: 'noop', content: 'durable success', ok: true };
     },
   });
-  assert.match((await s.handleMessage('multi-step goal')).text, /可用点数不足/);
+  assert.match((await s.handleMessage('multi-step goal')).text, /余额不足/);
   assert.equal(f.calls.length, 1);
   assert.ok(JSON.stringify(SessionStore.getInstance().loadContext(s.key)).includes('durable success'));
   assert.equal(f.actions.some(a => a.action === 'finish'), false);
@@ -613,6 +617,18 @@ test('clear keeps the paused task until explicit abandonment is acknowledged for
   assert.notEqual(f.calls[1].headers['x-catsco-root-task-id'], oldRoot);
 });
 
+test('explicit Relay balance error is reported and stops model retries', async t => {
+  const f = await relay(t);
+  f.control.respond = (_body, _headers, res) => {
+    res.statusCode = 402;
+    res.end(JSON.stringify({ error: { code: 'insufficient_balance', message: 'insufficient credit' } }));
+    return true;
+  };
+  const s = session(f.config, `credit-task-${randomUUID()}`);
+  assert.equal((await s.handleMessage('test balance gate')).text, '余额不足');
+  assert.equal(f.calls.length, 1);
+});
+
 const relayAccountingError = { error: { type: 'api_error', param: null, code: 'credit_request_failed',
   message: 'credit request could not be accounted' } };
 
@@ -737,7 +753,7 @@ for (const outcome of ['success', 'restored duplicate input', 'unpaired historic
     assert.equal(f.calls.length, 0);
     if (outcome === 'gate recovers after reload') {
       f.control.allowed = false;
-      assert.match((await s.handleCommand('resume', [])).reply!, /可用点数不足/);
+      assert.match((await s.handleCommand('resume', [])).reply!, /余额不足/);
       assert.equal(f.calls.length, 0);
       assert.equal(store.loadRuntimeState(key).creditTask!.manualResumeGuard, 'budget');
       assert.notEqual(store.loadRuntimeState(key).creditTask!.reason, LEGACY_CREDIT_GATE_PAUSE);

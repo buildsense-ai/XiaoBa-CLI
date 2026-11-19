@@ -104,7 +104,8 @@ export class CreditTaskPausedError extends Error {
 
 export function creditTaskHeaders(apiUrl: string): Record<string, string> {
   const task = currentCreditTask();
-  return task?.matches(apiUrl) ? { 'X-CatsCo-Root-Task-ID': task.snapshot.taskId } : {};
+  return task?.snapshot.enabled !== false && task?.matches(apiUrl)
+    ? { 'X-CatsCo-Root-Task-ID': task.snapshot.taskId } : {};
 }
 
 /** One original goal, including all necessary in-process descendants. No credentials are persisted. */
@@ -164,10 +165,9 @@ export class CreditTaskRuntime {
     if (this.snapshot.manualResumeGuard === 'review') return '原任务的恢复结果尚未确认，需检查已保存的进度，系统不会重发。';
     switch (this.snapshot.reason) {
       case 'quota_exhausted':
-      case '余额不足':
-        return '当前可用点数不足。';
       case 'debt_outstanding':
-        return '账户点数有欠款，请先补足欠款。';
+      case '余额不足':
+        return '余额不足';
       case 'entitlement_expired':
         return '当前套餐没有可用的模型调用权益。';
       case 'plan_tier_unavailable':
@@ -273,10 +273,11 @@ export class CreditTaskRuntime {
     try {
       const endpoint = new URL('/v1/credit-tasks', this.config.apiUrl);
       if (!this.config.apiKey || endpoint.username || endpoint.password) throw new Error('Relay 凭据或地址未配置');
+      const model = action === 'start' ? this.config.model?.trim() : undefined;
       const response = await this.fetchImpl(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` },
-        body: JSON.stringify({ action, task_id: this.snapshot.taskId }),
+        body: JSON.stringify({ action, task_id: this.snapshot.taskId, ...(model && { model }) }),
         redirect: 'error',
         signal: AbortSignal.timeout(10_000),
       }).catch(() => { throw new Error('暂时无法连接 Relay，请稍后再试。'); });
