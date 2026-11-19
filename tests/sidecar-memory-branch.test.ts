@@ -230,6 +230,60 @@ describe('memory sidecar branch', () => {
     assert.equal(aiService.calls.length, 3);
   });
 
+  test('repo assessment skips repeated merge evidence and follows a later PR question', async () => {
+    const dir = path.join(testRoot, 'logs/sessions/chat/2026-11-19');
+    fs.mkdirSync(dir, {recursive: true});
+    const merge = '8da12e65 Merge branch main of https://github.com/buildsense-ai/XiaoBa-CLI';
+    const root = 'episode:1:6eca7af2';
+    const rows = ['PR #388', '反思最近干的活', '最近没完成的活', '分析 buildsense-ai 的 repo'].map((text, i) => ({
+      entry_type: 'turn', turn: i + 1, session_id: 'chat:demo', session_type: 'chat',
+      timestamp: `2026-11-19T10:00:0${i}.000Z`, ...(i === 3 && {run_id: root}),
+      user: {text}, assistant: {text: i === 0 ? 'PR #388 approved after the DNS fix' : '',
+        tool_calls: i === 1 || i === 2 ? [{id: 'git', name: 'execute_shell', arguments: '{}', result: merge}] : []},
+      tokens: {prompt: 1, completion: 1},
+    }));
+    fs.writeFileSync(path.join(dir, 'demo.jsonl'), rows.map(row => JSON.stringify(row)).join('\n'));
+    const scope = {sessionKey: 'chat:demo', topicId: 'demo', actorUserId: 'usr1'};
+    let events: any[] = [], seq = 1, calls = 0;
+    const report: Record<string, unknown> = {};
+    const aiService = {isToolCallingSupported: () => true, chat: async (msgs: Message[]) => {
+      const call = (name: string, args: unknown) => ({content: null, toolCalls: [makeToolCall(`call${calls}`, name, args)], usage});
+      calls++;
+      const result = JSON.parse(String(msgs.filter(m => m.role === 'tool').at(-1)?.content ?? '{}'));
+      if (calls === 1) {
+        events = Array.from({length: 6}, () => ({kind: 'tool_result', sequence: 1, turn: 1, toolName: 'execute_shell', text: 'private-shell-output'.repeat(200)}));
+        return call('memory_search', {keywords: ['buildsense-ai']});
+      }
+      if (calls === 2) {
+        assert.equal(result.count, 1);
+        assert.equal(result.matches[0].field, 'tool_result');
+        assert.match(result.matches[0].preview, /Merge branch/);
+        assert.equal(JSON.stringify(msgs).includes('private-shell-output'), false);
+        report.org_candidates = result.count;
+        seq = 2;
+        events = [{kind: 'user_input', turn: 2, sequence: 2, text: 'Actually review PR #388'}];
+        return call('memory_search', {keywords: ['PR #388']});
+      }
+      if (calls === 3) {
+        assert.ok(JSON.stringify(msgs).includes('Actually review PR #388'));
+        return call('memory_read_turn', {ref: result.matches[0].ref});
+      }
+      assert.equal(calls, 4);
+      assert.match(result.text, /approved after the DNS fix/);
+      report.verified_ref = result.ref;
+      return call('finish_memory_search', {summary: 'Approved after the DNS fix.', evidence: [result.ref], inject: true});
+    }};
+    const handle = startMemorySidecarBranch({sessionKey: scope.sessionKey, input: rows[3].user.text,
+      recentMessages: [], workingDirectory: testRoot, aiService: aiService as any, queue: new InMemorySyntheticObservationQueue(),
+      session: {inputSequence: 1, originTurn: 1, originTurnId: root, scope, currentInputSequence: () => seq,
+        heldObservations: () => [], takeEvents: () => events.splice(0), publish: () => ({ok: true, observationId: 'published'}),
+        reconfirm: () => ({ok: false}), withdraw: () => ({ok: false})} as any});
+    await handle.done;
+    assert.deepEqual(report, {org_candidates: 1, verified_ref: 'chat/2026-11-19/demo.jsonl#1'});
+    assert.equal(calls, 4);
+    console.log('recall_budget_journey', JSON.stringify(report));
+  });
+
   test('suppresses observations when branch finishes with inject false', async () => {
     const queue = new InMemorySyntheticObservationQueue();
     const aiService = new NoInjectMemoryBranchAI();

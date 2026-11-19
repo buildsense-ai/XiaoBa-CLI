@@ -52,11 +52,12 @@ describe('memory branch tools', () => {
     assert.equal(result.ok, true);
     const parsed = JSON.parse(String(result.content));
     assert.equal(parsed.count, 2);
-    assert.deepEqual(parsed.matches, [
+    assert.deepEqual(parsed.matches.map(({ref, hits}: any) => ({ref, hits})), [
       { ref: 'chat/2026-06-16/demo.jsonl#2', hits: ['alpha_unique', 'beta_unique'] },
       { ref: 'chat/2026-06-16/demo.jsonl#1', hits: ['alpha_unique'] },
     ]);
-    assert.equal('preview' in parsed.matches[0], false);
+    assert.deepEqual(parsed.matches.map((match: any) => match.field), ['assistant', 'user']);
+    assert.match(parsed.matches[0].preview, /alpha_unique beta_unique/);
     assert.equal('score' in parsed.matches[0], false);
   });
 

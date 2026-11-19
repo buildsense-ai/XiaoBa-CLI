@@ -650,7 +650,10 @@ export class SessionMemoryBranchStore implements SyntheticObservationQueue {
   private pushEvent(event: MemoryBranchSessionEvent): void {
     if (this.closed) return;
     this.events.push(event);
-    if (this.events.length > MAX_SESSION_MEMORY_EVENTS) this.events.splice(0, this.events.length - MAX_SESSION_MEMORY_EVENTS);
+    if (this.events.length > MAX_SESSION_MEMORY_EVENTS) {
+      const activity = this.events.findIndex(item => item.kind === 'tool_result');
+      this.events.splice(Math.max(0, activity), 1);
+    }
   }
 
   private hold(entry: SessionMemoryObservationEntry, sequence: number, reason: string): void {

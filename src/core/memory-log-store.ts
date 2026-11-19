@@ -11,6 +11,9 @@ export interface MemorySearchMatch {
   ref: string;
   hits: string[];
   timestamp: string;
+  field: 'user' | 'assistant' | 'tool_result' | 'tool_call' | 'transcript';
+  preview: string;
+  title: string;
 }
 
 export interface ArchiveTurnPin { day: string; offset: number; digest: string }
@@ -29,6 +32,7 @@ export interface MemorySearchParams {
   startTime?: string;
   endTime?: string;
   limit?: number;
+  excludeRun?: {sessionId: string; runId: string};
 }
 
 export interface ReadMemoryTurnOptions {
@@ -89,7 +93,7 @@ export class MemoryLogStore {
     }
 
     const limit = clampPositiveInteger(params.limit, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT);
-    const matches: MemorySearchMatch[] = [];
+    const matches: Array<MemorySearchMatch & { duplicateKey?: string }> = [];
     for (const root of this.roots) {
       throwIfAborted(signal);
       const files = await collectJsonlFiles(root.root, signal);
@@ -99,6 +103,8 @@ export class MemoryLogStore {
         for (const record of records) {
           throwIfAborted(signal);
           if (record.searchable === false) continue;
+          if (params.excludeRun && record.entry.session_id === params.excludeRun.sessionId
+            && record.entry.run_id === params.excludeRun.runId) continue;
           const timestampMs = timestampForRecord(record);
           if (start !== null && timestampMs < start) continue;
           if (end !== null && timestampMs > end) continue;
@@ -107,7 +113,10 @@ export class MemoryLogStore {
           const lower = text.toLowerCase();
           const hits = keywords.filter(keyword => lower.includes(keyword.toLowerCase()));
           if (hits.length === 0) continue;
+          const preview = matchPreview(record, hits);
           matches.push({
+            ...preview,
+            title: record.entry.user.text.trim().split('\n', 1)[0].slice(0, 64),
             ref: record.ref,
             hits,
             timestamp: timestampForSort(record),
@@ -116,10 +125,19 @@ export class MemoryLogStore {
       }
     }
 
+    const seen = new Set<string>();
+    const priority = (m: MemorySearchMatch) => Number(m.field === 'user' || m.field === 'assistant');
     return matches
-      .sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.ref.localeCompare(a.ref))
+      .sort((a, b) => priority(b) - priority(a) || b.hits.length - a.hits.length
+        || b.timestamp.localeCompare(a.timestamp) || b.ref.localeCompare(a.ref))
+      .filter(match => {
+        if (!match.duplicateKey) return true;
+        if (seen.has(match.duplicateKey)) return false;
+        seen.add(match.duplicateKey);
+        return true;
+      })
       .slice(0, limit)
-      .map(({ ref, hits }) => ({ ref, hits, timestamp: '' }));
+      .map(({ duplicateKey, ...match }) => match);
   }
 
   async readTurn(ref: string, options: ReadMemoryTurnOptions = {}, signal?: AbortSignal): Promise<MemoryReadResult> {
@@ -352,6 +370,33 @@ function parseCanonicalRef(ref: string): ParsedRef {
 
 function formatRef(ref: ParsedRef): string {
   return `${ref.sessionType}/${ref.date}/${ref.fileName}#${ref.key}`;
+}
+
+function matchPreview(record: MemoryTurnRecord, hits: string[]) {
+  function locate(field: MemorySearchMatch['field'], text: string, toolName?: string) {
+    const lower = text.toLowerCase();
+    const keyword = hits.find(hit => lower.includes(hit.toLowerCase()));
+    if (!keyword) return;
+    const index = lower.indexOf(keyword.toLowerCase());
+    const begin = text.lastIndexOf('\n', Math.max(0, index - 1)) + 1;
+    const next = text.indexOf('\n', index);
+    const end = next < 0 ? text.length : next;
+    const start = Math.max(begin, index - 60);
+    const preview = text.slice(start, Math.min(end, start + 160));
+    // Compare complete matching lines, never just the bounded display prefix.
+    const duplicateKey = field === 'tool_result' && hits.every(hit => text.slice(begin, end).toLowerCase().includes(hit.toLowerCase()))
+      ? createHash('sha256').update(`${toolName}\n${text.slice(begin, end)}`).digest('hex') : undefined;
+    return {field, preview, duplicateKey};
+  }
+  const entry = record.entry;
+  const direct = locate('user', entry.user.text) || locate('assistant', stripAssistantTranscriptArtifacts(entry.assistant.text));
+  if (direct) return direct;
+  for (const tool of entry.assistant.tool_calls) {
+    const match = locate('tool_result', tool.result || '', tool.name)
+      || locate('tool_call', normalizeToolArgument(tool.arguments)) || locate('tool_call', tool.name);
+    if (match) return match;
+  }
+  return locate('transcript', record.transcript || '') || {field: 'transcript' as const, preview: ''};
 }
 
 function searchableText(entry: SessionTurnLogEntry): string {

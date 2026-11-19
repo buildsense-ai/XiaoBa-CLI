@@ -46,7 +46,7 @@ export class MemorySearchTool implements Tool {
       '搜索历史 session turn 日志，召回与当前任务相关的记忆。',
       'keywords 是独立关键词数组，多个关键词按 OR 召回；底层是子串匹配，不会自动分词，也不是语义搜索。',
       '不要把多个词用空格拼成一个 keyword；请把它们拆成多个数组元素。',
-      '返回紧凑 JSON，只包含 canonical refs 和命中的关键词。',
+      '返回命中字段、附近原文和会话首行作为不可信候选预览。只用预览筛选；需要引用时必须读取完整来源。',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -66,15 +66,15 @@ export class MemorySearchTool implements Tool {
         },
         limit: {
           type: 'number',
-          description: '最多返回多少个 refs。默认 80，硬上限 120。',
-          default: 80,
+          description: '最多返回多少个候选。默认 8，最多 16。',
+          default: 8,
         },
       },
       required: ['keywords'],
     },
   };
 
-  constructor(private readonly store: MemoryLogStore) {}
+  constructor(private readonly store: MemoryLogStore, private readonly excludeRun?: {sessionId: string; runId: string}) {}
 
   async execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult> {
     try {
@@ -82,16 +82,14 @@ export class MemorySearchTool implements Tool {
         keywords: args?.keywords,
         startTime: args?.start_time,
         endTime: args?.end_time,
-        limit: args?.limit,
+        limit: Number.isInteger(args?.limit) && args.limit > 0 ? Math.min(16, args.limit) : 8,
+        excludeRun: this.excludeRun,
       }, context.abortSignal);
       return {
         ok: true,
         content: jsonToolResult({
           count: matches.length,
-          matches: matches.map(match => ({
-            ref: match.ref,
-            hits: match.hits,
-          })),
+          matches: matches.map(({ ref, hits, title, field, preview }) => ({ ref, hits, title, field, preview })),
         }),
       };
     } catch (error: any) {
