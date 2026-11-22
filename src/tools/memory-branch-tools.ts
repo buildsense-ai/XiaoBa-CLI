@@ -1,5 +1,6 @@
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import { jsonToolError, jsonToolResult, MemoryLogStore } from '../core/memory-log-store';
+import { mondayWikiId } from '../utils/monday-wiki-memory';
 
 import {
   CATSLOG_POOL_CITATION_REF_PATTERN,
@@ -364,7 +365,7 @@ function validateFinishArgs(args: any, isDeliveredPoolRef: (ref: string) => bool
     // The active local grammar remains unchanged. Pool refs are an explicit
     // run-local extension, admitted only after complete delivery.
     if (!CANONICAL_REF_PATTERN.test(ref)
-      && !(CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) && isDeliveredPoolRef(ref))) {
+      && !((CATSLOG_POOL_CITATION_REF_PATTERN.test(ref) || mondayWikiId.test(ref)) && isDeliveredPoolRef(ref))) {
       return { ok: false, error: `invalid canonical ref: ${ref}` };
     }
   }

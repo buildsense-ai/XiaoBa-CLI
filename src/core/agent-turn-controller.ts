@@ -171,6 +171,7 @@ export interface AgentTurnServices {
     modelSource: 'inherit' | 'catalog' | 'custom';
     aiService: AIService;
     budget?: MemoryBranchBudget;
+    wikiMemory?: () => import('../utils/monday-wiki-memory').MondayWikiMemory | undefined;
   };
   /** Device-bound CatsLog read capability, scoped to the memory branch. */
   catslogMemory?: CatsLogMemoryBackend;
@@ -828,6 +829,7 @@ export class AgentTurnController {
       workingDirectory: this.options.getCurrentDirectory(),
       aiService: this.options.services.memoryBranch?.aiService ?? this.options.services.aiService,
       catslogMemory: this.options.services.catslogMemory,
+      wikiMemory: this.options.services.memoryBranch?.wikiMemory?.(),
       queue: options.queue,
       signal: options.abortSignal,
       activationContext: options.activationContext,

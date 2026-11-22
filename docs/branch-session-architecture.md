@@ -77,6 +77,12 @@ legacy budget response is now `budget: null, budgetPolicy: "model_context"`;
 writing retired pipeline budgets returns 409 rather than implying they are active.
 Legacy persisted budget fields are not deleted, but are not passed to this Memory runtime.
 
+## Harness Memory Wiki
+
+When the Memory Branch is enabled and the runtime already has a Cats Company Bot binding, it also exposes `wiki_search`, `wiki_read` and `wiki_read_source`. The client loads the bound UID and existing Bot API key from local configuration. Tool arguments contain only search terms or references. The Memory service verifies the credential through Cats Company before querying that Bot's stored sessions.
+
+Search returns excerpts for the first ten results and titles and IDs through rank thirty. The branch reads a Wiki before citing it in `finish_memory_search`. The observation carries chosen Wiki IDs and their search IDs when available. Full Wiki text and original Episode pages stay in the branch.
+
 ## Asynchronous checkpoint Summary (independent opt-in)
 
 Set `XIAOBA_CHECKPOINT_CANDIDATES_ENABLED=true` to enable. Absent/false keeps

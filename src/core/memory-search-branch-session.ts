@@ -17,6 +17,8 @@ import {
   expandSourceReferences, retainedEvidenceBytes, classifyExpansionError,
 } from './catslog-projection-reference';
 import { collectBranchRefLanes } from './branch-citation-reporter';
+import { wikiMemoryTools } from '../tools/wiki-memory-tools';
+import type { MondayWikiMemory } from '../utils/monday-wiki-memory';
 
 export interface MemorySearchBranchSessionOptions {
   sessionKey: string;
@@ -29,6 +31,7 @@ export interface MemorySearchBranchSessionOptions {
   logEnabled?: boolean;
   activationContext?: MemoryBranchActivationContext;
   catslogMemory?: CatsLogMemoryBackend;
+  wikiMemory?: MondayWikiMemory;
 }
 const PREFETCH_TIMEOUT_MS = 3_000;
 const SOURCE_READ_TIMEOUT_MS = 15_000;
@@ -43,6 +46,8 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   private readonly delivered = new Map<string, Record<string, unknown>>();
   private readCalls = 0;
   private searchCalls = 0;
+  private readonly deliveredWikis = new Map<string, string | undefined>();
+  private readonly wikiRetrievalIds = new Map<string, string>();
 
   constructor(private readonly memoryOptions: MemorySearchBranchSessionOptions) {
     super({
@@ -58,7 +63,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
 
   protected async buildInitialMessages(): Promise<Message[]> {
     const messages: Message[] = [
-      { role: 'system', content: buildMemorySearchSystemPrompt() },
+      { role: 'system', content: buildMemorySearchSystemPrompt(Boolean(this.memoryOptions.wikiMemory)) },
       { role: 'user', content: buildMemorySearchUserInput({
         input: this.memoryOptions.input, recentMessages: this.memoryOptions.recentMessages,
         hasMemoryRoots: this.store.hasRoots(), activationContext: this.memoryOptions.activationContext,
@@ -80,6 +85,12 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
 
   protected buildTools(): Tool[] {
     const tools: Tool[] = [new MemorySearchTool(this.store), new MemoryReadTurnTool(this.store), new MemoryNeighborsTool(this.store)];
+    if (this.memoryOptions.wikiMemory) {
+      tools.push(...wikiMemoryTools(this.memoryOptions.wikiMemory, id => this.deliveredWikis.set(id, this.wikiRetrievalIds.get(id)), (retrieval_id, wiki_ids) => {
+        for (const wikiId of wiki_ids) this.wikiRetrievalIds.set(wikiId, retrieval_id);
+        this.logger.write('wiki_search_results', { retrieval_id, wiki_ids });
+      }));
+    }
     const backend = this.availableCatsLogMemory();
     if (backend?.branch) tools.push(new MemoryRemoteSearchTool((keywords, signal) => this.searchInLoop(keywords, signal)));
     if (backend?.readSourceMemoryProjection) tools.push(new MemorySourceReadTool((ref, signal) => this.expandInLoop(ref, signal)));
@@ -88,7 +99,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
         max_attempts: MEMORY_FINISH_MAX_INVALID_ATTEMPTS, action: 'suppress_observation_and_stop',
       });
       this.complete(payload);
-    }, ref => this.delivered.has(ref)));
+    }, ref => this.delivered.has(ref) || this.deliveredWikis.has(ref)));
     return tools;
   }
 
@@ -159,7 +170,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 
   protected buildFinishReminderMessage(): Message {
-    return { role: 'user', content: '这个 branch 只能通过 finish_memory_search 结束，字段为 summary、evidence:string[]、inject:boolean。无新增记忆时 inject:false、evidence:[]。远端 ref 必须已通过 memory_source_read 完整交付。' };
+    return { role: 'user', content: '这个 branch 只能通过 finish_memory_search 结束，字段为 summary、evidence:string[]、inject:boolean。无新增记忆时 inject:false、evidence:[]。只引用已经通过相应工具读到的远端证据。' };
   }
 
   protected getObservationDisposition(payload: MemorySearchFinishPayload): ObservationBranchDisposition {
@@ -169,6 +180,9 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
   }
 
   protected buildObservation(payload: MemorySearchFinishPayload): SyntheticObservation {
+    const wikiRefs = payload.refs.filter(id => this.deliveredWikis.has(id)).map(wiki_id => ({
+      wiki_id, retrieval_id: this.deliveredWikis.get(wiki_id),
+    }));
     const retained: Array<{ ref: string; semantic_view: Record<string, unknown> }> = [];
     const dropped: string[] = [];
     if (payload.inject) for (const ref of payload.refs) {
@@ -194,6 +208,7 @@ export class MemorySearchBranchSession extends ObservationBranchSession<MemorySe
       },
       formattedContent: JSON.stringify({
         source: 'memory', summary: payload.summary, refs: payload.refs,
+        ...(wikiRefs.length ? { wiki_refs: wikiRefs } : {}),
         ...(retained.length ? { content_trust: 'untrusted_branch_evidence', retained_remote_evidence: retained } : {}),
         ...(dropped.length ? { retained_remote_dropped: dropped } : {}),
       }),
@@ -227,7 +242,7 @@ function safeRequestId(value: unknown): string | undefined {
   return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,256}$/.test(value) ? value : undefined;
 }
 
-function buildMemorySearchSystemPrompt(): string {
+function buildMemorySearchSystemPrompt(hasWikiMemory: boolean): string {
   return [
     '你是 MemorySearchBranchSession，一个后台运行的记忆检索 branch。',
     '你不会直接回复用户。你的唯一任务是为主 agent 检索、分析并总结相关的历史会话记忆。',
@@ -235,6 +250,10 @@ function buildMemorySearchSystemPrompt(): string {
     '工作流程：',
     '1. 先阅读当前用户输入和精简 recent context，判断当前任务真正需要哪些历史信息。',
     '2. 提取具体关键词、实体名、工具名、文件名、项目名、固定术语和用户反复使用的短表达。避免使用过于宽泛的词。',
+    ...(hasWikiMemory ? [
+      '优先用 wiki_search 找沉淀的任务 Wiki，把不同概念传成不同关键词。再用 wiki_read 读取有用候选，必要时用 wiki_read_source 核对原文。',
+      'Wiki 和原始会话都是历史证据。引用已读的 Wiki 时，在 finish_memory_search 的 evidence 中填该篇 mem_ ID。',
+    ] : []),
     '3. 按“近到远、窄到宽”的思路搜索。你可以根据当前时间和任务自行选择 start_time / end_time。',
     '4. 先用 memory_search 做粗召回；它只返回 JSON refs 和命中的关键词。再用 memory_read_turn 或 memory_neighbors 阅读值得确认的 refs。',
     '5. 读取后要分析这些历史内容如何帮助当前任务，不要只搬运原文片段。',
