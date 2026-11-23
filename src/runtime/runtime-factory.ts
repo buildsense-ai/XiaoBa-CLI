@@ -4,7 +4,7 @@ import { TurnSkillSnapshotStore } from '../skills/turn-skill-snapshot';
 import { ToolManager } from '../tools/tool-manager';
 import { AIService } from '../utils/ai-service';
 import { resolveActiveBotLLMConfig } from '../bot-definition/llm-config-resolver';
-import { loadBranchAgentConfig, resolveMemoryBranchModelOverride } from '../core/branch-agent-config';
+import { loadBranchAgentConfig, resolveMemoryBranchModelOverride, resolveOfficialMemoryBranchModel } from '../core/branch-agent-config';
 import { Logger } from '../utils/logger';
 import { PromptManager } from '../utils/prompt-manager';
 import { PromptComposer } from './prompt-composer';
@@ -77,17 +77,21 @@ export class RuntimeFactory {
     // A per-surface runtime profile may still carry old model fields. Once a
     // CatsCo bot is bound, let ConfigManager resolve its Definition instead of
     // allowing that profile to override the bot identity.
-    const modelOverride = resolveActiveBotLLMConfig() ? {} : profile.model;
+    const activeBotModel = resolveActiveBotLLMConfig();
+    const modelOverride = activeBotModel ? {} : profile.model;
 
     const aiService = new AIService(modelOverride);
     const branchConfig = loadBranchAgentConfig();
-    const memoryBranchOverride = resolveMemoryBranchModelOverride(branchConfig);
-    const memoryBranchModelSource = branchConfig.branches.memorySearch.model.kind;
+    const memory = branchConfig.branches.memorySearch;
+    const explicitCatsLogModel = memory.kind === 'catslog' ? resolveMemoryBranchModelOverride(branchConfig) : undefined;
+    const memoryBranchOverride = explicitCatsLogModel ?? (memory.enabled
+      ? resolveOfficialMemoryBranchModel(activeBotModel?.config ?? aiService.getConfig())
+      : undefined);
     // Keep a lazy provider attached to long-lived adapter runtimes. The
     // branch re-checks its current capability before every turn, so a login,
     // token rotation, or explicit disable after startup is observed without
     // reconstructing the adapter service graph.
-    const catslogMemory = branchConfig.branches.memorySearch.enabled
+    const catslogMemory = memory.enabled && memory.kind === 'catslog'
       ? new CatsLogMemoryProvider(
         // CatsLog credentials live under the runtime data root (the same root
         // used by Dashboard login/logout). Fall back to the profile cwd for
@@ -104,11 +108,14 @@ export class RuntimeFactory {
     return {
       aiService,
       memoryBranch: {
-        enabled: branchConfig.branches.memorySearch.enabled,
-        modelSource: memoryBranchModelSource,
-        aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : aiService,
-        budget: { ...branchConfig.branches.memorySearch.budget },
-        wikiMemory: () => mondayWikiMemory(PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory)),
+        enabled: memory.enabled,
+        kind: memory.kind,
+        modelSource: explicitCatsLogModel ? memory.model.kind : 'official-deepseek',
+        aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : undefined,
+        budget: { ...memory.budget },
+        ...(memory.kind === 'wiki' && {
+          wikiMemory: () => mondayWikiMemory(PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory)),
+        }),
       },
       ...(catslogMemory ? { catslogMemory } : {}),
       ...(mcpToolBridge ? { mcpToolBridge } : {}),

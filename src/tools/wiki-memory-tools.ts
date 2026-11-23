@@ -16,7 +16,18 @@ function tool(definition: ToolDefinition, call: (args: Record<string, unknown>, 
   };
 }
 
-export function wikiMemoryTools(memory: MondayWikiMemory, onRead: (id: string) => void, onSearch: (id: string, wikiIds: string[]) => void): Tool[] {
+interface WikiEvidenceTracker {
+  onRead(id: string, refs: string[]): void;
+  onSearch(id: string, wikiIds: string[]): void;
+  canReadSource(id: string, ref: string): boolean;
+  onReadSource(id: string, ref: string): void;
+}
+
+export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceTracker): Tool[] {
+  let searches = 0;
+  let reads = 0;
+  let sourceReads = 0;
+  const content_trust = 'untrusted_branch_evidence';
   const wikiParam = { type: 'string', description: 'Wiki ID from search or a Wiki reference' };
   const wikiId = (value: unknown) => {
     if (typeof value !== 'string' || !mondayWikiId.test(value)) throw new Error('Expected a Wiki ID');
@@ -32,6 +43,8 @@ export function wikiMemoryTools(memory: MondayWikiMemory, onRead: (id: string) =
           !keywords.every((word: unknown): word is string => typeof word === 'string' && !!word.trim() && [...word].length <= 256)) {
         throw new Error('Expected 1–16 literal keywords');
       }
+      if (searches >= 2) throw new Error('搜索次数已用完。使用现有结果或结束检索。');
+      searches++;
       const result = await memory.search(keywords, signal);
       if (!result || typeof result !== 'object' || !('retrieval_id' in result) ||
           typeof result.retrieval_id !== 'string' || !/^ret_[\da-f-]{36}$/i.test(result.retrieval_id) ||
@@ -40,8 +53,8 @@ export function wikiMemoryTools(memory: MondayWikiMemory, onRead: (id: string) =
         if (!item || typeof item !== 'object' || !('wiki_id' in item)) throw new Error('Invalid Wiki search item');
         return wikiId(item.wiki_id);
       });
-      onSearch(result.retrieval_id, wikiIds);
-      return result;
+      tracker.onSearch(result.retrieval_id, wikiIds);
+      return { ...result, content_trust };
     }),
     tool({
       name: 'wiki_read',
@@ -49,25 +62,47 @@ export function wikiMemoryTools(memory: MondayWikiMemory, onRead: (id: string) =
       parameters: { type: 'object', properties: { wiki_id: wikiParam }, required: ['wiki_id'] },
     }, async ({ wiki_id }, signal) => {
       const id = wikiId(wiki_id);
+      if (reads >= 3) throw new Error('正文读取次数已用完。请结束检索。');
+      reads++;
       const result = await memory.read(id, signal);
       if (!result || typeof result !== 'object' || !('wiki_id' in result) || result.wiki_id !== id ||
-          !('markdown' in result) || typeof result.markdown !== 'string') throw new Error('Invalid Wiki response');
-      onRead(id);
-      return result;
+          !('markdown' in result) || typeof result.markdown !== 'string' ||
+          !('source_refs' in result) || !Array.isArray(result.source_refs) ||
+          !result.source_refs.every(isWikiEpisodeRef)) throw new Error('Invalid Wiki response');
+      tracker.onRead(id, result.source_refs);
+      return { ...result, content_trust };
     }),
     tool({
       name: 'wiki_read_source',
-      description: '核对一篇 Wiki 对应的原始会话片段。ref 使用 wiki_read 返回的 Episode 引用。有 next_offset 时可继续读取。',
+      description: '必要时核对一页原始会话。ref 使用 wiki_read 返回的 Episode 引用。长事件只展示预览。',
       parameters: {
         type: 'object',
         properties: { wiki_id: wikiParam, ref: { type: 'string' }, offset: { type: 'integer' } },
         required: ['wiki_id', 'ref'],
       },
-    }, ({ wiki_id, ref, offset = 0 }, signal) => {
+    }, async ({ wiki_id, ref, offset = 0 }, signal) => {
       if (!isWikiEpisodeRef(ref) || typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) {
         throw new Error('Expected an Episode ref and nonnegative offset');
       }
-      return memory.source(wikiId(wiki_id), ref, offset, signal);
+      const id = wikiId(wiki_id);
+      if (!tracker.canReadSource(id, ref)) throw new Error('请先打开 Wiki 并使用它返回的原文引用。');
+      if (sourceReads >= 1) throw new Error('原文核验次数已用完。请结束检索。');
+      sourceReads++;
+      const result = await memory.source(id, ref, offset, signal);
+      if (!result || typeof result !== 'object' || !('ref' in result) || result.ref !== ref ||
+          !('events' in result) || !Array.isArray(result.events)) throw new Error('Invalid Wiki source response');
+      const events = result.events.slice(0, 10).map((event: unknown) => {
+        if (!event || typeof event !== 'object') throw new Error('Invalid Wiki source event');
+        const text = 'text' in event && typeof event.text === 'string' ? event.text : '';
+        return {
+          ...('ref' in event && typeof event.ref === 'string' && { ref: event.ref }),
+          ...('kind' in event && typeof event.kind === 'string' && { kind: event.kind }),
+          text: text.slice(0, 1200),
+          ...(text.length > 1200 && { truncated: true }),
+        };
+      });
+      if (events.some(event => event.text.trim())) tracker.onReadSource(id, ref);
+      return { ref, events, next_offset: 'next_offset' in result ? result.next_offset : null, content_trust };
     }),
   ];
 }

@@ -87,6 +87,20 @@ describe('Dashboard Branch agent API', () => {
     assert.deepEqual(loadBranchAgentConfig({ runtimeRoot: root }), before);
   });
 
+  test('persists one retrieval mode at a time and can switch it off', async () => {
+    for (const mode of ['wiki', 'catslog', 'off']) {
+      const response = await fetch(`${baseUrl}/api/branch-agents/memory/mode`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).mode, mode);
+      const memory = loadBranchAgentConfig({ runtimeRoot: root }).branches.memorySearch;
+      assert.equal(memory.enabled ? memory.kind : 'off', mode);
+    }
+    assert.deepEqual(restartCalls, ['catscompany', 'catscompany', 'catscompany']);
+  });
+
   test('saves a custom model, preserves the primary model env, and requests one connector restart', async () => {
     process.env.GAUZ_LLM_MODEL = 'primary-model';
     const response = await fetch(`${baseUrl}/api/branch-agents/memory/model/custom`, {

@@ -229,7 +229,7 @@ describe('Branch agent device config', () => {
     assert.equal(resolveMemoryBranchModelOverride(stored), undefined);
   });
 
-  test('RuntimeFactory keeps the primary service shared when only customDraft is configured', () => {
+  test('RuntimeFactory does not use an unsaved draft or primary model for the default Branch', () => {
     const root = tempRoot();
     const previous = {
       runtimeRoot: process.env.XIAOBA_USER_DATA_DIR,
@@ -254,7 +254,8 @@ describe('Branch agent device config', () => {
       saveBranchAgentConfig(config, { runtimeRoot: root, env: process.env });
       const profile = resolveDefaultRuntimeProfile({ surface: 'catscompany', workingDirectory: root });
       const services = RuntimeFactory.createServicesSync(profile);
-      assert.equal(services.memoryBranch?.aiService, services.aiService);
+      assert.equal(services.memoryBranch?.modelSource, 'official-deepseek');
+      assert.equal(services.memoryBranch?.aiService, undefined);
       assert.equal(services.aiService.getConfig().model, 'primary-model');
     } finally {
       for (const [key, value] of Object.entries({
@@ -401,14 +402,27 @@ describe('Branch agent device config', () => {
       process.env.XIAOBA_BRANCH_AGENTS_ENABLED = 'false';
       process.env.XIAOBA_MEMORY_SIDECAR_ENABLED = 'false';
       process.env.GAUZ_LLM_PROVIDER = 'openai';
-      process.env.GAUZ_LLM_API_BASE = 'https://primary.example.test/v1';
+      process.env.GAUZ_LLM_API_BASE = 'https://relay.catsco.cc/anthropic';
       process.env.GAUZ_LLM_API_KEY = 'primary-secret';
       process.env.GAUZ_LLM_MODEL = 'primary-model';
 
       const profile = resolveDefaultRuntimeProfile({ surface: 'catscompany', workingDirectory: root });
       const services = RuntimeFactory.createServicesSync(profile);
       assert.equal(services.memoryBranch?.enabled, true);
-      assert.equal(services.memoryBranch?.aiService, services.aiService);
+      const branch = services.memoryBranch?.aiService?.getConfig();
+      assert.equal(branch?.model, 'deepseek-v4-flash');
+      assert.equal(branch?.apiUrl, 'https://relay.catsco.cc/v1');
+      assert.equal(branch?.openaiApiMode, 'responses');
+      assert.equal(services.aiService.getConfig().model, 'primary-model');
+      assert.ok(services.catslogMemory);
+
+      config.branches.memorySearch.kind = 'wiki';
+      saveBranchAgentConfig(config, { runtimeRoot: root });
+      const wikiServices = RuntimeFactory.createServicesSync(profile);
+      assert.equal(wikiServices.memoryBranch?.kind, 'wiki');
+      assert.equal(wikiServices.memoryBranch?.aiService?.getConfig().model, 'deepseek-v4-flash');
+      assert.equal(typeof wikiServices.memoryBranch?.wikiMemory, 'function');
+      assert.equal(wikiServices.catslogMemory, undefined);
     } finally {
       for (const [key, value] of Object.entries({
         XIAOBA_USER_DATA_DIR: previous.runtimeRoot,

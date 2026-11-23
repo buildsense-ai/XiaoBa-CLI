@@ -112,6 +112,7 @@ import {
 } from '../../utils/prompt-editor';
 import {
   loadBranchAgentConfig,
+  resolveOfficialMemoryBranchModel,
   saveBranchAgentConfig,
   type BranchAgentConfig,
   type BranchModelRuntime,
@@ -1464,7 +1465,14 @@ function writeDashboardEnvAndProcess(updates: Record<string, string | undefined>
 function memoryBranchDashboardPayload(config: BranchAgentConfig, serviceManager?: ServiceManager): Record<string, unknown> {
   const memory = config.branches.memorySearch;
   const primary = modelProfileFromCurrentConfig();
-  const active = memory.model.kind === 'inherit' ? primary : memory.model;
+  const savedModel = memory.kind === 'catslog' && memory.model.kind !== 'inherit' ? memory.model : undefined;
+  const useRelayDefault = !savedModel;
+  const relay = useRelayDefault ? resolveOfficialMemoryBranchModel(getModelConfigReadonly()) : undefined;
+  const active = savedModel ?? {
+    ...relay,
+    apiBase: relay?.apiUrl,
+    capabilities: relay?.modelCapabilities,
+  };
   const custom = memory.customDraft ?? (memory.model.kind === 'custom' ? memory.model : undefined);
   const service = serviceManager?.getService('catscompany');
   return {
@@ -1472,6 +1480,8 @@ function memoryBranchDashboardPayload(config: BranchAgentConfig, serviceManager?
     name: 'Memory Search',
     description: '后台检索相关历史，并把内部观察结果交给主 Agent。',
     enabled: memory.enabled,
+    mode: memory.enabled ? memory.kind : 'off',
+    runtimeModelSource: useRelayDefault ? 'xiaoba-relay-deepseek' : memory.model.kind,
     // Legacy pipeline budgets are preserved on disk, but not applied by autonomous Memory.
     budget: null,
     budgetPolicy: 'model_context',
@@ -1494,7 +1504,7 @@ function memoryBranchDashboardPayload(config: BranchAgentConfig, serviceManager?
       reasoningEffort: active.reasoningEffort,
       openaiApiMode: active.openaiApiMode,
       apiKeyPresent: Boolean(active.apiKey),
-      capabilities: memory.model.kind === 'inherit' ? undefined : memory.model.capabilities,
+      capabilities: 'capabilities' in active ? active.capabilities : undefined,
     },
     custom: custom ? {
       provider: custom.provider,
@@ -2658,6 +2668,26 @@ export function createApiRouter(
         return res.status(400).json({ error: 'enabled must be a boolean' });
       }
       const config = saveMemoryBranchConfig(memory => { memory.enabled = req.body.enabled; });
+      res.json({
+        ok: true,
+        ...memoryBranchDashboardPayload(config, serviceManager),
+        ...branchRestartPayload(serviceManager),
+      });
+    } catch (e: any) {
+      res.status(e?.status || 400).json({ error: e?.message || String(e) });
+    }
+  });
+
+  router.put('/branch-agents/memory/mode', (req, res) => {
+    const mode: unknown = req.body?.mode;
+    if (mode !== 'off' && mode !== 'catslog' && mode !== 'wiki') {
+      return res.status(400).json({ error: 'mode must be off, catslog, or wiki' });
+    }
+    try {
+      const config = saveMemoryBranchConfig(memory => {
+        memory.enabled = mode !== 'off';
+        if (mode !== 'off') memory.kind = mode;
+      });
       res.json({
         ok: true,
         ...memoryBranchDashboardPayload(config, serviceManager),

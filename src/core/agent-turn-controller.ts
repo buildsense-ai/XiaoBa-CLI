@@ -57,6 +57,7 @@ import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-m
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 import type { MemoryBranchBudget } from './branch-budget';
+import type { MemoryBranchKind } from './branch-agent-config';
 import type { MemoryBranchActivationContext } from './sidecar-memory-branch';
 
 export const DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
@@ -166,13 +167,7 @@ class TurnInjectionTiming {
 
 export interface AgentTurnServices {
   aiService: AIService;
-  memoryBranch?: {
-    enabled: boolean;
-    modelSource: 'inherit' | 'catalog' | 'custom';
-    aiService: AIService;
-    budget?: MemoryBranchBudget;
-    wikiMemory?: () => import('../utils/monday-wiki-memory').MondayWikiMemory | undefined;
-  };
+  memoryBranch?: MemoryBranchRuntime;
   /** Device-bound CatsLog read capability, scoped to the memory branch. */
   catslogMemory?: CatsLogMemoryBackend;
   /** CatsCo MCP 工具桥（可选；远端定制 Agent 作为本地工具）。 */
@@ -180,6 +175,15 @@ export interface AgentTurnServices {
   toolManager: ToolManager;
   skillManager: SkillManager;
   turnSkillSnapshotStore?: TurnSkillSnapshotStore;
+}
+
+export interface MemoryBranchRuntime {
+  enabled: boolean;
+  kind?: MemoryBranchKind;
+  modelSource: 'inherit' | 'catalog' | 'custom' | 'official-deepseek';
+  aiService?: AIService;
+  budget?: MemoryBranchBudget;
+  wikiMemory?: () => import('../utils/monday-wiki-memory').MondayWikiMemory | undefined;
 }
 
 export interface AgentTurnCallbacks {
@@ -657,15 +661,17 @@ export class AgentTurnController {
     if (!this.isMemoryBranchEnabled() || options.abortSignal?.aborted) {
       return null;
     }
-    const memoryBranchAiService = this.options.services.memoryBranch?.aiService ?? this.options.services.aiService;
+    const branch = this.options.services.memoryBranch;
+    const memoryBranchAiService = branch?.aiService ?? (branch?.modelSource === 'inherit' ? this.options.services.aiService : undefined);
+    const wiki = branch?.kind === 'wiki' ? branch.wikiMemory?.() : undefined;
+    if (branch?.kind === 'wiki' && !wiki) {
+      Logger.warning(`[${this.options.sessionKey}] Wiki memory branch skipped: no Bot API key`);
+      return null;
+    }
     if (!(memoryBranchAiService instanceof AIService) || !memoryBranchAiService.isToolCallingSupported()) {
-      // Fail closed, visibly: assess_memory_need / finish_memory_search are
-      // the branch's only tool surfaces, so a model without tool calling
-      // must not start the branch. The warn names the modelSource so the
-      // misconfiguration (override or inherited primary) is fixable in the
-      // Dashboard instead of silently producing "memory never runs".
+      const reason = !memoryBranchAiService ? 'no XiaoBa Relay credential' : 'branch model cannot do tool calling';
       Logger.warning(
-        `[${this.options.sessionKey}] memory branch skipped: branch model cannot do tool calling`
+        `[${this.options.sessionKey}] memory branch skipped: ${reason}`
         + ` (modelSource=${this.options.services.memoryBranch?.modelSource ?? 'inherit'})`,
       );
       return null;
@@ -681,7 +687,7 @@ export class AgentTurnController {
         queue,
         abortSignal: options.abortSignal,
         activationContext: options.activationContext,
-      }),
+      }, memoryBranchAiService, wiki),
     };
     slot.handle.done.finally(() => {
       slot.done = true;
@@ -821,15 +827,16 @@ export class AgentTurnController {
     queue: SyntheticObservationQueue;
     abortSignal?: AbortSignal;
     activationContext?: MemoryBranchActivationContext;
-  }): MemorySidecarBranchHandle {
+  }, aiService: AIService, wikiMemory?: import('../utils/monday-wiki-memory').MondayWikiMemory): MemorySidecarBranchHandle {
     return startMemorySidecarBranch({
       sessionKey: this.options.sessionKey,
       input: options.input,
       recentMessages: options.messages,
       workingDirectory: this.options.getCurrentDirectory(),
-      aiService: this.options.services.memoryBranch?.aiService ?? this.options.services.aiService,
-      catslogMemory: this.options.services.catslogMemory,
-      wikiMemory: this.options.services.memoryBranch?.wikiMemory?.(),
+      aiService,
+      ...(wikiMemory
+        ? { kind: 'wiki' as const, wikiMemory }
+        : { kind: 'catslog' as const, catslogMemory: this.options.services.catslogMemory }),
       queue: options.queue,
       signal: options.abortSignal,
       activationContext: options.activationContext,

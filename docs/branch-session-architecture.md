@@ -77,11 +77,15 @@ legacy budget response is now `budget: null, budgetPolicy: "model_context"`;
 writing retired pipeline budgets returns 409 rather than implying they are active.
 Legacy persisted budget fields are not deleted, but are not passed to this Memory runtime.
 
-## Harness Memory Wiki
+## Memory retrieval modes
 
-When the Memory Branch is enabled and the runtime has a Cats Company Bot API key, it also exposes `wiki_search`, `wiki_read` and `wiki_read_source`. The client loads the existing key from local configuration. Tool arguments contain only search terms or references. The Memory service verifies the credential through Cats Company and queries the stored sessions of the verified Bot.
+Set `PUT /api/branch-agents/memory/mode` to `{"mode":"off"}`, `{"mode":"catslog"}`, or `{"mode":"wiki"}`. The runtime starts only the selected branch. New installations start with memory retrieval off. An existing enabled configuration with no kind selects CatsLog.
 
-Search returns excerpts for the first ten results and titles and IDs through rank thirty. The branch reads a Wiki before citing it in `finish_memory_search`. The observation carries chosen Wiki IDs and their search IDs when available. Full Wiki text and original Episode pages stay in the branch.
+Both modes default to XiaoBa's built-in CatsCo Relay with `deepseek-v4-flash` and low reasoning. CatsLog retains the legacy explicit model override. Wiki uses the Relay model and requires the existing Bot API key for Memory reads.
+
+The Wiki branch has its own prompt and tool set. Each run can search twice, read three Wiki bodies, and check one page of source evidence. Long source events are marked as previews. The branch treats all retrieved text as untrusted historical evidence.
+
+The `finish_wiki_search` tool accepts a brief summary and a list of read Wiki IDs with their contributions. An empty list skips injection. For an accepted observation, XiaoBa records the selected Wiki IDs, available retrieval IDs, source references, and which source references the branch actually checked. The synthetic observation is written to the conversation transcript when the parent consumes it. This records evidence available to the parent for later edge analysis.
 
 ## Asynchronous checkpoint Summary (independent opt-in)
 

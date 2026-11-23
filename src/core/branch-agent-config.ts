@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../types';
 import { PathResolver } from '../utils/path-resolver';
+import { DEEPSEEK_RELAY_MODEL_PROFILE } from '../providers/deepseek/catalog-profile';
+import { isOfficialRelayBaseUrl } from '../utils/relay-model-profiles';
 import {
   hasLegacyBranchAgentSwitch,
 } from './branch-agent-settings';
@@ -16,6 +18,7 @@ export const BRANCH_AGENT_CONFIG_FILE = 'branch-agents.json';
 const LEGACY_BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v1';
 
 export type BranchModelSource = 'inherit' | 'catalog' | 'custom';
+export type MemoryBranchKind = 'catslog' | 'wiki';
 
 export interface BranchModelRuntime {
   kind: 'catalog' | 'custom';
@@ -36,13 +39,11 @@ export interface BranchModelRuntime {
 
 export interface MemoryBranchConfig {
   enabled: boolean;
+  /** Exactly one read branch can be active. `catslog` preserves the legacy branch. */
+  kind: MemoryBranchKind;
   /**
-   * Effective Memory Branch model override. `inherit` (the default) follows
-   * the primary agent model; a `catalog`/`custom` runtime replaces it for the
-   * whole branch — BOTH the assess pass and the refine pass of
-   * MemorySearchBranchSession run on it. The config shape has no per-pass
-   * fields, so a refine-only cheaper model is deliberately unsupported.
-   * Invalid material fails safe back to `inherit` (normalizeModel).
+   * Saved CatsLog model preference. The existing `inherit` value selects the
+   * default model. Wiki always uses the XiaoBa Relay model.
    */
   model: { kind: 'inherit' } | BranchModelRuntime;
   /**
@@ -152,12 +153,35 @@ export function resolveMemoryBranchModelOverride(config: BranchAgentConfig): Par
   };
 }
 
+/**
+ * Use the DeepSeek catalog profile with the existing first-party Relay credential.
+ */
+export function resolveOfficialMemoryBranchModel(relay: Partial<ChatConfig>): Partial<ChatConfig> | undefined {
+  const apiKey = relay.apiKey?.trim();
+  if (!apiKey) return undefined;
+  let origin: string;
+  try { origin = new URL(relay.apiUrl ?? '').origin; } catch { return undefined; }
+  if (!isOfficialRelayBaseUrl(origin)) return undefined;
+  return {
+    provider: DEEPSEEK_RELAY_MODEL_PROFILE.preferredProvider,
+    apiUrl: origin + '/v1',
+    apiKey,
+    catsCoRelay: true,
+    model: DEEPSEEK_RELAY_MODEL_PROFILE.model,
+    contextWindowTokens: DEEPSEEK_RELAY_MODEL_PROFILE.contextWindowTokens,
+    reasoningEffort: 'low',
+    openaiApiMode: DEEPSEEK_RELAY_MODEL_PROFILE.openaiApiMode,
+    modelCapabilities: { ...DEEPSEEK_RELAY_MODEL_PROFILE.capabilities },
+  };
+}
+
 function defaultBranchAgentConfig(enabled = false): BranchAgentConfig {
   return {
     schema: BRANCH_AGENT_CONFIG_SCHEMA,
     branches: {
       memorySearch: {
         enabled,
+        kind: 'catslog',
         model: { kind: 'inherit' },
         budget: { ...DEFAULT_MEMORY_BRANCH_BUDGET },
       },
@@ -227,6 +251,7 @@ function normalizeBranchAgentConfig(input: any, fallback: BranchAgentConfig): Br
     branches: {
       memorySearch: {
         enabled: typeof memory?.enabled === 'boolean' ? memory.enabled : fallback.branches.memorySearch.enabled,
+        kind: memory?.kind === 'wiki' ? 'wiki' : 'catslog',
         model,
         budget,
         ...(customDraft?.kind === 'custom' ? { customDraft } : {}),

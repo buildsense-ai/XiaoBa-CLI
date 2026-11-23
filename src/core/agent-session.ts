@@ -14,7 +14,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from '../utils/ai-service';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
-import type { MemoryBranchBudget } from './branch-budget';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import type { TurnSkillSnapshotStore } from '../skills/turn-skill-snapshot';
@@ -43,7 +42,7 @@ import {
 } from './runtime-feedback-inbox';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { TurnContextBuilder } from './turn-context-builder';
-import { AgentTurnController, AgentTurnRunError } from './agent-turn-controller';
+import { AgentTurnController, AgentTurnRunError, type MemoryBranchRuntime } from './agent-turn-controller';
 import { SessionLifecycleManager } from './session-lifecycle-manager';
 import { prepareForkMessages, truncateAtTurn } from './session-fork';
 import { PlanRuntime } from './plan-runtime';
@@ -139,13 +138,7 @@ type CheckpointUsageResolver = (messages: Message[]) => CheckpointContextUsage;
 export interface AgentServices {
   aiService: AIService;
   /** Dedicated runtime used only by the Memory Search Branch. */
-  memoryBranch?: {
-    enabled: boolean;
-    modelSource: 'inherit' | 'catalog' | 'custom';
-    aiService: AIService;
-    budget?: MemoryBranchBudget;
-    wikiMemory?: () => import('../utils/monday-wiki-memory').MondayWikiMemory | undefined;
-  };
+  memoryBranch?: MemoryBranchRuntime;
   /** Device-bound CatsLog read capability used only by the memory branch. */
   catslogMemory?: CatsLogMemoryBackend;
   /** CatsCo MCP 工具桥（可选；把远端定制 Agent 暴露为本地一等工具）。 */
