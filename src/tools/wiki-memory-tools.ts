@@ -97,19 +97,19 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
   return [
     tool({
       name: 'wiki_search',
-      description: '按关键词搜索本 Bot 的历史 Wiki。任一词命中即可入选。每页前 10 条带片段，再返回最多 20 个标题和 Wiki ID。使用相同 keywords 和返回的 next_offset 翻页，或换词再搜。',
+      description: '按关键词搜索本 Bot 的历史 Wiki。任一词命中即可入选。返回前 30 篇，每篇标明命中的关键词和数量，前 10 篇附片段。结果太宽时可换成更具体的词再搜。',
       parameters: {
-        type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' } }, offset: { type: 'integer' } },
+        type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' } } },
         required: ['keywords'],
       },
-    }, async ({ keywords, offset = 0 }, signal) => {
+    }, async ({ keywords }, signal) => {
       if (!Array.isArray(keywords) || !keywords.length) {
         throw new WikiArgumentError('keywords 至少需要一个关键词。');
       }
       const invalid = keywords.findIndex((word: unknown) =>
         typeof word !== 'string' || !word.trim() || word.includes('\0'));
       if (invalid !== -1) throw new WikiArgumentError(`keywords[${invalid}] 需要非空文本，且不能含空字符。`);
-      const result = await memory.search(keywords, signal, readOffset(offset, 'offset'));
+      const result = await memory.search(keywords, signal);
       if (!result || typeof result !== 'object' || !('retrieval_id' in result) ||
           typeof result.retrieval_id !== 'string' || !/^ret_[\da-f-]{36}$/i.test(result.retrieval_id) ||
           !('items' in result) || !Array.isArray(result.items)) throw new Error('Memory 的搜索响应缺少有效的 retrieval_id 或 items。');

@@ -35,10 +35,10 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
     assert.equal(headers.get('x-bot-uid'), null);
     requested.push(route);
     if (route.endsWith('/search')) {
-      const searchPage = requested.length === 1 ? 0 : 30;
-      assert.deepEqual(JSON.parse(String(options?.body)), { keywords: ['anchor', 'reflow'], ...(searchPage > 0 && { offset: searchPage }) });
+      assert.deepEqual(JSON.parse(String(options?.body)), { keywords: ['anchor', 'reflow'] });
       return Response.json({
-        retrieval_id, items: searchPage === 30 ? [{ wiki_id, title: 'Layout reflow' }] : [], next_offset: searchPage === 30 ? null : 30,
+        retrieval_id, has_more: false,
+        items: [{ wiki_id, title: 'Layout reflow', matched_keywords: ['reflow'], matched_keyword_count: 1 }],
       });
     }
     if (route.endsWith('/source')) {
@@ -50,7 +50,6 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
   assert.ok(provider);
   const actions = [
     { name: 'wiki_search', args: { keywords: ['anchor', 'reflow'] } },
-    { name: 'wiki_search', args: { keywords: ['anchor', 'reflow'], offset: 30 } },
     { name: 'finish_wiki_search', args: { summary: 'Premature.', evidence: [{ wiki_id, contribution: 'Not yet read.' }] } },
     { name: 'wiki_read', args: { wiki_id } },
     { name: 'wiki_read_source', args: { wiki_id, ref } },
@@ -62,7 +61,12 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
     isToolCallingSupported: () => true,
     async chat(messages: Message[], definitions: Array<{ name: string; parameters: unknown }>) {
       assert.equal(JSON.stringify(messages).includes('fixture-key'), false);
-      if (step === 3) {
+      if (step === 1) {
+        const searchResult = JSON.parse(String(messages.filter(message => message.role === 'tool').at(-1)?.content));
+        assert.deepEqual(searchResult.items[0].matched_keywords, ['reflow']);
+        assert.equal(searchResult.items[0].matched_keyword_count, 1);
+      }
+      if (step === 2) {
         const rejection = String(messages.filter(message => message.role === 'tool').at(-1)?.content);
         assert.ok(rejection.includes(`evidence[0]（${wiki_id}）`));
         assert.match(rejection, /只看到了标题.*wiki_read/);
@@ -83,7 +87,7 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
     sessionKey: 'wiki-branch', input: 'Keep the selected node', recentMessages: [], workingDirectory: root,
     aiService: ai as unknown as AIService, queue, kind: 'wiki', wikiMemory: provider, logEnabled: false,
   }).done;
-  assert.deepEqual(requested, ['/v1/bot-memory/search', '/v1/bot-memory/search', '/v1/bot-memory/wikis/' + wiki_id, '/v1/bot-memory/wikis/' + wiki_id + '/source']);
+  assert.deepEqual(requested, ['/v1/bot-memory/search', '/v1/bot-memory/wikis/' + wiki_id, '/v1/bot-memory/wikis/' + wiki_id + '/source']);
   const [observation] = queue.drain();
   assert.ok(observation?.formattedContent);
   assert.deepEqual(JSON.parse(observation.formattedContent).wiki_refs, [{
@@ -201,11 +205,11 @@ test('keeps searching and reading after the former quotas and can finish a long 
   const retrieval_id = 'ret_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const longText = 'a'.repeat(11_999) + '😊' + 'b'.repeat(1_000);
   let sourceRequests = 0;
-  const requestedPages: number[] = [];
+  const requestedSearches: string[][] = [];
   const [search, read, source] = wikiMemoryTools({
-    search: async (_keywords, _signal, offset = 0) => {
-      requestedPages.push(offset);
-      return { retrieval_id, items: [{ wiki_id: wikiId }], next_offset: offset < 60 ? offset + 30 : null };
+    search: async keywords => {
+      requestedSearches.push(keywords);
+      return { retrieval_id, items: [{ wiki_id: wikiId }], has_more: false };
     },
     read: async id => {
       if (id !== wikiId) throw new WikiMemoryHttpError(404);
@@ -222,14 +226,10 @@ test('keeps searching and reading after the former quotas and can finish a long 
   });
   const context = { workingDirectory: tmpdir(), conversationHistory: [] };
   const keywords = Array.from({ length: 17 }, (_, i) => `keyword-${i}`);
-  let searchOffset: number | null = 0;
-  for (let page = 0; page < 3; page++) {
-    const result = await search.execute({ keywords, offset: searchOffset }, context);
-    assert.ok(result.ok);
-    searchOffset = JSON.parse(result.content).next_offset;
+  for (let i = 0; i < 3; i++) {
+    assert.ok((await search.execute({ keywords: [...keywords, `refine-${i}`] }, context)).ok);
   }
-  assert.equal(searchOffset, null);
-  assert.deepEqual(requestedPages, [0, 30, 60]);
+  assert.deepEqual(requestedSearches.map(words => words.at(-1)), ['refine-0', 'refine-1', 'refine-2']);
   for (let n = 0; n < 3; n++) assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);
   assert.equal((await read.execute({ wiki_id: mistypedId }, context)).ok, false);
   assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);

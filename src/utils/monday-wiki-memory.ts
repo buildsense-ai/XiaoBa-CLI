@@ -35,8 +35,7 @@ export function mondayWikiMemory(runtimeRoot: string, request = fetch) {
   }
 
   return {
-    search: (keywords: string[], signal?: AbortSignal, offset = 0) =>
-      query('/search', { keywords, ...(offset > 0 && { offset }) }, signal),
+    search: (keywords: string[], signal?: AbortSignal) => query('/search', { keywords }, signal),
     read: (id: string, signal?: AbortSignal) => query('/wikis/' + id, undefined, signal),
     source: (id: string, ref: string, offset: number, signal?: AbortSignal) =>
       query('/wikis/' + id + '/source', { ref, offset, limit: 10 }, signal),
