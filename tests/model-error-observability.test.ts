@@ -9,7 +9,6 @@ import { classifyModelError } from '../src/utils/model-error-classifier';
 const noKnownFlags = {
   isImageSafetyError: false,
   isRelayBudgetError: false,
-  isVisionError: false,
   isTimeout: false,
   isEmptyResponse: false,
   isTransient: false,
@@ -94,6 +93,54 @@ describe('model error observability', () => {
       assert.equal(classified.confidence, 'low');
       assert.equal(classified.recovery_action, 'retry_later');
     }
+  });
+
+  test('classifies the upstream temporary multimodal download failure even past the log summary limit', () => {
+    const message = 'InternalError.Algo: An error occurred in model serving, error message is: [Temporary multimodal download failure]';
+    const wrapped = new Error(`API错误 (400): <400> ${message}`);
+    const structured = Object.assign(new Error('Request failed with status code 400'), {
+      response: { status: 400, data: { error: { code: 'InvalidParameter', message } } },
+    });
+    for (const error of [wrapped, structured]) {
+      const classified = classifyModelError(error, noKnownFlags);
+      assert.equal(classified.error_code, 'temporary_multimodal_download_failure');
+      assert.equal(classified.category, 'image_processing_temporary');
+      assert.equal(classified.retry_strategy, 'none');
+      assert.equal(classified.recovery_action, 'retry_later');
+    }
+  });
+
+  test('requires explicit evidence that the model rejects vision inputs', () => {
+    for (const message of ['This model does not support image inputs.', 'Image inputs are not supported by this model.']) {
+      const result = classifyModelError(new Error(`API错误 (400): ${message}`), noKnownFlags);
+      assert.equal(result.category, 'vision_unsupported');
+    }
+    for (const message of [
+      'Unsupported image format.',
+      'Could not decode base64 image.',
+      'Invalid image URL.',
+      'This model does not support images larger than 20 MB.',
+      'Images are not supported in this format.',
+    ]) {
+      const result = classifyModelError(new Error(`API错误 (400): ${message}`), noKnownFlags);
+      assert.notEqual(result.category, 'vision_unsupported');
+      assert.notEqual(result.category, 'image_processing_temporary');
+    }
+  });
+
+  test('classifies relay route denial only when the route returns 403', () => {
+    const denial = classifyModelError(new Error('API错误 (403): model routing unavailable'), noKnownFlags);
+    assert.equal(denial.category, 'relay_route_denied');
+    assert.equal(denial.recovery_action, 'fix_configuration');
+    assert.equal(denial.retry_strategy, 'none');
+    const structured = Object.assign(new Error('Request failed with status code 403'), {
+      response: { status: 403, data: { error: { code: 'route_unavailable' } } },
+    });
+    assert.equal(classifyModelError(structured, noKnownFlags).category, 'relay_route_denied');
+    const outage = classifyModelError(new Error('API错误 (503): model routing unavailable'), {
+      ...noKnownFlags, isTransient: true,
+    });
+    assert.equal(outage.category, 'transient');
   });
 
   test('uses explicit provider evidence for high-confidence causes', () => {

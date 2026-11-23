@@ -24,6 +24,7 @@ export function isModelImageSafetyError(error: unknown): boolean {
 export type ModelErrorCategory =
   | 'image_safety'
   | 'budget'
+  | 'image_processing_temporary'
   | 'vision_unsupported'
   | 'timeout'
   | 'empty_response'
@@ -31,6 +32,7 @@ export type ModelErrorCategory =
   | 'rate_limited'
   | 'auth_invalid'
   | 'access_denied'
+  | 'relay_route_denied'
   | 'model_or_endpoint_missing'
   | 'input_too_large'
   | 'request_invalid'
@@ -62,7 +64,6 @@ export interface ModelErrorClassification {
 export interface KnownModelErrorFlags {
   isImageSafetyError: boolean;
   isRelayBudgetError: boolean;
-  isVisionError: boolean;
   isTimeout: boolean;
   isEmptyResponse: boolean;
   isTransient: boolean;
@@ -77,6 +78,7 @@ export interface ModelErrorClassificationContext {
 const USER_MESSAGES: Record<ModelErrorCategory, string> = {
   image_safety: MODEL_IMAGE_SAFETY_MESSAGE,
   budget: '当前模型暂时无法继续调用，请切换模型或联系管理员。',
+  image_processing_temporary: '模型暂时未能处理图片。请稍后重试；如果持续失败，可以重新上传图片。',
   vision_unsupported: '当前模型不支持图片识别。请使用支持多模态的模型，或者用文字描述图片内容。',
   timeout: '模型响应超时，本轮上下文已保留，请稍后继续。',
   empty_response: '模型本轮未返回有效内容，请重新发送上一条消息；若仍失败，请切换模型或稍后再试。',
@@ -84,6 +86,7 @@ const USER_MESSAGES: Record<ModelErrorCategory, string> = {
   rate_limited: '当前请求较多，请稍等片刻再试。',
   auth_invalid: '模型服务配置异常，请联系管理员处理。',
   access_denied: '模型服务配置异常，请联系管理员处理。',
+  relay_route_denied: '中转拒绝了当前模型的请求。请联系管理员核对模型权限，或先切换到可用模型。',
   model_or_endpoint_missing: '模型服务配置异常，请联系管理员处理。',
   input_too_large: '当前对话内容较多，需要整理上下文后继续。',
   request_invalid: '模型未能处理本次请求，请重新发送；持续失败时请联系管理员。',
@@ -109,6 +112,17 @@ export function classifyModelError(
     diagnostics.provider_type,
     diagnostics.error_summary,
   ].filter(Boolean).join(' ');
+  // The diagnostic summary is bounded for logging and can truncate the cause.
+  // Inspect the original message for these specific signatures without logging it.
+  const messages = [
+    error?.response?.data?.error?.message,
+    error?.response?.data?.message,
+    error?.error?.message,
+    error?.message,
+    error,
+  ].filter((value): value is string => typeof value === 'string');
+  const hasMessage = (signature: RegExp): boolean =>
+    (messages.length ? messages : [diagnostics.error_summary]).some(message => signature.test(message));
 
   const result = (
     category: ModelErrorCategory,
@@ -128,10 +142,23 @@ export function classifyModelError(
 
   if (known.isImageSafetyError) return result('image_safety', 'image_safety_block', 'high', 'none', 'investigate');
   if (known.isRelayBudgetError) return result('budget', 'relay_budget_exhausted', 'high', 'none', 'switch_model');
-  if (known.isVisionError) return result('vision_unsupported', 'vision_not_supported', 'medium', 'none', 'switch_model');
+  if (status === 400 && hasMessage(/\btemporary multimodal download failure\b/i)) {
+    return result('image_processing_temporary', 'temporary_multimodal_download_failure', 'high', 'none', 'retry_later');
+  }
+  if (status === 403 && (diagnostics.provider_code === 'route_unavailable' || hasMessage(/\bmodel routing unavailable\b/i))) {
+    return result('relay_route_denied', 'relay_model_route_denied', 'high', 'none', 'fix_configuration');
+  }
   if (known.isTimeout) return result('timeout', 'model_timeout', 'high', 'transport', 'retry_same_context');
   if (known.isEmptyResponse) return result('empty_response', 'empty_model_response', 'high', 'transport', 'retry_same_context');
   if (known.isTransient) return result('transient', 'transient_provider_error', 'high', 'transport', 'retry_later');
+
+  const visionInputRejected = /^(?:vision_not_supported|unsupported_(?:image|vision|multimodal)_input)$/i
+    .test(diagnostics.provider_code ?? '')
+    || hasMessage(/\b(?:does not|doesn't|do not|don't) support (?:image inputs?|images|vision|multimodal inputs?)(?=\s*(?:$|[.!"']|\]))/i)
+    || hasMessage(/\b(?:images|image inputs?|vision|multimodal inputs?|input_image) (?:is|are) not supported(?: by (?:this|the|the selected|the current) model)?(?=\s*(?:$|[.!"']|\]))/i);
+  if (visionInputRejected && (status === undefined || status === 400 || status === 422)) {
+    return result('vision_unsupported', 'vision_not_supported', 'high', 'none', 'switch_model');
+  }
 
   if (/reasoning[_\s-]?(?:content|text).{0,80}(must be passed back|must be echoed|not passed back|required|expected)/i.test(evidence)
     || /thinking mode.{0,80}reasoning/i.test(evidence)) {

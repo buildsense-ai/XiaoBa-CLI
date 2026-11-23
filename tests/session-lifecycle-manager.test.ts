@@ -1162,6 +1162,39 @@ describe('AgentSession lifecycle', () => {
     assert.equal(result.text, '模型服务暂时不稳定，本次处理未能完成，请稍后继续。');
     assert.doesNotMatch(result.text, /unknown error|request_id|API错误|520/);
   });
+  test('handleMessage explains temporary image processing failures and relay route denials', async () => {
+    const { AgentSession } = loadSessionModules();
+    const cases = [
+      {
+        id: 'image-download-failure',
+        message: 'API错误 (400): <400> InternalError.Algo: An error occurred in model serving, error message is: [Temporary multimodal download failure]',
+        expected: /模型暂时未能处理图片。请稍后重试/,
+      },
+      {
+        id: 'relay-route-denial',
+        message: 'API错误 (403): model routing unavailable',
+        expected: /请联系管理员核对模型权限/,
+      },
+      {
+        id: 'vision-unsupported',
+        message: 'API错误 (400): This model does not support image inputs.',
+        expected: /当前模型不支持图片识别/,
+      },
+    ];
+
+    for (const { id, message, expected } of cases) {
+      const session = new AgentSession(`catscompany:lifecycle-${id}`, buildMockServices({
+        aiService: { async chatStream() { throw new Error(message); } },
+      }), 'catscompany');
+      session.setSystemPromptProvider(() => 'system prompt');
+
+      const result = await session.handleMessage('继续');
+
+      assert.equal(result.taskOutcome, 'failed');
+      assert.match(result.text, expected);
+      assert.doesNotMatch(result.text, /API错误|InternalError\.Algo|model routing unavailable/);
+    }
+  });
 
   test('handleMessage maps rate limits to a user-facing message without exposing status codes', async () => {
     const { AgentSession } = loadSessionModules();

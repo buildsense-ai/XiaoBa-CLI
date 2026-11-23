@@ -1096,10 +1096,7 @@ export class AgentSession {
           return { text: this.creditTask?.pauseMessage || String(err.message), visibleToUser: true, taskOutcome: 'failed' };
         }
 
-        // 识别多模态相关错误
-        const errorMsg = err.message || String(err);
         const isImageSafetyError = isModelImageSafetyError(err);
-        const isVisionError = !isImageSafetyError && errorMsg.match(/image|vision|multimodal|media_type|base64.*not supported/i);
         const isModelTimeoutError = this.isModelTimeoutError(err);
         const isTransientProviderError = this.isTransientProviderError(err);
         const isEmptyModelResponseError = this.isEmptyModelResponseError(err);
@@ -1108,7 +1105,6 @@ export class AgentSession {
         const classified = classifyModelError(err, {
           isImageSafetyError,
           isRelayBudgetError,
-          isVisionError: Boolean(isVisionError),
           isTimeout: isModelTimeoutError,
           isEmptyResponse: isEmptyModelResponseError,
           isTransient: isTransientProviderError,
@@ -2431,6 +2427,8 @@ export class AgentSession {
   ): string {
     if (
       category === 'image_safety'
+      || category === 'image_processing_temporary'
+      || category === 'relay_route_denied'
       || category === 'vision_unsupported'
       || category === 'input_too_large'
     ) {
