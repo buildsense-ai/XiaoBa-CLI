@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { AgentSession } from '../src/core/agent-session';
 import type { SyntheticObservationQueue } from '../src/core/synthetic-observation';
 import { AIService } from '../src/utils/ai-service';
+import { mondayWikiMemory } from '../src/utils/monday-wiki-memory';
 
 test('AgentSession does not implicitly sync the Bot Skill workspace after a completed turn', async () => {
   let scheduledSyncs = 0;
@@ -49,6 +53,30 @@ test('AgentSession requestInterrupt aborts an in-flight model request', async ()
   assert.equal(stopResult.reply, '已停止当前请求。');
   assert.equal(observedSignal?.aborted, true);
   assert.equal(result.text, '已停止当前请求。');
+});
+
+test('the main reply still completes when Wiki credentials cannot be read', async t => {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'xiaoba-wiki-credentials-'));
+  t.after(() => rmSync(runtimeRoot, { recursive: true, force: true }));
+  mkdirSync(join(runtimeRoot, '.env'));
+  const wiki = new AIService({
+    provider: 'openai', apiUrl: 'https://example.test/v1', apiKey: 'fixture', model: 'wiki',
+    modelCapabilities: { toolCalling: true },
+  });
+  const session = new AgentSession('user:wiki-credentials-unreadable', {
+    ...buildMockServices({ aiService: {
+      async chatStream() { return { content: 'main reply', toolCalls: [] }; },
+    } }),
+    memoryBranch: {
+      enabled: true, kind: 'wiki', modelSource: 'official-deepseek', aiService: wiki,
+      wikiMemory: () => mondayWikiMemory(runtimeRoot),
+    },
+  }, 'catscompany');
+  t.after(() => session.cleanup());
+  session.setSystemPromptProvider(() => 'system prompt');
+  const result = await session.handleMessage('continue chatting');
+  assert.equal(result.taskOutcome, 'completed');
+  assert.equal(result.text, 'main reply');
 });
 
 test('user stop gives the existing Wiki retrieval a bounded finish window and preserves its result', async t => {

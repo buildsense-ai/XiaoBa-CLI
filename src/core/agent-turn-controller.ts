@@ -55,6 +55,7 @@ import {
 } from './synthetic-observation';
 import { MemorySidecarBranchHandle, startMemorySidecarBranch } from './sidecar-memory-branch';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
+import type { MondayWikiMemory } from '../utils/monday-wiki-memory';
 import type { CheckpointCompactionCoordinator } from './checkpoint-compaction';
 import type { MemoryBranchBudget } from './branch-budget';
 import type { MemoryBranchKind } from './branch-agent-config';
@@ -184,7 +185,7 @@ export interface MemoryBranchRuntime {
   modelSource: 'inherit' | 'catalog' | 'custom' | 'official-deepseek';
   aiService?: AIService;
   budget?: MemoryBranchBudget;
-  wikiMemory?: () => import('../utils/monday-wiki-memory').MondayWikiMemory | undefined;
+  wikiMemory?: () => MondayWikiMemory | undefined;
 }
 
 export interface AgentTurnCallbacks {
@@ -706,11 +707,6 @@ export class AgentTurnController {
     }
     const branch = this.options.services.memoryBranch;
     const memoryBranchAiService = branch?.aiService ?? (branch?.modelSource === 'inherit' ? this.options.services.aiService : undefined);
-    const wiki = branch?.kind === 'wiki' ? branch.wikiMemory?.() : undefined;
-    if (branch?.kind === 'wiki' && !wiki) {
-      Logger.warning(`[${this.options.sessionKey}] Wiki memory branch skipped: no Bot API key`);
-      return null;
-    }
     if (!(memoryBranchAiService instanceof AIService) || !memoryBranchAiService.isToolCallingSupported()) {
       const reason = !memoryBranchAiService ? 'no XiaoBa Relay credential' : 'branch model cannot do tool calling';
       Logger.warning(
@@ -718,6 +714,19 @@ export class AgentTurnController {
         + ` (modelSource=${this.options.services.memoryBranch?.modelSource ?? 'inherit'})`,
       );
       return null;
+    }
+    let wiki: MondayWikiMemory | undefined;
+    if (branch?.kind === 'wiki') {
+      try {
+        wiki = branch.wikiMemory?.();
+      } catch {
+        Logger.warning(`[${this.options.sessionKey}] Wiki memory branch skipped: unable to read Bot credentials`);
+        return null;
+      }
+      if (!wiki) {
+        Logger.warning(`[${this.options.sessionKey}] Wiki memory branch skipped: no Bot API key`);
+        return null;
+      }
     }
     const queue = new InMemorySyntheticObservationQueue();
     const handle = this.createMemorySidecarHandle({
@@ -885,7 +894,7 @@ export class AgentTurnController {
     messages: Message[];
     queue: SyntheticObservationQueue;
     activationContext?: MemoryBranchActivationContext;
-  }, aiService: AIService, wikiMemory?: import('../utils/monday-wiki-memory').MondayWikiMemory): MemorySidecarBranchHandle {
+  }, aiService: AIService, wikiMemory?: MondayWikiMemory): MemorySidecarBranchHandle {
     return startMemorySidecarBranch({
       sessionKey: this.options.sessionKey,
       input: options.input,

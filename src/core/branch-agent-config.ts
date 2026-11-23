@@ -5,6 +5,7 @@ import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { FileBotCatalogModelRuntimeRepository, FileBotCloudCatalogModelRuntimeRepository } from '../bot-definition/repository';
 import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../types';
 import { PathResolver } from '../utils/path-resolver';
+import { Logger } from '../utils/logger';
 import { DEEPSEEK_FLASH_RELAY_MODEL_PROFILE } from '../providers/deepseek/catalog-profile';
 import { isOfficialRelayBaseUrl } from '../utils/relay-model-profiles';
 import {
@@ -139,7 +140,14 @@ export function resolveOfficialMemoryBranchModel(options: {
   if (active) return active;
 
   const envFile = path.join(runtimeRoot, '.env');
-  const env = fs.existsSync(envFile) ? dotenv.parse(fs.readFileSync(envFile)) : {};
+  let env: Record<string, string> = {};
+  if (fs.existsSync(envFile)) {
+    try {
+      env = dotenv.parse(fs.readFileSync(envFile));
+    } catch {
+      Logger.warning('Unable to read .env for the Wiki Branch Relay. Checking other Relay sources.');
+    }
+  }
   const saved = toDeepSeekBranchModel({
     apiUrl: process.env.CATSCO_RELAY_LLM_API_BASE ?? env.CATSCO_RELAY_LLM_API_BASE ?? '',
     apiKey: process.env.CATSCO_RELAY_LLM_API_KEY ?? env.CATSCO_RELAY_LLM_API_KEY ?? '',

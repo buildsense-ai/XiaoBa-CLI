@@ -11,6 +11,7 @@ import {
   BRANCH_AGENT_CONFIG_FILE,
   loadBranchAgentConfig,
   resolveMemoryBranchModelOverride,
+  resolveOfficialMemoryBranchModel,
   saveBranchAgentConfig,
 } from '../src/core/branch-agent-config';
 import { RuntimeFactory } from '../src/runtime/runtime-factory';
@@ -419,5 +420,22 @@ describe('Branch agent device config', () => {
     assert.equal(branch?.apiKey, 'relay-secret');
     assert.equal(branch?.model, 'deepseek-flash');
     assert.equal(branch?.reasoningEffort, 'high');
+  });
+
+  test('an unreadable Wiki Relay env file does not block other Relay sources', t => {
+    const root = tempRoot();
+    fs.mkdirSync(path.join(root, '.env'));
+    for (const [key, value] of Object.entries({
+      CATSCO_RELAY_LLM_API_BASE: 'https://relay.catsco.cn/v1',
+      CATSCO_RELAY_LLM_API_KEY: 'relay-fixture',
+    })) {
+      const previous = process.env[key];
+      process.env[key] = value;
+      t.after(() => {
+        if (previous === undefined) delete process.env[key];
+        else process.env[key] = previous;
+      });
+    }
+    assert.equal(resolveOfficialMemoryBranchModel({ runtimeRoot: root })?.apiKey, 'relay-fixture');
   });
 });
