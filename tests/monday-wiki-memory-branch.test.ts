@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { startMemorySidecarBranch } from '../src/core/sidecar-memory-branch';
 import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observation';
-import { mondayWikiMemory } from '../src/utils/monday-wiki-memory';
+import { wikiMemoryTools } from '../src/tools/wiki-memory-tools';
+import { mondayWikiMemory, WikiMemoryHttpError } from '../src/utils/monday-wiki-memory';
 import type { AIService } from '../src/utils/ai-service';
+import type { Message } from '../src/types';
 
 test('the dedicated Wiki branch injects only read evidence with verified source and retrieval refs', async t => {
   const root = mkdtempSync(join(tmpdir(), 'monday-wiki-branch-'));
@@ -54,8 +56,13 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
   let step = 0;
   const ai = {
     isToolCallingSupported: () => true,
-    async chat(messages: unknown[], definitions: Array<{ name: string; parameters: unknown }>) {
+    async chat(messages: Message[], definitions: Array<{ name: string; parameters: unknown }>) {
       assert.equal(JSON.stringify(messages).includes('fixture-key'), false);
+      if (step === 2) {
+        const rejection = String(messages.filter(message => message.role === 'tool').at(-1)?.content);
+        assert.ok(rejection.includes(`evidence[0]（${wiki_id}）`));
+        assert.match(rejection, /只看到了标题.*wiki_read/);
+      }
       const action = actions[step++];
       assert.ok(action);
       assert.ok(definitions.find(definition => definition.name === action.name));
@@ -81,8 +88,9 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
   }]);
 });
 
-test('allows a verified search quote after an invented quote or a title-only citation is rejected', async () => {
+test('reports each invalid citation so the model can correct the finish in one turn', async () => {
   const wiki_id = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const mistypedId = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef';
   const titleOnlyId = 'mem_bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee';
   const retrieval_id = 'ret_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const laterRetrieval = 'ret_bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -92,14 +100,24 @@ test('allows a verified search quote after an invented quote or a title-only cit
   const actions = [
     { name: 'wiki_search', args: { keywords: ['reflow'] } },
     { name: 'wiki_search', args: { keywords: ['layout'] } },
-    { name: 'finish_wiki_search', args: { summary, evidence: [{ ...candidate, quote: 'Clear the selected node.' }] } },
-    { name: 'finish_wiki_search', args: { summary, evidence: [{ ...candidate, wiki_id: titleOnlyId, quote }] } },
+    { name: 'finish_wiki_search', args: { summary, evidence: [
+      { ...candidate, quote: 'Clear the selected node.' },
+      { ...candidate, wiki_id: titleOnlyId, quote },
+      { ...candidate, wiki_id: mistypedId, quote },
+    ] } },
     { name: 'finish_wiki_search', args: { summary, evidence: [{ ...candidate, quote }] } },
   ];
   let step = 0;
   const ai = {
     isToolCallingSupported: () => true,
-    async chat() {
+    async chat(messages: Message[]) {
+      if (step === 3) {
+        const rejection = String(messages.filter(message => message.role === 'tool').at(-1)?.content);
+        assert.ok(rejection.includes(`evidence[0]（${wiki_id}） 的 quote 与该 Wiki 的命中片段不一致`));
+        assert.ok(rejection.includes(`evidence[1]（${titleOnlyId}） 只看到了标题`));
+        assert.ok(rejection.includes(`evidence[2]（${mistypedId}） 本轮没有搜到或打开过`));
+        assert.ok(rejection.includes(`请核对是否要使用本轮已找到的 ${wiki_id}`));
+      }
       const action = actions[step++];
       assert.ok(action);
       return { content: null, toolCalls: [{
@@ -125,4 +143,46 @@ test('allows a verified search quote after an invented quote or a title-only cit
   assert.deepEqual(JSON.parse(observation.formattedContent).wiki_refs, [{
     ...candidate, retrieval_id, evidence_level: 'search_snippet', quote,
   }]);
+});
+
+test('points read failures to the known Wiki or Episode and distinguishes credential errors', async () => {
+  const wikiId = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const mistypedId = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef';
+  const unrelatedId = 'mem_ffffffff-ffff-ffff-ffff-ffffffffffff';
+  const sourceRef = 'ep_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const wrongRef = 'ep_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef';
+  const [search, read, source] = wikiMemoryTools({
+    search: async () => { throw new WikiMemoryHttpError(401); },
+    read: async () => { throw new WikiMemoryHttpError(404); },
+    source: async () => assert.fail('Bad source arguments must be rejected before HTTP'),
+  }, {
+    knownWikiIds: () => [wikiId, unrelatedId],
+    sourceRefs: id => id === wikiId ? [sourceRef] : undefined,
+    onSearch() {},
+    onRead() {},
+    onReadSource() {},
+  });
+  const context = { workingDirectory: tmpdir(), conversationHistory: [] };
+  const typo = await read.execute({ wiki_id: mistypedId }, context);
+  assert.equal(typo.ok, false);
+  if (typo.ok) return;
+  assert.ok(typo.message.includes(mistypedId));
+  assert.ok(typo.message.includes(wikiId));
+  assert.ok(!typo.message.includes(unrelatedId));
+
+  const episode = await source.execute({ wiki_id: wikiId, ref: wrongRef }, context);
+  assert.equal(episode.ok, false);
+  if (episode.ok) return;
+  assert.ok(episode.message.includes(wrongRef));
+  assert.ok(episode.message.includes(sourceRef));
+
+  const badKeyword = await search.execute({ keywords: ['layout', ''] }, context);
+  assert.equal(badKeyword.ok, false);
+  if (badKeyword.ok) return;
+  assert.match(badKeyword.message, /keywords\[1\]/);
+
+  const credential = await search.execute({ keywords: ['layout'] }, context);
+  assert.equal(credential.ok, false);
+  if (credential.ok) return;
+  assert.match(credential.message, /Bot 凭据.*HTTP 401/);
 });

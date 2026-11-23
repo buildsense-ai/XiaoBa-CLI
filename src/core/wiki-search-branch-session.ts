@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Message } from '../types';
 import type { Tool } from '../types/tool';
-import { wikiMemoryTools } from '../tools/wiki-memory-tools';
-import type { MondayWikiMemory } from '../utils/monday-wiki-memory';
+import { wikiIdHint, wikiMemoryTools } from '../tools/wiki-memory-tools';
+import { mondayWikiId, type MondayWikiMemory } from '../utils/monday-wiki-memory';
 import { ObservationBranchSession } from './observation-branch-session';
 import type { MemorySidecarContext } from './sidecar-memory-branch';
 import type { SyntheticObservation } from './synthetic-observation';
@@ -37,6 +37,8 @@ interface WikiFinish {
   summary: string;
   evidence: WikiCitation[];
 }
+
+type FinishValidation = { payload: WikiFinish } | { errors: string[] };
 
 export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish> {
   private readonly searches = new Map<string, SeenSearchHit[]>();
@@ -85,7 +87,8 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
         const retrieval_id = this.searches.get(wiki_id)?.at(-1)?.retrieval_id;
         this.read.set(wiki_id, { wiki_id, ...(retrieval_id && { retrieval_id }), source_refs, checked_source_refs: [] });
       },
-      canReadSource: (id, ref) => this.read.get(id)?.source_refs.includes(ref) ?? false,
+      knownWikiIds: () => this.knownWikiIds(),
+      sourceRefs: id => this.read.get(id)?.source_refs,
       onReadSource: (id, ref) => {
         const checked = this.read.get(id)?.checked_source_refs;
         if (checked && !checked.includes(ref)) checked.push(ref);
@@ -114,43 +117,87 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
         },
       },
       execute: async (args: unknown) => {
-        const payload = this.parseFinish(args);
-        if (!payload) {
+        const result = this.parseFinish(args);
+        if ('errors' in result) {
           return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: true,
-            message: '每条证据须来自已读正文，或附上搜索片段中可核对的逐字引文。请修正引用，并让摘要只包含有证据支持的结论。' };
+            message: result.errors.join('\n') };
         }
-        this.complete(payload);
-        return { ok: true, content: JSON.stringify({ inject: payload.evidence.length > 0 }) };
+        this.complete(result.payload);
+        return { ok: true, content: JSON.stringify({ inject: result.payload.evidence.length > 0 }) };
       },
     }];
   }
 
-  private parseFinish(args: unknown): WikiFinish | undefined {
-    if (!args || typeof args !== 'object' || !('summary' in args) || typeof args.summary !== 'string'
-      || !('evidence' in args) || !Array.isArray(args.evidence) || args.evidence.length > 3) return;
+  private knownWikiIds(): string[] {
+    return [...this.searches.keys(), ...this.read.keys()];
+  }
+
+  private parseFinish(args: unknown): FinishValidation {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return { errors: ['请提交包含 summary 和 evidence 的 JSON 对象。'] };
+    if (!('summary' in args) || typeof args.summary !== 'string') return { errors: ['summary 必须是字符串。'] };
+    if (!('evidence' in args) || !Array.isArray(args.evidence)) return { errors: ['evidence 必须是数组。没有新增证据时请传 []。'] };
+    if (args.evidence.length > 3) return { errors: ['evidence 最多包含 3 篇 Wiki，请保留支持摘要的证据。'] };
     const summary = args.summary.trim();
-    if (!args.evidence.length) return { summary: '', evidence: [] };
-    if (!summary || summary.length > 700) return;
-    const evidence = new Map<string, WikiCitation>();
+    if (!args.evidence.length) return { payload: { summary: '', evidence: [] } };
+    const errors: string[] = [];
+    if (!summary || summary.length > 700) errors.push('已有 evidence 时，summary 必须非空且不超过 700 字符。');
+    const evidence: WikiCitation[] = [];
+    const seen = new Set<string>();
     const supplied: unknown[] = args.evidence;
-    for (const item of supplied) {
-      if (!item || typeof item !== 'object' || !('wiki_id' in item) || typeof item.wiki_id !== 'string'
-        || !('contribution' in item) || typeof item.contribution !== 'string') return;
+    for (const [index, item] of supplied.entries()) {
+      const position = `evidence[${index}]`;
+      if (!item || typeof item !== 'object' || Array.isArray(item) || !('wiki_id' in item) || typeof item.wiki_id !== 'string') {
+        errors.push(`${position}.wiki_id 必须是字符串。`);
+        continue;
+      }
       const wiki_id = item.wiki_id;
-      const contribution = item.contribution.trim();
-      if (!contribution || contribution.length > 300 || evidence.has(wiki_id)) return;
+      if (!mondayWikiId.test(wiki_id)) {
+        errors.push(`${position}.wiki_id 格式有误，请使用完整的 mem_ 加 UUID。` + wikiIdHint(wiki_id, this.knownWikiIds()));
+        continue;
+      }
+      const label = `${position}（${wiki_id}）`;
+      if (seen.has(wiki_id)) {
+        errors.push(`${label} 重复引用。请合并这篇 Wiki 的贡献。`);
+        continue;
+      }
+      seen.add(wiki_id);
+      const contribution = 'contribution' in item && typeof item.contribution === 'string' ? item.contribution.trim() : '';
+      if (!contribution || contribution.length > 300) {
+        errors.push(`${label} 的 contribution 必须说明该 Wiki 支持的事实，且不超过 300 字符。`);
+        continue;
+      }
       const read = this.read.get(wiki_id);
       if (read) {
-        evidence.set(wiki_id, { ...read, contribution, evidence_level: 'wiki_body' });
+        evidence.push({ ...read, contribution, evidence_level: 'wiki_body' });
+        continue;
+      }
+      const hits = this.searches.get(wiki_id);
+      if (!hits) {
+        errors.push(`${label} 本轮没有搜到或打开过，暂不能引用。` +
+          (wikiIdHint(wiki_id, this.knownWikiIds()) || ' 请先搜索或打开要引用的 Wiki。'));
+        continue;
+      }
+      if (!hits.some(hit => hit.snippet?.trim())) {
+        errors.push(`${label} 只看到了标题，暂不能引用。请先调用 wiki_read 打开正文。`);
         continue;
       }
       const quote = 'quote' in item && typeof item.quote === 'string' ? item.quote.trim() : '';
-      if (!quote || quote.length > 600) return;
-      const hit = this.searches.get(wiki_id)?.find(candidate => candidate.snippet?.includes(quote));
-      if (!hit) return;
-      evidence.set(wiki_id, { wiki_id, retrieval_id: hit.retrieval_id, contribution, evidence_level: 'search_snippet', quote });
+      if (!quote) {
+        errors.push(`${label} 还没打开正文。请提供该命中片段里的逐字 quote，或先调用 wiki_read。`);
+        continue;
+      }
+      if (quote.length > 600) {
+        errors.push(`${label} 的 quote 超过 600 字符，请截取能支撑该事实的一段连续原文。`);
+        continue;
+      }
+      const hit = hits.find(candidate => candidate.snippet?.includes(quote));
+      if (!hit) {
+        errors.push(`${label} 的 quote 与该 Wiki 的命中片段不一致。请逐字复制连续片段，或调用 wiki_read 核对正文。`);
+        continue;
+      }
+      evidence.push({ wiki_id, retrieval_id: hit.retrieval_id, contribution, evidence_level: 'search_snippet', quote });
     }
-    return { summary, evidence: [...evidence.values()] };
+    return errors.length ? { errors } : { payload: { summary, evidence } };
   }
 
   protected buildFinishReminderMessage(): Message {
