@@ -55,7 +55,9 @@ function tool(definition: ToolDefinition, call: (args: Record<string, unknown>, 
           return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: true };
         }
         const message = describeWikiFailure(error, describeMissing && (() => describeMissing(args)));
-        return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `${definition.name}：${message}`, retryable: false };
+        const retryable = (error instanceof WikiMemoryHttpError && (error.status === 404 || error.status === 503))
+          || (error instanceof Error && error.name === 'TimeoutError');
+        return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `${definition.name}：${message}`, retryable };
       }
     },
   };
@@ -77,7 +79,9 @@ interface WikiEvidenceTracker {
 export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceTracker): Tool[] {
   let searches = 0;
   let reads = 0;
+  let readAttempts = 0;
   let sourceReads = 0;
+  let sourceAttempts = 0;
   const content_trust = 'untrusted_branch_evidence';
   const wikiParam = { type: 'string', description: 'Wiki ID from search or a Wiki reference' };
   const wikiId = (value: unknown) => {
@@ -122,13 +126,14 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
       parameters: { type: 'object', properties: { wiki_id: wikiParam }, required: ['wiki_id'] },
     }, async ({ wiki_id }, signal) => {
       const id = wikiId(wiki_id);
-      if (reads >= 3) throw new Error('正文读取次数已用完。请结束检索。');
-      reads++;
+      if (reads >= 3 || readAttempts >= 4) throw new Error('正文读取次数已用完。请结束检索。');
+      readAttempts++;
       const result = await memory.read(id, signal);
       if (!result || typeof result !== 'object' || !('wiki_id' in result) || result.wiki_id !== id ||
           !('markdown' in result) || typeof result.markdown !== 'string' ||
           !('source_refs' in result) || !Array.isArray(result.source_refs) ||
           !result.source_refs.every(isWikiEpisodeRef)) throw new Error(`Memory 返回的 Wiki ${id} 正文或原文引用不完整。`);
+      reads++;
       tracker.onRead(id, result.source_refs);
       return { ...result, content_trust };
     }, ({ wiki_id }) => {
@@ -155,8 +160,8 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
         const available = refs.length ? `可用的引用：${refs.join('、')}。` : '这篇 Wiki 未返回 Episode 引用。';
         throw new WikiArgumentError(`引用 ${ref} 不属于 Wiki ${id}。${available}`);
       }
-      if (sourceReads >= 1) throw new Error('原文核验次数已用完。请结束检索。');
-      sourceReads++;
+      if (sourceReads >= 1 || sourceAttempts >= 2) throw new Error('原文核验次数已用完。请结束检索。');
+      sourceAttempts++;
       const result = await memory.source(id, ref, offset, signal);
       if (!result || typeof result !== 'object' || !('ref' in result) || result.ref !== ref ||
           !('events' in result) || !Array.isArray(result.events)) throw new Error(`Memory 返回的原文页和 Wiki ${id} 的引用 ${ref} 不匹配。`);
@@ -170,6 +175,7 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
           ...(text.length > 1200 && { truncated: true }),
         };
       });
+      sourceReads++;
       if (events.some(event => event.text.trim())) tracker.onReadSource(id, ref);
       return { ref, events, next_offset: 'next_offset' in result ? result.next_offset : null, content_trust };
     }, ({ wiki_id, ref }) => `当前 Bot 无法读取 Wiki ${wikiId(wiki_id)} 的原文 ${isWikiEpisodeRef(ref) ? ref : ''}（HTTP 404）。请重新读取 Wiki 确认原文引用。`),

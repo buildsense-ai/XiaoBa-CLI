@@ -43,6 +43,7 @@ type FinishValidation = { payload: WikiFinish } | { errors: string[] };
 export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish> {
   private readonly searches = new Map<string, SeenSearchHit[]>();
   private readonly read = new Map<string, ReadWiki>();
+  private finishOnly = false;
 
   constructor(private readonly input: MemorySidecarContext & { wikiMemory: MondayWikiMemory }) {
     super({
@@ -74,7 +75,7 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
   }
 
   protected buildTools(): Tool[] {
-    const tools = wikiMemoryTools(this.input.wikiMemory, {
+    const tools = this.finishOnly ? [] : wikiMemoryTools(this.input.wikiMemory, {
       onSearch: (retrieval_id, hits) => {
         for (const { wiki_id, snippet } of hits) {
           const seen = this.searches.get(wiki_id) ?? [];
@@ -200,7 +201,12 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
     return errors.length ? { errors } : { payload: { summary, evidence } };
   }
 
+  protected reservedTailPasses(): number {
+    return 1;
+  }
+
   protected buildFinishReminderMessage(): Message {
+    this.finishOnly = true;
     return { role: 'user', content: '请立即用 finish_wiki_search 提交已找到的证据；没有增量时传空摘要和空证据。' };
   }
 

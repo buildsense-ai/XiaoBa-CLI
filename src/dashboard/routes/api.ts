@@ -1466,13 +1466,13 @@ function memoryBranchDashboardPayload(config: BranchAgentConfig, serviceManager?
   const memory = config.branches.memorySearch;
   const primary = modelProfileFromCurrentConfig();
   const savedModel = memory.kind === 'memory' && memory.model.kind !== 'inherit' ? memory.model : undefined;
-  const useRelayDefault = !savedModel;
-  const relay = useRelayDefault ? resolveOfficialMemoryBranchModel(getModelConfigReadonly()) : undefined;
-  const active = savedModel ?? {
-    ...relay,
-    apiBase: relay?.apiUrl,
-    capabilities: relay?.modelCapabilities,
-  };
+  const useRelayDefault = memory.kind === 'wiki';
+  const relay = useRelayDefault
+    ? resolveOfficialMemoryBranchModel({ runtimeRoot: runtimeDataRoot(), activeRelay: getModelConfigReadonly() })
+    : undefined;
+  const active = useRelayDefault
+    ? { ...relay, apiBase: relay?.apiUrl, capabilities: relay?.modelCapabilities }
+    : savedModel ?? primary;
   const custom = memory.customDraft ?? (memory.model.kind === 'custom' ? memory.model : undefined);
   const service = serviceManager?.getService('catscompany');
   return {

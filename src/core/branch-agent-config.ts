@@ -1,21 +1,20 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as dotenv from 'dotenv';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
+import { FileBotCatalogModelRuntimeRepository, FileBotCloudCatalogModelRuntimeRepository } from '../bot-definition/repository';
 import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../types';
 import { PathResolver } from '../utils/path-resolver';
 import { DEEPSEEK_FLASH_RELAY_MODEL_PROFILE } from '../providers/deepseek/catalog-profile';
 import { isOfficialRelayBaseUrl } from '../utils/relay-model-profiles';
-import {
-  hasLegacyBranchAgentSwitch,
-} from './branch-agent-settings';
 import {
   DEFAULT_MEMORY_BRANCH_BUDGET,
   normalizeMemoryBranchBudget,
   type MemoryBranchBudget,
 } from './branch-budget';
 
-export const BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v2';
+export const BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v3';
 export const BRANCH_AGENT_CONFIG_FILE = 'branch-agents.json';
-const LEGACY_BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v1';
 
 export type BranchModelSource = 'inherit' | 'catalog' | 'custom';
 export type MemoryBranchKind = 'memory' | 'wiki';
@@ -42,8 +41,7 @@ export interface MemoryBranchConfig {
   /** Exactly one read branch can be active. `memory` preserves the legacy branch. */
   kind: MemoryBranchKind;
   /**
-   * Saved CatsLog model preference. The existing `inherit` value selects the
-   * default model. Wiki always uses the XiaoBa Relay model.
+   * Saved legacy Memory Branch model preference. Wiki uses the XiaoBa Relay model.
    */
   model: { kind: 'inherit' } | BranchModelRuntime;
   /**
@@ -65,7 +63,6 @@ export interface BranchAgentConfig {
 
 export interface BranchAgentConfigOptions {
   runtimeRoot?: string;
-  env?: NodeJS.ProcessEnv;
 }
 
 export function getBranchAgentConfigPath(runtimeRoot = PathResolver.getRuntimeDataRoot()): string {
@@ -73,33 +70,10 @@ export function getBranchAgentConfigPath(runtimeRoot = PathResolver.getRuntimeDa
 }
 
 export function loadBranchAgentConfig(options: BranchAgentConfigOptions = {}): BranchAgentConfig {
-  const runtimeRoot = options.runtimeRoot ?? PathResolver.getRuntimeDataRoot();
-  const configPath = getBranchAgentConfigPath(runtimeRoot);
-  if (!fs.existsSync(configPath)) {
-    const env = options.env ?? process.env;
-    if (!hasLegacyBranchAgentSwitch(env)) return defaultBranchAgentConfig();
-    const migrated = defaultBranchAgentConfig();
-    try {
-      return saveInitialBranchAgentConfig(migrated, runtimeRoot);
-    } catch (error: any) {
-      // Dashboard and Connector can race during the first startup. The process
-      // that loses the exclusive create must use the winner's persisted value.
-      if (error?.code === 'EEXIST' && fs.existsSync(configPath)) {
-        return loadInitialBranchAgentConfigAfterRace(configPath);
-      }
-      throw error;
-    }
-  }
-
   const fallback = defaultBranchAgentConfig();
-
   try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    const normalized = normalizeBranchAgentConfig(parsed, fallback);
-    if (parsed?.schema === LEGACY_BRANCH_AGENT_CONFIG_SCHEMA) {
-      normalized.branches.memorySearch.enabled = false;
-    }
-    return normalized;
+    const parsed: unknown = JSON.parse(fs.readFileSync(getBranchAgentConfigPath(options.runtimeRoot), 'utf-8'));
+    return normalizeBranchAgentConfig(parsed, fallback);
   } catch {
     return fallback;
   }
@@ -156,11 +130,37 @@ export function resolveMemoryBranchModelOverride(config: BranchAgentConfig): Par
 /**
  * Use the DeepSeek catalog profile with the existing first-party Relay credential.
  */
-export function resolveOfficialMemoryBranchModel(relay: Partial<ChatConfig>): Partial<ChatConfig> | undefined {
-  const apiKey = relay.apiKey?.trim();
-  if (!apiKey) return undefined;
+export function resolveOfficialMemoryBranchModel(options: {
+  runtimeRoot: string;
+  activeRelay?: Pick<ChatConfig, 'apiUrl' | 'apiKey'>;
+}): Partial<ChatConfig> | undefined {
+  const { runtimeRoot, activeRelay } = options;
+  const active = toDeepSeekBranchModel(activeRelay);
+  if (active) return active;
+
+  const envFile = path.join(runtimeRoot, '.env');
+  const env = fs.existsSync(envFile) ? dotenv.parse(fs.readFileSync(envFile)) : {};
+  const saved = toDeepSeekBranchModel({
+    apiUrl: process.env.CATSCO_RELAY_LLM_API_BASE ?? env.CATSCO_RELAY_LLM_API_BASE ?? '',
+    apiKey: process.env.CATSCO_RELAY_LLM_API_KEY ?? env.CATSCO_RELAY_LLM_API_KEY ?? '',
+  });
+  if (saved) return saved;
+
+  const botId = createCatsCoLocalConfigService({ runtimeRoot }).load().currentBot?.uid;
+  if (!botId) return undefined;
+  for (const repo of [FileBotCloudCatalogModelRuntimeRepository, FileBotCatalogModelRuntimeRepository]) {
+    const cached = new repo({ runtimeRoot }).read(String(botId));
+    const model = cached && toDeepSeekBranchModel({ apiUrl: cached.apiBase, apiKey: cached.apiKey });
+    if (model) return model;
+  }
+  return undefined;
+}
+
+function toDeepSeekBranchModel(relay?: Pick<ChatConfig, 'apiUrl' | 'apiKey'>): Partial<ChatConfig> | undefined {
+  const apiKey = relay?.apiKey?.trim();
+  if (!apiKey || !relay?.apiUrl) return undefined;
   let origin: string;
-  try { origin = new URL(relay.apiUrl ?? '').origin; } catch { return undefined; }
+  try { origin = new URL(relay.apiUrl).origin; } catch { return undefined; }
   if (!isOfficialRelayBaseUrl(origin)) return undefined;
   const profile = DEEPSEEK_FLASH_RELAY_MODEL_PROFILE;
   return {
@@ -176,13 +176,13 @@ export function resolveOfficialMemoryBranchModel(relay: Partial<ChatConfig>): Pa
   };
 }
 
-function defaultBranchAgentConfig(enabled = false): BranchAgentConfig {
+function defaultBranchAgentConfig(): BranchAgentConfig {
   return {
     schema: BRANCH_AGENT_CONFIG_SCHEMA,
     branches: {
       memorySearch: {
-        enabled,
-        kind: 'memory',
+        enabled: true,
+        kind: 'wiki',
         model: { kind: 'inherit' },
         budget: { ...DEFAULT_MEMORY_BRANCH_BUDGET },
       },
@@ -190,60 +190,9 @@ function defaultBranchAgentConfig(enabled = false): BranchAgentConfig {
   };
 }
 
-function saveInitialBranchAgentConfig(config: BranchAgentConfig, runtimeRoot: string): BranchAgentConfig {
-  const persisted: BranchAgentConfig = {
-    ...config,
-    updatedAt: new Date().toISOString(),
-  };
-  fs.mkdirSync(runtimeRoot, { recursive: true });
-  const configPath = getBranchAgentConfigPath(runtimeRoot);
-  const tempPath = `${configPath}.${process.pid}.${Date.now()}.initial.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(persisted, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
-  try {
-    // Linking a fully-written same-directory file publishes it atomically and
-    // fails with EEXIST when another process won the first-start migration.
-    try {
-      fs.linkSync(tempPath, configPath);
-    } catch (error: any) {
-      if (!new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV']).has(error?.code)) throw error;
-      // Some removable/network file systems cannot create hard links. The
-      // exclusive copy fallback is paired with a bounded reader retry below.
-      fs.copyFileSync(tempPath, configPath, fs.constants.COPYFILE_EXCL);
-    }
-  } finally {
-    try { fs.unlinkSync(tempPath); } catch { /* Best-effort cleanup after a failed publish. */ }
-  }
-  try { fs.chmodSync(configPath, 0o600); } catch { /* Windows does not expose POSIX modes. */ }
-  return persisted;
-}
-
-function loadInitialBranchAgentConfigAfterRace(configPath: string): BranchAgentConfig {
-  const fallback = defaultBranchAgentConfig();
-  const waiter = new Int32Array(new SharedArrayBuffer(4));
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    try {
-      return readBranchAgentConfigFile(configPath, fallback);
-    } catch (error) {
-      lastError = error;
-      Atomics.wait(waiter, 0, 0, 5);
-    }
-  }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`Timed out reading initial Branch config: ${configPath}`);
-}
-
-function readBranchAgentConfigFile(configPath: string, fallback: BranchAgentConfig): BranchAgentConfig {
-  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  return normalizeBranchAgentConfig(parsed, fallback);
-}
-
 function normalizeBranchAgentConfig(input: any, fallback: BranchAgentConfig): BranchAgentConfig {
-  const memory = input?.schema === BRANCH_AGENT_CONFIG_SCHEMA
-    || input?.schema === LEGACY_BRANCH_AGENT_CONFIG_SCHEMA
-    ? input?.branches?.memorySearch
-    : undefined;
+  if (input?.schema !== BRANCH_AGENT_CONFIG_SCHEMA) return fallback;
+  const memory = input.branches?.memorySearch;
   const model = normalizeModel(memory?.model) ?? fallback.branches.memorySearch.model;
   const customDraft = normalizeModel(memory?.customDraft);
   const budget = normalizeMemoryBranchBudget(memory?.budget, fallback.branches.memorySearch.budget);
@@ -252,7 +201,7 @@ function normalizeBranchAgentConfig(input: any, fallback: BranchAgentConfig): Br
     branches: {
       memorySearch: {
         enabled: typeof memory?.enabled === 'boolean' ? memory.enabled : fallback.branches.memorySearch.enabled,
-        kind: memory?.kind === 'wiki' ? 'wiki' : 'memory',
+        kind: memory?.kind === 'memory' ? 'memory' : 'wiki',
         model,
         budget,
         ...(customDraft?.kind === 'custom' ? { customDraft } : {}),

@@ -30,10 +30,11 @@ function tempRoot(): string {
 }
 
 describe('Branch agent device config', () => {
-  test('defaults Memory Search to disabled and following the primary model', () => {
+  test('defaults new installations to Wiki Search', () => {
     const root = tempRoot();
-    const config = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
-    assert.equal(config.branches.memorySearch.enabled, false);
+    const config = loadBranchAgentConfig({ runtimeRoot: root });
+    assert.equal(config.branches.memorySearch.enabled, true);
+    assert.equal(config.branches.memorySearch.kind, 'wiki');
     assert.deepEqual(config.branches.memorySearch.model, { kind: 'inherit' });
     assert.deepEqual(config.branches.memorySearch.budget, {
       maxTurnsPerPass: 4,
@@ -45,21 +46,7 @@ describe('Branch agent device config', () => {
     assert.equal(fs.existsSync(path.join(root, BRANCH_AGENT_CONFIG_FILE)), false);
   });
 
-  test('disables the legacy Branch switch when the device config is first created', () => {
-    const root = tempRoot();
-    const migrated = loadBranchAgentConfig({
-      runtimeRoot: root,
-      env: { XIAOBA_BRANCH_AGENTS_ENABLED: 'true' },
-    });
-    assert.equal(migrated.branches.memorySearch.enabled, false);
-    const reloaded = loadBranchAgentConfig({
-      runtimeRoot: root,
-      env: { XIAOBA_BRANCH_AGENTS_ENABLED: 'true' },
-    });
-    assert.equal(reloaded.branches.memorySearch.enabled, false);
-  });
-
-  test('concurrent v1 readers do not write or overwrite later manual enablement', async () => {
+  test('concurrent v1 readers discard obsolete settings without overwriting new choices', async () => {
     const root = tempRoot();
     const configPath = path.join(root, BRANCH_AGENT_CONFIG_FILE);
     const legacyFile = JSON.stringify({
@@ -94,7 +81,7 @@ describe('Branch agent device config', () => {
     const script = [
       `const imported = await import(${JSON.stringify(moduleUrl)});`,
       'const branchConfig = imported.default ?? imported;',
-      'const config = branchConfig.loadBranchAgentConfig({ runtimeRoot: process.env.BRANCH_TEST_ROOT, env: {} });',
+      'const config = branchConfig.loadBranchAgentConfig({ runtimeRoot: process.env.BRANCH_TEST_ROOT });',
       'process.stdout.write(String(config.branches.memorySearch.enabled));',
     ].join('\n');
     const childOptions = {
@@ -106,80 +93,49 @@ describe('Branch agent device config', () => {
       ['--import', 'tsx', '--input-type=module', '--eval', script],
       childOptions,
     )));
-    assert.deepEqual(readers.map(result => result.stdout), Array(6).fill('false'));
+    assert.deepEqual(readers.map(result => result.stdout), Array(6).fill('true'));
     assert.equal(fs.readFileSync(configPath, 'utf-8'), legacyFile);
 
-    const migrated = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    const migrated = loadBranchAgentConfig({ runtimeRoot: root });
     assert.equal(migrated.schema, BRANCH_AGENT_CONFIG_SCHEMA);
-    assert.equal(migrated.branches.memorySearch.enabled, false);
-    const model = migrated.branches.memorySearch.model;
-    assert.equal(model.kind, 'custom');
-    assert.ok(model.kind === 'custom');
-    assert.equal(model.apiKey, 'branch-secret');
-    assert.equal(migrated.branches.memorySearch.customDraft?.apiKey, 'draft-secret');
+    assert.equal(migrated.branches.memorySearch.enabled, true);
+    assert.equal(migrated.branches.memorySearch.kind, 'wiki');
+    assert.deepEqual(migrated.branches.memorySearch.model, { kind: 'inherit' });
+    assert.equal(migrated.branches.memorySearch.customDraft, undefined);
 
-    migrated.branches.memorySearch.enabled = true;
+    migrated.branches.memorySearch.enabled = false;
     saveBranchAgentConfig(migrated, { runtimeRoot: root });
-    const reloaded = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    const reloaded = loadBranchAgentConfig({ runtimeRoot: root });
     assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf-8')).schema, BRANCH_AGENT_CONFIG_SCHEMA);
-    assert.equal(reloaded.branches.memorySearch.enabled, true);
-    assert.equal(reloaded.branches.memorySearch.customDraft?.apiKey, 'draft-secret');
+    assert.equal(reloaded.branches.memorySearch.enabled, false);
+    assert.equal(reloaded.branches.memorySearch.customDraft, undefined);
     const postSaveReader = await execFileAsync(
       process.execPath,
       ['--import', 'tsx', '--input-type=module', '--eval', script],
       childOptions,
     );
-    assert.equal(postSaveReader.stdout, 'true');
+    assert.equal(postSaveReader.stdout, 'false');
   });
 
-  test('migrates the old Memory sidecar switch and then ignores both legacy switches', () => {
+  test('switches all v2 devices to Wiki regardless of their previous mode', () => {
     const root = tempRoot();
-    const migrated = loadBranchAgentConfig({
-      runtimeRoot: root,
-      env: { XIAOBA_MEMORY_SIDECAR_ENABLED: 'false' },
-    });
-    assert.equal(migrated.branches.memorySearch.enabled, false);
-
-    migrated.branches.memorySearch.enabled = true;
-    saveBranchAgentConfig(migrated, { runtimeRoot: root });
-    const reloaded = loadBranchAgentConfig({
-      runtimeRoot: root,
-      env: {
-        XIAOBA_BRANCH_AGENTS_ENABLED: 'false',
-        XIAOBA_MEMORY_SIDECAR_ENABLED: 'false',
-      },
-    });
-    assert.equal(reloaded.branches.memorySearch.enabled, true);
-  });
-
-  test('publishes the first legacy migration atomically across concurrent processes', async () => {
-    const root = tempRoot();
-    const moduleUrl = pathToFileURL(path.join(process.cwd(), 'src/core/branch-agent-config.ts')).href;
-    const script = [
-      `const imported = await import(${JSON.stringify(moduleUrl)});`,
-      'const branchConfig = imported.default ?? imported;',
-      'const config = branchConfig.loadBranchAgentConfig({ runtimeRoot: process.env.BRANCH_TEST_ROOT, env: process.env });',
-      'process.stdout.write(String(config.branches.memorySearch.enabled));',
-    ].join('\n');
-    const env = {
-      ...process.env,
-      BRANCH_TEST_ROOT: root,
-      XIAOBA_BRANCH_AGENTS_ENABLED: 'false',
-      XIAOBA_MEMORY_SIDECAR_ENABLED: 'false',
-    };
-    const results = await Promise.all(Array.from({ length: 6 }, () => execFileAsync(
-      process.execPath,
-      ['--import', 'tsx', '--input-type=module', '--eval', script],
-      { cwd: process.cwd(), env },
-    )));
-    assert.deepEqual(results.map(result => result.stdout), Array(6).fill('false'));
-    const stored = JSON.parse(fs.readFileSync(path.join(root, BRANCH_AGENT_CONFIG_FILE), 'utf-8'));
-    assert.equal(stored.branches.memorySearch.enabled, false);
+    for (const prior of [{ enabled: false }, { enabled: true }, { enabled: true, kind: 'wiki' }]) {
+      fs.writeFileSync(path.join(root, BRANCH_AGENT_CONFIG_FILE), JSON.stringify({
+        schema: 'xiaoba.branch-agents.v2',
+        branches: { memorySearch: { ...prior, model: {
+          kind: 'custom', provider: 'openai', apiBase: 'https://old.example.test/v1',
+          apiKey: 'old-key', model: 'old-model', contextWindowTokens: 64_000,
+          capabilities: { toolCalling: true },
+        } } },
+      }));
+      const { enabled, kind, model } = loadBranchAgentConfig({ runtimeRoot: root }).branches.memorySearch;
+      assert.deepEqual({ enabled, kind, model }, { enabled: true, kind: 'wiki', model: { kind: 'inherit' } });
+    }
   });
 
   test('persists a dedicated custom model and resolves every model-affecting field', () => {
     const root = tempRoot();
-    const config = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    const config = loadBranchAgentConfig({ runtimeRoot: root });
     config.branches.memorySearch.model = {
       kind: 'custom',
       provider: 'openai',
@@ -191,11 +147,11 @@ describe('Branch agent device config', () => {
       openaiApiMode: 'responses',
       capabilities: { toolCalling: true, vision: false },
     };
-    saveBranchAgentConfig(config, { runtimeRoot: root, env: {} });
+    saveBranchAgentConfig(config, { runtimeRoot: root });
     config.branches.memorySearch.enabled = false;
-    saveBranchAgentConfig(config, { runtimeRoot: root, env: {} });
+    saveBranchAgentConfig(config, { runtimeRoot: root });
 
-    const stored = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    const stored = loadBranchAgentConfig({ runtimeRoot: root });
     const override = resolveMemoryBranchModelOverride(stored);
     assert.equal(stored.branches.memorySearch.model.kind, 'custom');
     assert.equal(stored.branches.memorySearch.enabled, false);
@@ -210,7 +166,7 @@ describe('Branch agent device config', () => {
 
   test('pins customDraft as a Dashboard-only draft: it never resolves into a runtime override', () => {
     const root = tempRoot();
-    const config = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    const config = loadBranchAgentConfig({ runtimeRoot: root });
     config.branches.memorySearch.model = { kind: 'inherit' };
     config.branches.memorySearch.customDraft = {
       kind: 'custom',
@@ -221,9 +177,9 @@ describe('Branch agent device config', () => {
       contextWindowTokens: 128_000,
       capabilities: { toolCalling: true },
     };
-    saveBranchAgentConfig(config, { runtimeRoot: root, env: {} });
+    saveBranchAgentConfig(config, { runtimeRoot: root });
 
-    const stored = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+    const stored = loadBranchAgentConfig({ runtimeRoot: root });
     assert.equal(stored.branches.memorySearch.model.kind, 'inherit');
     assert.equal(stored.branches.memorySearch.customDraft?.apiKey, 'draft-secret');
     assert.equal(resolveMemoryBranchModelOverride(stored), undefined);
@@ -244,14 +200,14 @@ describe('Branch agent device config', () => {
       process.env.GAUZ_LLM_API_BASE = 'https://primary.example.test/v1';
       process.env.GAUZ_LLM_API_KEY = 'primary-secret';
       process.env.GAUZ_LLM_MODEL = 'primary-model';
-      const config = loadBranchAgentConfig({ runtimeRoot: root, env: process.env });
+      const config = loadBranchAgentConfig({ runtimeRoot: root });
       config.branches.memorySearch.model = { kind: 'inherit' };
       config.branches.memorySearch.customDraft = {
         kind: 'custom', provider: 'anthropic', apiBase: 'https://draft.example.test/anthropic',
         apiKey: 'draft-secret', model: 'draft-model', contextWindowTokens: 128_000,
         capabilities: { toolCalling: true },
       };
-      saveBranchAgentConfig(config, { runtimeRoot: root, env: process.env });
+      saveBranchAgentConfig(config, { runtimeRoot: root });
       const profile = resolveDefaultRuntimeProfile({ surface: 'catscompany', workingDirectory: root });
       const services = RuntimeFactory.createServicesSync(profile);
       assert.equal(services.memoryBranch?.modelSource, 'official-deepseek');
@@ -274,14 +230,9 @@ describe('Branch agent device config', () => {
   test('falls back safely when the local config is corrupt', () => {
     const root = tempRoot();
     fs.writeFileSync(path.join(root, BRANCH_AGENT_CONFIG_FILE), '{not-json', 'utf-8');
-    const config = loadBranchAgentConfig({
-      runtimeRoot: root,
-      env: {
-        XIAOBA_BRANCH_AGENTS_ENABLED: 'false',
-        XIAOBA_MEMORY_SIDECAR_ENABLED: 'false',
-      },
-    });
-    assert.equal(config.branches.memorySearch.enabled, false);
+    const config = loadBranchAgentConfig({ runtimeRoot: root });
+    assert.equal(config.branches.memorySearch.enabled, true);
+    assert.equal(config.branches.memorySearch.kind, 'wiki');
     assert.equal(config.branches.memorySearch.model.kind, 'inherit');
   });
 
@@ -308,10 +259,10 @@ describe('Branch agent device config', () => {
     ]) {
       const root = tempRoot();
       fs.writeFileSync(path.join(root, BRANCH_AGENT_CONFIG_FILE), JSON.stringify({
-        schema: 'xiaoba.branch-agents.v1',
+        schema: BRANCH_AGENT_CONFIG_SCHEMA,
         branches: { memorySearch: { enabled: true, model } },
       }), 'utf-8');
-      assert.equal(loadBranchAgentConfig({ runtimeRoot: root, env: {} }).branches.memorySearch.model.kind, 'inherit');
+      assert.equal(loadBranchAgentConfig({ runtimeRoot: root }).branches.memorySearch.model.kind, 'inherit');
     }
   });
 
@@ -333,7 +284,7 @@ describe('Branch agent device config', () => {
       },
     }), 'utf-8');
 
-    assert.deepEqual(loadBranchAgentConfig({ runtimeRoot: root, env: {} }).branches.memorySearch.budget, {
+    assert.deepEqual(loadBranchAgentConfig({ runtimeRoot: root }).branches.memorySearch.budget, {
       maxTurnsPerPass: 64,
       maxPasses: 2,
       deadlineMs: 45_000,
@@ -356,13 +307,14 @@ describe('Branch agent device config', () => {
       process.env.GAUZ_LLM_API_BASE = 'https://primary.example.test/v1';
       process.env.GAUZ_LLM_API_KEY = 'primary-secret';
       process.env.GAUZ_LLM_MODEL = 'primary-model';
-      const config = loadBranchAgentConfig({ runtimeRoot: root, env: process.env });
+      const config = loadBranchAgentConfig({ runtimeRoot: root });
+      config.branches.memorySearch.kind = 'memory';
       config.branches.memorySearch.model = {
         kind: 'custom', provider: 'anthropic', apiBase: 'https://branch.example.test/anthropic',
         apiKey: 'branch-secret', model: 'branch-model', contextWindowTokens: 200000,
         capabilities: { toolCalling: true },
       };
-      saveBranchAgentConfig(config, { runtimeRoot: root, env: process.env });
+      saveBranchAgentConfig(config, { runtimeRoot: root });
       const profile = resolveDefaultRuntimeProfile({ surface: 'catscompany', workingDirectory: root });
       const services = RuntimeFactory.createServicesSync(profile);
       assert.notEqual(services.memoryBranch?.aiService, services.aiService);
@@ -395,7 +347,7 @@ describe('Branch agent device config', () => {
       model: process.env.GAUZ_LLM_MODEL,
     };
     try {
-      const config = loadBranchAgentConfig({ runtimeRoot: root, env: {} });
+      const config = loadBranchAgentConfig({ runtimeRoot: root });
       config.branches.memorySearch.enabled = true;
       saveBranchAgentConfig(config, { runtimeRoot: root });
       process.env.XIAOBA_USER_DATA_DIR = root;
@@ -415,15 +367,15 @@ describe('Branch agent device config', () => {
       assert.equal(branch?.openaiApiMode, 'responses');
       assert.equal(branch?.reasoningEffort, 'high');
       assert.equal(services.aiService.getConfig().model, 'primary-model');
-      assert.ok(services.catslogMemory);
+      assert.equal(services.catslogMemory, undefined);
 
-      config.branches.memorySearch.kind = 'wiki';
+      config.branches.memorySearch.kind = 'memory';
       saveBranchAgentConfig(config, { runtimeRoot: root });
-      const wikiServices = RuntimeFactory.createServicesSync(profile);
-      assert.equal(wikiServices.memoryBranch?.kind, 'wiki');
-      assert.equal(wikiServices.memoryBranch?.aiService?.getConfig().model, 'deepseek-flash');
-      assert.equal(typeof wikiServices.memoryBranch?.wikiMemory, 'function');
-      assert.equal(wikiServices.catslogMemory, undefined);
+      const legacyServices = RuntimeFactory.createServicesSync(profile);
+      assert.equal(legacyServices.memoryBranch?.kind, 'memory');
+      assert.equal(legacyServices.memoryBranch?.modelSource, 'inherit');
+      assert.ok(legacyServices.catslogMemory);
+      assert.equal(legacyServices.memoryBranch?.wikiMemory, undefined);
     } finally {
       for (const [key, value] of Object.entries({
         XIAOBA_USER_DATA_DIR: previous.runtimeRoot,
@@ -438,5 +390,34 @@ describe('Branch agent device config', () => {
         else process.env[key] = value;
       }
     }
+  });
+
+  test('Wiki uses the separately saved Relay when the primary model is custom', t => {
+    const root = tempRoot();
+    const env = {
+      XIAOBA_USER_DATA_DIR: root,
+      GAUZ_LLM_PROVIDER: 'openai',
+      GAUZ_LLM_API_BASE: 'https://primary.example.test/v1',
+      GAUZ_LLM_API_KEY: 'primary-secret',
+      GAUZ_LLM_MODEL: 'primary-model',
+      CATSCO_RELAY_LLM_API_BASE: 'https://relay.catsco.cn/v1',
+      CATSCO_RELAY_LLM_API_KEY: 'relay-secret',
+    };
+    for (const [key, value] of Object.entries(env)) {
+      const previous = process.env[key];
+      process.env[key] = value;
+      t.after(() => {
+        if (previous === undefined) delete process.env[key];
+        else process.env[key] = previous;
+      });
+    }
+    const profile = resolveDefaultRuntimeProfile({ surface: 'catscompany', workingDirectory: root });
+    const services = RuntimeFactory.createServicesSync(profile);
+    assert.equal(services.aiService.getConfig().model, 'primary-model');
+    assert.equal(services.memoryBranch?.kind, 'wiki');
+    const branch = services.memoryBranch?.aiService?.getConfig();
+    assert.equal(branch?.apiKey, 'relay-secret');
+    assert.equal(branch?.model, 'deepseek-flash');
+    assert.equal(branch?.reasoningEffort, 'high');
   });
 });

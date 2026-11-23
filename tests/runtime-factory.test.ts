@@ -280,9 +280,10 @@ describe('RuntimeFactory', () => {
     const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
     process.env.XIAOBA_USER_DATA_DIR = testRoot;
     try {
-      const config = loadBranchAgentConfig({ runtimeRoot: testRoot, env: {} });
+      const config = loadBranchAgentConfig({ runtimeRoot: testRoot });
       config.branches.memorySearch.enabled = true;
-      saveBranchAgentConfig(config, { runtimeRoot: testRoot, env: {} });
+      config.branches.memorySearch.kind = 'memory';
+      saveBranchAgentConfig(config, { runtimeRoot: testRoot });
 
       const profile = resolveDefaultRuntimeProfile({
         surface: 'feishu',
@@ -302,7 +303,7 @@ describe('RuntimeFactory', () => {
     const previousRuntimeRoot = process.env.XIAOBA_USER_DATA_DIR;
     process.env.XIAOBA_USER_DATA_DIR = testRoot;
     try {
-      const config = loadBranchAgentConfig({ runtimeRoot: testRoot, env: {} });
+      const config = loadBranchAgentConfig({ runtimeRoot: testRoot });
       config.branches.memorySearch.enabled = true;
       config.branches.memorySearch.budget = {
         maxTurnsPerPass: 6,
@@ -310,7 +311,7 @@ describe('RuntimeFactory', () => {
         deadlineMs: 30_000,
         maxContextTokens: 12_000,
       };
-      saveBranchAgentConfig(config, { runtimeRoot: testRoot, env: {} });
+      saveBranchAgentConfig(config, { runtimeRoot: testRoot });
 
       const profile = resolveDefaultRuntimeProfile({ surface: 'cli', workingDirectory: testRoot });
       const services = RuntimeFactory.createServicesSync(profile);
@@ -346,9 +347,10 @@ describe('RuntimeFactory', () => {
         skillTokenExpiresAt: '2099-08-28T00:00:00.000Z',
         uploaded: {},
       });
-      const config = loadBranchAgentConfig({ runtimeRoot: testRoot, env: {} });
+      const config = loadBranchAgentConfig({ runtimeRoot: testRoot });
       config.branches.memorySearch.enabled = true;
-      saveBranchAgentConfig(config, { runtimeRoot: testRoot, env: {} });
+      config.branches.memorySearch.kind = 'memory';
+      saveBranchAgentConfig(config, { runtimeRoot: testRoot });
 
       const profile = resolveDefaultRuntimeProfile({
         surface: 'feishu',

@@ -81,12 +81,12 @@ export class RuntimeFactory {
     const modelOverride = activeBotModel ? {} : profile.model;
 
     const aiService = new AIService(modelOverride);
-    const branchConfig = loadBranchAgentConfig();
+    const runtimeRoot = PathResolver.getRuntimeDataRoot();
+    const branchConfig = loadBranchAgentConfig({ runtimeRoot });
     const memory = branchConfig.branches.memorySearch;
-    const explicitMemoryModel = memory.kind === 'memory' ? resolveMemoryBranchModelOverride(branchConfig) : undefined;
-    const memoryBranchOverride = explicitMemoryModel ?? (memory.enabled
-      ? resolveOfficialMemoryBranchModel(activeBotModel?.config ?? aiService.getConfig())
-      : undefined);
+    const memoryBranchOverride = !memory.enabled ? undefined : memory.kind === 'wiki'
+      ? resolveOfficialMemoryBranchModel({ runtimeRoot, activeRelay: activeBotModel?.config ?? aiService.getConfig() })
+      : resolveMemoryBranchModelOverride(branchConfig);
     // Keep a lazy provider attached to long-lived adapter runtimes. The
     // branch re-checks its current capability before every turn, so a login,
     // token rotation, or explicit disable after startup is observed without
@@ -110,7 +110,7 @@ export class RuntimeFactory {
       memoryBranch: {
         enabled: memory.enabled,
         kind: memory.kind,
-        modelSource: explicitMemoryModel ? memory.model.kind : 'official-deepseek',
+        modelSource: memory.kind === 'wiki' ? 'official-deepseek' : memory.model.kind,
         aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : undefined,
         budget: { ...memory.budget },
         ...(memory.kind === 'wiki' && {

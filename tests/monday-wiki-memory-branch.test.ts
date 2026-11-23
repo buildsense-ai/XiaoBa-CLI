@@ -88,7 +88,7 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
   }]);
 });
 
-test('reports each invalid citation so the model can correct the finish in one turn', async () => {
+test('reports each invalid citation and accepts a corrected finish after stray text', async () => {
   const wiki_id = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const mistypedId = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef';
   const titleOnlyId = 'mem_bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -105,6 +105,7 @@ test('reports each invalid citation so the model can correct the finish in one t
       { ...candidate, wiki_id: titleOnlyId, quote },
       { ...candidate, wiki_id: mistypedId, quote },
     ] } },
+    null,
     { name: 'finish_wiki_search', args: { summary, evidence: [{ ...candidate, quote }] } },
   ];
   let step = 0;
@@ -118,7 +119,9 @@ test('reports each invalid citation so the model can correct the finish in one t
         assert.ok(rejection.includes(`evidence[2]（${mistypedId}） 本轮没有搜到或打开过`));
         assert.ok(rejection.includes(`请核对是否要使用本轮已找到的 ${wiki_id}`));
       }
+      if (step === 4) assert.match(String(messages.at(-1)?.content), /请立即用 finish_wiki_search/);
       const action = actions[step++];
+      if (action === null) return { content: summary };
       assert.ok(action);
       return { content: null, toolCalls: [{
         id: 'call-' + step, type: 'function', function: { name: action.name, arguments: JSON.stringify(action.args) },
@@ -185,4 +188,33 @@ test('points read failures to the known Wiki or Episode and distinguishes creden
   assert.equal(credential.ok, false);
   if (credential.ok) return;
   assert.match(credential.message, /Bot 凭据.*HTTP 401/);
+});
+
+test('allows a corrected ID or a temporary failure to be retried within the read quota', async () => {
+  const wikiId = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const mistypedId = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef';
+  const ref = 'ep_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  let sourceRequests = 0;
+  const [, read, source] = wikiMemoryTools({
+    search: async () => assert.fail('Unexpected search'),
+    read: async id => {
+      if (id !== wikiId) throw new WikiMemoryHttpError(404);
+      return { wiki_id: id, markdown: '# Evidence', source_refs: [ref] };
+    },
+    source: async () => {
+      if (++sourceRequests === 1) throw new WikiMemoryHttpError(503);
+      return { ref, events: [{ text: 'Evidence' }] };
+    },
+  }, {
+    knownWikiIds: () => [wikiId], sourceRefs: () => [ref],
+    onSearch() {}, onRead() {}, onReadSource() {},
+  });
+  const context = { workingDirectory: tmpdir(), conversationHistory: [] };
+  for (let n = 0; n < 2; n++) assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);
+  assert.equal((await read.execute({ wiki_id: mistypedId }, context)).ok, false);
+  assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);
+  assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, false);
+  assert.equal((await source.execute({ wiki_id: wikiId, ref }, context)).ok, false);
+  assert.equal((await source.execute({ wiki_id: wikiId, ref }, context)).ok, true);
+  assert.equal((await source.execute({ wiki_id: wikiId, ref }, context)).ok, false);
 });

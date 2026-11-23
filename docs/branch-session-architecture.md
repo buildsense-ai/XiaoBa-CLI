@@ -71,17 +71,15 @@ No new content means no new call. Reusing a citation for a new fact is allowed;
 the model is instructed to avoid duplicate conclusions. The original observation
 queue/carryover and cancellation semantics remain.
 
-Memory is off by default. An existing explicit enablement in
-`branch-agents.json` is honored; upgrading does not enable it. The Dashboard's
-legacy budget response is now `budget: null, budgetPolicy: "model_context"`;
+The Dashboard's legacy budget response is `budget: null, budgetPolicy: "model_context"`;
 writing retired pipeline budgets returns 409 rather than implying they are active.
 Legacy persisted budget fields are not deleted, but are not passed to this Memory runtime.
 
 ## Memory retrieval modes
 
-Set `PUT /api/branch-agents/memory/mode` to `{"mode":"off"}`, `{"mode":"memory"}`, or `{"mode":"wiki"}`. New installations start with memory retrieval off. An existing enabled configuration with no kind selects the original Memory Branch.
+New installations and upgrades from v1 or v2 start in Wiki mode. Previous Branch settings do not carry over. Settings saved by this release apply on subsequent starts. Use `PUT /api/branch-agents/memory/mode` to select `{"mode":"off"}`, `{"mode":"memory"}` for the original Memory Branch, or `{"mode":"wiki"}`.
 
-Both modes default to `deepseek-flash` with high reasoning through XiaoBa's built-in CatsCo Relay. The original Memory Branch keeps previously saved model overrides. Wiki uses the Relay model and requires the existing Bot API key for Memory reads.
+The Wiki Branch uses `deepseek-flash` with `high` reasoning through XiaoBa's built-in CatsCo Relay and the existing Bot API key for Memory reads. Its model is independent of the primary Agent. The rest of the model override section applies only when the original Memory Branch is selected explicitly.
 
 The Wiki branch has its own prompt and tool set. Each run can search twice, read three Wiki bodies, and check one page of source evidence. Long source events are marked as previews. The branch treats all retrieved text as untrusted historical evidence.
 

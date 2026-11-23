@@ -68,7 +68,9 @@ describe('Dashboard Branch agent API', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     assert.equal(response.status, 200);
-    assert.equal(data.enabled, false);
+    assert.equal(data.enabled, true);
+    assert.equal(data.mode, 'wiki');
+    assert.equal(data.runtimeModelSource, 'xiaoba-relay-deepseek');
     assert.equal(data.modelSource, 'inherit');
     assert.equal(typeof data.primary.model, 'string');
     assert.equal(data.custom.apiKeyPresent, false);
