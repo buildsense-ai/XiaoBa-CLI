@@ -71,17 +71,23 @@ No new content means no new call. Reusing a citation for a new fact is allowed;
 the model is instructed to avoid duplicate conclusions. The original observation
 queue/carryover and cancellation semantics remain.
 
-Memory is off by default. An existing explicit enablement in
-`branch-agents.json` is honored; upgrading does not enable it. The Dashboard's
-legacy budget response is now `budget: null, budgetPolicy: "model_context"`;
+The Dashboard's legacy budget response is `budget: null, budgetPolicy: "model_context"`;
 writing retired pipeline budgets returns 409 rather than implying they are active.
 Legacy persisted budget fields are not deleted, but are not passed to this Memory runtime.
 
-## Harness Memory Wiki
+## Memory retrieval modes
 
-When the Memory Branch is enabled and the runtime has a Cats Company Bot API key, it also exposes `wiki_search`, `wiki_read` and `wiki_read_source`. The client loads the existing key from local configuration. Tool arguments contain only search terms or references. The Memory service verifies the credential through Cats Company and queries the stored sessions of the verified Bot.
+New installations and upgrades from v1 or v2 start in Wiki mode. Previous Branch settings do not carry over. Settings saved by this release apply on subsequent starts. Use `PUT /api/branch-agents/memory/mode` to select `{"mode":"off"}`, `{"mode":"memory"}` for the original Memory Branch, or `{"mode":"wiki"}`.
 
-Search returns excerpts for the first ten results and titles and IDs through rank thirty. The branch reads a Wiki before citing it in `finish_memory_search`. The observation carries chosen Wiki IDs and their search IDs when available. Full Wiki text and original Episode pages stay in the branch.
+The Wiki Branch uses `deepseek-flash` with `high` reasoning through XiaoBa's built-in CatsCo Relay and the existing Bot API key for Memory reads. Its model is independent of the primary Agent. The rest of the model override section applies only when the original Memory Branch is selected explicitly.
+
+The Wiki Branch can search, open Wiki bodies, and read source pages as needed. One search accepts up to 16 distinct literal substrings of at most 25 Unicode code points each after trimming. Search for independent concepts as separate terms and keep fixed phrases together. Each result matches at least one keyword and includes its matched terms and count. The first ten of up to 30 results also include snippets. Source reads return up to 10 events and 12,000 characters of text at a time. Source offsets allow the Branch to continue from the next event or from a position inside a long event. The Branch treats retrieved text as untrusted historical evidence.
+
+Both retrieval modes use the same observation queue and refresh rules. When the foreground turn succeeds or the user stops it, an already running branch has up to 2 minutes to finish. The timeout cancels ongoing retrieval and preserves any ready result in the session's observation queue. The next turn consumes ready results before a model call and discards remaining work and results from the previous turn on exit. Other cancellations, failed turns, and session cleanup discard outstanding observations. In a long foreground turn, new progress can trigger another retrieval at the next model boundary at least 15 minutes after the previous branch finishes. Wiki requests use a separate Relay credit task so the foreground does not wait for Wiki billing or inherit its failure state.
+
+The Wiki Branch uses the same turn loop as the original Memory Branch. If it returns plain text, it receives a reminder to submit through the finish tool and can still use its retrieval tools. The first invalid submission returns the specific error and leaves three chances to correct it. After four invalid submissions, the Branch stops without injecting memory.
+
+The `finish_wiki_search` tool accepts a brief summary and the contribution of each cited Wiki. A search snippet can support a fact when the branch quotes it verbatim. A title alone does not qualify as evidence. XiaoBa labels snippet citations `search_snippet` and records the matching retrieval ID and quote. For full reads it records `wiki_body`, the available retrieval ID, source references, and any source references the branch actually checked. An empty evidence list skips injection. The parent writes the consumed observation to the conversation transcript for later edge analysis.
 
 ## Asynchronous checkpoint Summary (independent opt-in)
 

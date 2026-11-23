@@ -36,6 +36,7 @@ const LOW_RISK_TOOLS = new Set([
   // the provider; it does not mutate the local machine or send an external
   // side effect.
   'finish_memory_search',
+  'finish_wiki_search',
 ]);
 
 const CONFIRM_TOOLS = new Set([

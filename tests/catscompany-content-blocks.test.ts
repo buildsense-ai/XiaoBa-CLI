@@ -1233,12 +1233,12 @@ describe('CatsCo content blocks', () => {
   test('interrupts active session on CatsCompany stream cancel event', () => {
     const bot = Object.create(CatsCompanyBot.prototype) as any;
     bot.botUid = 'usr43';
-    let interrupted = 0;
+    const interrupts: unknown[] = [];
     bot.sessionManager = {
       get: (key: string) => key === 'session:v2:catscompany:p2p:p2p_1_2:agent:usr43'
         ? {
-          requestInterrupt: () => {
-            interrupted += 1;
+          requestInterrupt: (options: unknown) => {
+            interrupts.push(options);
           },
         }
         : null,
@@ -1255,7 +1255,7 @@ describe('CatsCo content blocks', () => {
       seq: 0,
     });
 
-    assert.strictEqual(interrupted, 1);
+    assert.deepEqual(interrupts, [{ keepMemory: true }]);
   });
 
   test('subagent runtime events are sent as CatsCompany working metadata', async () => {

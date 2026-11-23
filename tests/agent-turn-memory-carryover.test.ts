@@ -4,6 +4,7 @@ import {
   AgentTurnController,
   DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS,
 } from '../src/core/agent-turn-controller';
+import type { MemoryBranchKind } from '../src/core/branch-agent-config';
 import {
   BRANCH_AGENTS_ENABLED_ENV,
   MEMORY_SIDECAR_ENABLED_ENV,
@@ -14,6 +15,11 @@ import { Message } from '../src/types';
 import { AIService } from '../src/utils/ai-service';
 
 const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
+const wikiMemory = {
+  search: async () => assert.fail('Unexpected Wiki search'),
+  read: async () => assert.fail('Unexpected Wiki read'),
+  source: async () => assert.fail('Unexpected source read'),
+};
 
 function memoryObservation(id: string): SyntheticObservation {
   return {
@@ -53,7 +59,7 @@ class CapturingAIService {
   }
 }
 
-function createMemoryBranchController(enabled: boolean): AgentTurnController {
+function createMemoryBranchController(enabled: boolean, kind: MemoryBranchKind = 'memory'): AgentTurnController {
   const aiService = new AIService({
     provider: 'openai',
     apiUrl: 'https://models.example.test/v1',
@@ -66,7 +72,7 @@ function createMemoryBranchController(enabled: boolean): AgentTurnController {
     sessionType: 'catscompany',
     services: {
       aiService,
-      memoryBranch: { enabled, modelSource: 'inherit', aiService },
+      memoryBranch: { enabled, kind, modelSource: 'inherit', aiService, ...(kind === 'wiki' && { wikiMemory: () => wikiMemory }) },
       toolManager: {} as any,
       skillManager: {} as any,
     },
@@ -125,9 +131,40 @@ describe('AgentTurnController memory branch carryover', () => {
   });
 
   test('injects previous-turn memory as a legal late synthetic tool pair and expires it after one turn', async () => {
+    await verifyLateMemoryDelivery('memory');
+  });
+
+  test('injects a late Wiki result during the next turn and expires it at that turn boundary', async () => {
+    await verifyLateMemoryDelivery('wiki');
+  });
+
+  test('session cleanup discards active Wiki branch work and its result before the foreground turn exits', async () => {
+    await verifyLateMemoryDelivery('wiki', true);
+  });
+
+  async function verifyLateMemoryDelivery(kind: MemoryBranchKind, clearDuringFirstTurn = false) {
     const aiService = new CapturingAIService();
     const queues: InMemorySyntheticObservationQueue[] = [];
     const cancelled: boolean[] = [];
+    const originalChat = aiService.chatStream.bind(aiService);
+    aiService.chatStream = async messages => {
+      const result = await originalChat(messages);
+      if (aiService.requests.length === 1) {
+        if (clearDuringFirstTurn) {
+          controller.clearMemoryBranches();
+          assert.equal(cancelled[0], true);
+          assert.equal(queues[0].push(memoryObservation('after-cleanup')), false);
+          return result;
+        }
+        const observation = memoryObservation('late-one');
+        if (kind === 'wiki') {
+          observation.metadata = { ...observation.metadata, branchType: 'wiki-memory' };
+          observation.formattedContent = JSON.stringify({ ...JSON.parse(observation.formattedContent!), branch: 'wiki' });
+        }
+        assert.equal(queues[0].push(observation), true);
+      }
+      return result;
+    };
     const controller = new AgentTurnController({
       sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
       sessionType: 'catscompany',
@@ -166,12 +203,8 @@ describe('AgentTurnController memory branch carryover', () => {
       return {
         queue,
         originTurn: options.turnNumber,
-        done: false,
-        handle: {
-          cancel: () => {
-            cancelled[index] = true;
-          },
-          done: new Promise<void>(() => undefined),
+        cancel: () => {
+          cancelled[index] = true;
         },
       };
     };
@@ -190,7 +223,14 @@ describe('AgentTurnController memory branch carryover', () => {
 
     await runTurn('turn one');
     assert.equal(aiService.requests.length, 1);
-    assert.equal(queues[0].push(memoryObservation('late-one')), true);
+    if (clearDuringFirstTurn) {
+      await runTurn('turn two continues the same topic');
+      assert.equal(aiService.requests[1].some(message => message.__syntheticObservation), false);
+      controller.clearMemoryBranches();
+      return;
+    }
+    assert.equal(cancelled[0], false);
+    assert.equal(queues[0].size(), 1);
 
     await runTurn('turn two continues the same topic');
     assert.equal(aiService.requests.length, 2);
@@ -208,6 +248,7 @@ describe('AgentTurnController memory branch carryover', () => {
     assert.equal(callArgs.timing, 'late_previous_turn');
     assert.equal(resultContent.timing, 'late_previous_turn');
     assert.equal(resultContent.summary, 'Previous turn found the birthday dinner decision.');
+    if (kind === 'wiki') assert.equal(resultContent.branch, 'wiki');
 
     const currentUserIndex = secondRequest.findIndex(message => message.role === 'user' && message.content === 'turn two continues the same topic');
     const syntheticCallIndex = secondRequest.indexOf(synthetic[0]);
@@ -221,11 +262,15 @@ describe('AgentTurnController memory branch carryover', () => {
     await runTurn('turn three should not receive turn one memory');
     const thirdSynthetic = aiService.requests[2].filter(message => message.__syntheticObservation);
     assert.equal(thirdSynthetic.length, 0);
-  });
+    controller.clearMemoryBranches();
+    assert.equal(cancelled[2], true);
+    assert.equal(queues[2].push(memoryObservation('after-reset')), false);
+  }
 
-  test('starts a repeated branch with only episode progress and advisory previous injections', async () => {
-    const controller = createMemoryBranchController(true);
-    (controller as any).options.memoryBranchRefreshIntervalMs = 0;
+  test('refreshes Wiki after 15 minutes with only episode progress and advisory previous injections', async t => {
+    let now = Date.now();
+    t.mock.method(Date, 'now', () => now);
+    const controller = createMemoryBranchController(true, 'wiki');
     const starts: any[] = [];
     (controller as any).createMemorySidecarHandle = (options: any) => {
       starts.push(options);
@@ -267,9 +312,15 @@ describe('AgentTurnController memory branch carryover', () => {
         __episodeId: 'episode:test',
       },
     ];
+    now += DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS - 1;
     const observations = (controller as any).drainMemoryObservations(null, runtime, progress);
-
     assert.equal(observations.length, 1);
+    assert.equal(starts.length, 1);
+
+    now++;
+    (controller as any).drainMemoryObservations(null, runtime, []);
+    assert.equal(starts.length, 1, 'an idle turn does not refresh');
+    (controller as any).drainMemoryObservations(null, runtime, progress);
     assert.equal(starts.length, 2);
     assert.equal(starts[1].activationContext.taskAnchor, '完成长任务');
     assert.deepEqual(starts[1].activationContext.previousInjections, [{

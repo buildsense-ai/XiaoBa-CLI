@@ -14,7 +14,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AIService } from '../utils/ai-service';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
-import type { MemoryBranchBudget } from './branch-budget';
 import { ToolManager } from '../tools/tool-manager';
 import { SkillManager } from '../skills/skill-manager';
 import type { TurnSkillSnapshotStore } from '../skills/turn-skill-snapshot';
@@ -43,7 +42,7 @@ import {
 } from './runtime-feedback-inbox';
 import { TurnLogRecorder } from './turn-log-recorder';
 import { TurnContextBuilder } from './turn-context-builder';
-import { AgentTurnController, AgentTurnRunError } from './agent-turn-controller';
+import { AgentTurnController, AgentTurnRunError, type MemoryBranchRuntime } from './agent-turn-controller';
 import { SessionLifecycleManager } from './session-lifecycle-manager';
 import { prepareForkMessages, truncateAtTurn } from './session-fork';
 import { PlanRuntime } from './plan-runtime';
@@ -139,13 +138,7 @@ type CheckpointUsageResolver = (messages: Message[]) => CheckpointContextUsage;
 export interface AgentServices {
   aiService: AIService;
   /** Dedicated runtime used only by the Memory Search Branch. */
-  memoryBranch?: {
-    enabled: boolean;
-    modelSource: 'inherit' | 'catalog' | 'custom';
-    aiService: AIService;
-    budget?: MemoryBranchBudget;
-    wikiMemory?: () => import('../utils/monday-wiki-memory').MondayWikiMemory | undefined;
-  };
+  memoryBranch?: MemoryBranchRuntime;
   /** Device-bound CatsLog read capability used only by the memory branch. */
   catslogMemory?: CatsLogMemoryBackend;
   /** CatsCo MCP 工具桥（可选；把远端定制 Agent 暴露为本地一等工具）。 */
@@ -1224,7 +1217,7 @@ export class AgentSession {
 
       // /stop - 中断当前正在运行的请求
       if (commandName === 'stop') {
-        this.requestInterrupt();
+        this.requestInterrupt({ keepMemory: true });
         return { handled: true, reply: '已停止当前请求。' };
       }
 
@@ -1513,6 +1506,7 @@ export class AgentSession {
   reset(): void {
     this.lifecycleGeneration++;
     this.activeAbortController?.abort();
+    this.turnController.clearMemoryBranches();
     this.checkpointRevision++;
     this.cancelCheckpointCandidate();
     this.checkpointCandidateFallbackRequired = false;
@@ -1532,6 +1526,7 @@ export class AgentSession {
   clear(): boolean {
     this.lifecycleGeneration++;
     this.activeAbortController?.abort();
+    this.turnController.clearMemoryBranches();
     this.checkpointRevision++;
     this.cancelCheckpointCandidate();
     this.checkpointCandidateFallbackRequired = false;
@@ -1551,6 +1546,7 @@ export class AgentSession {
   async summarizeAndDestroy(): Promise<boolean> {
     this.lifecycleGeneration++;
     this.checkpointRevision++;
+    this.turnController.clearMemoryBranches();
     return this.withLogContext(async () => {
       this.planRuntime.clear();
       this.cancelCheckpointCandidate();
@@ -1565,6 +1561,7 @@ export class AgentSession {
   async cleanup(options: SessionCleanupOptions = {}): Promise<void> {
     this.lifecycleGeneration++;
     this.checkpointRevision++;
+    this.turnController.clearMemoryBranches();
     return this.withLogContext(async () => {
       this.cancelCheckpointCandidate();
       if (options.stopSubAgents) {
@@ -1608,13 +1605,15 @@ export class AgentSession {
   }
 
   /** 请求中断当前运行中的对话回合 */
-  requestInterrupt(): void {
+  requestInterrupt({ keepMemory = false }: { keepMemory?: boolean } = {}): void {
     if (this.resumeInFlight) {
       this.lifecycleGeneration++;
       this.checkpointRevision++;
     }
     this.stopSubAgents('用户请求中止');
     this.cancelCheckpointCandidate();
+    if (keepMemory) this.turnController.allowMemoryCarryoverOnStop();
+    else this.turnController.clearMemoryBranches();
     if (!this.busy && !this.creditTurnInFlight) return;
     this.interruptRequested = true;
     this.activeAbortController?.abort();

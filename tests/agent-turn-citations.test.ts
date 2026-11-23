@@ -97,17 +97,13 @@ function createCitationController(options: {
   });
 
   const queues: InMemorySyntheticObservationQueue[] = [];
-  (controller as any).startMemorySidecarIfEnabled = () => {
+  controller['startMemorySidecarIfEnabled'] = () => {
     const queue = new InMemorySyntheticObservationQueue();
     queues.push(queue);
     return {
       queue,
       originTurn: queues.length,
-      done: false,
-      handle: {
-        cancel: () => undefined,
-        done: new Promise<void>(() => undefined),
-      },
+      cancel: () => undefined,
     };
   };
   return { controller, queues };

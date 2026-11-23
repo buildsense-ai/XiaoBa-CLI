@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { CreditTaskRuntime, CreditTaskPausedError, checkCreditTask, currentCreditTask, isCatsCoCreditProvider, LEGACY_CREDIT_GATE_PAUSE, CREDIT_ACCOUNTING_PAUSE } from '../src/core/credit-task-runtime';
 import { AIService } from '../src/utils/ai-service';
 import { AgentSession } from '../src/core/agent-session';
+import { startMemorySidecarBranch } from '../src/core/sidecar-memory-branch';
+import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observation';
 import { SubAgentManager } from '../src/core/sub-agent-manager';
 import { SessionStore } from '../src/utils/session-store';
 import type { ChatConfig, Message } from '../src/types';
@@ -363,6 +365,99 @@ test('credit queued inputs stay queued and each subsequent user goal starts a fr
   const starts = f.actions.filter(a => a.action === 'start');
   assert.equal(starts.length, 2);
   assert.notEqual(starts[0].task_id, starts[1].task_id);
+});
+
+test('a Wiki-only Relay rejection finishes its own task and leaves the foreground running', async t => {
+  const f = await relay(t);
+  const root = new CreditTaskRuntime(f.config);
+  const primary = new AIService(f.config);
+  const wiki = new AIService({ ...f.config, model: 'wiki-model', modelCapabilities: { toolCalling: true } });
+  f.control.respond = (body, _headers, res) => {
+    if (body.model !== 'wiki-model') return false;
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: { message: 'Wiki model forbidden' } }));
+    return true;
+  };
+  const queue = new InMemorySyntheticObservationQueue();
+  await root.run(async () => {
+    await root.start();
+    await startMemorySidecarBranch({
+      kind: 'wiki', sessionKey: 'wiki-credit-isolation', input: 'Find history', recentMessages: [],
+      aiService: wiki, queue, logEnabled: false, workingDirectory: process.env.TEMP || process.cwd(),
+      wikiMemory: {
+        search: async () => assert.fail('Unexpected memory query'),
+        read: async () => assert.fail('Unexpected Wiki read'),
+        source: async () => assert.fail('Unexpected source read'),
+      },
+    }).done;
+    assert.equal(root.snapshot.state, 'running');
+    assert.equal((await primary.chat([{ role: 'user', content: 'Continue the foreground task' }])).content, 'done');
+    await root.complete();
+  });
+  const wikiCall = f.calls.find(call => call.body.model === 'wiki-model');
+  const wikiTask = wikiCall?.headers['x-catsco-root-task-id'];
+  assert.ok(wikiTask);
+  assert.notEqual(wikiTask, root.snapshot.taskId);
+  assert.ok(f.actions.some(action => action.task_id === wikiTask && action.action === 'finish'));
+  assert.deepEqual(queue.drain(), []);
+});
+
+test('a follow-up turn can run while the previous Wiki model call is still pending', { timeout: 10_000 }, async t => {
+  const f = await relay(t);
+  const wiki = new AIService({ ...f.config, model: 'wiki-model', modelCapabilities: { toolCalling: true } });
+  const memory = {
+    search: async () => assert.fail('Unexpected memory query'),
+    read: async () => assert.fail('Unexpected Wiki read'),
+    source: async () => assert.fail('Unexpected source read'),
+  };
+  let signalWikiStarted!: () => void;
+  const wikiStarted = new Promise<void>(resolve => { signalWikiStarted = resolve; });
+  let wikiCalls = 0;
+  let finishFirstWiki: (() => void) | undefined;
+  f.control.respond = (body, _headers, res) => {
+    if (body.model !== 'wiki-model') return false;
+    const finish = () => res.end(JSON.stringify({ choices: [{ message: {
+      content: null, tool_calls: [{ type: 'function', id: 'wiki-finish', function: {
+        name: 'finish_wiki_search', arguments: '{"summary":"","evidence":[]}',
+      } }],
+    }, finish_reason: 'tool_calls' }] }));
+    if (++wikiCalls === 1) {
+      finishFirstWiki = finish;
+      signalWikiStarted();
+    } else {
+      finish();
+    }
+    return true;
+  };
+  const s = new AgentSession(`wiki-carryover-${randomUUID()}`, {
+    ...services(new AIService(f.config)),
+    memoryBranch: { enabled: true, kind: 'wiki', modelSource: 'official-deepseek', aiService: wiki, wikiMemory: () => memory },
+  });
+  s.setSystemPromptProvider(() => 'Test system prompt');
+  try {
+    const first = s.handleMessage('first goal');
+    await Promise.race([
+      wikiStarted,
+      new Promise<never>((_, reject) => {
+        AbortSignal.timeout(2_000).addEventListener('abort', () => reject(new Error(
+          `Wiki request did not start: ${JSON.stringify({ actions: f.actions.map(({ action, model }) => ({ action, model })), models: f.calls.map(call => call.body.model) })}`,
+        )));
+      }),
+    ]);
+    assert.equal((await first).taskOutcome, 'completed');
+    const firstWikiTask = f.calls.find(call => call.body.model === 'wiki-model')?.headers['x-catsco-root-task-id'];
+    assert.ok(firstWikiTask);
+    assert.equal(f.actions.some(action => action.task_id === firstWikiTask && action.action === 'finish'), false);
+
+    assert.equal((await s.handleMessage('follow-up goal')).taskOutcome, 'completed');
+    const foregroundCalls = f.calls.filter(call => call.body.model === f.config.model);
+    assert.equal(foregroundCalls.length, 2);
+    assert.ok(foregroundCalls.every(call => call.headers['x-catsco-root-task-id'] !== firstWikiTask));
+  } finally {
+    finishFirstWiki?.();
+    s.requestInterrupt();
+    await s.cleanup();
+  }
 });
 
 test('iteration gate saves successful tool progress and blocks the next model call until manual resume', async t => {

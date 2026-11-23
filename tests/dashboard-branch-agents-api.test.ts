@@ -68,7 +68,9 @@ describe('Dashboard Branch agent API', () => {
     const text = await response.text();
     const data = JSON.parse(text) as any;
     assert.equal(response.status, 200);
-    assert.equal(data.enabled, false);
+    assert.equal(data.enabled, true);
+    assert.equal(data.mode, 'wiki');
+    assert.equal(data.runtimeModelSource, 'xiaoba-relay-deepseek');
     assert.equal(data.modelSource, 'inherit');
     assert.equal(typeof data.primary.model, 'string');
     assert.equal(data.custom.apiKeyPresent, false);
@@ -85,6 +87,20 @@ describe('Dashboard Branch agent API', () => {
     });
     assert.equal(response.status, 409);
     assert.deepEqual(loadBranchAgentConfig({ runtimeRoot: root }), before);
+  });
+
+  test('persists one retrieval mode at a time and can switch it off', async () => {
+    for (const mode of ['wiki', 'memory', 'off']) {
+      const response = await fetch(`${baseUrl}/api/branch-agents/memory/mode`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).mode, mode);
+      const memory = loadBranchAgentConfig({ runtimeRoot: root }).branches.memorySearch;
+      assert.equal(memory.enabled ? memory.kind : 'off', mode);
+    }
+    assert.deepEqual(restartCalls, ['catscompany', 'catscompany', 'catscompany']);
   });
 
   test('saves a custom model, preserves the primary model env, and requests one connector restart', async () => {
