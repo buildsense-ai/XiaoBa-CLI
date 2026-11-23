@@ -11,6 +11,7 @@ import { PromptComposer } from './prompt-composer';
 import { composeSessionSystemPromptProvider } from '../core/session-system-prompt';
 import { PathResolver } from '../utils/path-resolver';
 import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
+import { mondayWikiMemory } from '../utils/monday-wiki-memory';
 import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
 import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
@@ -107,6 +108,7 @@ export class RuntimeFactory {
         modelSource: memoryBranchModelSource,
         aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : aiService,
         budget: { ...branchConfig.branches.memorySearch.budget },
+        wikiMemory: () => mondayWikiMemory(PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory)),
       },
       ...(catslogMemory ? { catslogMemory } : {}),
       ...(mcpToolBridge ? { mcpToolBridge } : {}),

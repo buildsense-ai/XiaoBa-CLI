@@ -4,6 +4,7 @@ import { Logger } from '../utils/logger';
 import { SyntheticObservationQueue } from './synthetic-observation';
 import { MemorySearchBranchSession } from './memory-search-branch-session';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
+import type { MondayWikiMemory } from '../utils/monday-wiki-memory';
 
 export interface MemoryBranchPreviousInjection {
   summary: string;
@@ -27,6 +28,7 @@ export interface MemorySidecarBranchOptions {
   logEnabled?: boolean;
   activationContext?: MemoryBranchActivationContext;
   catslogMemory?: CatsLogMemoryBackend;
+  wikiMemory?: MondayWikiMemory;
 }
 
 export interface MemorySidecarBranchHandle {

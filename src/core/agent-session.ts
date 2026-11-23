@@ -144,6 +144,7 @@ export interface AgentServices {
     modelSource: 'inherit' | 'catalog' | 'custom';
     aiService: AIService;
     budget?: MemoryBranchBudget;
+    wikiMemory?: () => import('../utils/monday-wiki-memory').MondayWikiMemory | undefined;
   };
   /** Device-bound CatsLog read capability used only by the memory branch. */
   catslogMemory?: CatsLogMemoryBackend;
