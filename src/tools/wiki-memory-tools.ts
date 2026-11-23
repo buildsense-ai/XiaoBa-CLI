@@ -4,6 +4,7 @@ import { isWikiEpisodeRef, mondayWikiId, WikiMemoryHttpError, type MondayWikiMem
 class WikiArgumentError extends Error {}
 const SOURCE_PAGE_TEXT_CHARS = 12_000;
 export const WIKI_SEARCH_KEYWORD_LIMIT = 16;
+const WIKI_SEARCH_KEYWORD_MAX_LENGTH = 25;
 
 function searchKeywords(input: unknown): string[] {
   if (!Array.isArray(input) || !input.length) {
@@ -14,7 +15,11 @@ function searchKeywords(input: unknown): string[] {
     if (typeof word !== 'string' || !word.trim() || word.includes('\0')) {
       throw new WikiArgumentError(`keywords[${index}] 需要非空文本，且不能含空字符。`);
     }
-    distinct.add(word.trim().replace(/[A-Z]/g, char => char.toLowerCase()));
+    const keyword = word.trim();
+    if ([...keyword].length > WIKI_SEARCH_KEYWORD_MAX_LENGTH) {
+      throw new WikiArgumentError(`keywords[${index}] 最多 ${WIKI_SEARCH_KEYWORD_MAX_LENGTH} 个字符，请改为简短的关键词。`);
+    }
+    distinct.add(keyword.replace(/[A-Z]/g, char => char.toLowerCase()));
   }
   if (distinct.size > WIKI_SEARCH_KEYWORD_LIMIT) {
     throw new WikiArgumentError(`每次最多 ${WIKI_SEARCH_KEYWORD_LIMIT} 个不同关键词。请按不同查找方向拆成多次搜索。`);
@@ -116,7 +121,7 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
   return [
     tool({
       name: 'wiki_search',
-      description: `按原文子串搜索本 Bot 的 Wiki，任一词命中即入选。每次最多 ${WIKI_SEARCH_KEYWORD_LIMIT} 个不同关键词，建议每个查找方向单独查询。返回前 30 篇及其命中词，前 10 篇附片段。`,
+      description: `按原文子串搜索本 Bot 的 Wiki，任一词命中即入选。把独立概念拆成数组元素，固定术语可保留空格。每次最多 ${WIKI_SEARCH_KEYWORD_LIMIT} 个不同关键词，每词最多 ${WIKI_SEARCH_KEYWORD_MAX_LENGTH} 字符。返回前 30 篇及其命中词，前 10 篇附片段。`,
       parameters: {
         type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' } } },
         required: ['keywords'],

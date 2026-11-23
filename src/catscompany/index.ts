@@ -2245,7 +2245,7 @@ export class CatsCompanyBot {
     // Stop is control input: it must reach the same boundary as the web button
     // before any asynchronous history restore or ordinary message queueing.
     if (/^\/stop(?:\s|$)/i.test(msg.text)) {
-      this.stopSessionExecution(key);
+      this.stopSessionExecution(key, { keepMemory: true });
       await this.sender.reply(msg.topic, '已停止当前请求。').catch((err: any) => {
         Logger.warning(`停止提示发送失败: ${err?.message || err}`);
       });
@@ -4400,10 +4400,10 @@ export class CatsCompanyBot {
       botUid: this.botUid,
     });
     const key = envelope.sessionKey;
-    this.stopSessionExecution(key);
+    this.stopSessionExecution(key, { keepMemory: true });
   }
 
-  private stopSessionExecution(key: string): void {
+  private stopSessionExecution(key: string, options?: { keepMemory: boolean }): void {
     const stopGeneration = this.bumpSessionStopGeneration(key);
     // Stop is a boundary for queued input. Messages received afterwards get
     // the new generation and can start a fresh turn normally.
@@ -4428,7 +4428,7 @@ export class CatsCompanyBot {
       return;
     }
 
-    session.requestInterrupt();
+    session.requestInterrupt(options);
     this.cancelConversationTask(key);
     Logger.info(`[${key}] 收到 CatsCompany 取消事件，已请求中断当前回合`);
   }

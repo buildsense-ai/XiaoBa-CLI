@@ -61,6 +61,7 @@ import type { MemoryBranchKind } from './branch-agent-config';
 import type { MemoryBranchActivationContext } from './sidecar-memory-branch';
 
 export const DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+const MEMORY_BRANCH_FINISH_GRACE_MS = 2 * 60_000;
 
 const EMPTY_FINAL_RESPONSE_MESSAGE = '模型本轮未返回有效内容。请重新发送上一条消息；若仍失败，请切换模型或稍后再试。';
 
@@ -274,10 +275,10 @@ export interface AgentTurnControllerOptions {
 
 interface MemoryBranchSlot {
   queue: InMemorySyntheticObservationQueue;
-  handle: MemorySidecarBranchHandle;
   originTurn: number;
-  done: boolean;
+  cancel?: () => void;
   completedAt?: number;
+  finishTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface EpisodeMemoryRuntime {
@@ -290,19 +291,41 @@ interface EpisodeMemoryRuntime {
   stopped: boolean;
 }
 
+interface TurnMemory {
+  carryover: MemoryBranchSlot | null;
+  current: EpisodeMemoryRuntime | null;
+  preserveOnStop: boolean;
+}
+
 /**
  * Runs one user turn: durable input -> transient context -> model/tool loop -> state/log sync.
  */
 export class AgentTurnController {
   private turnSequence = 0;
   private memoryBranchCarryover: MemoryBranchSlot | null = null;
+  private activeTurnMemory: TurnMemory | null = null;
 
   constructor(private readonly options: AgentTurnControllerOptions) {}
 
-  clearMemoryCarryover(): void {
-    const slot = this.memoryBranchCarryover;
+  allowMemoryCarryoverOnStop(): void {
+    const turn = this.activeTurnMemory;
+    if (!turn) return;
+    turn.preserveOnStop = true;
+    if (turn.current) {
+      turn.current.stopped = true;
+      this.limitMemoryBranchFinishTime(turn.current.activeSlot);
+    }
+  }
+
+  clearMemoryBranches(): void {
+    const turn = this.activeTurnMemory;
+    const carryover = this.memoryBranchCarryover;
+    this.activeTurnMemory = null;
     this.memoryBranchCarryover = null;
-    this.expireMemoryBranch(slot, 'session_reset');
+    if (turn?.current) turn.current.stopped = true;
+    this.expireMemoryBranch(carryover, 'session_reset');
+    this.expireMemoryBranch(turn?.carryover ?? null, 'session_reset');
+    this.expireMemoryBranch(turn?.current?.activeSlot ?? null, 'session_reset');
   }
 
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
@@ -315,12 +338,17 @@ export class AgentTurnController {
     });
     const episodeId = this.createEpisodeId(turnNumber);
     let turnSkills: Awaited<ReturnType<AgentTurnController['prepareTurnSkills']>> | undefined;
-    let carryoverMemoryBranch: MemoryBranchSlot | null = null;
-    let currentMemoryRuntime: EpisodeMemoryRuntime | null = null;
+    const turnMemory: TurnMemory = { carryover: null, current: null, preserveOnStop: false };
+    this.activeTurnMemory = turnMemory;
+    const abortMemory = () => {
+      if (this.activeTurnMemory === turnMemory && !turnMemory.preserveOnStop) this.clearMemoryBranches();
+    };
+    if (params.abortSignal?.aborted) abortMemory();
+    else params.abortSignal?.addEventListener('abort', abortMemory, { once: true });
     let outcome: 'completed' | 'failed' | 'cancelled' = 'failed';
     let errorName: string | undefined;
-    this.options.turnLogRecorder.startRun(episodeId, params.input, params.transcriptInputIds, params.runtimeObservationSource);
     try {
+      this.options.turnLogRecorder.startRun(episodeId, params.input, params.transcriptInputIds, params.runtimeObservationSource);
       for (const feedback of params.runtimeFeedback) {
         this.options.turnLogRecorder.recordEvent(episodeId, { type: 'runtime_observation', source: 'runtime_feedback', text: feedback });
       }
@@ -330,12 +358,11 @@ export class AgentTurnController {
         await mcpToolBridge.ensureReady();
         mcpToolBridge.refreshInBackground();
       }
-      const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
-      const branchAgentsEnabled = this.isMemoryBranchEnabled();
-      carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
-      this.memoryBranchCarryover = null;
-      if (!branchAgentsEnabled) {
-        this.expireMemoryBranch(previousCarryoverMemoryBranch, 'branch_agents_disabled');
+      if (this.activeTurnMemory === turnMemory) {
+        const previousCarryover = this.memoryBranchCarryover;
+        this.memoryBranchCarryover = null;
+        if (this.isMemoryBranchEnabled()) turnMemory.carryover = previousCarryover;
+        else this.expireMemoryBranch(previousCarryover, 'branch_agents_disabled');
       }
 
       turnSkills = await this.prepareTurnSkills();
@@ -369,12 +396,14 @@ export class AgentTurnController {
         dispatchedAsTool: params.dispatchedAsTool,
       });
 
-      currentMemoryRuntime = this.startEpisodeMemoryRuntime({
-        turnNumber,
-        input: params.input,
-        messages: params.messages,
-        abortSignal: params.abortSignal,
-      });
+      if (this.activeTurnMemory === turnMemory && !turnMemory.preserveOnStop) {
+        turnMemory.current = this.startEpisodeMemoryRuntime({
+          turnNumber,
+          input: params.input,
+          messages: params.messages,
+          abortSignal: params.abortSignal,
+        });
+      }
 
       // Observations drained here are injected synchronously by the runner
       // right after the provider call, so this list is exactly the set of
@@ -402,8 +431,8 @@ export class AgentTurnController {
         episodeId,
         syntheticObservationProvider: progressMessages => {
           const drained = this.drainMemoryObservations(
-            carryoverMemoryBranch,
-            currentMemoryRuntime,
+            turnMemory.carryover,
+            turnMemory.current,
             progressMessages,
           );
           if (drained.length > 0) {
@@ -498,14 +527,20 @@ export class AgentTurnController {
       errorName = error instanceof Error ? error.name : 'Error';
       throw error;
     } finally {
-      if (currentMemoryRuntime) currentMemoryRuntime.stopped = true;
-      this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
-      const currentMemoryBranch = currentMemoryRuntime?.activeSlot ?? null;
-      if (outcome === 'completed' && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
-        this.memoryBranchCarryover = currentMemoryBranch;
-      } else {
-        const reason = outcome === 'completed' ? 'current_branch_consumed' : `turn_${outcome}`;
-        this.expireMemoryBranch(currentMemoryBranch, reason);
+      params.abortSignal?.removeEventListener('abort', abortMemory);
+      if (this.activeTurnMemory === turnMemory) {
+        this.activeTurnMemory = null;
+        if (turnMemory.current) turnMemory.current.stopped = true;
+        this.expireMemoryBranch(turnMemory.carryover, 'carryover_ttl_expired');
+        const current = turnMemory.current?.activeSlot ?? null;
+        const canCarry = outcome === 'completed' || (outcome === 'cancelled' && turnMemory.preserveOnStop);
+        if (current && canCarry && this.shouldCarryMemoryBranch(current)) {
+          this.memoryBranchCarryover = current;
+          this.limitMemoryBranchFinishTime(current);
+        } else {
+          const reason = outcome === 'completed' ? 'current_branch_consumed' : `turn_${outcome}`;
+          this.expireMemoryBranch(current, reason);
+        }
       }
       this.options.turnLogRecorder.recordEvent(episodeId, {
         type: 'run_finished', status: outcome,
@@ -685,21 +720,22 @@ export class AgentTurnController {
       return null;
     }
     const queue = new InMemorySyntheticObservationQueue();
+    const handle = this.createMemorySidecarHandle({
+      input: options.input,
+      messages: options.messages,
+      queue,
+      activationContext: options.activationContext,
+    }, memoryBranchAiService, wiki);
     const slot: MemoryBranchSlot = {
       queue,
       originTurn: options.turnNumber,
-      done: false,
-      handle: this.createMemorySidecarHandle({
-        input: options.input,
-        messages: options.messages,
-        queue,
-        abortSignal: options.abortSignal,
-        activationContext: options.activationContext,
-      }, memoryBranchAiService, wiki),
+      cancel: handle.cancel,
     };
-    slot.handle.done.finally(() => {
-      slot.done = true;
+    handle.done.finally(() => {
+      slot.cancel = undefined;
       slot.completedAt = Date.now();
+      clearTimeout(slot.finishTimer);
+      slot.finishTimer = undefined;
     });
     return slot;
   }
@@ -724,7 +760,7 @@ export class AgentTurnController {
 
   private maybeStartMemoryRefresh(runtime: EpisodeMemoryRuntime, progressMessages: readonly Message[]): void {
     const previous = runtime.activeSlot;
-    if (runtime.stopped || runtime.abortSignal?.aborted || !previous.done || previous.completedAt === undefined) return;
+    if (runtime.stopped || runtime.abortSignal?.aborted || previous.completedAt === undefined) return;
     const interval = Math.max(0, this.options.memoryBranchRefreshIntervalMs ?? DEFAULT_MEMORY_BRANCH_REFRESH_INTERVAL_MS);
     if (Date.now() - previous.completedAt < interval) return;
     // The runner's append-only turn log survives checkpoint replacement of the
@@ -792,12 +828,27 @@ export class AgentTurnController {
   }
 
   private shouldCarryMemoryBranch(slot: MemoryBranchSlot): boolean {
-    return !slot.done || slot.queue.size() > 0;
+    return slot.cancel !== undefined || slot.queue.size() > 0;
+  }
+
+  private limitMemoryBranchFinishTime(slot: MemoryBranchSlot): void {
+    if (!slot.cancel || slot.finishTimer) return;
+    slot.finishTimer = setTimeout(() => this.stopMemoryBranchWork(slot), MEMORY_BRANCH_FINISH_GRACE_MS);
+    slot.finishTimer.unref();
+  }
+
+  private stopMemoryBranchWork(slot: MemoryBranchSlot): void {
+    clearTimeout(slot.finishTimer);
+    slot.finishTimer = undefined;
+    const cancel = slot.cancel;
+    slot.cancel = undefined;
+    cancel?.();
   }
 
   private expireMemoryBranch(slot: MemoryBranchSlot | null, reason: string): void {
     if (!slot) return;
-    slot.handle.cancel();
+    const wasRunning = slot.cancel !== undefined;
+    this.stopMemoryBranchWork(slot);
     const droppedObservations = slot.queue.cancel()
       .map(observation => this.withMemoryBranchObservationMetadata(
         observation,
@@ -821,7 +872,7 @@ export class AgentTurnController {
           }),
         );
       }
-    } else if (!slot.done && reason === 'carryover_ttl_expired') {
+    } else if (wasRunning && reason === 'carryover_ttl_expired') {
       Logger.info(
         `[${this.options.sessionKey}] cancelled unfinished memory branch carryover: `
         + `reason=${reason} origin_turn=${slot.originTurn}`
@@ -833,7 +884,6 @@ export class AgentTurnController {
     input: string | ContentBlock[];
     messages: Message[];
     queue: SyntheticObservationQueue;
-    abortSignal?: AbortSignal;
     activationContext?: MemoryBranchActivationContext;
   }, aiService: AIService, wikiMemory?: import('../utils/monday-wiki-memory').MondayWikiMemory): MemorySidecarBranchHandle {
     return startMemorySidecarBranch({
@@ -846,7 +896,6 @@ export class AgentTurnController {
         ? { kind: 'wiki' as const, wikiMemory }
         : { kind: 'memory' as const, catslogMemory: this.options.services.catslogMemory }),
       queue: options.queue,
-      signal: options.abortSignal,
       activationContext: options.activationContext,
     });
   }

@@ -229,12 +229,18 @@ test('keeps searching and reading after the former quotas and can finish a long 
   const overLimit = await search.execute({ keywords: [...keywords, 'one', 'two'] }, context);
   assert.equal(overLimit.ok, false);
   if (!overLimit.ok) assert.match(overLimit.message, /16 个不同关键词/);
+  const longest = '词'.repeat(25);
+  const tooLong = await search.execute({ keywords: ['layout', `${longest}词`] }, context);
+  assert.equal(tooLong.ok, false);
+  if (!tooLong.ok) assert.match(tooLong.message, /keywords\[1\].*25/);
   assert.equal(requestedSearches.length, 0);
   for (let i = 0; i < 3; i++) {
     assert.ok((await search.execute({ keywords: [' KEYWORD-0 ', ...keywords, `refine-${i}`] }, context)).ok);
   }
   assert.deepEqual(requestedSearches.map(words => words.at(-1)), ['refine-0', 'refine-1', 'refine-2']);
   assert.ok(requestedSearches.every(words => words.length === 16));
+  assert.ok((await search.execute({ keywords: [' force layout ', ` ${longest} `] }, context)).ok);
+  assert.deepEqual(requestedSearches.at(-1), ['force layout', longest]);
   for (let n = 0; n < 3; n++) assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);
   assert.equal((await read.execute({ wiki_id: mistypedId }, context)).ok, false);
   assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);

@@ -138,7 +138,11 @@ describe('AgentTurnController memory branch carryover', () => {
     await verifyLateMemoryDelivery('wiki');
   });
 
-  async function verifyLateMemoryDelivery(kind: MemoryBranchKind) {
+  test('session cleanup discards active Wiki branch work and its result before the foreground turn exits', async () => {
+    await verifyLateMemoryDelivery('wiki', true);
+  });
+
+  async function verifyLateMemoryDelivery(kind: MemoryBranchKind, clearDuringFirstTurn = false) {
     const aiService = new CapturingAIService();
     const queues: InMemorySyntheticObservationQueue[] = [];
     const cancelled: boolean[] = [];
@@ -146,6 +150,12 @@ describe('AgentTurnController memory branch carryover', () => {
     aiService.chatStream = async messages => {
       const result = await originalChat(messages);
       if (aiService.requests.length === 1) {
+        if (clearDuringFirstTurn) {
+          controller.clearMemoryBranches();
+          assert.equal(cancelled[0], true);
+          assert.equal(queues[0].push(memoryObservation('after-cleanup')), false);
+          return result;
+        }
         const observation = memoryObservation('late-one');
         if (kind === 'wiki') {
           observation.metadata = { ...observation.metadata, branchType: 'wiki-memory' };
@@ -193,12 +203,8 @@ describe('AgentTurnController memory branch carryover', () => {
       return {
         queue,
         originTurn: options.turnNumber,
-        done: false,
-        handle: {
-          cancel: () => {
-            cancelled[index] = true;
-          },
-          done: new Promise<void>(() => undefined),
+        cancel: () => {
+          cancelled[index] = true;
         },
       };
     };
@@ -217,6 +223,12 @@ describe('AgentTurnController memory branch carryover', () => {
 
     await runTurn('turn one');
     assert.equal(aiService.requests.length, 1);
+    if (clearDuringFirstTurn) {
+      await runTurn('turn two continues the same topic');
+      assert.equal(aiService.requests[1].some(message => message.__syntheticObservation), false);
+      controller.clearMemoryBranches();
+      return;
+    }
     assert.equal(cancelled[0], false);
     assert.equal(queues[0].size(), 1);
 
@@ -250,7 +262,7 @@ describe('AgentTurnController memory branch carryover', () => {
     await runTurn('turn three should not receive turn one memory');
     const thirdSynthetic = aiService.requests[2].filter(message => message.__syntheticObservation);
     assert.equal(thirdSynthetic.length, 0);
-    controller.clearMemoryCarryover();
+    controller.clearMemoryBranches();
     assert.equal(cancelled[2], true);
     assert.equal(queues[2].push(memoryObservation('after-reset')), false);
   }

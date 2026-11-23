@@ -1221,7 +1221,7 @@ export class AgentSession {
 
       // /stop - 中断当前正在运行的请求
       if (commandName === 'stop') {
-        this.requestInterrupt();
+        this.requestInterrupt({ keepMemory: true });
         return { handled: true, reply: '已停止当前请求。' };
       }
 
@@ -1510,7 +1510,7 @@ export class AgentSession {
   reset(): void {
     this.lifecycleGeneration++;
     this.activeAbortController?.abort();
-    this.turnController.clearMemoryCarryover();
+    this.turnController.clearMemoryBranches();
     this.checkpointRevision++;
     this.cancelCheckpointCandidate();
     this.checkpointCandidateFallbackRequired = false;
@@ -1530,7 +1530,7 @@ export class AgentSession {
   clear(): boolean {
     this.lifecycleGeneration++;
     this.activeAbortController?.abort();
-    this.turnController.clearMemoryCarryover();
+    this.turnController.clearMemoryBranches();
     this.checkpointRevision++;
     this.cancelCheckpointCandidate();
     this.checkpointCandidateFallbackRequired = false;
@@ -1550,7 +1550,7 @@ export class AgentSession {
   async summarizeAndDestroy(): Promise<boolean> {
     this.lifecycleGeneration++;
     this.checkpointRevision++;
-    this.turnController.clearMemoryCarryover();
+    this.turnController.clearMemoryBranches();
     return this.withLogContext(async () => {
       this.planRuntime.clear();
       this.cancelCheckpointCandidate();
@@ -1565,7 +1565,7 @@ export class AgentSession {
   async cleanup(options: SessionCleanupOptions = {}): Promise<void> {
     this.lifecycleGeneration++;
     this.checkpointRevision++;
-    this.turnController.clearMemoryCarryover();
+    this.turnController.clearMemoryBranches();
     return this.withLogContext(async () => {
       this.cancelCheckpointCandidate();
       if (options.stopSubAgents) {
@@ -1609,13 +1609,15 @@ export class AgentSession {
   }
 
   /** 请求中断当前运行中的对话回合 */
-  requestInterrupt(): void {
+  requestInterrupt({ keepMemory = false }: { keepMemory?: boolean } = {}): void {
     if (this.resumeInFlight) {
       this.lifecycleGeneration++;
       this.checkpointRevision++;
     }
     this.stopSubAgents('用户请求中止');
     this.cancelCheckpointCandidate();
+    if (keepMemory) this.turnController.allowMemoryCarryoverOnStop();
+    else this.turnController.clearMemoryBranches();
     if (!this.busy && !this.creditTurnInFlight) return;
     this.interruptRequested = true;
     this.activeAbortController?.abort();
