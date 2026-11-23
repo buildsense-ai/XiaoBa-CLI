@@ -79,7 +79,7 @@ Legacy persisted budget fields are not deleted, but are not passed to this Memor
 
 ## Harness Memory Wiki
 
-When the Memory Branch is enabled and the runtime already has a Cats Company Bot binding, it also exposes `wiki_search`, `wiki_read` and `wiki_read_source`. The client loads the bound UID and existing Bot API key from local configuration. Tool arguments contain only search terms or references. The Memory service verifies the credential through Cats Company before querying that Bot's stored sessions.
+When the Memory Branch is enabled and the runtime has a Cats Company Bot API key, it also exposes `wiki_search`, `wiki_read` and `wiki_read_source`. The client loads the existing key from local configuration. Tool arguments contain only search terms or references. The Memory service verifies the credential through Cats Company and queries the stored sessions of the verified Bot.
 
 Search returns excerpts for the first ten results and titles and IDs through rank thirty. The branch reads a Wiki before citing it in `finish_memory_search`. The observation carries chosen Wiki IDs and their search IDs when available. Full Wiki text and original Episode pages stay in the branch.
 

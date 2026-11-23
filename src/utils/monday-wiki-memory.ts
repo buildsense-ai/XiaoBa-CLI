@@ -4,10 +4,9 @@ export const mondayWikiId = /^mem_[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 const episodeId = /^ep_[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 
 export function mondayWikiMemory(runtimeRoot: string, request = fetch) {
-  const auth = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
-  const uid = auth.botUid?.replace(/^usr/, '');
-  if (!uid || !/^[1-9][0-9]{0,18}$/.test(uid) || !auth.apiKey) return undefined;
-  const headers = { authorization: 'ApiKey ' + auth.apiKey, 'x-bot-uid': uid };
+  const { apiKey } = createCatsCoLocalConfigService({ runtimeRoot }).getAuthState();
+  if (!apiKey) return undefined;
+  const headers = { authorization: 'ApiKey ' + apiKey };
 
   async function query(path: string, body: object | undefined, signal?: AbortSignal): Promise<unknown> {
     const deadline = AbortSignal.timeout(10_000);

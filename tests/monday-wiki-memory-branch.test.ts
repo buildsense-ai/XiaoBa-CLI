@@ -8,12 +8,12 @@ import { InMemorySyntheticObservationQueue } from '../src/core/synthetic-observa
 import { mondayWikiMemory } from '../src/utils/monday-wiki-memory';
 import type { AIService } from '../src/utils/ai-service';
 
-test('the existing memory branch searches, reads and cites a Wiki with the bound Bot identity', async t => {
+test('the existing memory branch searches, reads and cites a Wiki with only the Bot API key', async t => {
   const root = mkdtempSync(join(tmpdir(), 'monday-wiki-branch-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const originalUid = process.env.CATSCO_BOT_UID;
   const originalKey = process.env.CATSCO_API_KEY;
-  process.env.CATSCO_BOT_UID = 'usr365';
+  process.env.CATSCO_BOT_UID = 'stale-bot-uid';
   process.env.CATSCO_API_KEY = 'fixture-key';
   t.after(() => {
     if (originalUid === undefined) delete process.env.CATSCO_BOT_UID;
@@ -30,7 +30,7 @@ test('the existing memory branch searches, reads and cites a Wiki with the bound
     const route = new URL(String(url)).pathname;
     const headers = new Headers(options?.headers);
     assert.equal(headers.get('authorization'), 'ApiKey fixture-key');
-    assert.equal(headers.get('x-bot-uid'), '365');
+    assert.equal(headers.get('x-bot-uid'), null);
     requested.push(route);
     if (route.endsWith('/search')) {
       assert.deepEqual(JSON.parse(String(options?.body)), { keywords: ['anchor', 'reflow'] });
