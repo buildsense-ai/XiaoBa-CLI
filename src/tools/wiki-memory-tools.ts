@@ -3,6 +3,24 @@ import { isWikiEpisodeRef, mondayWikiId, WikiMemoryHttpError, type MondayWikiMem
 
 class WikiArgumentError extends Error {}
 const SOURCE_PAGE_TEXT_CHARS = 12_000;
+export const WIKI_SEARCH_KEYWORD_LIMIT = 16;
+
+function searchKeywords(input: unknown): string[] {
+  if (!Array.isArray(input) || !input.length) {
+    throw new WikiArgumentError('keywords 至少需要一个关键词。');
+  }
+  const distinct = new Set<string>();
+  for (const [index, word] of input.entries()) {
+    if (typeof word !== 'string' || !word.trim() || word.includes('\0')) {
+      throw new WikiArgumentError(`keywords[${index}] 需要非空文本，且不能含空字符。`);
+    }
+    distinct.add(word.trim().replace(/[A-Z]/g, char => char.toLowerCase()));
+  }
+  if (distinct.size > WIKI_SEARCH_KEYWORD_LIMIT) {
+    throw new WikiArgumentError(`每次最多 ${WIKI_SEARCH_KEYWORD_LIMIT} 个不同关键词。请按不同查找方向拆成多次搜索。`);
+  }
+  return [...distinct];
+}
 
 function readOffset(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
@@ -39,6 +57,7 @@ function describeWikiFailure(error: unknown, missing?: () => string): string {
     if (error.status === 404 && missing) return missing();
     if (error.status === 401 || error.status === 403) return `Bot 凭据未通过 Memory 验证（HTTP ${error.status}）。`;
     if (error.status === 503) return 'Memory 暂时不可用（HTTP 503）。';
+    if (error.status === 504) return 'Memory 查询超时（HTTP 504）。搜索时可减少关键词，按方向分别查找。';
   }
   if (error instanceof Error && error.name === 'TimeoutError') return '请求 Memory 超时。';
   if (error instanceof Error && error.name === 'AbortError') return '请求已取消。';
@@ -63,7 +82,7 @@ function tool(definition: ToolDefinition, call: (args: Record<string, unknown>, 
           return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', message: error.message, retryable: true };
         }
         const message = describeWikiFailure(error, describeMissing && (() => describeMissing(args)));
-        const retryable = (error instanceof WikiMemoryHttpError && (error.status === 404 || error.status === 503))
+        const retryable = (error instanceof WikiMemoryHttpError && [404, 503, 504].includes(error.status))
           || (error instanceof Error && error.name === 'TimeoutError');
         return { ok: false, errorCode: 'TOOL_EXECUTION_ERROR', message: `${definition.name}：${message}`, retryable };
       }
@@ -97,19 +116,13 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
   return [
     tool({
       name: 'wiki_search',
-      description: '按关键词搜索本 Bot 的历史 Wiki。任一词命中即可入选。返回前 30 篇，每篇标明命中的关键词和数量，前 10 篇附片段。结果太宽时可换成更具体的词再搜。',
+      description: `按原文子串搜索本 Bot 的 Wiki，任一词命中即入选。每次最多 ${WIKI_SEARCH_KEYWORD_LIMIT} 个不同关键词，建议每个查找方向单独查询。返回前 30 篇及其命中词，前 10 篇附片段。`,
       parameters: {
         type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' } } },
         required: ['keywords'],
       },
     }, async ({ keywords }, signal) => {
-      if (!Array.isArray(keywords) || !keywords.length) {
-        throw new WikiArgumentError('keywords 至少需要一个关键词。');
-      }
-      const invalid = keywords.findIndex((word: unknown) =>
-        typeof word !== 'string' || !word.trim() || word.includes('\0'));
-      if (invalid !== -1) throw new WikiArgumentError(`keywords[${invalid}] 需要非空文本，且不能含空字符。`);
-      const result = await memory.search(keywords, signal);
+      const result = await memory.search(searchKeywords(keywords), signal);
       if (!result || typeof result !== 'object' || !('retrieval_id' in result) ||
           typeof result.retrieval_id !== 'string' || !/^ret_[\da-f-]{36}$/i.test(result.retrieval_id) ||
           !('items' in result) || !Array.isArray(result.items)) throw new Error('Memory 的搜索响应缺少有效的 retrieval_id 或 items。');

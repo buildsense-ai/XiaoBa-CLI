@@ -273,6 +273,7 @@ export interface AgentTurnControllerOptions {
 }
 
 interface MemoryBranchSlot {
+  kind: MemoryBranchKind;
   queue: InMemorySyntheticObservationQueue;
   handle: MemorySidecarBranchHandle;
   originTurn: number;
@@ -441,7 +442,9 @@ export class AgentTurnController {
         if (currentMemoryRuntime) currentMemoryRuntime.stopped = true;
         const currentMemoryBranch = currentMemoryRuntime?.activeSlot ?? null;
         this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
-        if (result && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
+        if (currentMemoryBranch?.kind === 'wiki') {
+          this.expireMemoryBranch(currentMemoryBranch, result ? 'wiki_turn_finished' : 'turn_failed', 'current_turn');
+        } else if (result && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
           this.memoryBranchCarryover = currentMemoryBranch;
         } else {
           this.expireMemoryBranch(currentMemoryBranch, result ? 'current_branch_consumed' : 'turn_failed');
@@ -678,6 +681,7 @@ export class AgentTurnController {
     }
     const queue = new InMemorySyntheticObservationQueue();
     const slot: MemoryBranchSlot = {
+      kind: wiki ? 'wiki' : 'memory',
       queue,
       originTurn: options.turnNumber,
       done: false,
@@ -787,13 +791,17 @@ export class AgentTurnController {
     return !slot.done || slot.queue.size() > 0;
   }
 
-  private expireMemoryBranch(slot: MemoryBranchSlot | null, reason: string): void {
+  private expireMemoryBranch(
+    slot: MemoryBranchSlot | null,
+    reason: string,
+    timing: SyntheticObservationTiming = 'late_previous_turn',
+  ): void {
     if (!slot) return;
     slot.handle.cancel();
     const droppedObservations = slot.queue.cancel()
       .map(observation => this.withMemoryBranchObservationMetadata(
         observation,
-        'late_previous_turn',
+        timing,
         slot.originTurn,
       ));
     if (droppedObservations.length > 0) {

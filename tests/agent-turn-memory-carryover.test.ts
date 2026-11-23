@@ -125,9 +125,25 @@ describe('AgentTurnController memory branch carryover', () => {
   });
 
   test('injects previous-turn memory as a legal late synthetic tool pair and expires it after one turn', async () => {
+    await verifyLateMemoryDelivery('memory');
+  });
+
+  test('cancels Wiki at foreground completion and discards a queued late result', async () => {
+    await verifyLateMemoryDelivery('wiki');
+  });
+
+  async function verifyLateMemoryDelivery(kind: 'memory' | 'wiki') {
     const aiService = new CapturingAIService();
     const queues: InMemorySyntheticObservationQueue[] = [];
     const cancelled: boolean[] = [];
+    const originalChat = aiService.chatStream.bind(aiService);
+    aiService.chatStream = async messages => {
+      const result = await originalChat(messages);
+      if (kind === 'wiki' && aiService.requests.length === 1) {
+        assert.equal(queues[0].push(memoryObservation('queued-after-final-request')), true);
+      }
+      return result;
+    };
     const controller = new AgentTurnController({
       sessionKey: 'session:v2:catscompany:group:grp_test:agent:usr1',
       sessionType: 'catscompany',
@@ -164,6 +180,7 @@ describe('AgentTurnController memory branch carryover', () => {
       queues.push(queue);
       cancelled[index] = false;
       return {
+        kind,
         queue,
         originTurn: options.turnNumber,
         done: false,
@@ -190,6 +207,16 @@ describe('AgentTurnController memory branch carryover', () => {
 
     await runTurn('turn one');
     assert.equal(aiService.requests.length, 1);
+
+    if (kind === 'wiki') {
+      assert.equal(cancelled[0], true);
+      assert.equal(queues[0].size(), 0);
+      assert.equal(queues[0].push(memoryObservation('after-turn')), false);
+      await runTurn('turn two continues the same topic');
+      assert.equal(aiService.requests[1].some(message => message.__syntheticObservation), false);
+      return;
+    }
+
     assert.equal(queues[0].push(memoryObservation('late-one')), true);
 
     await runTurn('turn two continues the same topic');
@@ -221,7 +248,7 @@ describe('AgentTurnController memory branch carryover', () => {
     await runTurn('turn three should not receive turn one memory');
     const thirdSynthetic = aiService.requests[2].filter(message => message.__syntheticObservation);
     assert.equal(thirdSynthetic.length, 0);
-  });
+  }
 
   test('starts a repeated branch with only episode progress and advisory previous injections', async () => {
     const controller = createMemoryBranchController(true);

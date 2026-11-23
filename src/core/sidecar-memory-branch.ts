@@ -4,7 +4,7 @@ import { Logger } from '../utils/logger';
 import { SyntheticObservationQueue } from './synthetic-observation';
 import { MemorySearchBranchSession } from './memory-search-branch-session';
 import { WikiSearchBranchSession } from './wiki-search-branch-session';
-import { CreditTaskRuntime, currentCreditTask, isCatsCoCreditProvider } from './credit-task-runtime';
+import { CreditTaskRuntime, isCatsCoCreditProvider } from './credit-task-runtime';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import type { MondayWikiMemory } from '../utils/monday-wiki-memory';
 
@@ -65,13 +65,11 @@ export function startMemorySidecarBranch(options: MemorySidecarBranchOptions): M
 async function runWikiSession(run: () => Promise<void>, aiService: AIService): Promise<void> {
   const config = aiService.getConfig?.();
   if (!config || !isCatsCoCreditProvider(config)) return run();
-  const parent = currentCreditTask();
-  if (parent) return parent.child(run);
   const task = new CreditTaskRuntime(config);
   try {
-    await task.run(run);
+    await task.runIndependent(run);
   } finally {
-    if (task.snapshot.startSent) await task.complete();
+    if (task.snapshot.startSent) await task.finish(true);
   }
 }
 

@@ -130,6 +130,10 @@ export class CreditTaskRuntime {
     return scope.getStore() ? fn() : scope.run(this, fn);
   }
 
+  runIndependent<T>(fn: () => T): T {
+    return scope.run(this, fn);
+  }
+
   matches(apiUrl: string): boolean {
     try { return new URL(apiUrl).origin === new URL(this.config.apiUrl!).origin; }
     catch { return false; }

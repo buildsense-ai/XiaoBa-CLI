@@ -225,11 +225,16 @@ test('keeps searching and reading after the former quotas and can finish a long 
     onSearch() {}, onRead() {}, onReadSource() {},
   });
   const context = { workingDirectory: tmpdir(), conversationHistory: [] };
-  const keywords = Array.from({ length: 17 }, (_, i) => `keyword-${i}`);
+  const keywords = Array.from({ length: 15 }, (_, i) => `keyword-${i}`);
+  const overLimit = await search.execute({ keywords: [...keywords, 'one', 'two'] }, context);
+  assert.equal(overLimit.ok, false);
+  if (!overLimit.ok) assert.match(overLimit.message, /16 个不同关键词/);
+  assert.equal(requestedSearches.length, 0);
   for (let i = 0; i < 3; i++) {
-    assert.ok((await search.execute({ keywords: [...keywords, `refine-${i}`] }, context)).ok);
+    assert.ok((await search.execute({ keywords: [' KEYWORD-0 ', ...keywords, `refine-${i}`] }, context)).ok);
   }
   assert.deepEqual(requestedSearches.map(words => words.at(-1)), ['refine-0', 'refine-1', 'refine-2']);
+  assert.ok(requestedSearches.every(words => words.length === 16));
   for (let n = 0; n < 3; n++) assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);
   assert.equal((await read.execute({ wiki_id: mistypedId }, context)).ok, false);
   assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);

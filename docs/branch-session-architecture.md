@@ -81,7 +81,9 @@ New installations and upgrades from v1 or v2 start in Wiki mode. Previous Branch
 
 The Wiki Branch uses `deepseek-flash` with `high` reasoning through XiaoBa's built-in CatsCo Relay and the existing Bot API key for Memory reads. Its model is independent of the primary Agent. The rest of the model override section applies only when the original Memory Branch is selected explicitly.
 
-The Wiki Branch can search, open Wiki bodies, and read source pages as needed. Each search returns up to 30 results with their matched keywords and counts. The first ten also include snippets. Source reads return up to 10 events and 12,000 characters of text at a time. Source offsets allow the Branch to continue from the next event or from a position inside a long event. The Branch treats retrieved text as untrusted historical evidence.
+The Wiki Branch can search, open Wiki bodies, and read source pages as needed. One search accepts up to 16 distinct literal substrings. Each result matches at least one keyword and includes its matched terms and count. The first ten of up to 30 results also include snippets. Source reads return up to 10 events and 12,000 characters of text at a time. Source offsets allow the Branch to continue from the next event or from a position inside a long event. The Branch treats retrieved text as untrusted historical evidence.
+
+Wiki requests use a separate Relay credit task. When the foreground model loop ends, it cancels the Wiki Branch and discards any observations still in its queue. The main conversation can proceed while the Wiki Branch closes its own credit task.
 
 The Wiki Branch uses the same turn loop as the original Memory Branch. If it returns plain text, it receives a reminder to submit through the finish tool and can still use its retrieval tools. The first invalid submission returns the specific error and leaves three chances to correct it. After four invalid submissions, the Branch stops without injecting memory.
 
