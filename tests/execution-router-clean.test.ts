@@ -44,6 +44,21 @@ function catsContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecuti
       createdAt: Date.now(),
       expiresAt: Date.now() + 60_000,
     }],
+    deviceSelection: {
+      kind: 'user_device_selection',
+      source: 'catscompany',
+      status: 'selected',
+      selectionSource: 'user_confirmation',
+      sessionKey: 'session:v2:catscompany:p2p:p2p_85_320:agent:usr320',
+      topicId: 'p2p_85_320',
+      topicType: 'p2p',
+      actorUserId: 'usr85',
+      agentId: 'usr320',
+      identityTrust: 'server_canonical',
+      selectedOwnerUserId: 'usr85',
+      selectedDeviceId: 'dev-alice-win',
+      selectedDeviceDisplayName: 'Alice 的电脑',
+    },
     targetRoutes: buildTargetRoutes([{
       userId: 'usr85',
       userName: 'Alice',
@@ -139,7 +154,7 @@ test('username target routes through Thin Tool RPC, strips target args, and owns
   assert.doesNotMatch(String(result?.ok && result.content), /target: agent_self/);
 });
 
-test('legacy speaker_default fallback still uses Device RPC when runtime routes are unavailable', async () => {
+test('confirmed speaker_default still uses Device RPC when runtime routes are unavailable', async () => {
   let capturedArgs: Record<string, unknown> | undefined;
   const context = catsContext({
     targetRoutes: undefined,
@@ -168,6 +183,15 @@ test('legacy speaker_default fallback still uses Device RPC when runtime routes 
   assert.equal(result?.ok, true);
   assert.equal(result?.ok && result.content, 'legacy remote ok');
   assert.deepEqual(capturedArgs, { path: 'C:\\Users\\Alice\\Desktop', pattern: '*' });
+});
+
+test('speaker_default cannot infer an own device without a trusted selection', () => {
+  const context = catsContext({ deviceSelection: undefined, targetRoutes: undefined });
+  const route = resolveExecutionRoute(context, {
+    toolName: 'glob', operation: 'glob', target: 'speaker_default',
+  });
+
+  assert.equal(route.ok, false, 'an active grant alone must not choose the default device');
 });
 
 test('remote execute_shell rejects unconfirmed dangerous commands before routing', async () => {
@@ -259,7 +283,7 @@ test('Device RPC receiver always executes locally and does not route again', () 
   assert.equal(route.ok && route.mode, 'local');
 });
 
-test('runtime context injects short text with username targets instead of JSON', () => {
+test('runtime context with a confirmed default injects username targets instead of JSON', () => {
   const message = buildRuntimeContextMessage({
     sessionKey: 'session:v2:catscompany:p2p:p2p_85_320:agent:usr320',
     sessionType: 'catscompany',
@@ -274,6 +298,7 @@ test('runtime context injects short text with username targets instead of JSON',
       isTrusted: true,
     },
     targetRoutes: catsContext().targetRoutes,
+    deviceSelection: catsContext().deviceSelection,
   });
 
   assert.ok(message);
