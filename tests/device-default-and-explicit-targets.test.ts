@@ -1,3 +1,4 @@
+import { getDeviceAuthorizationSessionKey } from '../src/core/device-grants';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createExecutionScope, createCatsCoMessageEnvelope } from '../src/catscompany/message-envelope';
@@ -44,6 +45,24 @@ function fixture(selected: 'selected' | 'unavailable' | 'needs_selection' = 'sel
   };
   return { ctx, calls, metadata, scope };
 }
+
+test('an unspecified default leaves exact-device routing authorized and lets the Bot decide', () => {
+  const { ctx } = fixture('needs_selection');
+  ctx.deviceSelection!.selectionSource = 'user_unspecified';
+  const route = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file', target: 'b' });
+  assert.equal(route.ok, true);
+  const alias = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file', target: 'speaker_default' });
+  assert.equal(alias.ok, false, 'an empty default must not silently resolve by list order');
+  const text = buildRuntimeContextText(ctx.targetRoutes, undefined, undefined, ctx.deviceSelection);
+  assert.match(text, /由 Bot 根据当前任务判断/);
+  assert.match(text, /不要要求用户必须先设置默认设备/);
+  assert.doesNotMatch(text, /默认未选定且有多台设备时才询问/);
+  assert.doesNotMatch(text, /target 用 "Alice"/);
+  const snapshot = buildRuntimeContextSnapshot({ sessionKey: ctx.executionScope!.sessionKey, executionScope: ctx.executionScope,
+    deviceSelection: ctx.deviceSelection, deviceGrants: ctx.deviceGrants });
+  assert.match(snapshot!.toolRules.join('\n'), /No user device is pinned/);
+  assert.doesNotMatch(snapshot!.toolRules.join('\n'), /call target="speaker_default"/);
+});
 
 const resolve = (ctx: ToolExecutionContext, target: string) => resolveExecutionRoute(ctx, { toolName: 'write_file', operation: 'write_file', target });
 
@@ -273,4 +292,25 @@ test('agent-host tools stay local and prompt distinguishes defaults from explici
   assert.match(prompt, /本次任务的目标，不改变默认设备/);
   assert.match(prompt, /分别报告实际成功或失败/);
   assert.doesNotMatch(prompt, /与选择不一致时/);
+});
+
+test('missing selection and directory cannot infer speaker_default from the first shared grant', () => {
+  const { ctx } = fixture();
+  const own = ctx.deviceGrants!.find(g => g.grantId === 'default-a')!;
+  const shared = { ...own, ownerUserId: 'usr8', identitySource: 'group_device_share', shareId: 'share-b', shareRevision: 1, topicType: 'group' as const };
+  ctx.executionScope!.topicType = 'group';
+  shared.sessionKey = getDeviceAuthorizationSessionKey(ctx.executionScope!);
+  ctx.deviceGrants = [shared];
+  ctx.deviceSelection = undefined;
+  ctx.targetRoutes = undefined;
+  assert.equal(resolve(ctx, 'speaker_default').ok, false);
+  const snapshot = buildRuntimeContextSnapshot({sessionKey: ctx.executionScope!.sessionKey, executionScope: ctx.executionScope, deviceGrants: ctx.deviceGrants});
+  assert.equal(snapshot!.executionTargets.find(t => t.id === 'speaker_default')?.status, 'unavailable');
+  assert.doesNotMatch(snapshot!.toolRules.join('\n'), /call target="speaker_default"/);
+});
+
+test('an old default grant is rejected after the current selection revision changes', () => {
+  const { ctx } = fixture();
+  ctx.deviceSelection!.revision = 'r2';
+  assert.equal(resolve(ctx, 'speaker_default').ok, false);
 });

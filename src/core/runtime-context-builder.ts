@@ -94,6 +94,7 @@ export function buildRuntimeContextText(
   selection?: ScopedDeviceSelection,
 ): string {
   const routes = targetRoutes?.routes || [];
+  const botDecides = !selection || (selection.status === 'needs_selection' && !selection.selectedDeviceId);
   const lines = [TRANSIENT_RUNTIME_CONTEXT_PREFIX];
   if (attachmentDirectory) {
     lines.push(`当前会话附件缓存目录（XiaoBa 本地运行体）：${attachmentDirectory}`);
@@ -122,7 +123,7 @@ export function buildRuntimeContextText(
       lines.push(`- ${displayTargetUser(route)}：${JSON.stringify(route.label)}，device_id=${JSON.stringify(route.deviceId)}，${formatOS(route.os)}，${route.status === 'ready' ? '在线' : '暂时不可用'}`);
     }
     if (selection) {
-      lines.push(`本轮设备选择：${selection.status}；目标=${JSON.stringify(selection.selectedDeviceDisplayName || selection.selectedDeviceId || '尚未选择')}`);
+      lines.push(botDecides ? '本轮默认设备：未指定，由 Bot 根据当前任务判断。' : `本轮设备选择：${selection.status}；目标=${JSON.stringify(selection.selectedDeviceDisplayName || selection.selectedDeviceId || '尚未选择')}`);
     }
     lines.push('');
     lines.push('可在用户电脑执行的工具：');
@@ -131,18 +132,26 @@ export function buildRuntimeContextText(
   }
   lines.push('规则：');
   lines.push('- 对本来就在 Bot 自身环境进行的工作（如正常 Skill、附件处理），默认不要传 target，工具会在 XiaoBa 自己的电脑执行。这不是查找用户指定设备失败后的回退方式。');
-  lines.push('- 右上角选中的设备是默认目标。用户说“在桌面创建文件”“我的电脑”等且未指定设备时，直接使用本轮默认选择（target="speaker_default"），不必再次询问设备名。默认未选定且有多台设备时才询问。');
+  lines.push(botDecides
+    ? '- 当前未指定默认设备。根据用户任务和当前可用授权自行判断目标：Bot 自身工作使用 agent_self；需要用户设备时，使用已授权列表中准确的设备名/ID作为 target。不要要求用户必须先设置默认设备；只有任务目标不明确或有歧义时再询问。'
+    : '- 右上角选中的设备是默认目标。用户说“在桌面创建文件”“我的电脑”等且未指定设备时，直接使用本轮默认选择（target="speaker_default"），不必再次询问设备名。默认未选定且有多台设备时才询问。');
   lines.push('- 用户明确要求在某台设备执行时，用列表中的准确设备名/ID作为 target；该设备可以不同于默认选择，但必须有自己的本轮授权。这只是本次任务的目标，不改变默认设备。仅在提问、引用或否定中提到设备，不构成操作请求。');
   lines.push('- 用户明确要求操作两台/多台设备时，逐台使用准确 target、独立解析路径并执行，分别报告实际成功或失败。可以依次执行，不要把一台的成功说成全部成功。已知离线设备直接说明不可用；不要拿它的任务或路径到其他电脑、Bot 宿主机或附件缓存中尝试。');
   lines.push('- 设备名不可见只说明当前上下文无法确认该目标，不得声称它属于其他账号、一定存在或已被权限系统拒绝。不得猜测/改写 Linux 与 Windows 路径以尝试其他电脑。');
-  lines.push('- 只有用户明确要求操作某个用户的电脑、桌面、文件或路径时才设置 target：指定设备用列表中的准确设备名/ID；“我的电脑”等用户别名按本轮选择解析，例如 target="Alice"。不能用当前用户名代替用户明确点名的另一台设备。');
+  lines.push(botDecides
+    ? '- 只有任务需要用户设备时才设置 target。未指定默认设备时，使用准确设备名/ID，不使用 speaker_default 或用户名作为默认别名。明确点名的目标不可替换；不得扩大当前授权。'
+    : '- 只有用户明确要求操作某个用户的电脑、桌面、文件或路径时才设置 target：指定设备用列表中的准确设备名/ID；“我的电脑”等用户别名按本轮选择解析，例如 target="Alice"。不能用当前用户名代替用户明确点名的另一台设备。');
   lines.push('- 只有带 target 参数的工具可以在用户电脑执行；没有 target 参数的工具只能在 XiaoBa 自己电脑执行。');
-  lines.push('- 如果 Alice 说“我的电脑/我的桌面/我这边”，target 用 "Alice"。');
+  if (!botDecides) lines.push('- 如果 Alice 说“我的电脑/我的桌面/我这边”，target 用 "Alice"。');
   lines.push('- 如果用户说“你的电脑/XiaoBa 的电脑/bot 的电脑”，不要传 target。');
   lines.push('- 工具结果中的路径只属于实际执行设备，换设备后要重新解析路径。');
-  lines.push('- 同账号可能有多台电脑；用户名不是某一台电脑的固定名称，以本轮默认选择为准。未指定目标、多台且未选定默认设备时先询问；明确指定设备或明确要求所有设备时，不必要求用户先改变默认选择。不按列表顺序猜测目标。');
+  lines.push(botDecides
+    ? '- 同账号可能有多台设备；按任务语义判断，不按列表顺序猜测。目标仍有歧义时再询问；明确指定设备或明确要求所有设备时可使用各自有效授权。'
+    : '- 同账号可能有多台电脑；用户名不是某一台电脑的固定名称，以本轮默认选择为准。未指定目标、多台且未选定默认设备时先询问；明确指定设备或明确要求所有设备时，不必要求用户先改变默认选择。不按列表顺序猜测目标。');
   lines.push('- 已选定的电脑离线时说明它暂时不可用，不能换另一台电脑或改为服务器执行。仅提到其他设备不代表要求切换。');
-  lines.push('- 删除、覆盖等操作也必须核对本次任务的目标设备和路径；未明确指定时使用默认设备。换设备后重新解析路径，不能把上一台电脑的路径当作本机路径。保留原有安全检查，不新增设备操作确认步骤。');
+  lines.push(botDecides
+    ? '- 删除、覆盖等操作仍须核对目标设备和路径，并保留原有安全检查。目标未能确定时先询问；换设备后重新解析路径。'
+    : '- 删除、覆盖等操作也必须核对本次任务的目标设备和路径；未明确指定时使用默认设备。换设备后重新解析路径，不能把上一台电脑的路径当作本机路径。保留原有安全检查，不新增设备操作确认步骤。');
   lines.push('[/transient_runtime_context]');
   return lines.join('\n');
 }
@@ -208,8 +217,8 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
   const selected = params.deviceSelection;
   const speakerGrant = selected?.status === 'selected' && selected.selectedDeviceId
     ? params.deviceGrants?.find(grant => grant.deviceId === selected.selectedDeviceId && grant.ownerUserId === (selected.selectedOwnerUserId || actorUserId))
-    : selected ? undefined : params.deviceGrants?.find(grant => grant.status === 'active') || params.deviceGrants?.[0];
-  const speakerDeviceReady = selected ? selected.status === 'selected' && Boolean(selected.selectedDeviceId) : Boolean(speakerGrant?.deviceId);
+    : undefined;
+  const speakerDeviceReady = selected?.status === 'selected' && Boolean(selected.selectedDeviceId) && Boolean(speakerGrant);
   const speakerDeviceLabel = (selected?.status === 'selected' ? selected.selectedDeviceDisplayName : undefined)
     || speakerGrant?.deviceDisplayName
     || `${speakerName} computer`;
@@ -256,11 +265,11 @@ export function buildRuntimeContextSnapshot(params: BuildRuntimeContextParams): 
           }]),
     ],
     defaultTarget: 'agent_self',
-    toolRules: buildToolRules(conversationType),
+    toolRules: buildToolRules(conversationType, !selected || (selected.status === 'needs_selection' && !selected.selectedDeviceId)),
   };
 }
 
-function buildToolRules(type: ExecutionContextSnapshot['conversation']['type']): string[] {
+function buildToolRules(type: ExecutionContextSnapshot['conversation']['type'], unassigned = false): string[] {
   if (type === 'local') {
     return [
       'This is a normal local conversation. Use tools without target unless the user explicitly asks otherwise.',
@@ -268,11 +277,15 @@ function buildToolRules(type: ExecutionContextSnapshot['conversation']['type']):
   }
   return [
     'Default tool target is agent_self.',
-    'When the current speaker says "my computer", "my desktop", "my files", "我电脑", "我的电脑", "我的桌面", or "我这边", call target="speaker_default".',
+    unassigned
+      ? 'No user device is pinned. Decide the target from the task and use an authorized exact device name/ID. Do not require setting a default; ask only when the task target is ambiguous.'
+      : 'When the current speaker says "my computer", "my desktop", "my files", "我电脑", "我的电脑", "我的桌面", or "我这边", call target="speaker_default".',
     'When the current speaker says "your computer", "bot computer", "XiaoBa computer", "你的电脑", "你自己的电脑", "小八的电脑", or "机器人的电脑", call target="agent_self".',
     'If a user asks for a common directory such as Desktop or Downloads, call resolve_common_directory on the same target before passing the returned path to glob, read_file, write_file, edit_file, or execute_shell.',
     'Paths returned by tools belong only to the target that produced them. Re-resolve paths after switching target.',
-    'The selected computer is the default for unspecified user-device requests. An explicitly requested device may differ from the default if it has its own current authorization. For multiple devices, use separate exact targets and report each result without changing the default. Missing, ambiguous or offline targets never permit probing the agent host, attachment cache or another device.',
+    unassigned
+      ? 'Keep the default empty after executing a task. Choose only within current authorization; an unavailable or ambiguous target never permits probing another device or the agent host.'
+      : 'The selected computer is the default for unspecified user-device requests. An explicitly requested device may differ from the default if it has its own current authorization. For multiple devices, use separate exact targets and report each result without changing the default. Missing, ambiguous or offline targets never permit probing the agent host, attachment cache or another device.',
   ];
 }
 

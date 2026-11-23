@@ -167,6 +167,7 @@ export interface PendingUserInput {
   /** Replaces the current turn's short-lived Artifact context ref when present, including explicit undefined. */
   artifactContextRef?: string;
   skillConnectorGrants?: import('../types/session-identity').SkillConnectorGrant[];
+  /** Latest complete device authorization list for this scope. [] clears it; undefined means no update. */
   deviceGrants?: ScopedDeviceGrant[];
   deviceSelection?: ScopedDeviceSelection;
   targetRoutes?: TargetRoutes;
@@ -1028,13 +1029,13 @@ export class ConversationRunner {
         artifactContextRef: pending.artifactContextRef,
       };
     }
-    if (isPendingUserInput(pending) && pending.deviceGrants?.length) {
+    if (isPendingUserInput(pending) && Array.isArray(pending.deviceGrants)) {
       this.toolExecutionContext = {
         ...(this.toolExecutionContext || {}),
-        deviceGrants: [
-          ...(this.toolExecutionContext?.deviceGrants || []),
-          ...pending.deviceGrants,
-        ],
+        deviceGrants: pending.deviceGrants.filter(grant => grant.status === 'active'),
+        // A newly authoritative list can restore a previously unavailable
+        // target. Do not retain failures from the superseded list.
+        targetResolutionState: {},
       };
       shouldRefreshRuntimeContext = true;
     }

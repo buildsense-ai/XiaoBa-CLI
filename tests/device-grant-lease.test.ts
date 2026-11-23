@@ -57,7 +57,39 @@ test('fresh grants, unsupported servers, expired and untrusted authority are nev
   }
 });
 
-for (const variant of ['device', 'actor', 'session', 'scope', 'revision', 'operations', 'duplicate operations', 'expiry', 'body', 'creation']) {
+test('legacy bounded group shares can renew without changing owner or share provenance', async () => {
+  const f = fixture();
+  Object.assign(f.context.executionScope!, { topicId: 'grp_1', topicType: 'group', sessionKey: 'cc_group:grp_1' });
+  const grant = f.context.deviceGrants![0];
+  Object.assign(grant, f.context.executionScope, { sessionKey: 'session:v2:catscompany:group:grp_1%3Aactor%3Ausr7:agent:usr43', ownerUserId: 'usr8', identitySource: 'group_device_share', shareId: 'share-1', shareRevision: 3 });
+  f.advance(300_000);
+  await f.lease.refresh();
+  assert.equal(f.renewals(), 1);
+  assert.equal(grant.ownerUserId, 'usr8');
+  assert.equal(grant.shareId, 'share-1');
+  assert.equal(grant.shareRevision, 3);
+  delete grant.shareId;
+  f.advance(300_000);
+  await f.lease.refresh();
+  assert.equal(f.renewals(), 1, 'incomplete delegated authority must not renew');
+});
+
+test('newer grants for another owner with the same device ID do not supersede each other', async () => {
+  const f = fixture();
+  Object.assign(f.context.executionScope!, { topicId: 'grp_1', topicType: 'group', sessionKey: 'cc_group:grp_1' });
+  const own = f.context.deviceGrants![0];
+  Object.assign(own, f.context.executionScope, { sessionKey: 'session:v2:catscompany:group:grp_1%3Aactor%3Ausr7:agent:usr43' });
+  const shared: ScopedDeviceGrant = { ...own, grantId: 'other-owner', ownerUserId: 'usr8', identitySource: 'group_device_share',
+    shareId: 'shared-a', shareRevision: 1, createdAt: own.createdAt + 1 };
+  f.context.deviceGrants!.push(shared);
+  f.advance(300_000);
+  await f.lease.refresh();
+  assert.equal(f.renewals(), 2);
+  assert.equal(own.grantId, 'renewed-1');
+  assert.equal(shared.grantId, 'renewed-2');
+});
+
+for (const variant of ['device', 'actor', 'session', 'scope', 'revision', 'operations', 'duplicate operations', 'expiry', 'body', 'creation', 'share', 'share revision']) {
   test(`rejects renewal response with changed ${variant}`, () => {
     const f = fixture(); const old = f.context.deviceGrants![0];
     const next: ScopedDeviceGrant = { ...old, grantId: 'new-id', expiresAt: Date.now() + 600_000 };
@@ -72,6 +104,8 @@ for (const variant of ['device', 'actor', 'session', 'scope', 'revision', 'opera
       case 'expiry': next.expiresAt = old.expiresAt + 600_001; break;
       case 'body': next.deviceBodyId = 'other'; break;
       case 'creation': next.createdAt++; break;
+      case 'share': next.shareId = 'other-share'; break;
+      case 'share revision': next.shareRevision = 9; break;
     }
     assert.equal(isDeviceGrantRenewal(old, next), false);
   });
@@ -375,4 +409,21 @@ test('renewal diagnostics are counted, throttled and never log raw errors or bea
     assert.equal(f.context.deviceGrants![0].grantId, 'fake-scoped-grant');
   }
   assert.doesNotMatch(logs.join('\n'), /SECRET|BEARER|fake-scoped-grant|private/);
+});
+
+
+test('current group permission needs no renewal across long time intervals', async () => {
+ const f = fixture();
+ Object.assign(f.context.executionScope!, {topicId:'grp_1',topicType:'group',sessionKey:'cc_group:grp_1'});
+ const grant=f.context.deviceGrants![0];
+ Object.assign(grant,f.context.executionScope,{sessionKey:'session:v2:catscompany:group:grp_1%3Aactor%3Ausr7:agent:usr43',ownerUserId:'usr8',identitySource:'group_device_share',shareId:'share-1',shareRevision:1,expiresAt:253402300799999});
+ for(const elapsed of [11*60_000,25*60*60_000,365*24*60*60_000]) {
+  f.advance(elapsed);
+  await f.lease.refresh();
+  assert.equal(f.renewals(),0);
+ }
+ assert.equal(grant.ownerUserId,'usr8');
+ assert.equal(grant.actorUserId,'usr7');
+ assert.equal(grant.shareId,'share-1');
+ assert.equal(grant.shareRevision,1);
 });

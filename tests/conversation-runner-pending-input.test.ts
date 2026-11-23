@@ -1,3 +1,5 @@
+import { buildTargetRoutes } from '../src/catscompany/runtime-context';
+import { resolveExecutionRoute } from '../src/tools/execution-router';
 import { describe, test } from 'node:test';
 import * as assert from 'node:assert';
 import * as path from 'path';
@@ -384,92 +386,110 @@ describe('ConversationRunner pending input', () => {
     assert.deepEqual(contexts[1]?.localFileGrants, [initialGrant, pendingGrant]);
   });
 
-  test('merges pending device grants into later tool execution context without clearing existing grants', async () => {
-    const requests: Message[][] = [];
-    const aiService = {
-      chat: async (messages: Message[]) => {
-        requests.push(messages.map(msg => ({ ...msg })));
-        if (requests.length === 1) {
+  for (const update of ['replace', 'empty', 'missing', 'undefined', 'inactive', 'new revision', 'restored target']) {
+    test(`applies complete pending device authorization: ${update}`, async () => {
+      const requests: Message[][] = [];
+      const aiService = {
+        chat: async (messages: Message[]) => {
+          requests.push(messages.map(msg => ({ ...msg })));
+          if (requests.length === 1) {
+            return {
+              content: null,
+              toolCalls: [{
+                id: 'call_1',
+                type: 'function',
+                function: { name: 'noop', arguments: '{}' },
+              }],
+              usage,
+            };
+          }
+          if (requests.length === 2) {
+            return {
+              content: null,
+              toolCalls: [{
+                id: 'call_2',
+                type: 'function',
+                function: { name: 'noop', arguments: '{}' },
+              }],
+              usage,
+            };
+          }
+          return { content: 'done', toolCalls: [], usage };
+        },
+      } as any;
+      const contexts: Array<Partial<ToolExecutionContext> | undefined> = [];
+      const executor: ToolExecutor = {
+        getToolDefinitions: () => [{
+          name: 'noop',
+          description: 'noop',
+          parameters: { type: 'object', properties: {} },
+        }],
+        executeTool: async (toolCall, _history, contextOverrides) => {
+          contexts.push(contextOverrides);
+          if (update === 'restored target') {
+            const route = resolveExecutionRoute(contextOverrides as ToolExecutionContext, {toolName:'read_file',operation:'read_file',target:'device-pending'});
+            assert.equal(route.ok, contexts.length === 2, 'new authoritative state should restore the previously unavailable target');
+          }
           return {
-            content: null,
-            toolCalls: [{
-              id: 'call_1',
-              type: 'function',
-              function: { name: 'noop', arguments: '{}' },
-            }],
-            usage,
+            tool_call_id: toolCall.id,
+            role: 'tool',
+            name: toolCall.function.name,
+            content: 'ok',
+            ok: true,
           };
-        }
-        if (requests.length === 2) {
-          return {
-            content: null,
-            toolCalls: [{
-              id: 'call_2',
-              type: 'function',
-              function: { name: 'noop', arguments: '{}' },
-            }],
-            usage,
-          };
-        }
-        return { content: 'done', toolCalls: [], usage };
-      },
-    } as any;
-    const contexts: Array<Partial<ToolExecutionContext> | undefined> = [];
-    const executor: ToolExecutor = {
-      getToolDefinitions: () => [{
-        name: 'noop',
-        description: 'noop',
-        parameters: { type: 'object', properties: {} },
-      }],
-      executeTool: async (toolCall, _history, contextOverrides) => {
-        contexts.push(contextOverrides);
-        return {
-          tool_call_id: toolCall.id,
-          role: 'tool',
-          name: toolCall.function.name,
-          content: 'ok',
-          ok: true,
-        };
-      },
-    };
+        },
+      };
 
-    let pendingUsed = false;
-    const initialGrant = deviceGrant('device-initial');
-    const pendingGrant = deviceGrant('device-pending');
-    const runner = new ConversationRunner(aiService, executor, {
-      stream: false,
-      toolExecutionContext: {
-        sessionId: 'cc_user:usr7',
-        surface: 'catscompany',
-        executionScope: scope(),
-        deviceGrants: [initialGrant],
-      },
-      pendingUserInputProvider: () => {
-        if (pendingUsed) return null;
-        pendingUsed = true;
-        return {
-          content: 'new device grant while busy',
-          deviceGrants: [pendingGrant],
-        };
-      },
+      let pendingUsed = false;
+      const initialGrant = deviceGrant('device-initial');
+      const pendingGrant = update === 'new revision'
+        ? {...initialGrant, grantId:'new-revision', shareRevision:2}
+        : deviceGrant('device-pending');
+      const snapshot = update === 'empty' ? [] : update === 'inactive' ? [{...pendingGrant,status:'revoked' as const}] : [pendingGrant];
+      const runner = new ConversationRunner(aiService, executor, {
+        stream: false,
+        toolExecutionContext: {
+          sessionId: 'cc_user:usr7',
+          surface: 'catscompany',
+          executionScope: scope(),
+          deviceGrants: [initialGrant],
+          targetResolutionState: {},
+          ...(update === 'restored target' ? {thinToolRpc:{executeTool:async()=>({ok:true as const,content:'unused'})}} : {}),
+        },
+        pendingUserInputProvider: () => {
+          if (pendingUsed) return null;
+          pendingUsed = true;
+          return {
+            content: 'new device grant while busy',
+            ...(update === 'missing' ? {} : {deviceGrants:update === 'undefined' ? undefined : snapshot}),
+            ...(update === 'restored target' ? {targetRoutes:buildTargetRoutes([{userId:'usr7',ownerUserId:'usr7',deviceId:'device-pending',label:'pc-new',os:'linux',status:'ready'}])} : {}),
+          };
+        },
+      });
+
+      const result = await runner.run([{ role: 'user', content: 'run a tool' }]);
+
+      assert.equal(result.response, 'done');
+      assert.equal(contexts.length, 2);
+      assert.deepEqual(contexts[0]?.deviceGrants, [initialGrant]);
+      assert.deepEqual(contexts[1]?.deviceGrants, ['missing','undefined'].includes(update) ? [initialGrant] : update === 'empty' || update === 'inactive' ? [] : [pendingGrant]);
+
+      const refreshedContext = requests[1].find(isRuntimeContextMessage);
+      if (['missing', 'undefined'].includes(update)) {
+        assert.equal(refreshedContext, undefined, 'missing metadata should not replace the current context');
+        return;
+      }
+      assert.ok(refreshedContext);
+      const refreshedContent = String(refreshedContext.content || '');
+      assert.match(refreshedContent, /规则：/);
+      assert.doesNotMatch(refreshedContent, /device-initial/);
+      if (update === 'restored target') assert.match(refreshedContent, /pc-new/);
+      else assert.doesNotMatch(refreshedContent, /device-pending/);
+      assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
+      assert.doesNotMatch(refreshedContext.content as string, /body-main/);
     });
+  }
 
-    const result = await runner.run([{ role: 'user', content: 'run a tool' }]);
-
-    assert.equal(result.response, 'done');
-    assert.equal(contexts.length, 2);
-    assert.deepEqual(contexts[0]?.deviceGrants, [initialGrant]);
-    assert.deepEqual(contexts[1]?.deviceGrants, [initialGrant, pendingGrant]);
-
-    const refreshedContext = requests[1].find(isRuntimeContextMessage);
-    assert.ok(refreshedContext);
-    const refreshedContent = String(refreshedContext.content || '');
-    assert.match(refreshedContent, /规则：/);
-    assert.doesNotMatch(refreshedContent, /device-initial/);
-    assert.doesNotMatch(refreshedContent, /device-pending/);
-    assert.doesNotMatch(refreshedContext.content as string, /install:device-/);
-    assert.doesNotMatch(refreshedContext.content as string, /body-main/);
-  });
 
   test('unions pending Skill connector grants with the live turn and refreshes only the matching Skill', async () => {
     const requests: Message[][] = [];

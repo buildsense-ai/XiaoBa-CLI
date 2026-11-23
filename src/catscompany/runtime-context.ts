@@ -19,7 +19,7 @@ export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | 
     if (explicit.length > 0 && selection?.candidates?.length) {
       const ownerRecord = (Array.isArray(runtime?.devices) ? runtime.devices : []).map(asRecord)
         .find(device => stringField(device, 'userId') === scope.actorUserId);
-      return buildTargetRoutes(selection.candidates.filter(device => device.status !== 'ready' || explicit.some(grant => grant.deviceId === device.deviceId && grant.ownerUserId === (device.ownerUserId || scope.actorUserId))).map(device => ({
+      return buildTargetRoutes(selection.candidates.filter(device => !device.ownerUserId || device.ownerUserId === scope.actorUserId || device.status !== 'ready' || explicit.some(grant => grant.deviceId === device.deviceId && grant.ownerUserId === device.ownerUserId)).map(device => ({
         userId: device.ownerUserId || scope.actorUserId, ownerUserId: device.ownerUserId || scope.actorUserId, deviceId: device.deviceId,
         userName: device.ownerUserId && device.ownerUserId !== scope.actorUserId ? device.ownerDisplayName : stringField(ownerRecord, 'userName'),
         label: device.displayName || device.deviceId, os: normalizeOS(device.os),
