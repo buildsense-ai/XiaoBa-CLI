@@ -1465,7 +1465,7 @@ function writeDashboardEnvAndProcess(updates: Record<string, string | undefined>
 function memoryBranchDashboardPayload(config: BranchAgentConfig, serviceManager?: ServiceManager): Record<string, unknown> {
   const memory = config.branches.memorySearch;
   const primary = modelProfileFromCurrentConfig();
-  const savedModel = memory.kind === 'catslog' && memory.model.kind !== 'inherit' ? memory.model : undefined;
+  const savedModel = memory.kind === 'memory' && memory.model.kind !== 'inherit' ? memory.model : undefined;
   const useRelayDefault = !savedModel;
   const relay = useRelayDefault ? resolveOfficialMemoryBranchModel(getModelConfigReadonly()) : undefined;
   const active = savedModel ?? {
@@ -2680,8 +2680,8 @@ export function createApiRouter(
 
   router.put('/branch-agents/memory/mode', (req, res) => {
     const mode: unknown = req.body?.mode;
-    if (mode !== 'off' && mode !== 'catslog' && mode !== 'wiki') {
-      return res.status(400).json({ error: 'mode must be off, catslog, or wiki' });
+    if (mode !== 'off' && mode !== 'memory' && mode !== 'wiki') {
+      return res.status(400).json({ error: 'mode must be off, memory, or wiki' });
     }
     try {
       const config = saveMemoryBranchConfig(memory => {

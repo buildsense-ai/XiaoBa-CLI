@@ -32,7 +32,7 @@ export interface MemorySidecarContext {
 }
 
 export type MemorySidecarBranchOptions = MemorySidecarContext & (
-  | { kind?: 'catslog'; catslogMemory?: CatsLogMemoryBackend }
+  | { kind?: 'memory'; catslogMemory?: CatsLogMemoryBackend }
   | { kind: 'wiki'; wikiMemory: MondayWikiMemory }
 );
 

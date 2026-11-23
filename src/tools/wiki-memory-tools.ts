@@ -16,9 +16,14 @@ function tool(definition: ToolDefinition, call: (args: Record<string, unknown>, 
   };
 }
 
+export interface WikiSearchHit {
+  wiki_id: string;
+  snippet?: string;
+}
+
 interface WikiEvidenceTracker {
   onRead(id: string, refs: string[]): void;
-  onSearch(id: string, wikiIds: string[]): void;
+  onSearch(id: string, hits: WikiSearchHit[]): void;
   canReadSource(id: string, ref: string): boolean;
   onReadSource(id: string, ref: string): void;
 }
@@ -49,16 +54,17 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
       if (!result || typeof result !== 'object' || !('retrieval_id' in result) ||
           typeof result.retrieval_id !== 'string' || !/^ret_[\da-f-]{36}$/i.test(result.retrieval_id) ||
           !('items' in result) || !Array.isArray(result.items)) throw new Error('Invalid Wiki search response');
-      const wikiIds = result.items.map((item: unknown) => {
+      const hits = result.items.map((item: unknown): WikiSearchHit => {
         if (!item || typeof item !== 'object' || !('wiki_id' in item)) throw new Error('Invalid Wiki search item');
-        return wikiId(item.wiki_id);
+        const snippet = 'snippet' in item && typeof item.snippet === 'string' ? item.snippet : undefined;
+        return { wiki_id: wikiId(item.wiki_id), ...(snippet && { snippet }) };
       });
-      tracker.onSearch(result.retrieval_id, wikiIds);
+      tracker.onSearch(result.retrieval_id, hits);
       return { ...result, content_trust };
     }),
     tool({
       name: 'wiki_read',
-      description: '读取一篇 Wiki 的完整 Markdown 和原始 Episode 引用。引用它作为结论依据前先读取正文。',
+      description: '读取完整 Wiki 和 Episode 引用。搜索片段不完整或有歧义时用它核对。',
       parameters: { type: 'object', properties: { wiki_id: wikiParam }, required: ['wiki_id'] },
     }, async ({ wiki_id }, signal) => {
       const id = wikiId(wiki_id);

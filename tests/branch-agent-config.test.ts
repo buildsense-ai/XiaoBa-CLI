@@ -413,6 +413,7 @@ describe('Branch agent device config', () => {
       assert.equal(branch?.model, 'deepseek-flash');
       assert.equal(branch?.apiUrl, 'https://relay.catsco.cc/v1');
       assert.equal(branch?.openaiApiMode, 'responses');
+      assert.equal(branch?.reasoningEffort, 'high');
       assert.equal(services.aiService.getConfig().model, 'primary-model');
       assert.ok(services.catslogMemory);
 

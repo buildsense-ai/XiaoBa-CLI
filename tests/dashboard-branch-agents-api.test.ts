@@ -88,7 +88,7 @@ describe('Dashboard Branch agent API', () => {
   });
 
   test('persists one retrieval mode at a time and can switch it off', async () => {
-    for (const mode of ['wiki', 'catslog', 'off']) {
+    for (const mode of ['wiki', 'memory', 'off']) {
       const response = await fetch(`${baseUrl}/api/branch-agents/memory/mode`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode }),

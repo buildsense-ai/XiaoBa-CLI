@@ -77,5 +77,52 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
   assert.ok(observation?.formattedContent);
   assert.deepEqual(JSON.parse(observation.formattedContent).wiki_refs, [{
     wiki_id, retrieval_id, source_refs: [ref], checked_source_refs: [ref], contribution: 'Reflow preserves the selected node.',
+    evidence_level: 'wiki_body',
+  }]);
+});
+
+test('allows a verified search quote after an invented quote or a title-only citation is rejected', async () => {
+  const wiki_id = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const titleOnlyId = 'mem_bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const retrieval_id = 'ret_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const laterRetrieval = 'ret_bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const quote = 'Keep the selected node during reflow.';
+  const summary = 'Preserve the selected node.';
+  const candidate = { wiki_id, contribution: summary };
+  const actions = [
+    { name: 'wiki_search', args: { keywords: ['reflow'] } },
+    { name: 'wiki_search', args: { keywords: ['layout'] } },
+    { name: 'finish_wiki_search', args: { summary, evidence: [{ ...candidate, quote: 'Clear the selected node.' }] } },
+    { name: 'finish_wiki_search', args: { summary, evidence: [{ ...candidate, wiki_id: titleOnlyId, quote }] } },
+    { name: 'finish_wiki_search', args: { summary, evidence: [{ ...candidate, quote }] } },
+  ];
+  let step = 0;
+  const ai = {
+    isToolCallingSupported: () => true,
+    async chat() {
+      const action = actions[step++];
+      assert.ok(action);
+      return { content: null, toolCalls: [{
+        id: 'call-' + step, type: 'function', function: { name: action.name, arguments: JSON.stringify(action.args) },
+      }] };
+    },
+  };
+  const queue = new InMemorySyntheticObservationQueue();
+  await startMemorySidecarBranch({
+    sessionKey: 'wiki-snippet', input: 'Which node stays selected?', recentMessages: [],
+    workingDirectory: tmpdir(), aiService: ai as unknown as AIService, queue, kind: 'wiki', logEnabled: false,
+    wikiMemory: {
+      search: async keywords => keywords.includes('reflow')
+        ? { retrieval_id, items: [{ wiki_id, title: 'Layout reflow', snippet: quote }] }
+        : { retrieval_id: laterRetrieval, items: [{ wiki_id, title: 'Layout reflow' }, { wiki_id: titleOnlyId, title: quote }] },
+      read: async () => assert.fail('The snippet supports this fact without opening the Wiki'),
+      source: async () => assert.fail('No original source lookup was requested'),
+    },
+  }).done;
+  assert.equal(step, actions.length);
+  const [observation] = queue.drain();
+  assert.ok(observation?.formattedContent);
+  assert.deepEqual(JSON.parse(observation.formattedContent).wiki_refs, [{
+    ...candidate, retrieval_id, evidence_level: 'search_snippet', quote,
   }]);
 });

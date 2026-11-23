@@ -836,7 +836,7 @@ export class AgentTurnController {
       aiService,
       ...(wikiMemory
         ? { kind: 'wiki' as const, wikiMemory }
-        : { kind: 'catslog' as const, catslogMemory: this.options.services.catslogMemory }),
+        : { kind: 'memory' as const, catslogMemory: this.options.services.catslogMemory }),
       queue: options.queue,
       signal: options.abortSignal,
       activationContext: options.activationContext,

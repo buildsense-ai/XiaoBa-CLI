@@ -83,15 +83,15 @@ export class RuntimeFactory {
     const aiService = new AIService(modelOverride);
     const branchConfig = loadBranchAgentConfig();
     const memory = branchConfig.branches.memorySearch;
-    const explicitCatsLogModel = memory.kind === 'catslog' ? resolveMemoryBranchModelOverride(branchConfig) : undefined;
-    const memoryBranchOverride = explicitCatsLogModel ?? (memory.enabled
+    const explicitMemoryModel = memory.kind === 'memory' ? resolveMemoryBranchModelOverride(branchConfig) : undefined;
+    const memoryBranchOverride = explicitMemoryModel ?? (memory.enabled
       ? resolveOfficialMemoryBranchModel(activeBotModel?.config ?? aiService.getConfig())
       : undefined);
     // Keep a lazy provider attached to long-lived adapter runtimes. The
     // branch re-checks its current capability before every turn, so a login,
     // token rotation, or explicit disable after startup is observed without
     // reconstructing the adapter service graph.
-    const catslogMemory = memory.enabled && memory.kind === 'catslog'
+    const catslogMemory = memory.enabled && memory.kind === 'memory'
       ? new CatsLogMemoryProvider(
         // CatsLog credentials live under the runtime data root (the same root
         // used by Dashboard login/logout). Fall back to the profile cwd for
@@ -110,7 +110,7 @@ export class RuntimeFactory {
       memoryBranch: {
         enabled: memory.enabled,
         kind: memory.kind,
-        modelSource: explicitCatsLogModel ? memory.model.kind : 'official-deepseek',
+        modelSource: explicitMemoryModel ? memory.model.kind : 'official-deepseek',
         aiService: memoryBranchOverride ? new AIService(memoryBranchOverride) : undefined,
         budget: { ...memory.budget },
         ...(memory.kind === 'wiki' && {

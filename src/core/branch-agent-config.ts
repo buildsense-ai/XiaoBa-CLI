@@ -18,7 +18,7 @@ export const BRANCH_AGENT_CONFIG_FILE = 'branch-agents.json';
 const LEGACY_BRANCH_AGENT_CONFIG_SCHEMA = 'xiaoba.branch-agents.v1';
 
 export type BranchModelSource = 'inherit' | 'catalog' | 'custom';
-export type MemoryBranchKind = 'catslog' | 'wiki';
+export type MemoryBranchKind = 'memory' | 'wiki';
 
 export interface BranchModelRuntime {
   kind: 'catalog' | 'custom';
@@ -39,7 +39,7 @@ export interface BranchModelRuntime {
 
 export interface MemoryBranchConfig {
   enabled: boolean;
-  /** Exactly one read branch can be active. `catslog` preserves the legacy branch. */
+  /** Exactly one read branch can be active. `memory` preserves the legacy branch. */
   kind: MemoryBranchKind;
   /**
    * Saved CatsLog model preference. The existing `inherit` value selects the
@@ -170,7 +170,7 @@ export function resolveOfficialMemoryBranchModel(relay: Partial<ChatConfig>): Pa
     catsCoRelay: true,
     model: profile.model,
     contextWindowTokens: profile.contextWindowTokens,
-    reasoningEffort: 'low',
+    reasoningEffort: 'high',
     openaiApiMode: profile.openaiApiMode,
     modelCapabilities: { ...profile.capabilities },
   };
@@ -182,7 +182,7 @@ function defaultBranchAgentConfig(enabled = false): BranchAgentConfig {
     branches: {
       memorySearch: {
         enabled,
-        kind: 'catslog',
+        kind: 'memory',
         model: { kind: 'inherit' },
         budget: { ...DEFAULT_MEMORY_BRANCH_BUDGET },
       },
@@ -252,7 +252,7 @@ function normalizeBranchAgentConfig(input: any, fallback: BranchAgentConfig): Br
     branches: {
       memorySearch: {
         enabled: typeof memory?.enabled === 'boolean' ? memory.enabled : fallback.branches.memorySearch.enabled,
-        kind: memory?.kind === 'wiki' ? 'wiki' : 'catslog',
+        kind: memory?.kind === 'wiki' ? 'wiki' : 'memory',
         model,
         budget,
         ...(customDraft?.kind === 'custom' ? { customDraft } : {}),
