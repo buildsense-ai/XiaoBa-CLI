@@ -1510,6 +1510,7 @@ export class AgentSession {
   reset(): void {
     this.lifecycleGeneration++;
     this.activeAbortController?.abort();
+    this.turnController.clearMemoryCarryover();
     this.checkpointRevision++;
     this.cancelCheckpointCandidate();
     this.checkpointCandidateFallbackRequired = false;
@@ -1529,6 +1530,7 @@ export class AgentSession {
   clear(): boolean {
     this.lifecycleGeneration++;
     this.activeAbortController?.abort();
+    this.turnController.clearMemoryCarryover();
     this.checkpointRevision++;
     this.cancelCheckpointCandidate();
     this.checkpointCandidateFallbackRequired = false;
@@ -1548,6 +1550,7 @@ export class AgentSession {
   async summarizeAndDestroy(): Promise<boolean> {
     this.lifecycleGeneration++;
     this.checkpointRevision++;
+    this.turnController.clearMemoryCarryover();
     return this.withLogContext(async () => {
       this.planRuntime.clear();
       this.cancelCheckpointCandidate();
@@ -1562,6 +1565,7 @@ export class AgentSession {
   async cleanup(options: SessionCleanupOptions = {}): Promise<void> {
     this.lifecycleGeneration++;
     this.checkpointRevision++;
+    this.turnController.clearMemoryCarryover();
     return this.withLogContext(async () => {
       this.cancelCheckpointCandidate();
       if (options.stopSubAgents) {

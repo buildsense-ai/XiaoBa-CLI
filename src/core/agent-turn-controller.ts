@@ -273,7 +273,6 @@ export interface AgentTurnControllerOptions {
 }
 
 interface MemoryBranchSlot {
-  kind: MemoryBranchKind;
   queue: InMemorySyntheticObservationQueue;
   handle: MemorySidecarBranchHandle;
   originTurn: number;
@@ -300,6 +299,12 @@ export class AgentTurnController {
 
   constructor(private readonly options: AgentTurnControllerOptions) {}
 
+  clearMemoryCarryover(): void {
+    const slot = this.memoryBranchCarryover;
+    this.memoryBranchCarryover = null;
+    this.expireMemoryBranch(slot, 'session_reset');
+  }
+
   async run(params: RunAgentTurnParams): Promise<RunAgentTurnResult> {
     const turnNumber = ++this.turnSequence;
     const turnStartedAt = Date.now();
@@ -310,6 +315,8 @@ export class AgentTurnController {
     });
     const episodeId = this.createEpisodeId(turnNumber);
     let turnSkills: Awaited<ReturnType<AgentTurnController['prepareTurnSkills']>> | undefined;
+    let carryoverMemoryBranch: MemoryBranchSlot | null = null;
+    let currentMemoryRuntime: EpisodeMemoryRuntime | null = null;
     let outcome: 'completed' | 'failed' | 'cancelled' = 'failed';
     let errorName: string | undefined;
     this.options.turnLogRecorder.startRun(episodeId, params.input, params.transcriptInputIds, params.runtimeObservationSource);
@@ -325,7 +332,7 @@ export class AgentTurnController {
       }
       const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
       const branchAgentsEnabled = this.isMemoryBranchEnabled();
-      const carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
+      carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
       this.memoryBranchCarryover = null;
       if (!branchAgentsEnabled) {
         this.expireMemoryBranch(previousCarryoverMemoryBranch, 'branch_agents_disabled');
@@ -362,7 +369,7 @@ export class AgentTurnController {
         dispatchedAsTool: params.dispatchedAsTool,
       });
 
-      const currentMemoryRuntime = this.startEpisodeMemoryRuntime({
+      currentMemoryRuntime = this.startEpisodeMemoryRuntime({
         turnNumber,
         input: params.input,
         messages: params.messages,
@@ -438,17 +445,6 @@ export class AgentTurnController {
           (error as AgentTurnRunError).partialMessages = partialMessages;
         }
         throw error;
-      } finally {
-        if (currentMemoryRuntime) currentMemoryRuntime.stopped = true;
-        const currentMemoryBranch = currentMemoryRuntime?.activeSlot ?? null;
-        this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
-        if (currentMemoryBranch?.kind === 'wiki') {
-          this.expireMemoryBranch(currentMemoryBranch, result ? 'wiki_turn_finished' : 'turn_failed', 'current_turn');
-        } else if (result && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
-          this.memoryBranchCarryover = currentMemoryBranch;
-        } else {
-          this.expireMemoryBranch(currentMemoryBranch, result ? 'current_branch_consumed' : 'turn_failed');
-        }
       }
 
       if (this.options.checkpointCandidateBoundary) {
@@ -502,6 +498,15 @@ export class AgentTurnController {
       errorName = error instanceof Error ? error.name : 'Error';
       throw error;
     } finally {
+      if (currentMemoryRuntime) currentMemoryRuntime.stopped = true;
+      this.expireMemoryBranch(carryoverMemoryBranch, 'carryover_ttl_expired');
+      const currentMemoryBranch = currentMemoryRuntime?.activeSlot ?? null;
+      if (outcome === 'completed' && currentMemoryBranch && this.shouldCarryMemoryBranch(currentMemoryBranch)) {
+        this.memoryBranchCarryover = currentMemoryBranch;
+      } else {
+        const reason = outcome === 'completed' ? 'current_branch_consumed' : `turn_${outcome}`;
+        this.expireMemoryBranch(currentMemoryBranch, reason);
+      }
       this.options.turnLogRecorder.recordEvent(episodeId, {
         type: 'run_finished', status: outcome,
         ...(errorName && { error_name: errorName }),
@@ -681,7 +686,6 @@ export class AgentTurnController {
     }
     const queue = new InMemorySyntheticObservationQueue();
     const slot: MemoryBranchSlot = {
-      kind: wiki ? 'wiki' : 'memory',
       queue,
       originTurn: options.turnNumber,
       done: false,
@@ -791,17 +795,13 @@ export class AgentTurnController {
     return !slot.done || slot.queue.size() > 0;
   }
 
-  private expireMemoryBranch(
-    slot: MemoryBranchSlot | null,
-    reason: string,
-    timing: SyntheticObservationTiming = 'late_previous_turn',
-  ): void {
+  private expireMemoryBranch(slot: MemoryBranchSlot | null, reason: string): void {
     if (!slot) return;
     slot.handle.cancel();
     const droppedObservations = slot.queue.cancel()
       .map(observation => this.withMemoryBranchObservationMetadata(
         observation,
-        timing,
+        'late_previous_turn',
         slot.originTurn,
       ));
     if (droppedObservations.length > 0) {
