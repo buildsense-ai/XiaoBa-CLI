@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { Message } from '../types';
-import type { Tool } from '../types/tool';
+import type { Tool, ToolExecutionResult } from '../types/tool';
 import { wikiIdHint, wikiMemoryTools } from '../tools/wiki-memory-tools';
 import { mondayWikiId, type MondayWikiMemory } from '../utils/monday-wiki-memory';
 import { ObservationBranchSession } from './observation-branch-session';
 import type { MemorySidecarContext } from './sidecar-memory-branch';
 import type { SyntheticObservation } from './synthetic-observation';
+
+const MAX_RETRIEVAL_TURNS = 50;
+const MAX_FINISH_RETRIES = 3;
 
 const prompt = [
   '你是 Wiki 记忆检索分支。你的输出是给主 Agent 的任务辅助证据。',
@@ -44,6 +47,7 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
   private readonly searches = new Map<string, SeenSearchHit[]>();
   private readonly read = new Map<string, ReadWiki>();
   private finishOnly = false;
+  private invalidFinishAttempts = 0;
 
   constructor(private readonly input: MemorySidecarContext & { wikiMemory: MondayWikiMemory }) {
     super({
@@ -51,8 +55,7 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
       type: 'wiki-memory',
       id: randomUUID(),
       parallelToolExecution: false,
-      deadlineMs: 45_000,
-      maxTurnsPerPass: 8,
+      maxTurnsPerPass: MAX_RETRIEVAL_TURNS,
       maxPasses: 1,
     });
   }
@@ -119,14 +122,32 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
       },
       execute: async (args: unknown) => {
         const result = this.parseFinish(args);
-        if ('errors' in result) {
-          return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: true,
-            message: result.errors.join('\n') };
-        }
+        if ('errors' in result) return this.rejectFinish(result.errors.join('\n'));
         this.complete(result.payload);
         return { ok: true, content: JSON.stringify({ inject: result.payload.evidence.length > 0 }) };
       },
+      handleInvalidArguments: async message => this.rejectFinish(message),
     }];
+  }
+
+  private rejectFinish(message: string): ToolExecutionResult {
+    const remainingRetries = MAX_FINISH_RETRIES - this.invalidFinishAttempts;
+    this.invalidFinishAttempts++;
+    if (remainingRetries > 0) {
+      return {
+        ok: false,
+        errorCode: 'INVALID_TOOL_ARGUMENTS',
+        retryable: true,
+        message: `${message}\n还可以修正并重新提交 ${remainingRetries} 次。`,
+      };
+    }
+
+    this.logger.write('invalid_finalization_exhausted', { invalid_attempts: this.invalidFinishAttempts });
+    this.complete({ summary: '', evidence: [] });
+    return {
+      ok: true,
+      content: JSON.stringify({ inject: false, terminal: true, reason: 'invalid_finalization_exhausted', message }),
+    };
   }
 
   private knownWikiIds(): string[] {
@@ -202,7 +223,11 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
   }
 
   protected reservedTailPasses(): number {
-    return 1;
+    return MAX_FINISH_RETRIES + 1;
+  }
+
+  protected override runConversation() {
+    return super.runConversation(this.finishOnly ? 1 : undefined);
   }
 
   protected buildFinishReminderMessage(): Message {

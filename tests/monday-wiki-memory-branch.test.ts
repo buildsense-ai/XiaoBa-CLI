@@ -218,3 +218,70 @@ test('allows a corrected ID or a temporary failure to be retried within the read
   assert.equal((await source.execute({ wiki_id: wikiId, ref }, context)).ok, true);
   assert.equal((await source.execute({ wiki_id: wikiId, ref }, context)).ok, false);
 });
+
+test('allows 50 retrieval turns and three final submissions to correct an error', async () => {
+  const wiki_id = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const retrieval_id = 'ret_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const quote = 'Keep the selected node.';
+  const queue = new InMemorySyntheticObservationQueue();
+  let turn = 0;
+  let searchRequests = 0;
+  const ai = {
+    isToolCallingSupported: () => true,
+    async chat(messages: Message[], definitions: Array<{ name: string }>) {
+      turn++;
+      const finishOnly = turn > 50;
+      const name = finishOnly ? 'finish_wiki_search' : 'wiki_search';
+      assert.ok(definitions.some(definition => definition.name === name));
+      if (finishOnly) assert.deepEqual(definitions.map(definition => definition.name), [name]);
+      const errors = messages.filter(message => message.role === 'tool');
+      if (turn > 51) assert.match(String(errors.at(-1)?.content), new RegExp(`还可以修正并重新提交 ${55 - turn} 次`));
+
+      const args = turn <= 50 ? JSON.stringify({ keywords: [turn === 1 ? 'selected node' : ''] })
+        : turn === 51 ? '{' // Malformed JSON counts as a finalization failure too.
+        : turn === 52 ? JSON.stringify({ summary: quote })
+        : JSON.stringify({ summary: quote, evidence: [{ wiki_id, contribution: quote, quote: turn === 53 ? 'wrong quote' : quote }] });
+      return { content: null, toolCalls: [{ id: `call-${turn}`, type: 'function', function: { name, arguments: args } }] };
+    },
+  };
+  await startMemorySidecarBranch({
+    sessionKey: 'wiki-finish-at-budget', input: 'Which node stays selected?', recentMessages: [],
+    workingDirectory: tmpdir(), aiService: ai as unknown as AIService, queue, kind: 'wiki', logEnabled: false,
+    wikiMemory: {
+      search: async () => {
+        searchRequests++;
+        return { retrieval_id, items: [{ wiki_id, title: 'Node selection', snippet: quote }] };
+      },
+      read: async () => assert.fail('Unexpected Wiki read'),
+      source: async () => assert.fail('Unexpected source read'),
+    },
+  }).done;
+  assert.equal(searchRequests, 1);
+  assert.equal(turn, 54);
+  assert.deepEqual(queue.drain().map(observation => observation.summary), [quote]);
+});
+
+test('stops after the fourth invalid finish call and injects no partial evidence', async () => {
+  const queue = new InMemorySyntheticObservationQueue();
+  let attempts = 0;
+  const ai = {
+    isToolCallingSupported: () => true,
+    async chat() {
+      attempts++;
+      return { content: null, toolCalls: [{ id: `finish-${attempts}`, type: 'function', function: {
+        name: 'finish_wiki_search', arguments: JSON.stringify({ summary: 'Unsupported', evidence: [{}] }),
+      } }] };
+    },
+  };
+  await startMemorySidecarBranch({
+    sessionKey: 'wiki-invalid-finish', input: 'Find memory', recentMessages: [], workingDirectory: tmpdir(),
+    aiService: ai as unknown as AIService, queue, kind: 'wiki', logEnabled: false,
+    wikiMemory: {
+      search: async () => assert.fail('Unexpected search'),
+      read: async () => assert.fail('Unexpected Wiki read'),
+      source: async () => assert.fail('Unexpected source read'),
+    },
+  }).done;
+  assert.equal(attempts, 4);
+  assert.deepEqual(queue.drain(), []);
+});
