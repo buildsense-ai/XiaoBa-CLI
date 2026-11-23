@@ -2,6 +2,14 @@ import type { Tool, ToolDefinition } from '../types/tool';
 import { isWikiEpisodeRef, mondayWikiId, WikiMemoryHttpError, type MondayWikiMemory } from '../utils/monday-wiki-memory';
 
 class WikiArgumentError extends Error {}
+const SOURCE_PAGE_TEXT_CHARS = 12_000;
+
+function readOffset(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new WikiArgumentError(`${field} 必须是非负整数。请使用上次返回的续读位置。`);
+  }
+  return value;
+}
 
 function editDistance(input: string, target: string): number {
   let previous = Array.from({ length: target.length + 1 }, (_, i) => i);
@@ -77,11 +85,6 @@ interface WikiEvidenceTracker {
 }
 
 export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceTracker): Tool[] {
-  let searches = 0;
-  let reads = 0;
-  let readAttempts = 0;
-  let sourceReads = 0;
-  let sourceAttempts = 0;
   const content_trust = 'untrusted_branch_evidence';
   const wikiParam = { type: 'string', description: 'Wiki ID from search or a Wiki reference' };
   const wikiId = (value: unknown) => {
@@ -94,18 +97,19 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
   return [
     tool({
       name: 'wiki_search',
-      description: '按关键词搜索本 Bot 的历史 Wiki。任一词命中即可入选。前 10 条带片段，再返回最多 20 个标题和 Wiki ID。可换词再搜。',
-      parameters: { type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' } } }, required: ['keywords'] },
-    }, async ({ keywords }, signal) => {
-      if (!Array.isArray(keywords) || keywords.length < 1 || keywords.length > 16) {
-        throw new WikiArgumentError('keywords 需要包含 1 至 16 个关键词。');
+      description: '按关键词搜索本 Bot 的历史 Wiki。任一词命中即可入选。每页前 10 条带片段，再返回最多 20 个标题和 Wiki ID。使用相同 keywords 和返回的 next_offset 翻页，或换词再搜。',
+      parameters: {
+        type: 'object', properties: { keywords: { type: 'array', items: { type: 'string' } }, offset: { type: 'integer' } },
+        required: ['keywords'],
+      },
+    }, async ({ keywords, offset = 0 }, signal) => {
+      if (!Array.isArray(keywords) || !keywords.length) {
+        throw new WikiArgumentError('keywords 至少需要一个关键词。');
       }
       const invalid = keywords.findIndex((word: unknown) =>
-        typeof word !== 'string' || !word.trim() || word.includes('\0') || [...word].length > 256);
-      if (invalid !== -1) throw new WikiArgumentError(`keywords[${invalid}] 需要非空文本，最多 256 个字符，且不能含空字符。`);
-      if (searches >= 2) throw new Error('搜索次数已用完。使用现有结果或结束检索。');
-      searches++;
-      const result = await memory.search(keywords, signal);
+        typeof word !== 'string' || !word.trim() || word.includes('\0'));
+      if (invalid !== -1) throw new WikiArgumentError(`keywords[${invalid}] 需要非空文本，且不能含空字符。`);
+      const result = await memory.search(keywords, signal, readOffset(offset, 'offset'));
       if (!result || typeof result !== 'object' || !('retrieval_id' in result) ||
           typeof result.retrieval_id !== 'string' || !/^ret_[\da-f-]{36}$/i.test(result.retrieval_id) ||
           !('items' in result) || !Array.isArray(result.items)) throw new Error('Memory 的搜索响应缺少有效的 retrieval_id 或 items。');
@@ -126,14 +130,11 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
       parameters: { type: 'object', properties: { wiki_id: wikiParam }, required: ['wiki_id'] },
     }, async ({ wiki_id }, signal) => {
       const id = wikiId(wiki_id);
-      if (reads >= 3 || readAttempts >= 4) throw new Error('正文读取次数已用完。请结束检索。');
-      readAttempts++;
       const result = await memory.read(id, signal);
       if (!result || typeof result !== 'object' || !('wiki_id' in result) || result.wiki_id !== id ||
           !('markdown' in result) || typeof result.markdown !== 'string' ||
           !('source_refs' in result) || !Array.isArray(result.source_refs) ||
           !result.source_refs.every(isWikiEpisodeRef)) throw new Error(`Memory 返回的 Wiki ${id} 正文或原文引用不完整。`);
-      reads++;
       tracker.onRead(id, result.source_refs);
       return { ...result, content_trust };
     }, ({ wiki_id }) => {
@@ -142,42 +143,54 @@ export function wikiMemoryTools(memory: MondayWikiMemory, tracker: WikiEvidenceT
     }),
     tool({
       name: 'wiki_read_source',
-      description: '必要时核对一页原始会话。ref 使用 wiki_read 返回的 Episode 引用。长事件只展示预览。',
+      description: '按页读取原始会话。ref 使用 wiki_read 返回的 Episode 引用。用 next_offset 和 next_text_offset 继续读取，直到 next_offset 为 null。',
       parameters: {
         type: 'object',
-        properties: { wiki_id: wikiParam, ref: { type: 'string' }, offset: { type: 'integer' } },
+        properties: { wiki_id: wikiParam, ref: { type: 'string' }, offset: { type: 'integer' }, text_offset: { type: 'integer' } },
         required: ['wiki_id', 'ref'],
       },
-    }, async ({ wiki_id, ref, offset = 0 }, signal) => {
+    }, async ({ wiki_id, ref, offset = 0, text_offset = 0 }, signal) => {
       const id = wikiId(wiki_id);
       if (!isWikiEpisodeRef(ref)) throw new WikiArgumentError(`Wiki ${id} 的 ref 必须使用 wiki_read 返回的完整 Episode 引用。`);
-      if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) {
-        throw new WikiArgumentError(`Wiki ${id} 的 offset 必须是非负整数。请使用上一页的 next_offset。`);
-      }
+      const eventOffset = readOffset(offset, 'offset');
+      const textOffset = readOffset(text_offset, 'text_offset');
       const refs = tracker.sourceRefs(id);
       if (!refs) throw new WikiArgumentError(`本轮还没打开 Wiki ${id}。请先调用 wiki_read。` + wikiIdHint(id, tracker.knownWikiIds()));
       if (!refs.includes(ref)) {
         const available = refs.length ? `可用的引用：${refs.join('、')}。` : '这篇 Wiki 未返回 Episode 引用。';
         throw new WikiArgumentError(`引用 ${ref} 不属于 Wiki ${id}。${available}`);
       }
-      if (sourceReads >= 1 || sourceAttempts >= 2) throw new Error('原文核验次数已用完。请结束检索。');
-      sourceAttempts++;
-      const result = await memory.source(id, ref, offset, signal);
+      const result = await memory.source(id, ref, eventOffset, signal);
       if (!result || typeof result !== 'object' || !('ref' in result) || result.ref !== ref ||
           !('events' in result) || !Array.isArray(result.events)) throw new Error(`Memory 返回的原文页和 Wiki ${id} 的引用 ${ref} 不匹配。`);
-      const events = result.events.slice(0, 10).map((event: unknown, index) => {
-        if (!event || typeof event !== 'object') throw new Error(`Memory 返回的原文 ${ref} 中，events[${index}] 格式有误。`);
-        const text = 'text' in event && typeof event.text === 'string' ? event.text : '';
-        return {
+      const events: Array<{ ref?: string; kind?: string; text: string }> = [];
+      let remaining = SOURCE_PAGE_TEXT_CHARS;
+      let nextOffset = 'next_offset' in result && typeof result.next_offset === 'number' ? result.next_offset : null;
+      let nextTextOffset = 0;
+      for (const [index, event] of result.events.entries()) {
+        if (!event || typeof event !== 'object' || typeof event.text !== 'string') {
+          throw new Error(`Memory 返回的原文 ${ref} 中，events[${index}] 缺少有效文本。`);
+        }
+        const start = index === 0 ? textOffset : 0;
+        if (start > event.text.length) throw new WikiArgumentError(`原文 ${ref} 的 text_offset 超出事件长度。`);
+        let end = Math.min(event.text.length, start + remaining);
+        // Keep a surrogate pair together when returning only part of an event.
+        const last = event.text.charCodeAt(end - 1);
+        if (end > start && end < event.text.length && last >= 0xd800 && last <= 0xdbff) end--;
+        if (end > start || end === event.text.length) events.push({
           ...('ref' in event && typeof event.ref === 'string' && { ref: event.ref }),
           ...('kind' in event && typeof event.kind === 'string' && { kind: event.kind }),
-          text: text.slice(0, 1200),
-          ...(text.length > 1200 && { truncated: true }),
-        };
-      });
-      sourceReads++;
+          text: event.text.slice(start, end),
+        });
+        remaining -= end - start;
+        if (end < event.text.length) {
+          nextOffset = eventOffset + index;
+          nextTextOffset = end;
+          break;
+        }
+      }
       if (events.some(event => event.text.trim())) tracker.onReadSource(id, ref);
-      return { ref, events, next_offset: 'next_offset' in result ? result.next_offset : null, content_trust };
+      return { ref, events, next_offset: nextOffset, next_text_offset: nextTextOffset, content_trust };
     }, ({ wiki_id, ref }) => `当前 Bot 无法读取 Wiki ${wikiId(wiki_id)} 的原文 ${isWikiEpisodeRef(ref) ? ref : ''}（HTTP 404）。请重新读取 Wiki 确认原文引用。`),
   ];
 }

@@ -81,9 +81,9 @@ New installations and upgrades from v1 or v2 start in Wiki mode. Previous Branch
 
 The Wiki Branch uses `deepseek-flash` with `high` reasoning through XiaoBa's built-in CatsCo Relay and the existing Bot API key for Memory reads. Its model is independent of the primary Agent. The rest of the model override section applies only when the original Memory Branch is selected explicitly.
 
-The Wiki branch has its own prompt and tool set. Each run can search twice, read three Wiki bodies, and check one page of source evidence. Long source events are marked as previews. The branch treats all retrieved text as untrusted historical evidence.
+The Wiki Branch can search, open Wiki bodies, and read source pages as needed. Search returns up to 30 results per page. Source reads return up to 10 events and 12,000 characters of text at a time. Offsets allow the Branch to continue from the next result, event, or position inside a long event. The Branch treats retrieved text as untrusted historical evidence.
 
-The Wiki Branch allows up to 50 retrieval turns. It can use up to four finish-only turns if retrieval ends without a valid submission. The first invalid submission returns the specific error and leaves three chances to correct it. After four invalid submissions, the Branch stops without injecting memory.
+The Wiki Branch uses the same turn loop as the original Memory Branch. If it returns plain text, it receives a reminder to submit through the finish tool and can still use its retrieval tools. The first invalid submission returns the specific error and leaves three chances to correct it. After four invalid submissions, the Branch stops without injecting memory.
 
 The `finish_wiki_search` tool accepts a brief summary and the contribution of each cited Wiki. A search snippet can support a fact when the branch quotes it verbatim. A title alone does not qualify as evidence. XiaoBa labels snippet citations `search_snippet` and records the matching retrieval ID and quote. For full reads it records `wiki_body`, the available retrieval ID, source references, and any source references the branch actually checked. An empty evidence list skips injection. The parent writes the consumed observation to the conversation transcript for later edge analysis.
 

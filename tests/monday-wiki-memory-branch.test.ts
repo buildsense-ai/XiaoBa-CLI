@@ -35,8 +35,11 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
     assert.equal(headers.get('x-bot-uid'), null);
     requested.push(route);
     if (route.endsWith('/search')) {
-      assert.deepEqual(JSON.parse(String(options?.body)), { keywords: ['anchor', 'reflow'] });
-      return Response.json({ retrieval_id, items: [{ wiki_id, title: 'Layout reflow' }], has_more: false });
+      const searchPage = requested.length === 1 ? 0 : 30;
+      assert.deepEqual(JSON.parse(String(options?.body)), { keywords: ['anchor', 'reflow'], ...(searchPage > 0 && { offset: searchPage }) });
+      return Response.json({
+        retrieval_id, items: searchPage === 30 ? [{ wiki_id, title: 'Layout reflow' }] : [], next_offset: searchPage === 30 ? null : 30,
+      });
     }
     if (route.endsWith('/source')) {
       assert.deepEqual(JSON.parse(String(options?.body)), { ref, offset: 0, limit: 10 });
@@ -47,6 +50,7 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
   assert.ok(provider);
   const actions = [
     { name: 'wiki_search', args: { keywords: ['anchor', 'reflow'] } },
+    { name: 'wiki_search', args: { keywords: ['anchor', 'reflow'], offset: 30 } },
     { name: 'finish_wiki_search', args: { summary: 'Premature.', evidence: [{ wiki_id, contribution: 'Not yet read.' }] } },
     { name: 'wiki_read', args: { wiki_id } },
     { name: 'wiki_read_source', args: { wiki_id, ref } },
@@ -58,7 +62,7 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
     isToolCallingSupported: () => true,
     async chat(messages: Message[], definitions: Array<{ name: string; parameters: unknown }>) {
       assert.equal(JSON.stringify(messages).includes('fixture-key'), false);
-      if (step === 2) {
+      if (step === 3) {
         const rejection = String(messages.filter(message => message.role === 'tool').at(-1)?.content);
         assert.ok(rejection.includes(`evidence[0]（${wiki_id}）`));
         assert.match(rejection, /只看到了标题.*wiki_read/);
@@ -79,7 +83,7 @@ test('the dedicated Wiki branch injects only read evidence with verified source 
     sessionKey: 'wiki-branch', input: 'Keep the selected node', recentMessages: [], workingDirectory: root,
     aiService: ai as unknown as AIService, queue, kind: 'wiki', wikiMemory: provider, logEnabled: false,
   }).done;
-  assert.deepEqual(requested, ['/v1/bot-memory/search', '/v1/bot-memory/wikis/' + wiki_id, '/v1/bot-memory/wikis/' + wiki_id + '/source']);
+  assert.deepEqual(requested, ['/v1/bot-memory/search', '/v1/bot-memory/search', '/v1/bot-memory/wikis/' + wiki_id, '/v1/bot-memory/wikis/' + wiki_id + '/source']);
   const [observation] = queue.drain();
   assert.ok(observation?.formattedContent);
   assert.deepEqual(JSON.parse(observation.formattedContent).wiki_refs, [{
@@ -190,36 +194,64 @@ test('points read failures to the known Wiki or Episode and distinguishes creden
   assert.match(credential.message, /Bot 凭据.*HTTP 401/);
 });
 
-test('allows a corrected ID or a temporary failure to be retried within the read quota', async () => {
+test('keeps searching and reading after the former quotas and can finish a long source event', async () => {
   const wikiId = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const mistypedId = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeef';
   const ref = 'ep_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const retrieval_id = 'ret_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const longText = 'a'.repeat(11_999) + '😊' + 'b'.repeat(1_000);
   let sourceRequests = 0;
-  const [, read, source] = wikiMemoryTools({
-    search: async () => assert.fail('Unexpected search'),
+  const requestedPages: number[] = [];
+  const [search, read, source] = wikiMemoryTools({
+    search: async (_keywords, _signal, offset = 0) => {
+      requestedPages.push(offset);
+      return { retrieval_id, items: [{ wiki_id: wikiId }], next_offset: offset < 60 ? offset + 30 : null };
+    },
     read: async id => {
       if (id !== wikiId) throw new WikiMemoryHttpError(404);
       return { wiki_id: id, markdown: '# Evidence', source_refs: [ref] };
     },
-    source: async () => {
+    source: async (_id, _ref, offset) => {
       if (++sourceRequests === 1) throw new WikiMemoryHttpError(503);
-      return { ref, events: [{ text: 'Evidence' }] };
+      return offset === 0 ? { ref, events: [{ text: longText }], next_offset: 1 }
+        : { ref, events: [{ text: 'Final event' }], next_offset: null };
     },
   }, {
     knownWikiIds: () => [wikiId], sourceRefs: () => [ref],
     onSearch() {}, onRead() {}, onReadSource() {},
   });
   const context = { workingDirectory: tmpdir(), conversationHistory: [] };
-  for (let n = 0; n < 2; n++) assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);
+  const keywords = Array.from({ length: 17 }, (_, i) => `keyword-${i}`);
+  let searchOffset: number | null = 0;
+  for (let page = 0; page < 3; page++) {
+    const result = await search.execute({ keywords, offset: searchOffset }, context);
+    assert.ok(result.ok);
+    searchOffset = JSON.parse(result.content).next_offset;
+  }
+  assert.equal(searchOffset, null);
+  assert.deepEqual(requestedPages, [0, 30, 60]);
+  for (let n = 0; n < 3; n++) assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);
   assert.equal((await read.execute({ wiki_id: mistypedId }, context)).ok, false);
   assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, true);
-  assert.equal((await read.execute({ wiki_id: wikiId }, context)).ok, false);
   assert.equal((await source.execute({ wiki_id: wikiId, ref }, context)).ok, false);
-  assert.equal((await source.execute({ wiki_id: wikiId, ref }, context)).ok, true);
-  assert.equal((await source.execute({ wiki_id: wikiId, ref }, context)).ok, false);
+  const text: string[] = [];
+  let offset: number | null = 0;
+  let text_offset = 0;
+  for (let page = 0; page < 3; page++) {
+    const result = await source.execute({ wiki_id: wikiId, ref, offset, text_offset }, context);
+    assert.ok(result.ok);
+    const parsed = JSON.parse(result.content);
+    text.push(parsed.events[0].text);
+    offset = parsed.next_offset;
+    text_offset = parsed.next_text_offset;
+  }
+  assert.equal(text[0].length, 11_999);
+  assert.equal(text.slice(0, 2).join(''), longText);
+  assert.equal(text[2], 'Final event');
+  assert.equal(offset, null);
 });
 
-test('allows 50 retrieval turns and three final submissions to correct an error', async () => {
+test('allows retrieval after turn 50 and three final submissions to correct an error', async () => {
   const wiki_id = 'mem_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const retrieval_id = 'ret_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const quote = 'Keep the selected node.';
@@ -230,17 +262,15 @@ test('allows 50 retrieval turns and three final submissions to correct an error'
     isToolCallingSupported: () => true,
     async chat(messages: Message[], definitions: Array<{ name: string }>) {
       turn++;
-      const finishOnly = turn > 50;
-      const name = finishOnly ? 'finish_wiki_search' : 'wiki_search';
+      const name = turn <= 52 ? 'wiki_search' : 'finish_wiki_search';
       assert.ok(definitions.some(definition => definition.name === name));
-      if (finishOnly) assert.deepEqual(definitions.map(definition => definition.name), [name]);
       const errors = messages.filter(message => message.role === 'tool');
-      if (turn > 51) assert.match(String(errors.at(-1)?.content), new RegExp(`还可以修正并重新提交 ${55 - turn} 次`));
+      if (turn > 53) assert.match(String(errors.at(-1)?.content), new RegExp(`还可以修正并重新提交 ${57 - turn} 次`));
 
-      const args = turn <= 50 ? JSON.stringify({ keywords: [turn === 1 ? 'selected node' : ''] })
-        : turn === 51 ? '{' // Malformed JSON counts as a finalization failure too.
-        : turn === 52 ? JSON.stringify({ summary: quote })
-        : JSON.stringify({ summary: quote, evidence: [{ wiki_id, contribution: quote, quote: turn === 53 ? 'wrong quote' : quote }] });
+      const args = turn <= 52 ? JSON.stringify({ keywords: [turn === 52 ? 'selected node' : ''] })
+        : turn === 53 ? '{' // Malformed JSON counts as a finalization failure too.
+        : turn === 54 ? JSON.stringify({ summary: quote })
+        : JSON.stringify({ summary: quote, evidence: [{ wiki_id, contribution: quote, quote: turn === 55 ? 'wrong quote' : quote }] });
       return { content: null, toolCalls: [{ id: `call-${turn}`, type: 'function', function: { name, arguments: args } }] };
     },
   };
@@ -257,7 +287,7 @@ test('allows 50 retrieval turns and three final submissions to correct an error'
     },
   }).done;
   assert.equal(searchRequests, 1);
-  assert.equal(turn, 54);
+  assert.equal(turn, 56);
   assert.deepEqual(queue.drain().map(observation => observation.summary), [quote]);
 });
 

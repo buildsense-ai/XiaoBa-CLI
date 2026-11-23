@@ -170,7 +170,7 @@ export abstract class BranchSession {
    */
   protected prepareConversationTurn(): void {}
 
-  protected async runConversation(maxTurns = normalizePositiveBudget(this.options.maxTurnsPerPass)): Promise<BranchRunOutcome> {
+  protected async runConversation(): Promise<BranchRunOutcome> {
     if (!this.beginConversationPass()) {
       return { messages: this.messages };
     }
@@ -209,7 +209,7 @@ export abstract class BranchSession {
             ),
         },
       ),
-      maxTurns,
+      maxTurns: normalizePositiveBudget(this.options.maxTurnsPerPass),
       maxContextTokens: normalizePositiveBudget(this.options.maxContextTokens),
       // Branch tools are read-only and independent, so multiple calls emitted
       // in one model turn run concurrently (results stay keyed to their
