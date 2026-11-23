@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ChatConfig, OpenAIApiMode, ReasoningEffort } from '../types';
 import { PathResolver } from '../utils/path-resolver';
-import { DEEPSEEK_RELAY_MODEL_PROFILE } from '../providers/deepseek/catalog-profile';
+import { DEEPSEEK_FLASH_RELAY_MODEL_PROFILE } from '../providers/deepseek/catalog-profile';
 import { isOfficialRelayBaseUrl } from '../utils/relay-model-profiles';
 import {
   hasLegacyBranchAgentSwitch,
@@ -162,16 +162,17 @@ export function resolveOfficialMemoryBranchModel(relay: Partial<ChatConfig>): Pa
   let origin: string;
   try { origin = new URL(relay.apiUrl ?? '').origin; } catch { return undefined; }
   if (!isOfficialRelayBaseUrl(origin)) return undefined;
+  const profile = DEEPSEEK_FLASH_RELAY_MODEL_PROFILE;
   return {
-    provider: DEEPSEEK_RELAY_MODEL_PROFILE.preferredProvider,
+    provider: profile.preferredProvider,
     apiUrl: origin + '/v1',
     apiKey,
     catsCoRelay: true,
-    model: DEEPSEEK_RELAY_MODEL_PROFILE.model,
-    contextWindowTokens: DEEPSEEK_RELAY_MODEL_PROFILE.contextWindowTokens,
+    model: profile.model,
+    contextWindowTokens: profile.contextWindowTokens,
     reasoningEffort: 'low',
-    openaiApiMode: DEEPSEEK_RELAY_MODEL_PROFILE.openaiApiMode,
-    modelCapabilities: { ...DEEPSEEK_RELAY_MODEL_PROFILE.capabilities },
+    openaiApiMode: profile.openaiApiMode,
+    modelCapabilities: { ...profile.capabilities },
   };
 }
 

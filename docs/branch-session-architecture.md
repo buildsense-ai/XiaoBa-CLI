@@ -81,7 +81,7 @@ Legacy persisted budget fields are not deleted, but are not passed to this Memor
 
 Set `PUT /api/branch-agents/memory/mode` to `{"mode":"off"}`, `{"mode":"catslog"}`, or `{"mode":"wiki"}`. The runtime starts only the selected branch. New installations start with memory retrieval off. An existing enabled configuration with no kind selects CatsLog.
 
-Both modes default to XiaoBa's built-in CatsCo Relay with `deepseek-v4-flash` and low reasoning. CatsLog retains the legacy explicit model override. Wiki uses the Relay model and requires the existing Bot API key for Memory reads.
+Both modes default to XiaoBa's built-in CatsCo Relay with `deepseek-flash` and low reasoning. CatsLog retains the legacy explicit model override. Wiki uses the Relay model and requires the existing Bot API key for Memory reads.
 
 The Wiki branch has its own prompt and tool set. Each run can search twice, read three Wiki bodies, and check one page of source evidence. Long source events are marked as previews. The branch treats all retrieved text as untrusted historical evidence.
 

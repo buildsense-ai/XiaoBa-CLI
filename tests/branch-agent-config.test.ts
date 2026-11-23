@@ -410,7 +410,7 @@ describe('Branch agent device config', () => {
       const services = RuntimeFactory.createServicesSync(profile);
       assert.equal(services.memoryBranch?.enabled, true);
       const branch = services.memoryBranch?.aiService?.getConfig();
-      assert.equal(branch?.model, 'deepseek-v4-flash');
+      assert.equal(branch?.model, 'deepseek-flash');
       assert.equal(branch?.apiUrl, 'https://relay.catsco.cc/v1');
       assert.equal(branch?.openaiApiMode, 'responses');
       assert.equal(services.aiService.getConfig().model, 'primary-model');
@@ -420,7 +420,7 @@ describe('Branch agent device config', () => {
       saveBranchAgentConfig(config, { runtimeRoot: root });
       const wikiServices = RuntimeFactory.createServicesSync(profile);
       assert.equal(wikiServices.memoryBranch?.kind, 'wiki');
-      assert.equal(wikiServices.memoryBranch?.aiService?.getConfig().model, 'deepseek-v4-flash');
+      assert.equal(wikiServices.memoryBranch?.aiService?.getConfig().model, 'deepseek-flash');
       assert.equal(typeof wikiServices.memoryBranch?.wikiMemory, 'function');
       assert.equal(wikiServices.catslogMemory, undefined);
     } finally {
