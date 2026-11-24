@@ -239,18 +239,68 @@ function parseServersTableTolerant(
 }
 
 /**
+ * 解析 MCP 配置文件路径及需要监听热重载的候选路径。
+ * 显式 path / XIAOBA_MCP_CONFIG 只监听指定文件；默认模式同时监听 <runtimeRoot>/mcp-servers.json 与 ~/.xiaoba/mcp-servers.json。
+ */
+export function resolveMcpConfigPaths(options: LoadMcpConfigOptions = {}): {
+  configPath: string;
+  watchPaths: string[];
+} {
+  const env = options.env ?? process.env;
+  const explicitPath = options.path ?? env[MCP_CONFIG_PATH_ENV]?.trim();
+  if (explicitPath) {
+    return {
+      configPath: explicitPath,
+      watchPaths: [explicitPath],
+    };
+  }
+  const runtimeConfigPath = options.runtimeRoot
+    ? path.join(options.runtimeRoot, 'mcp-servers.json')
+    : undefined;
+  const configPath =
+    runtimeConfigPath && fs.existsSync(runtimeConfigPath)
+      ? runtimeConfigPath
+      : DEFAULT_MCP_CONFIG_PATH;
+  const watchPaths = Array.from(
+    new Set([runtimeConfigPath, DEFAULT_MCP_CONFIG_PATH].filter((p): p is string => Boolean(p))),
+  );
+  return { configPath, watchPaths };
+}
+
+function stableStringMap(map?: Record<string, string>): Array<[string, string]> {
+  if (!map) return [];
+  return Object.entries(map).sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** 判断两份 McpServerConfig 是否语义等价（用于配置热重载 diff，避免无变更 server 误重连）。 */
+export function isSameMcpServerConfig(left: McpServerConfig, right: McpServerConfig): boolean {
+  if (left.transport !== right.transport) return false;
+  if (left.transport === 'stdio' && right.transport === 'stdio') {
+    return (
+      left.command === right.command &&
+      (left.cwd ?? '') === (right.cwd ?? '') &&
+      JSON.stringify(left.args ?? []) === JSON.stringify(right.args ?? []) &&
+      JSON.stringify(stableStringMap(left.env)) === JSON.stringify(stableStringMap(right.env))
+    );
+  }
+  if (left.transport === 'streamable-http' && right.transport === 'streamable-http') {
+    return (
+      left.url === right.url &&
+      (left.bearerToken ?? '') === (right.bearerToken ?? '') &&
+      (left.timeoutMs ?? null) === (right.timeoutMs ?? null) &&
+      JSON.stringify(stableStringMap(left.headers)) === JSON.stringify(stableStringMap(right.headers))
+    );
+  }
+  return false;
+}
+
+/**
  * 加载并校验 MCP 配置：文件（若存在）+ XIAOBA_MCP_SERVERS 环境变量 JSON 合并。
  * 字符串值里的 ${VAR} 在解析前从 env 展开。
  */
 export function loadMcpConfig(options: LoadMcpConfigOptions = {}): McpManagerFileConfig {
   const env = options.env ?? process.env;
-  const runtimeConfigPath = options.runtimeRoot
-    ? path.join(options.runtimeRoot, 'mcp-servers.json')
-    : undefined;
-  const configPath =
-    options.path ??
-    env[MCP_CONFIG_PATH_ENV]?.trim() ??
-    (runtimeConfigPath && fs.existsSync(runtimeConfigPath) ? runtimeConfigPath : DEFAULT_MCP_CONFIG_PATH);
+  const { configPath } = resolveMcpConfigPaths(options);
   const merged: Record<string, McpServerConfig> = {};
   const parseTable = (raw: unknown) =>
     options.tolerateInvalidServers

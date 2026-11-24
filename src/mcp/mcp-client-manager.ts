@@ -8,10 +8,18 @@
  * - 本类管**用户配置的任意 MCP server**（长连接、重连、事件转发），两者互不干扰。
  */
 import * as crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { Logger } from '../utils/logger';
 import type { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import type { ContentBlock } from '../types/index';
-import type { McpServerConfig } from './mcp-config';
+import {
+  isSameMcpServerConfig,
+  loadMcpConfig,
+  resolveMcpConfigPaths,
+  type LoadMcpConfigOptions,
+  type McpServerConfig,
+} from './mcp-config';
 import {
   McpPersistentClient,
   createSdkMcpConnectionFactory,
@@ -74,6 +82,20 @@ export interface McpServerStatus {
   resumption: { sessionId?: string; resumptionToken?: string };
 }
 
+export interface McpConfigWatchDiff {
+  added: string[];
+  updated: string[];
+  removed: string[];
+}
+
+export interface McpConfigWatchOptions {
+  loadOptions?: LoadMcpConfigOptions;
+  /** 防抖窗口（毫秒，默认 200ms），吸收编辑器原子保存/多次 write 事件。 */
+  debounceMs?: number;
+  onReload?: (diff: McpConfigWatchDiff) => void;
+  onError?: (error: Error) => void;
+}
+
 export class McpClientManager {
   private readonly toolManager: McpToolRegistry;
   private readonly createConnection: NonNullable<McpClientManagerOptions['createConnection']>;
@@ -85,8 +107,12 @@ export class McpClientManager {
   private readonly random?: () => number;
 
   private readonly servers = new Map<string, ManagedServer>();
+  /** 仅追踪由静态配置文件托管的 serverId，热重载 diff 不会误删动态挂载的 Artifact Bridge 等 server。 */
+  private readonly staticServerIds = new Set<string>();
   /** 跨 server 全局工具名归属表，防止 ('a_b','c') 与 ('a','b_c') 或 foo.bar 与 foo_bar 静默覆盖。 */
   private readonly ownedToolNames = new Map<string, { serverId: string; remoteName: string }>();
+  private readonly configWatchDisposers = new Set<() => void>();
+  private staticSyncChain: Promise<unknown> = Promise.resolve();
   private started = false;
 
   constructor(options: McpClientManagerOptions) {
@@ -99,6 +125,7 @@ export class McpClientManager {
     this.sleep = options.sleep;
     this.random = options.random;
     for (const [serverId, config] of Object.entries(options.servers ?? {})) {
+      this.staticServerIds.add(serverId);
       this.addServer(serverId, config);
     }
   }
@@ -199,8 +226,153 @@ export class McpClientManager {
     }));
   }
 
+  /**
+   * 按配置表增量同步静态 MCP server：
+   * - 新增 server：立即建连并注册工具；
+   * - 配置变更的 server：重建连接并刷新工具；
+   * - 移除的静态 server：关闭连接并注销工具；
+   * - 未变化的 server：保持现有长连接不断开；
+   * - 动态挂载的 server（如 Per-Artifact Bridge）：完全不受影响。
+   */
+  syncStaticServers(nextServers: Record<string, McpServerConfig>): Promise<McpConfigWatchDiff> {
+    const run = this.staticSyncChain.then(async (): Promise<McpConfigWatchDiff> => {
+      const added: string[] = [];
+      const updated: string[] = [];
+      const removed: string[] = [];
+
+      for (const serverId of [...this.staticServerIds]) {
+        if (!Object.prototype.hasOwnProperty.call(nextServers, serverId)) {
+          this.staticServerIds.delete(serverId);
+          if (this.servers.has(serverId)) {
+            await this.removeServer(serverId);
+            removed.push(serverId);
+          }
+        }
+      }
+
+      for (const [serverId, config] of Object.entries(nextServers)) {
+        const existing = this.servers.get(serverId);
+        if (existing) {
+          this.staticServerIds.add(serverId);
+          if (!isSameMcpServerConfig(existing.config, config)) {
+            this.addServer(serverId, config);
+            updated.push(serverId);
+          }
+        } else {
+          this.staticServerIds.add(serverId);
+          this.addServer(serverId, config);
+          added.push(serverId);
+        }
+      }
+
+      return { added, updated, removed };
+    });
+    this.staticSyncChain = run.catch(() => {});
+    return run;
+  }
+
+  /**
+   * 监听 mcp-servers.json（所在目录）变更并自动热重载静态 server 配置。
+   * - 监听父目录而非单个文件，兼容编辑器原子写入（rename）以及进程启动后新建配置文件；
+   * - 文件正在写入或 JSON 损坏时保留现有连接，不误清空工具面；
+   * - 返回停止监听的清理函数，且 closeAll() 时会自动清理。
+   */
+  watchConfig(options: McpConfigWatchOptions = {}): () => void {
+    const loadOptions = options.loadOptions ?? {};
+    const debounceMs = Math.max(20, options.debounceMs ?? 200);
+    const { watchPaths } = resolveMcpConfigPaths(loadOptions);
+
+    const dirToTargets = new Map<string, Set<string>>();
+    for (const filePath of watchPaths) {
+      const dir = path.dirname(filePath);
+      const base = path.basename(filePath);
+      const set = dirToTargets.get(dir) ?? new Set<string>();
+      set.add(base);
+      dirToTargets.set(dir, set);
+    }
+
+    let disposed = false;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const watchers: fs.FSWatcher[] = [];
+
+    const triggerReload = () => {
+      if (disposed) return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (disposed) return;
+        let nextServers: Record<string, McpServerConfig>;
+        try {
+          const loaded = loadMcpConfig({
+            tolerateInvalidServers: true,
+            ...loadOptions,
+          });
+          nextServers = loaded.servers;
+        } catch (error: any) {
+          options.onError?.(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        void this.syncStaticServers(nextServers)
+          .then((diff) => {
+            if (disposed) return;
+            if (diff.added.length > 0 || diff.updated.length > 0 || diff.removed.length > 0) {
+              options.onReload?.(diff);
+            }
+          })
+          .catch((error: any) => {
+            options.onError?.(error instanceof Error ? error : new Error(String(error)));
+          });
+      }, debounceMs);
+      debounceTimer.unref?.();
+    };
+
+    for (const [dir, targetNames] of dirToTargets.entries()) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const watcher = fs.watch(dir, { persistent: false }, (_eventType, filename) => {
+          if (disposed) return;
+          if (!filename || targetNames.has(String(filename))) {
+            triggerReload();
+          }
+        });
+        watcher.on('error', (error) => {
+          options.onError?.(error instanceof Error ? error : new Error(String(error)));
+        });
+        watcher.unref?.();
+        watchers.push(watcher);
+      } catch (error: any) {
+        options.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      for (const watcher of watchers) {
+        try {
+          watcher.close();
+        } catch {
+          // ignore close errors
+        }
+      }
+      watchers.length = 0;
+      this.configWatchDisposers.delete(dispose);
+    };
+
+    this.configWatchDisposers.add(dispose);
+    return dispose;
+  }
+
   async closeAll(): Promise<void> {
     this.started = false;
+    for (const dispose of [...this.configWatchDisposers]) {
+      dispose();
+    }
+    this.staticServerIds.clear();
     await Promise.allSettled([...this.servers.keys()].map(serverId => this.removeServer(serverId)));
   }
 

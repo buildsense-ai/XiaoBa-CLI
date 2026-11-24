@@ -555,4 +555,93 @@ describe('mcp-client-manager', () => {
     assert.equal(fsStatus.state, 'connected');
     assert.equal(fsStatus.transport, 'stdio');
   });
+
+  test('syncStaticServers + watchConfig：配置文件热重载（新增/修改/删除/坏 JSON 保护/不碰动态 Bridge）', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-mcp-watch-'));
+    const cfgPath = path.join(tmpDir, 'mcp-servers.json');
+    fs.writeFileSync(
+      cfgPath,
+      JSON.stringify({
+        mcpServers: {
+          alpha: { transport: 'stdio', command: 'alpha-cmd' },
+        },
+      }),
+      'utf8',
+    );
+
+    const { manager, mcpManager, connections, connOf } = createManagerHarness({
+      servers: { alpha: { transport: 'stdio', command: 'alpha-cmd' } },
+    });
+    mcpManager.start();
+    await mcpManager.waitForInitialConnect();
+    connOf('stdio:alpha-cmd').tools = [toolInfo('read')];
+    await mcpManager.refreshServerTools('alpha');
+    assert.ok(manager.getTool('mcp_alpha_read'));
+
+    // 动态挂载一个 Per-Artifact Bridge（不在配置文件里）
+    mcpManager.addServer('art_demo_123456', { transport: 'streamable-http', url: 'http://127.0.0.1:4100/mcp' });
+    await waitFor(() => connections.has('http:http://127.0.0.1:4100/mcp'));
+    connOf('http:http://127.0.0.1:4100/mcp').tools = [toolInfo('inspect')];
+    await mcpManager.refreshServerTools('art_demo_123456');
+    assert.ok(manager.getTool('mcp_art_demo_123456_inspect'));
+
+    const reloads: Array<{ added: string[]; updated: string[]; removed: string[] }> = [];
+    const errors: Error[] = [];
+    mcpManager.watchConfig({
+      loadOptions: { path: cfgPath },
+      debounceMs: 30,
+      onReload: (diff) => reloads.push(diff),
+      onError: (err) => errors.push(err),
+    });
+
+    try {
+      // 1. 写入损坏 JSON：保留现有连接与工具，不清空
+      fs.writeFileSync(cfgPath, '{ broken json', 'utf8');
+      await waitFor(() => errors.length >= 1, 2000);
+      assert.ok(manager.getTool('mcp_alpha_read'));
+      assert.ok(manager.getTool('mcp_art_demo_123456_inspect'));
+
+      // 2. 原子写入：保留 alpha（无变化不重连）、新增 beta
+      const tmpSwap = path.join(tmpDir, 'mcp-servers.json.tmp');
+      fs.writeFileSync(
+        tmpSwap,
+        JSON.stringify({
+          mcpServers: {
+            alpha: { transport: 'stdio', command: 'alpha-cmd' },
+            beta: { transport: 'stdio', command: 'beta-cmd' },
+          },
+        }),
+        'utf8',
+      );
+      fs.renameSync(tmpSwap, cfgPath);
+      await waitFor(() => reloads.some(r => r.added.includes('beta')), 2000);
+      await waitFor(() => connections.has('stdio:beta-cmd'), 2000);
+      // alpha 没有被误重连
+      assert.equal(connections.get('stdio:alpha-cmd')?.length, 1);
+      connOf('stdio:beta-cmd').tools = [toolInfo('search')];
+      await mcpManager.refreshServerTools('beta');
+      assert.ok(manager.getTool('mcp_beta_search'));
+      // 动态 bridge 依然完好
+      assert.ok(manager.getTool('mcp_art_demo_123456_inspect'));
+
+      // 3. 删除 alpha、修改 beta 命令
+      fs.writeFileSync(
+        cfgPath,
+        JSON.stringify({
+          mcpServers: {
+            beta: { transport: 'stdio', command: 'beta-cmd-v2' },
+          },
+        }),
+        'utf8',
+      );
+      await waitFor(() => reloads.some(r => r.removed.includes('alpha') && r.updated.includes('beta')), 2000);
+      await waitFor(() => connections.has('stdio:beta-cmd-v2'), 2000);
+      assert.equal(manager.getTool('mcp_alpha_read'), undefined);
+      assert.ok(connOf('stdio:alpha-cmd').closed);
+      assert.ok(manager.getTool('mcp_art_demo_123456_inspect'));
+    } finally {
+      await mcpManager.closeAll();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

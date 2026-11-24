@@ -20,7 +20,8 @@ import { adaptMcpNotification } from '../src/mcp/mcp-notification-adapter';
 import { ArtifactMcpRegistry, artifactServerId } from '../src/mcp/artifact-mcp-registry';
 import { validateServerConfig, McpConfigError } from '../src/mcp/mcp-config';
 import { McpPersistentClient, type McpConnection, type McpConnectionHooks } from '../src/mcp/mcp-persistent-client';
-import type { Tool } from '../src/types/tool';
+import { ConversationRunner } from '../src/core/conversation-runner';
+import type { Tool, ToolCall, ToolDefinition, ToolExecutor, ToolResult } from '../src/types/tool';
 
 async function testMcpNotificationEndToEnd(): Promise<void> {
   const router = new ExternalEventRouter({ aggregationPolicies: {} });
@@ -807,6 +808,101 @@ async function testSecurityAndHardening(): Promise<void> {
   router.reset();
 }
 
+async function testInEpisodeToolHotReload(): Promise<void> {
+  const dynamicTools = new Map<string, ToolDefinition>([
+    [
+      'attach_mcp_bridge',
+      {
+        name: 'attach_mcp_bridge',
+        description: 'Attach a new MCP tool mid-episode',
+        parameters: { type: 'object', properties: {} },
+      },
+    ],
+  ]);
+
+  const toolExecutor: ToolExecutor = {
+    getToolDefinitions: () => Array.from(dynamicTools.values()),
+    executeTool: async (toolCall: ToolCall): Promise<ToolResult> => {
+      if (toolCall.function.name === 'attach_mcp_bridge') {
+        // Simulate MCP tool hot-registration mid-episode
+        dynamicTools.set('mcp_art_live_relayout', {
+          name: 'mcp_art_live_relayout',
+          description: 'Hot-loaded A2UI relayout tool',
+          parameters: { type: 'object', properties: {} },
+        });
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: 'attached',
+          ok: true,
+        };
+      }
+      if (toolCall.function.name === 'mcp_art_live_relayout') {
+        return {
+          tool_call_id: toolCall.id,
+          role: 'tool',
+          name: toolCall.function.name,
+          content: 'relayout_done',
+          ok: true,
+        };
+      }
+      return {
+        tool_call_id: toolCall.id,
+        role: 'tool',
+        name: toolCall.function.name,
+        content: 'unknown',
+        ok: false,
+      };
+    },
+  };
+
+  const seenToolsPerTurn: string[][] = [];
+  let callIndex = 0;
+  const handleChat = async (_messages: any[], tools: ToolDefinition[]) => {
+    callIndex += 1;
+    seenToolsPerTurn.push(tools.map((t) => t.name).sort());
+    if (callIndex === 1) {
+      return {
+        content: '',
+        toolCalls: [
+          { id: 'tc-1', type: 'function', function: { name: 'attach_mcp_bridge', arguments: '{}' } },
+        ],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      };
+    }
+    if (callIndex === 2) {
+      return {
+        content: '',
+        toolCalls: [
+          { id: 'tc-2', type: 'function', function: { name: 'mcp_art_live_relayout', arguments: '{}' } },
+        ],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      };
+    }
+    return {
+      content: 'all done',
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    };
+  };
+  const fakeAiService: any = {
+    getConfig: () => ({}),
+    isToolCallingSupported: () => true,
+    chat: handleChat,
+    chatStream: handleChat,
+  };
+
+  const runner = new ConversationRunner(fakeAiService, toolExecutor, {
+    maxTurns: 5,
+  });
+  const result = await runner.run([{ role: 'user', content: 'attach and relayout' }]);
+  assert.equal(result.response, 'all done');
+  assert.equal(seenToolsPerTurn.length, 3);
+  assert.deepEqual(seenToolsPerTurn[0], ['attach_mcp_bridge']);
+  assert.deepEqual(seenToolsPerTurn[1], ['attach_mcp_bridge', 'mcp_art_live_relayout']);
+  assert.deepEqual(seenToolsPerTurn[2], ['attach_mcp_bridge', 'mcp_art_live_relayout']);
+}
+
 async function main(): Promise<void> {
   await testMcpNotificationEndToEnd();
   await testArtifactHttpRoutesEndToEnd();
@@ -814,6 +910,7 @@ async function main(): Promise<void> {
   await testReviewProbesP1ToP4();
   await testCrossProcessConnectorEventBridge();
   await testSecurityAndHardening();
+  await testInEpisodeToolHotReload();
   console.log('mcp-event-bus-integration.test.ts: PASS');
 }
 

@@ -233,6 +233,28 @@ export class RuntimeFactory {
       });
       artifactMcpRegistry.attachManager(manager);
       manager.start();
+      if (process.env.XIAOBA_MCP_CONFIG_WATCH !== '0') {
+        manager.watchConfig({
+          loadOptions: {
+            runtimeRoot: PathResolver.getRuntimeDataRoot(),
+            tolerateInvalidServers: true,
+            onServerError: (serverId, error) => {
+              Logger.warning(`MCP server "${serverId}" 热重载配置无效，已跳过: ${error.message}`);
+            },
+          },
+          onReload: (diff) => {
+            Logger.info(
+              `MCP 配置已热重载: +${diff.added.length} ~${diff.updated.length} -${diff.removed.length}` +
+                (diff.added.length ? ` added=[${diff.added.join(',')}]` : '') +
+                (diff.updated.length ? ` updated=[${diff.updated.join(',')}]` : '') +
+                (diff.removed.length ? ` removed=[${diff.removed.join(',')}]` : ''),
+            );
+          },
+          onError: (error) => {
+            Logger.warning(`MCP 配置热重载失败（保留现有连接）: ${error.message}`);
+          },
+        });
+      }
       return manager;
     } catch (error: any) {
       Logger.warning(`通用 MCP Client Manager 初始化失败，已跳过: ${error?.message ?? error}`);
