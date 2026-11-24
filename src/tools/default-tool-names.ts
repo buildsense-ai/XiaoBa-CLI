@@ -19,6 +19,7 @@ export const DEFAULT_TOOL_NAMES = [
   'share_skillhub_skill',
   'skillhub',
   'skill',
+  'local_compute_resources',
 ] as const;
 
 export type DefaultToolName = typeof DEFAULT_TOOL_NAMES[number];

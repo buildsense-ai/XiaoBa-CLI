@@ -111,6 +111,41 @@ function catsDeviceSelection(
 }
 
 describe('ToolManager', () => {
+  test('discovers and reads the current runtime resources through the default tool list', async () => {
+    const manager = new ToolManager(process.cwd(), { permissionProfile: 'strict' });
+    assert.ok(manager.getToolDefinitions().some(tool => tool.name === 'local_compute_resources'));
+    const result = await manager.executeTool({
+      id: 'compute-snapshot',
+      type: 'function',
+      function: { name: 'local_compute_resources', arguments: '{}' },
+    });
+    assert.equal(result.ok, true, String(result.content));
+    const snapshot = JSON.parse(String(result.content));
+    assert.equal(snapshot.scope, 'agent_runtime');
+    assert.equal(snapshot.platform, process.platform);
+    assert.ok(snapshot.cpuLogicalCount > 0);
+    assert.ok(Number.isFinite(Date.parse(snapshot.sampledAt)));
+    assert.ok(snapshot.nvidiaGpus === null || Array.isArray(snapshot.nvidiaGpus));
+  });
+
+  test('honors the machine resources opt-out and rejects unsupported parameters', async () => {
+    const manager = new ToolManager();
+    const original = process.env.XIAOBA_MACHINE_RESOURCES;
+    process.env.XIAOBA_MACHINE_RESOURCES = 'off';
+    try {
+      const execute = (args: string) => manager.executeTool({
+        id: 'compute-snapshot-disabled',
+        type: 'function',
+        function: { name: 'local_compute_resources', arguments: args },
+      });
+      assert.equal((await execute('{}')).errorCode, 'MACHINE_RESOURCES_DISABLED');
+      assert.equal((await execute('{"target":"other-device"}')).errorCode, 'INVALID_TOOL_ARGUMENTS');
+    } finally {
+      if (original === undefined) delete process.env.XIAOBA_MACHINE_RESOURCES;
+      else process.env.XIAOBA_MACHINE_RESOURCES = original;
+    }
+  });
+
   test('does not infer retryability from a failed tool result body', async () => {
     const manager = new ToolManager('/tmp/xiaoba-tool-manager', {}, { enabledToolNames: [] });
     manager.registerTool(fakeTool('execute_shell', async () => ({
