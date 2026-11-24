@@ -729,6 +729,81 @@ async function testSecurityAndHardening(): Promise<void> {
     }
   }
 
+  // 8. Multi-session external events do not block behind another session's slow model turn
+  {
+    const fastRouter = new ExternalEventRouter({ aggregationPolicies: {} });
+    const startedAt: Record<string, number> = {};
+    const t0 = Date.now();
+    const pendingTurns: Promise<void>[] = [];
+    fastRouter.subscribe((dispatch) => {
+      // Mirrors CatsCompanyBot: enqueue synchronously, kick off drain without awaiting in subscriber
+      startedAt[dispatch.sessionKey] = Date.now() - t0;
+      const turnMs = dispatch.sessionKey === 'sess-slow-A' ? 200 : 10;
+      pendingTurns.push(new Promise((resolve) => setTimeout(resolve, turnMs)));
+    });
+    fastRouter.emit({
+      eventId: 'ev-A',
+      source: 'artifact:a2ui',
+      type: 'a2ui_action',
+      target: { sessionKey: 'sess-slow-A' },
+      priority: 'immediate',
+    });
+    fastRouter.emit({
+      eventId: 'ev-B',
+      source: 'artifact:a2ui',
+      type: 'a2ui_action',
+      target: { sessionKey: 'sess-fast-B' },
+      priority: 'immediate',
+    });
+    const receiptStart = Date.now();
+    await fastRouter.emitAndWait({
+      eventId: 'ev-C',
+      source: 'catsco:receipt',
+      type: 'service_run_receipt',
+      target: { sessionKey: 'sess-receipt-C' },
+      priority: 'immediate',
+    });
+    const receiptElapsed = Date.now() - receiptStart;
+    assert.ok(startedAt['sess-fast-B'] < 100, `session B waited behind A's turn: ${startedAt['sess-fast-B']}ms`);
+    assert.ok(startedAt['sess-receipt-C'] < 100, `session C waited behind A's turn: ${startedAt['sess-receipt-C']}ms`);
+    assert.ok(receiptElapsed < 100, `emitAndWait for C waited behind A's turn: ${receiptElapsed}ms`);
+    await Promise.all(pendingTurns);
+    fastRouter.reset();
+  }
+
+  // 9. Default mcp:* debounce isolates different MCP servers targeting the same session
+  {
+    const mcpRouter = new ExternalEventRouter();
+    const mcpDispatches: ExternalEventDispatch[] = [];
+    mcpRouter.subscribe((d) => { mcpDispatches.push(d); });
+    mcpRouter.emit({
+      eventId: 'm-1',
+      source: 'mcp:srv-alpha',
+      type: 'mcp.resources.updated',
+      target: { sessionKey: 'sess-shared' },
+      payload: { uri: 'doc://1' },
+    });
+    mcpRouter.emit({
+      eventId: 'm-2',
+      source: 'mcp:srv-beta',
+      type: 'mcp.resources.updated',
+      target: { sessionKey: 'sess-shared' },
+      payload: { uri: 'doc://2' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await mcpRouter.emitAndWait({
+      eventId: 'm-flush',
+      source: 'catsco:receipt',
+      type: 'service_run_receipt',
+      target: { sessionKey: 'sess-other' },
+      priority: 'immediate',
+    });
+    const shared = mcpDispatches.filter((d) => d.sessionKey === 'sess-shared');
+    assert.equal(shared.length, 2, `expected 2 separate server dispatches, got ${shared.length}`);
+    assert.deepEqual(shared.map((d) => d.event.source).sort(), ['mcp:srv-alpha', 'mcp:srv-beta']);
+    mcpRouter.reset();
+  }
+
   router.reset();
 }
 

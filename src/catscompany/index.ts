@@ -936,18 +936,15 @@ export class CatsCompanyBot {
 
     // 统一外部事件唤醒总线：MCP 通知 / A2UI 交互 / 批注 / 服务回执都经
     // externalEventRouter 派发到这里。派发前已完成 eventId 幂等去重与
-    // artifactId → 会话绑定解析；此处按 shutdown fence + in-flight 计数收口。
-    // 注：catsco:receipt 已在 handleServiceRunReceipt 入口做过 shutdown fence 并处于
-    // runTrackedConversationWork 追踪内，此处返回 Promise 供 emitAndWait 等待完成，
-    // 避免回执刚被 consume 就在 dispatch 间隙因 shutdown 丢回合。
+    // artifactId → 会话绑定解析；此处仅同步入队并立即返回，绝不在订阅者内
+    // await 整轮模型回合，避免某个会话的长回合阻塞全进程的外部事件派发链。
+    // 实际的 drainMessageQueue 通过 runTrackedConversationWork 异步追踪执行，
+    // 既保证跨会话并发推进，也让 shutdown quiesce 能等待已入队的排空工作。
     this.unsubscribeExternalEvents = externalEventRouter.subscribe(dispatch => {
-      if (dispatch.event.source === 'catsco:receipt') {
-        return this.handleExternalEvent(dispatch).catch((error: any) => {
-          Logger.warning(`[CatsCompany] 处理服务回执派发失败: ${error?.message || error}`);
-        });
-      }
-      if (this.shuttingDown) return;
-      return this.runTrackedConversationWork(() => this.handleExternalEvent(dispatch)).catch((error: any) => {
+      if (dispatch.event.source !== 'catsco:receipt' && this.shuttingDown) return;
+      const sessionKey = this.enqueueExternalEventDispatch(dispatch);
+      if (!sessionKey) return;
+      void this.runTrackedConversationWork(() => this.drainMessageQueue(sessionKey)).catch((error: any) => {
         Logger.warning(`[CatsCompany] 处理外部事件失败: ${error?.message || error}`);
       });
     });
@@ -3864,8 +3861,8 @@ export class CatsCompanyBot {
       `tool=${consumed.run.toolName || '-'}`,
     );
     // 统一外部事件总线：回执作为 catsco:receipt 事件走同一派发链路。
-    // 使用 emitAndWait 让 consume → dispatch → drainMessageQueue 留在同一次
-    // runTrackedConversationWork 生命周期内，避免 shutdown 间隙丢失已消费回执。
+    // 使用 emitAndWait 等待订阅者同步入队并登记 drainMessageQueue 追踪任务，
+    // 既避免 shutdown 间隙丢失已消费回执，也不阻塞其它会话的派发链。
     await externalEventRouter.emitAndWait({
       eventId: receipt.receipt_id
         ? `catsco:receipt:${receipt.receipt_id}`
@@ -3880,11 +3877,10 @@ export class CatsCompanyBot {
   }
 
   /**
-   * 统一外部事件唤醒入口（设计「MCP Event Bus」）：把 ExternalEventRouter 派发
-   * 的事件作为一轮 runtime observation 入队并立即唤醒对应会话。
+   * 同步把 ExternalEventRouter 派发的事件入队到对应会话队列，返回可排空的 sessionKey。
    * 幂等/防抖/artifact 路由已在路由层完成；topic 缺失时无法构建通道回调，丢弃并告警。
    */
-  private async handleExternalEvent(dispatch: ExternalEventDispatch): Promise<void> {
+  private enqueueExternalEventDispatch(dispatch: ExternalEventDispatch): string | undefined {
     const sessionKey = dispatch.sessionKey;
     const topic = dispatch.topic || '';
     if (!sessionKey || !topic) {
@@ -3892,7 +3888,7 @@ export class CatsCompanyBot {
         `[CatsCompany] 外部事件缺少会话/topic，无法唤醒: source=${dispatch.event.source} ` +
         `type=${dispatch.event.type} session=${sessionKey || '-'} topic=${topic || '-'}`,
       );
-      return;
+      return undefined;
     }
     // 平台回执仍按 service_run_receipt 归属（保持 observation source 不变）；
     // 其它外部事件统一按 external_event，并且绝不把外部 HTTP/MCP 传入的 actorUserId
@@ -3907,7 +3903,7 @@ export class CatsCompanyBot {
       `[CatsCompany] 外部事件唤醒会话: source=${dispatch.event.source} type=${dispatch.event.type} ` +
       `session=${sessionKey}${dispatch.artifactId ? ` artifact=${dispatch.artifactId}` : ''}`,
     );
-    await this.drainMessageQueue(sessionKey);
+    return sessionKey;
   }
 
   /** 服务回执入队（保留原方法名与队列形状，测试/兼容路径）。 */

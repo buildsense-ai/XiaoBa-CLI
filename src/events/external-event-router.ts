@@ -167,8 +167,12 @@ export class ExternalEventRouter {
     this.now = options.now ?? Date.now;
     this.policies = new Map(Object.entries(options.aggregationPolicies ?? {
       // 默认策略：批注 2s 合并、MCP 普通通知（如 resources/updated）1s 节流合并；A2UI 等 immediate 事件绕过聚合。
+      // mcp:* 防抖键包含 event.source，避免不同 MCP server 发往同一会话的通知被混并到首个 server 的 source 下。
       'artifact:annotation': { windowMs: DEFAULT_ANNOTATION_DEBOUNCE_MS },
-      'mcp:*': { windowMs: DEFAULT_MCP_EVENT_DEBOUNCE_MS },
+      'mcp:*': {
+        windowMs: DEFAULT_MCP_EVENT_DEBOUNCE_MS,
+        debounceKey: (event) => `${event.target?.sessionKey ?? ''}\0${event.source}\0${event.type}`,
+      },
     }));
   }
 
