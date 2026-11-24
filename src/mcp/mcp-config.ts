@@ -135,9 +135,13 @@ export function validateServerConfig(serverId: string, raw: unknown): McpServerC
     };
   }
 
-  if (transport === 'streamable-http' || transport === 'http' || transport === 'sse') {
-    // http/sse 一律归一到 streamable-http：SDK 的 StreamableHTTPClientTransport
-    // 已覆盖 POST+SSE 双向通道，旧 sse 端点也已并入该规范。
+  if (transport === 'sse') {
+    throw new McpConfigError([
+      `[${serverId}] 不支持旧版 legacy sse transport，请使用 streamable-http 或 stdio`,
+    ]);
+  }
+
+  if (transport === 'streamable-http' || transport === 'http') {
     if (typeof raw.url !== 'string' || !raw.url.trim()) {
       issues.push('url 必填且必须是非空字符串');
     } else {
@@ -200,11 +204,38 @@ export function parseServersTable(raw: unknown): Record<string, McpServerConfig>
 }
 
 export interface LoadMcpConfigOptions {
-  /** 显式配置文件路径；未给时读 env[XIAOBA_MCP_CONFIG]，缺省 DEFAULT_MCP_CONFIG_PATH。 */
+  /** 显式配置文件路径；未给时读 env[XIAOBA_MCP_CONFIG]，再依次尝试 <runtimeRoot>/mcp-servers.json 与 DEFAULT_MCP_CONFIG_PATH。 */
   path?: string;
+  /** 可选运行时数据目录，优先于 ~/.xiaoba/mcp-servers.json。 */
+  runtimeRoot?: string;
   env?: NodeJS.ProcessEnv;
   /** 文件不存在时是否报错（默认 false：返回空表，仅由 env 变量提供配置）。 */
   requireFile?: boolean;
+  /** 容忍单条 server 配置错误（跳过无效条目并回调 onServerError，避免拖垮整个管理器与 Artifact Bridge）。 */
+  tolerateInvalidServers?: boolean;
+  onServerError?: (serverId: string, error: Error) => void;
+}
+
+function parseServersTableTolerant(
+  raw: unknown,
+  onServerError?: (serverId: string, error: Error) => void,
+): Record<string, McpServerConfig> {
+  if (!isRecord(raw)) {
+    throw new McpConfigError(['配置必须是对象']);
+  }
+  const table = raw.mcpServers ?? raw.servers ?? raw;
+  if (!isRecord(table)) {
+    throw new McpConfigError(['mcpServers/servers 必须是对象']);
+  }
+  const servers: Record<string, McpServerConfig> = {};
+  for (const [serverId, serverRaw] of Object.entries(table)) {
+    try {
+      servers[serverId] = validateServerConfig(serverId, serverRaw);
+    } catch (error: any) {
+      onServerError?.(serverId, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  return servers;
 }
 
 /**
@@ -213,8 +244,18 @@ export interface LoadMcpConfigOptions {
  */
 export function loadMcpConfig(options: LoadMcpConfigOptions = {}): McpManagerFileConfig {
   const env = options.env ?? process.env;
-  const configPath = options.path ?? env[MCP_CONFIG_PATH_ENV]?.trim() ?? DEFAULT_MCP_CONFIG_PATH;
+  const runtimeConfigPath = options.runtimeRoot
+    ? path.join(options.runtimeRoot, 'mcp-servers.json')
+    : undefined;
+  const configPath =
+    options.path ??
+    env[MCP_CONFIG_PATH_ENV]?.trim() ??
+    (runtimeConfigPath && fs.existsSync(runtimeConfigPath) ? runtimeConfigPath : DEFAULT_MCP_CONFIG_PATH);
   const merged: Record<string, McpServerConfig> = {};
+  const parseTable = (raw: unknown) =>
+    options.tolerateInvalidServers
+      ? parseServersTableTolerant(raw, options.onServerError)
+      : parseServersTable(raw);
 
   if (fs.existsSync(configPath)) {
     let parsed: unknown;
@@ -224,7 +265,7 @@ export function loadMcpConfig(options: LoadMcpConfigOptions = {}): McpManagerFil
       throw new McpConfigError([`配置文件 ${configPath} 不是合法 JSON: ${error?.message ?? error}`]);
     }
     const expanded = deepExpand(parsed, env);
-    Object.assign(merged, parseServersTable(expanded));
+    Object.assign(merged, parseTable(expanded));
   } else if (options.requireFile) {
     throw new McpConfigError([`配置文件不存在: ${configPath}`]);
   }
@@ -237,7 +278,7 @@ export function loadMcpConfig(options: LoadMcpConfigOptions = {}): McpManagerFil
     } catch (error: any) {
       throw new McpConfigError([`${MCP_SERVERS_ENV} 不是合法 JSON: ${error?.message ?? error}`]);
     }
-    Object.assign(merged, parseServersTable(parsed));
+    Object.assign(merged, parseTable(parsed));
   }
 
   return { servers: merged };

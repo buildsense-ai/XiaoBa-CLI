@@ -7,6 +7,7 @@
  * - CatsCoMcpToolBridge 管平台 `/api/mcp` 的 catsco_* 工具（用完即关、轮询回执）；
  * - 本类管**用户配置的任意 MCP server**（长连接、重连、事件转发），两者互不干扰。
  */
+import * as crypto from 'node:crypto';
 import { Logger } from '../utils/logger';
 import type { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import type { ContentBlock } from '../types/index';
@@ -246,6 +247,10 @@ export class McpClientManager {
 
   private async doRefreshServerTools(managed: ManagedServer): Promise<{ registered: string[]; unregistered: string[] }> {
     const infos = await managed.client.listAllTools();
+    // 若刷新在途期间该 server 已被 remove 或被新实例替换，放弃写入，避免把已关闭客户端的工具重新注册进去。
+    if (this.servers.get(managed.serverId) !== managed) {
+      return { registered: [], unregistered: [] };
+    }
     const seen = new Set<string>();
     const registered: string[] = [];
     const unregistered: string[] = [];
@@ -318,10 +323,23 @@ export class McpClientManager {
 
 // ---------------- 命名与结果映射 ----------------
 
-/** `mcp_<serverId>_<toolName>`：远端名里的非法字符折叠为下划线。 */
+const MAX_MCP_TOOL_NAME_LENGTH = 64;
+
+/**
+ * `mcp_<serverId>_<toolName>`：远端名里的非法字符折叠为下划线。
+ * - 超过 64 字符（OpenAI / Anthropic 等 provider 的工具名上限）时截断并追加 8 位 sha256 哈希后缀，
+ *   同时保证不同 `(serverId, remoteName)` 不会在折叠或截断后碰撞。
+ */
 export function mcpToolName(serverId: string, remoteName: string): string {
   const normalized = remoteName.replace(/[^A-Za-z0-9_-]/g, '_').replace(/_{2,}/g, '_');
-  return `${MCP_TOOL_NAME_PREFIX}_${serverId}_${normalized}`;
+  const full = `${MCP_TOOL_NAME_PREFIX}_${serverId}_${normalized}`;
+  if (full.length <= MAX_MCP_TOOL_NAME_LENGTH) {
+    return full;
+  }
+  const hash = crypto.createHash('sha256').update(`${serverId}\0${remoteName}`).digest('hex').slice(0, 8);
+  const maxPrefixLen = MAX_MCP_TOOL_NAME_LENGTH - 1 - hash.length;
+  const truncated = full.slice(0, maxPrefixLen).replace(/_+$/, '');
+  return `${truncated}_${hash}`;
 }
 
 /**

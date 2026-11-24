@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import { ExternalEventRouter, type ExternalEventDispatch } from '../src/events/external-event-router';
@@ -6,10 +9,17 @@ import {
   createExternalEventArtifactSink,
   forwardMcpEventToExternalRouter,
 } from '../src/events/event-bus-adapters';
+import {
+  startConnectorEventBridge,
+  createForwardingArtifactEventSink,
+  createForwardingArtifactMcpBridgeSink,
+} from '../src/events/connector-event-bridge';
 import { createArtifactEventsRouter } from '../src/dashboard/routes/artifact-events';
-import { McpClientManager } from '../src/mcp/mcp-client-manager';
-import { ArtifactMcpRegistry } from '../src/mcp/artifact-mcp-registry';
-import type { McpConnection, McpConnectionHooks } from '../src/mcp/mcp-persistent-client';
+import { McpClientManager, mcpToolName } from '../src/mcp/mcp-client-manager';
+import { adaptMcpNotification } from '../src/mcp/mcp-notification-adapter';
+import { ArtifactMcpRegistry, artifactServerId } from '../src/mcp/artifact-mcp-registry';
+import { validateServerConfig, McpConfigError } from '../src/mcp/mcp-config';
+import { McpPersistentClient, type McpConnection, type McpConnectionHooks } from '../src/mcp/mcp-persistent-client';
 import type { Tool } from '../src/types/tool';
 
 async function testMcpNotificationEndToEnd(): Promise<void> {
@@ -244,14 +254,16 @@ async function testPerArtifactDynamicMcpBridge(): Promise<void> {
     });
     assert.equal(attachRes.status, 200);
     const attachJson = await attachRes.json() as any;
+    const expectedServerId = artifactServerId('canvas-1');
+    assert.notEqual(artifactServerId('a.b'), artifactServerId('a-b'));
     assert.equal(attachJson.ok, true);
-    assert.equal(attachJson.serverId, 'art_canvas_1');
+    assert.equal(attachJson.serverId, expectedServerId);
     assert.equal(attachJson.sessionBound, true);
 
     await manager.waitForInitialConnect();
-    await manager.refreshServerTools('art_canvas_1');
-    assert.equal(registeredTools.has('mcp_art_canvas_1_canvas_get_snapshot'), true);
-    assert.equal(registeredTools.has('mcp_art_canvas_1_canvas_patch'), true);
+    await manager.refreshServerTools(expectedServerId);
+    assert.equal(registeredTools.has(mcpToolName(expectedServerId, 'canvas_get_snapshot')), true);
+    assert.equal(registeredTools.has(mcpToolName(expectedServerId, 'canvas_patch')), true);
 
     // 3. List bridges hides bearerToken
     const listRes = await fetch(`${baseUrl}/api/artifacts/mcp/bridges`);
@@ -284,7 +296,7 @@ async function testPerArtifactDynamicMcpBridge(): Promise<void> {
     assert.equal(detachJson.existed, true);
     assert.equal(detachJson.sessionUnbound, true);
     assert.equal(closed, true);
-    assert.equal(registeredTools.has('mcp_art_canvas_1_canvas_patch'), false);
+    assert.equal(registeredTools.has(mcpToolName(expectedServerId, 'canvas_patch')), false);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await manager.closeAll();
@@ -293,10 +305,342 @@ async function testPerArtifactDynamicMcpBridge(): Promise<void> {
   }
 }
 
+async function testReviewProbesP1ToP4(): Promise<void> {
+  // P1: 3 coalesced annotations in one debounce window → 1 dispatch containing FIRST, SECOND, THIRD
+  {
+    const router = new ExternalEventRouter({
+      aggregationPolicies: {
+        'artifact:annotation': { windowMs: 30, maxWaitMs: 120 },
+      },
+    });
+    const dispatches: ExternalEventDispatch[] = [];
+    router.subscribe((d) => dispatches.push(d));
+    const sink = createExternalEventArtifactSink(router);
+    await sink.bindArtifactSession({
+      artifactId: 'doc-p1',
+      sessionKey: 'sess-p1',
+      topic: 'p2p_p1',
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createArtifactEventsRouter(sink));
+    const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      for (const note of ['FIRST note', 'SECOND note', 'THIRD note']) {
+        const res = await fetch(`${baseUrl}/api/artifacts/events`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            kind: 'annotation_create',
+            artifactId: 'doc-p1',
+            comment: note,
+            quote: note,
+          }),
+        });
+        assert.equal(res.status, 202);
+      }
+      await new Promise((r) => setTimeout(r, 90));
+      assert.equal(dispatches.length, 1);
+      assert.equal(dispatches[0].text.includes('FIRST note'), true);
+      assert.equal(dispatches[0].text.includes('SECOND note'), true);
+      assert.equal(dispatches[0].text.includes('THIRD note'), true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      router.reset();
+    }
+  }
+
+  // P2: Retried clientEventId → 1 dispatch, second response reports deduplicated=true
+  // P3: Unbound artifact → accepted=false, deduplicated=false; retry after bind succeeds
+  {
+    const router = new ExternalEventRouter();
+    const dispatches: ExternalEventDispatch[] = [];
+    router.subscribe((d) => dispatches.push(d));
+    const sink = createExternalEventArtifactSink(router);
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createArtifactEventsRouter(sink));
+    const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      // P3: Unbound first
+      const unboundRes = await fetch(`${baseUrl}/api/artifacts/events`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'a2ui_action',
+          artifactId: 'art-p23',
+          componentId: 'btn-refresh',
+          clientEventId: 'idem-001',
+          actionName: 'refresh',
+        }),
+      });
+      assert.equal(unboundRes.status, 202);
+      const unboundJson = await unboundRes.json() as any;
+      assert.equal(unboundJson.results[0].accepted, false);
+      assert.equal(unboundJson.results[0].deduplicated, false);
+      assert.equal(dispatches.length, 0);
+
+      // Now bind and retry the SAME clientEventId → must succeed!
+      await sink.bindArtifactSession({
+        artifactId: 'art-p23',
+        sessionKey: 'sess-p23',
+        topic: 'p2p_p23',
+      });
+      const firstRes = await fetch(`${baseUrl}/api/artifacts/events`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'a2ui_action',
+          artifactId: 'art-p23',
+          componentId: 'btn-refresh',
+          clientEventId: 'idem-001',
+          actionName: 'refresh',
+        }),
+      });
+      const firstJson = await firstRes.json() as any;
+      assert.equal(firstJson.results[0].accepted, true);
+      assert.equal(firstJson.results[0].deduplicated, false);
+
+      // P2: Retry same clientEventId → deduplicated=true, still only 1 dispatch
+      const dupRes = await fetch(`${baseUrl}/api/artifacts/events`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'a2ui_action',
+          artifactId: 'art-p23',
+          componentId: 'btn-refresh',
+          clientEventId: 'idem-001',
+          actionName: 'refresh',
+        }),
+      });
+      const dupJson = await dupRes.json() as any;
+      assert.equal(dupJson.results[0].accepted, false);
+      assert.equal(dupJson.results[0].deduplicated, true);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(dispatches.length, 1);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      router.reset();
+    }
+  }
+
+  // P4: 3x notifications/resources/updated for the same URI (no explicit id) → 3 dispatches
+  {
+    const router = new ExternalEventRouter();
+    const dispatches: ExternalEventDispatch[] = [];
+    router.subscribe((d) => dispatches.push(d));
+    router.bindArtifact('art-res', { sessionKey: 'sess-res', topic: 'p2p_res' });
+
+    for (let i = 0; i < 3; i += 1) {
+      const adapted = adaptMcpNotification('canvas-srv', {
+        method: 'notifications/resources/updated',
+        params: { uri: 'canvas://art-res/layout' },
+      });
+      assert.equal(adapted.hasExplicitEventId, false);
+      forwardMcpEventToExternalRouter(adapted, router, { boundArtifactId: 'art-res' });
+    }
+    await new Promise((r) => setImmediate(r));
+    assert.equal(dispatches.length, 3);
+  }
+}
+
+async function testCrossProcessConnectorEventBridge(): Promise<void> {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xiaoba-bridge-test-'));
+  const router = new ExternalEventRouter();
+  const dispatches: ExternalEventDispatch[] = [];
+  router.subscribe((d) => dispatches.push(d));
+  const registry = new ArtifactMcpRegistry(router);
+
+  const bridge = await startConnectorEventBridge({
+    runtimeRoot,
+    sink: createExternalEventArtifactSink(router),
+    bridgeSink: registry,
+  });
+
+  const dashboardApp = express();
+  dashboardApp.use(express.json());
+  dashboardApp.use(
+    '/api',
+    createArtifactEventsRouter(
+      createForwardingArtifactEventSink(runtimeRoot),
+      createForwardingArtifactMcpBridgeSink(runtimeRoot),
+      { allowMcpAttach: true },
+    ),
+  );
+  const dashboardServer = await new Promise<ReturnType<typeof dashboardApp.listen>>((resolve) => {
+    const s = dashboardApp.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const baseUrl = `http://127.0.0.1:${(dashboardServer.address() as AddressInfo).port}`;
+
+  try {
+    // Bind through Dashboard → forwarded to Connector
+    const bindRes = await fetch(`${baseUrl}/api/artifacts/cross-1/bind`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionKey: 'sess-cross-1', topic: 'p2p_cross_1' }),
+    });
+    assert.equal(bindRes.status, 200);
+
+    // Emit event through Dashboard → forwarded to Connector → wakes Connector's ExternalEventRouter
+    const evtRes = await fetch(`${baseUrl}/api/artifacts/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'a2ui_action',
+        artifactId: 'cross-1',
+        componentId: 'btn-relayout',
+        clientEventId: 'cross-evt-1',
+        actionName: 'relayout',
+      }),
+    });
+    assert.equal(evtRes.status, 202);
+    const evtJson = await evtRes.json() as any;
+    assert.equal(evtJson.accepted, 1);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(dispatches.length, 1);
+    assert.equal(dispatches[0].sessionKey, 'sess-cross-1');
+
+    // Attach + list + detach MCP bridge through Dashboard → forwarded to Connector
+    const attachRes = await fetch(`${baseUrl}/api/artifacts/cross-1/mcp/attach`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'http://127.0.0.1:4999/mcp' }),
+    });
+    assert.equal(attachRes.status, 200);
+
+    const listRes = await fetch(`${baseUrl}/api/artifacts/mcp/bridges`);
+    assert.equal(listRes.status, 200);
+    const listJson = await listRes.json() as any;
+    assert.equal(listJson.bridges.length, 1);
+    assert.equal(listJson.bridges[0].artifactId, 'cross-1');
+
+    const detachRes = await fetch(`${baseUrl}/api/artifacts/cross-1/mcp/attach`, { method: 'DELETE' });
+    assert.equal(detachRes.status, 200);
+
+    // Stop connector bridge → Dashboard returns 503 connector_unavailable
+    await bridge.stop();
+    const downRes = await fetch(`${baseUrl}/api/artifacts/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'a2ui_action',
+        artifactId: 'cross-1',
+        componentId: 'btn-after-stop',
+        actionName: 'after_stop',
+      }),
+    });
+    assert.equal(downRes.status, 503);
+    assert.equal((await downRes.json() as any).code, 'connector_unavailable');
+  } finally {
+    await bridge.stop().catch(() => {});
+    await new Promise<void>((resolve) => dashboardServer.close(() => resolve()));
+    registry.reset();
+    router.reset();
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+}
+
+async function testSecurityAndHardening(): Promise<void> {
+  // 1. Per-artifact bridge cannot target another session/artifact via spoofed sessionKey/topic
+  const router = new ExternalEventRouter();
+  const dispatches: ExternalEventDispatch[] = [];
+  router.subscribe((d) => dispatches.push(d));
+  router.bindArtifact('art-mine', { sessionKey: 'sess-mine', topic: 'p2p_mine' });
+
+  const spoofed = adaptMcpNotification('art_mine_000000', {
+    method: 'notifications/artifact/a2ui',
+    params: {
+      event_id: 'spoof-1',
+      sessionKey: 'sess-victim',
+      topic: 'group_victim',
+      artifactId: 'art-other',
+    },
+  });
+  forwardMcpEventToExternalRouter(spoofed, router, { boundArtifactId: 'art-mine' });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(dispatches.length, 1);
+  assert.equal(dispatches[0].sessionKey, 'sess-mine');
+  assert.equal(dispatches[0].topic, 'p2p_mine');
+  assert.equal(dispatches[0].artifactId, 'art-mine');
+
+  // 2. Non-loopback URL rejected by ArtifactMcpRegistry by default
+  const registry = new ArtifactMcpRegistry(router);
+  assert.throws(
+    () => registry.registerArtifactBridge({ artifactId: 'art-remote', url: 'https://evil.example.com/mcp' }),
+    (err: any) => err?.code === 'remote_mcp_url_forbidden' && err?.status === 403,
+  );
+
+  // 3. mcpToolName enforces <= 64 chars with deterministic hash suffix
+  const longName = mcpToolName('very_long_server_identifier', 'super_long_remote_tool_name_that_exceeds_sixty_four_characters_limit');
+  assert.ok(longName.length <= 64, `expected <= 64 chars, got ${longName.length}: ${longName}`);
+  assert.equal(
+    longName,
+    mcpToolName('very_long_server_identifier', 'super_long_remote_tool_name_that_exceeds_sixty_four_characters_limit'),
+  );
+
+  // 4. Legacy SSE transport is explicitly rejected instead of silently mapped
+  assert.throws(
+    () => validateServerConfig('legacy', { transport: 'sse', url: 'https://example.test/sse' }),
+    (err: unknown) => err instanceof McpConfigError,
+  );
+
+  // 5. Failed connection attempt is closed before retry, and lastSessionId is passed on reconnect
+  let closedFailedCount = 0;
+  let seenSessionIds: Array<string | undefined> = [];
+  let attempt = 0;
+  const client = new McpPersistentClient({
+    serverId: 'retry-test',
+    config: { transport: 'streamable-http', url: 'http://127.0.0.1:4998/mcp' },
+    reconnect: { maxAttempts: 3, initialDelayMs: 1, maxDelayMs: 2, jitter: 0 },
+    sleep: async () => {},
+    createConnection: (_cfg, hooks): McpConnection => {
+      attempt += 1;
+      seenSessionIds.push(hooks.sessionId);
+      const currentAttempt = attempt;
+      const conn: McpConnection & { ready?: Promise<void> } = {
+        ready: currentAttempt === 1
+          ? (async () => {
+              hooks.onSessionId?.('mcp-sess-abc');
+              throw new Error('boom on first connect');
+            })()
+          : Promise.resolve(),
+        close: async () => {
+          if (currentAttempt === 1) closedFailedCount += 1;
+        },
+        listTools: async () => ({ tools: [] }),
+        callTool: async () => ({ isError: false, content: [] }),
+        listResources: async () => ({ resources: [] }),
+        readResource: async () => ({ contents: [] }),
+        subscribeResource: async () => {},
+        unsubscribeResource: async () => {},
+        listPrompts: async () => ({ prompts: [] }),
+        getPrompt: async () => ({ messages: [] }),
+      };
+      return conn;
+    },
+  });
+  await client.connect();
+  assert.equal(closedFailedCount, 1);
+  assert.deepEqual(seenSessionIds, [undefined, 'mcp-sess-abc']);
+  await client.close();
+  router.reset();
+}
+
 async function main(): Promise<void> {
   await testMcpNotificationEndToEnd();
   await testArtifactHttpRoutesEndToEnd();
   await testPerArtifactDynamicMcpBridge();
+  await testReviewProbesP1ToP4();
+  await testCrossProcessConnectorEventBridge();
+  await testSecurityAndHardening();
   console.log('mcp-event-bus-integration.test.ts: PASS');
 }
 

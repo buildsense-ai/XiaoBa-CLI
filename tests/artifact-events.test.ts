@@ -445,7 +445,7 @@ describe('artifact events dashboard route', () => {
     assert.equal(sink.bindings[0].boundByUserId, 'u9');
   });
 
-  test('rejects bind without a target and maps sink rejection to 409', async () => {
+  test('rejects bind without a canonical sessionKey and maps sink rejection to 409', async () => {
     const sink = new RecordingSink();
     const base = await startEventServer(sink);
 
@@ -455,7 +455,16 @@ describe('artifact events dashboard route', () => {
       body: JSON.stringify({}),
     });
     assert.equal(res.status, 422);
-    assert.equal((await res.json() as any).code, 'missing_binding_target');
+    assert.equal((await res.json() as any).code, 'missing_session_key');
+
+    // topic alone must also be rejected (CatsCo sessionKey is derived, not raw topic)
+    res = await fetch(`${base}/api/artifacts/art-123/bind`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: 'p2p_1_2' }),
+    });
+    assert.equal(res.status, 422);
+    assert.equal((await res.json() as any).code, 'missing_session_key');
 
     sink.bindResult = { ok: false, reason: 'session not found' };
     res = await fetch(`${base}/api/artifacts/art-123/bind`, {

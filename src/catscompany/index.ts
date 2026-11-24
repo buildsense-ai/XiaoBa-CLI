@@ -118,6 +118,12 @@ import {
   externalEventRouter,
   type ExternalEventDispatch,
 } from '../events/external-event-router';
+import { createExternalEventArtifactSink } from '../events/event-bus-adapters';
+import {
+  startConnectorEventBridge,
+  type ConnectorEventBridgeHandle,
+} from '../events/connector-event-bridge';
+import { artifactMcpRegistry } from '../mcp/artifact-mcp-registry';
 import {
   SkillHubThinRpcError,
   SkillHubThinRpcHandler,
@@ -680,6 +686,8 @@ export class CatsCompanyBot {
   private subAgentEventRoutes = new Map<string, SubAgentEventRoute>();
   /** 外部事件总线订阅的退订函数（destroy 时清理）。 */
   private unsubscribeExternalEvents: (() => void) | null = null;
+  /** Dashboard → Connector 跨进程事件桥句柄（destroy 时关闭）。 */
+  private connectorEventBridge: ConnectorEventBridgeHandle | null = null;
   /** no-wait 子 Agent 完成后的批量回流，避免逐条唤醒主模型刷屏 */
   private subAgentCompletionBatches = new Map<string, BackgroundSubAgentCompletionBatch>();
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
@@ -935,6 +943,20 @@ export class CatsCompanyBot {
         Logger.warning(`[CatsCompany] 处理外部事件失败: ${error?.message || error}`);
       });
     });
+
+    // 启动本机回环事件桥：让独立进程运行的 Dashboard 能把 /api/artifacts/* 请求
+    // 转发到当前 Connector 进程的 externalEventRouter 与 artifactMcpRegistry。
+    if (process.env.XIAOBA_CONNECTOR_EVENT_BRIDGE !== '0') {
+      try {
+        this.connectorEventBridge = await startConnectorEventBridge({
+          runtimeRoot: PathResolver.getRuntimeDataRoot(),
+          sink: createExternalEventArtifactSink(),
+          bridgeSink: artifactMcpRegistry,
+        });
+      } catch (error: any) {
+        Logger.warning(`[CatsCompany] 启动跨进程事件桥失败（不影响主聊天链路）: ${error?.message || error}`);
+      }
+    }
 
     this.bot.on('error', (err: Error) => {
       const message = String(err?.message || '');
@@ -3863,12 +3885,14 @@ export class CatsCompanyBot {
       );
       return;
     }
-    // 通用事件可能没有真人触发者（如 MCP Server 推送）：用 'system' 作为发送者，
-    // 语义与平台机器人系统消息一致（envelope 只把它当字符串处理）。
-    const senderId = dispatch.actorUserId || 'system';
     // 平台回执仍按 service_run_receipt 归属（保持 observation source 不变）；
-    // 其它事件统一按 external_event。
+    // 其它外部事件统一按 external_event，并且绝不把外部 HTTP/MCP 传入的 actorUserId
+    // 写入 executionScope.actorUserId（该字段会参与 device grant ownerUserId 判定），
+    // 一律固定为 'system'（原始 actorUserId 仅作为展示信息保留在提示词文本中）。
     const source = dispatch.event.type === 'service_run_receipt' ? 'service_run_receipt' : 'external_event';
+    const senderId = source === 'service_run_receipt'
+      ? (dispatch.actorUserId || 'system')
+      : 'system';
     this.enqueueExternalEventTurn(sessionKey, topic, senderId, dispatch.text, source);
     Logger.info(
       `[CatsCompany] 外部事件唤醒会话: source=${dispatch.event.source} type=${dispatch.event.type} ` +
@@ -4933,11 +4957,20 @@ export class CatsCompanyBot {
       if (batch.timer) clearTimeout(batch.timer);
     }
     this.subAgentCompletionBatches.clear();
-    // 退订外部事件总线：进程内单例会被后续服务实例复用，残留订阅会导致
-    // 旧实例的回调在 shutdown 后继续被调用（回调内虽有 shuttingDown fence，
-    // 但退订更干净，也避免 handler 集合泄漏）。
+    // 退订外部事件总线并关闭跨进程事件桥 + MCP 长连接，避免 reload 时泄漏子进程与旧订阅。
     this.unsubscribeExternalEvents?.();
     this.unsubscribeExternalEvents = null;
+    const bridge = this.connectorEventBridge;
+    this.connectorEventBridge = null;
+    if (bridge) {
+      await bridge.stop().catch(() => {});
+    }
+    const mcpClientManager = this.agentServices?.mcpClientManager;
+    if (mcpClientManager) {
+      artifactMcpRegistry.detachManager(mcpClientManager);
+      await mcpClientManager.closeAll().catch(() => {});
+    }
+    this.agentServices?.mcpToolBridge?.stopAutoRefresh?.();
     // Interrupt every busy session before quiescing. requestInterrupt() aborts
     // the session's active model turn (AbortController), so an in-flight
     // handleMessage / handleRuntimeObservation returns a cancellation instead of

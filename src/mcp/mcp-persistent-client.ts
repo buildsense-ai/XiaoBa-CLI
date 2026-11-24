@@ -119,6 +119,8 @@ export interface McpPersistentClientOptions {
 
 export interface McpConnectionHooks {
   onNotification?: (notification: McpNotificationLike) => void;
+  /** 断线重连时透传上一次协商拿到的 Streamable HTTP sessionId。 */
+  sessionId?: string;
   /** SDK 连接拿到的会话标识（Streamable HTTP sessionId），重连时复用。 */
   onSessionId?: (sessionId: string | undefined) => void;
   /** Streamable HTTP 的最新 SSE resumption token（断线续传诊断用）。 */
@@ -244,8 +246,10 @@ export class McpPersistentClient {
       this.reconnectAttempt = attempt;
       // 'connecting' 仅用于从未连上过的首轮；断开后的尝试一律 'reconnecting'。
       this.setState(attempt === 1 && this.state === 'disconnected' && !this.everConnected ? 'connecting' : 'reconnecting', attempt);
+      let openedConnection: McpConnection | null = null;
       try {
         const connection = this.openConnection();
+        openedConnection = connection;
         this.connection = connection;
         // SDK transport 的 onclose 在连接成功后任何时刻都可能触发（包括我们主动 close 之外的
         // 网络断连）。把它绑到「当前这条连接」上，过期的连接对象不会误触发新一轮重连。
@@ -263,6 +267,11 @@ export class McpPersistentClient {
       } catch (error: any) {
         this.lastError = String(error?.message ?? error);
         this.connection = null;
+        if (openedConnection) {
+          openedConnection.onclose = undefined;
+          openedConnection.onerror = undefined;
+          await openedConnection.close().catch(() => {});
+        }
         if (attempt >= maxAttempts) {
           this.setState('failed', attempt, this.lastError);
           if (throwOnExhaust) {
@@ -292,6 +301,7 @@ export class McpPersistentClient {
       onResumptionToken: (token) => {
         this.lastResumptionToken = token;
       },
+      ...(this.lastSessionId ? { sessionId: this.lastSessionId } : {}),
     });
   }
 
@@ -503,6 +513,7 @@ export function createSdkMcpConnectionFactory(factoryOptions: McpConnectionFacto
     }
     const transport = new StreamableHTTPClientTransport(new URL(config.url), {
       requestInit: { headers },
+      ...(hooks.sessionId ? { sessionId: hooks.sessionId } : {}),
     });
     const connection = new SdkMcpConnection(client, transport);
     connection.ready = client.connect(transport).then(() => {

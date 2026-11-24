@@ -113,25 +113,32 @@ describe('ExternalEventRouter — artifact 路由', () => {
     assert.strictEqual(dispatches[0].artifactId, 'art-2');
   });
 
-  test('未绑定 artifact 且无 sessionKey → 丢弃并完成幂等登记', async () => {
+  test('未绑定 artifact 且无 sessionKey → 丢弃但不污染幂等表，绑定后重投可正常派发', async () => {
     const router = new ExternalEventRouter();
     const { dispatches } = collect(router);
-    assert.strictEqual(router.emit({
+    const first = router.emitWithResult({
       eventId: 'orphan',
       source: 'mcp:srv',
       type: 'mcp.notification.x',
       target: { artifactId: 'art-missing' },
-    }), false);
+    });
+    assert.strictEqual(first.accepted, false);
+    assert.strictEqual(first.reason, 'unbound');
     await flush(router);
     assert.strictEqual(dispatches.length, 0);
-    // 幂等登记已生效：重投不再尝试。
+    // 未绑定时不占用幂等键：绑定后重投同一 eventId 应被接受并派发。
     router.bindArtifact('art-missing', { sessionKey: 'sess-late' });
-    assert.strictEqual(router.emit({
+    const retry = router.emitWithResult({
       eventId: 'orphan',
       source: 'mcp:srv',
       type: 'mcp.notification.x',
       target: { artifactId: 'art-missing' },
-    }), false);
+    });
+    assert.strictEqual(retry.accepted, true);
+    assert.strictEqual(retry.reason, 'dispatched');
+    await flush(router);
+    assert.strictEqual(dispatches.length, 1);
+    assert.strictEqual(dispatches[0].sessionKey, 'sess-late');
   });
 
   test('unbindArtifact 后事件无法再路由', async () => {

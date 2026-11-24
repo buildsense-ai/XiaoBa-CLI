@@ -31,11 +31,21 @@ const MAX_EVENTS_PER_REQUEST = 100;
  *   POST   /api/artifacts/:artifactId/mcp/detach
  *   GET    /api/artifacts/mcp/bridges
  */
+export interface ArtifactEventsRouterOptions {
+  /**
+   * 是否允许通过 HTTP 动态挂载/卸载 Per-Artifact MCP Bridge。
+   * 未配置 DASHBOARD_API_KEY 且未显式开启时默认拒绝，防止本机任意进程无鉴权注入 MCP 工具。
+   */
+  allowMcpAttach?: boolean;
+}
+
 export function createArtifactEventsRouter(
   sink: ArtifactEventSink,
   bridgeSink?: ArtifactMcpBridgeSink,
+  options: ArtifactEventsRouterOptions = {},
 ): Router {
   const router = Router();
+  const allowMcpAttach = options.allowMcpAttach !== false;
 
   router.post('/artifacts/events', async (req, res) => {
     try {
@@ -102,11 +112,11 @@ export function createArtifactEventsRouter(
       const body = (req.body && typeof req.body === 'object') ? req.body : {};
       const sessionKey = firstNonEmpty(body.sessionKey, body.session_key);
       const topic = firstNonEmpty(body.topic);
-      if (!sessionKey && !topic) {
+      if (!sessionKey) {
         return res.status(422).json({
           ok: false,
-          code: 'missing_binding_target',
-          error: 'bind requires sessionKey or topic',
+          code: 'missing_session_key',
+          error: 'bind requires a canonical sessionKey (topic alone cannot derive a CatsCo sessionKey)',
         });
       }
 
@@ -136,15 +146,27 @@ export function createArtifactEventsRouter(
   });
 
   if (bridgeSink) {
-    router.get('/artifacts/mcp/bridges', (_req, res) => {
-      return res.status(200).json({
-        ok: true,
-        bridges: bridgeSink.listArtifactBridges(),
-      });
+    router.get('/artifacts/mcp/bridges', async (_req, res) => {
+      try {
+        const bridges = await bridgeSink.listArtifactBridges();
+        return res.status(200).json({
+          ok: true,
+          bridges,
+        });
+      } catch (error) {
+        return respondWithError(res, error);
+      }
     });
 
     router.post('/artifacts/:artifactId/mcp/attach', async (req, res) => {
       try {
+        if (!allowMcpAttach) {
+          return res.status(403).json({
+            ok: false,
+            code: 'mcp_attach_requires_auth',
+            error: 'MCP bridge attach requires DASHBOARD_API_KEY (or XIAOBA_ALLOW_LOCAL_MCP_ATTACH=1)',
+          });
+        }
         const artifactId = String(req.params.artifactId || '').trim();
         const body = (req.body && typeof req.body === 'object') ? req.body : {};
         const result = await bridgeSink.registerArtifactBridge({

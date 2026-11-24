@@ -123,6 +123,8 @@ export interface AnnotationEventPayload {
 export interface ArtifactEventEnvelope {
   schema: typeof ARTIFACT_EVENT_SCHEMA;
   eventId: string;
+  /** Caller-supplied idempotency key when provided (clientEventId / eventId / idempotencyKey). */
+  clientEventId?: string;
   kind: ArtifactEventKind;
   family: ArtifactEventFamily;
   priority: ArtifactEventPriority;
@@ -238,7 +240,15 @@ export function normalizeArtifactEvent(input: unknown): ArtifactEventEnvelope {
   const sessionKey = pickString(raw, 'sessionKey', 'session_key');
   const topic = pickString(raw, 'topic');
   const actorUserId = pickString(raw, 'actorUserId', 'actor_user_id', 'actor', 'userId', 'user_id');
-  const clientEventId = pickString(raw, 'clientEventId', 'client_event_id', 'idempotencyKey', 'idempotency_key');
+  const clientEventId = pickString(
+    raw,
+    'clientEventId',
+    'client_event_id',
+    'eventId',
+    'event_id',
+    'idempotencyKey',
+    'idempotency_key',
+  );
   const dedupKeyInput = pickString(raw, 'dedupKey', 'dedup_key');
   const occurredAt = normalizeOccurredAt(pickString(raw, 'occurredAt', 'occurred_at', 'timestamp'));
 
@@ -263,6 +273,7 @@ export function normalizeArtifactEvent(input: unknown): ArtifactEventEnvelope {
   return {
     schema: ARTIFACT_EVENT_SCHEMA,
     eventId,
+    ...(clientEventId ? { clientEventId } : {}),
     kind: eventKind,
     family,
     priority,

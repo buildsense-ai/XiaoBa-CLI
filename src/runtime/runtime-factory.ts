@@ -195,13 +195,29 @@ export class RuntimeFactory {
   private static createMcpClientManager(toolManager: ToolManager): McpClientManager | undefined {
     if (process.env.XIAOBA_MCP_CLIENT_MANAGER === '0') return undefined;
     try {
-      const config = loadMcpConfig();
+      let servers: Record<string, import('../mcp/mcp-config').McpServerConfig> = {};
+      try {
+        const config = loadMcpConfig({
+          runtimeRoot: PathResolver.getRuntimeDataRoot(),
+          tolerateInvalidServers: true,
+          onServerError: (serverId, error) => {
+            Logger.warning(`MCP server "${serverId}" 配置无效，已跳过: ${error.message}`);
+          },
+        });
+        servers = config.servers;
+      } catch (error: any) {
+        // 即使静态配置文件损坏，也仍然初始化空管理器以支持 Per-Artifact MCP Bridge 动态挂载。
+        Logger.warning(`MCP 配置文件加载失败，将以空静态配置启动（Artifact Bridge 仍可用）: ${error?.message ?? error}`);
+      }
       const manager = new McpClientManager({
         toolManager,
-        servers: config.servers,
+        servers,
         onEvent: (event) => {
           try {
-            forwardMcpEventToExternalRouter(event);
+            const boundArtifactId = artifactMcpRegistry.getBoundArtifactId(event.serverId);
+            forwardMcpEventToExternalRouter(event, undefined, {
+              ...(boundArtifactId ? { boundArtifactId } : {}),
+            });
           } catch (error: any) {
             Logger.warning(`MCP 事件转发失败 (${event.serverId}/${event.method}): ${error?.message ?? error}`);
           }

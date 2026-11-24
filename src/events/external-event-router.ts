@@ -74,6 +74,8 @@ export interface ExternalEventEnvelope {
 export interface ExternalEventAggregationPolicy {
   /** 合并窗口（ms）。0/缺省 = 该类型不聚合，逐条派发。 */
   windowMs: number;
+  /** 最长等待时间（ms），防止持续流式批注无限推迟派发（默认 max(windowMs * 3, 5000)）。 */
+  maxWaitMs?: number;
   /** 防抖分组键；缺省 = `${sessionKey}\0${type}`（同一会话同类型合并）。 */
   debounceKey?: (event: ExternalEventEnvelope) => string;
   /**
@@ -81,6 +83,13 @@ export interface ExternalEventAggregationPolicy {
    * 返回新的缓冲事件（不修改入参亦可）。
    */
   merge?: (pending: ExternalEventEnvelope, next: ExternalEventEnvelope) => ExternalEventEnvelope;
+}
+
+export type ExternalEventEmitReason = 'dispatched' | 'buffered' | 'duplicate' | 'unbound' | 'invalid';
+
+export interface ExternalEventEmitResult {
+  accepted: boolean;
+  reason: ExternalEventEmitReason;
 }
 
 /** 宿主渲染提示文本（注入模型回合的 userMessage）。 */
@@ -210,15 +219,19 @@ export class ExternalEventRouter {
   /**
    * 统一投递入口（Dashboard / 本地 IPC / MCP 通知适配层 / CatsCompany WS 共用）。
    *
-   * 返回 true = 已接受（立即派发或进入防抖缓冲）；false = 丢弃（重复 eventId
-   * 或 envelope 非法）。事件没有可解析的 sessionKey 时也会返回 false ——
-   * 唤不回任何会话的事件派发没有意义，但**会**先完成幂等登记，避免重投刷屏。
+   * 返回 true = 已接受（立即派发或进入防抖缓冲）；false = 丢弃（重复 eventId、
+   * 未绑定会话或 envelope 非法）。未绑定会话的事件不会污染幂等表，绑定后可重试。
    */
   emit(envelope: ExternalEventEnvelope): boolean {
-    if (!envelope || typeof envelope !== 'object') return false;
+    return this.emitWithResult(envelope).accepted;
+  }
+
+  /** 带明确拒绝原因的投递入口（区分 duplicate / unbound / invalid）。 */
+  emitWithResult(envelope: ExternalEventEnvelope): ExternalEventEmitResult {
+    if (!envelope || typeof envelope !== 'object') return { accepted: false, reason: 'invalid' };
     const source = typeof envelope.source === 'string' ? envelope.source.trim() : '';
     const type = typeof envelope.type === 'string' ? envelope.type.trim() : '';
-    if (!source || !type) return false;
+    if (!source || !type) return { accepted: false, reason: 'invalid' };
     const event: ExternalEventEnvelope = {
       ...envelope,
       source: source as ExternalEventSource,
@@ -229,15 +242,19 @@ export class ExternalEventRouter {
     };
 
     this.prune();
-    if (!this.claimEventId(event.eventId)) return false;
+    // 先检查重复（不写入），再解析目标：未绑定 artifact 时不污染去重表，
+    // 这样调用方补齐绑定后重试同一 eventId 仍可成功唤醒。
+    if (this.isDuplicateEventId(event.eventId)) {
+      return { accepted: false, reason: 'duplicate' };
+    }
 
     const resolved = this.resolveTarget(event);
     if (!resolved) {
-      // 已做幂等登记但没会话可派：记诊断后丢弃（绑定可能稍后建立，来源重投会被幂等拦截；
-      // 需要「先缓存等绑定」的来源应在 emit 前自行等待绑定）。
       this.droppedDispatchCount += 1;
-      return false;
+      return { accepted: false, reason: 'unbound' };
     }
+    this.claimEventId(event.eventId);
+
     event.target = {
       ...(event.target ?? {}),
       sessionKey: resolved.sessionKey,
@@ -249,10 +266,10 @@ export class ExternalEventRouter {
     const policy = event.priority === 'immediate' ? undefined : this.policies.get(source);
     if (policy && policy.windowMs > 0) {
       this.buffer(event, policy);
-      return true;
+      return { accepted: true, reason: 'buffered' };
     }
     this.scheduleDispatch(event);
-    return true;
+    return { accepted: true, reason: 'dispatched' };
   }
 
   /** 带缓冲等待：防抖事件 flush 完成后 resolve（测试/顺序敏感场景用）。 */
@@ -278,6 +295,13 @@ export class ExternalEventRouter {
     for (const buffer of this.debounced.values()) clearTimeout(buffer.timer);
     this.debounced.clear();
     this.droppedDispatchCount = 0;
+  }
+
+  private isDuplicateEventId(eventId: string | undefined): boolean {
+    const id = typeof eventId === 'string' ? eventId.trim() : '';
+    if (!id) return false;
+    const seenAt = this.seenEvents.get(id);
+    return seenAt !== undefined && this.now() - seenAt < this.dedupeTtlMs;
   }
 
   /** 登记幂等键；已见过（未过期）→ false。无 eventId → true（不去重）。 */
@@ -316,16 +340,24 @@ export class ExternalEventRouter {
     return null;
   }
 
-  /** 进入防抖缓冲：同键事件合并，窗口结束一次性派发。 */
+  /** 进入防抖缓冲：同键事件合并，窗口结束（或达到 maxWaitMs）一次性派发。 */
   private buffer(event: ExternalEventEnvelope, policy: ExternalEventAggregationPolicy): void {
     const key = policy.debounceKey?.(event)
       ?? `${event.target?.sessionKey ?? ''}\0${event.type}`;
     const existing = this.debounced.get(key);
+    const maxWaitMs = policy.maxWaitMs ?? Math.max(policy.windowMs * 3, 5_000);
     if (existing) {
       const merge = policy.merge ?? mergeEventPayloads;
       existing.pending = merge(existing.pending, event);
       clearTimeout(existing.timer);
-      existing.timer = this.scheduleFlush(key, policy.windowMs);
+      const elapsed = this.now() - existing.firstAt;
+      const remaining = Math.max(0, maxWaitMs - elapsed);
+      if (remaining === 0) {
+        this.debounced.delete(key);
+        this.scheduleDispatch(existing.pending);
+        return;
+      }
+      existing.timer = this.scheduleFlush(key, Math.min(policy.windowMs, remaining));
       return;
     }
     this.debounced.set(key, {
@@ -429,8 +461,10 @@ export function mergeEventPayloads(
   ];
   return {
     ...pending,
-    // 合并后丢掉幂等键：聚合事件是一次新派发，不该复用任一原始 eventId。
+    // 合并后丢掉幂等键；若每条事件传入的是不同闭包则清掉 buildText 避免吞掉后续批注，
+    // 若共用同一个 batch-aware 渲染函数引用（如 renderCoalescedArtifactPrompt）则保留。
     eventId: undefined,
+    buildText: pending.buildText && pending.buildText === next.buildText ? pending.buildText : undefined,
     createdAt: pending.createdAt ?? next.createdAt,
     mergedEventIds: mergedIds,
     payload: { items },

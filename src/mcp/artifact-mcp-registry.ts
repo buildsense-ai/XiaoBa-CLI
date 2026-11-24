@@ -6,6 +6,7 @@
  * 自动绑定 artifactId → sessionKey/topic），关闭时 `unregisterArtifactBridge()`
  * 卸载工具与长连接。
  */
+import crypto from 'node:crypto';
 import type { McpClientManager } from './mcp-client-manager';
 import type { McpHttpServerConfig } from './mcp-config';
 import { externalEventRouter, type ExternalEventRouter } from '../events/external-event-router';
@@ -56,7 +57,7 @@ export interface ArtifactMcpBridgeSink {
     artifactId: string,
     options?: { unbindSession?: boolean },
   ): Promise<ArtifactMcpDetachResult> | ArtifactMcpDetachResult;
-  listArtifactBridges(): ArtifactMcpBridgeSummary[];
+  listArtifactBridges(): Promise<ArtifactMcpBridgeSummary[]> | ArtifactMcpBridgeSummary[];
 }
 
 export class ArtifactMcpBridgeError extends Error {
@@ -70,14 +71,25 @@ export class ArtifactMcpBridgeError extends Error {
   }
 }
 
-/** 将任意 artifactId 规范化为合法的 MCP serverId（用于 `mcp_art_<id>_<tool>` 前缀）。 */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return LOOPBACK_HOSTS.has(normalized);
+}
+
+/**
+ * 将任意 artifactId 规范化为合法且无碰撞的 MCP serverId（用于 `mcp_art_<slug>_<hash6>_<tool>` 前缀）。
+ * 追加原始 artifactId 的 6 位 sha256 哈希，避免 `a.b` 与 `a-b` 映射到同一 serverId。
+ */
 export function artifactServerId(artifactId: string): string {
-  const cleaned = artifactId
-    .trim()
+  const trimmed = artifactId.trim();
+  const cleaned = trimmed
     .replace(/[^a-zA-Z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
-    .slice(0, 48);
-  return `art_${cleaned || 'unnamed'}`;
+    .slice(0, 24);
+  const hash = crypto.createHash('sha256').update(trimmed).digest('hex').slice(0, 6);
+  return `art_${cleaned || 'unnamed'}_${hash}`;
 }
 
 interface StoredArtifactBridge {
@@ -136,6 +148,14 @@ export class ArtifactMcpRegistry implements ArtifactMcpBridgeSink {
         'unsupported_mcp_protocol',
       );
     }
+    const allowRemote = process.env.XIAOBA_ALLOW_REMOTE_MCP_ATTACH === '1';
+    if (!allowRemote && !isLoopbackHost(parsedUrl.hostname)) {
+      throw new ArtifactMcpBridgeError(
+        `MCP bridge url must target a loopback host (127.0.0.1 / localhost / ::1); got ${parsedUrl.hostname}`,
+        403,
+        'remote_mcp_url_forbidden',
+      );
+    }
 
     const headers: Record<string, string> = {};
     if (input.headers && typeof input.headers === 'object') {
@@ -178,12 +198,18 @@ export class ArtifactMcpRegistry implements ArtifactMcpBridgeSink {
     this.bridges.set(artifactId, entry);
 
     let sessionBound = false;
-    if (sessionKey || topic) {
+    if (sessionKey) {
       this.eventRouter.bindArtifact(artifactId, {
-        sessionKey: sessionKey || topic!,
+        sessionKey,
         ...(topic ? { topic } : {}),
       });
       sessionBound = true;
+    } else if (topic) {
+      throw new ArtifactMcpBridgeError(
+        'binding an artifact requires a canonical sessionKey (topic alone cannot derive a CatsCo sessionKey)',
+        422,
+        'missing_session_key',
+      );
     }
 
     for (const manager of this.managers) {
@@ -229,6 +255,14 @@ export class ArtifactMcpRegistry implements ArtifactMcpBridgeSink {
       existed,
       sessionUnbound,
     };
+  }
+
+  /** 按 MCP serverId 反查对应的 artifactId（用于限制 per-artifact bridge 仅能向自身 artifact 投递事件）。 */
+  getBoundArtifactId(serverId: string): string | undefined {
+    for (const bridge of this.bridges.values()) {
+      if (bridge.serverId === serverId) return bridge.artifactId;
+    }
+    return undefined;
   }
 
   listArtifactBridges(): ArtifactMcpBridgeSummary[] {

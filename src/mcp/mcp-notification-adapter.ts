@@ -19,8 +19,10 @@ export type McpEventPriority = 'low' | 'normal' | 'high' | 'critical';
 
 /** 发给外部事件总线的规范化事件。 */
 export interface McpForwardedEvent {
-  /** 幂等键：同一条通知重放产生相同 eventId。 */
+  /** 幂等键（日志与审计用）；仅当 hasExplicitEventId=true 时用于跨 24h 幂等去重。 */
   eventId: string;
+  /** 是否来自服务端显式提供的 event_id / eventId / notification_id。 */
+  hasExplicitEventId: boolean;
   /** 事件来源标识，固定 'mcp'（便于总线侧区分本机/平台事件）。 */
   source: 'mcp';
   /** 规范化事件类型，如 'tools/list_changed'、'resources/updated'。 */
@@ -149,8 +151,10 @@ export function adaptMcpNotification(serverId: string, notification: McpNotifica
     ? notification.method
     : 'notifications/unknown';
   const params = isRecord(notification?.params) ? notification.params : {};
+  const hasExplicitEventId = explicitEventId(params) !== undefined;
   return {
     eventId: mcpEventId(serverId, method, params),
+    hasExplicitEventId,
     source: 'mcp',
     type: typeForMethod(method),
     serverId,
