@@ -68,6 +68,7 @@ import {
   buildSyntheticObservationMessages,
   describeSyntheticObservationForLog,
   SyntheticObservation,
+  type WikiInjectionDisplay,
 } from './synthetic-observation';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -128,6 +129,7 @@ const TOOL_PRELUDE_PROGRESS_PATTERN =
  * 对话运行回调
  */
 export interface RunnerCallbacks {
+  onWikiInjection?: (injection: WikiInjectionDisplay) => void;
   /** 流式文本片段 */
   onText?: (text: string) => void;
   /** 模型在工具调用前给出的用户可见中途文本 */
@@ -210,7 +212,7 @@ interface ToolExecutionOutcome {
 
 /** ConversationRunner 构造选项 */
 export interface RunnerOptions {
-  onTranscript?: (event: SessionTranscriptEvent) => void;
+  onTranscript?: (event: SessionTranscriptEvent) => { event_id: string; timestamp: string } | void;
   /** Optional safety cap for autonomous tool loops. Undefined means no runner-level cap. */
   maxTurns?: number;
   maxContextTokens?: number;
@@ -320,7 +322,7 @@ export class ConversationRunner {
   private maxTurns?: number;
   private sessionLabel: string;
   private pendingUserInputProvider?: PendingUserInputProvider;
-  private readonly onTranscript?: (event: SessionTranscriptEvent) => void;
+  private readonly onTranscript?: (event: SessionTranscriptEvent) => { event_id: string; timestamp: string } | void;
   private promptTraceLogger: PromptTraceLogger;
   private cacheTraceSink?: CacheTraceSink;
   private syntheticObservationProvider?: SyntheticObservationProvider;
@@ -402,8 +404,8 @@ export class ConversationRunner {
     }
   }
 
-  private observeTranscript(event: SessionTranscriptEvent): void {
-    this.runObservation(() => this.onTranscript?.(event));
+  private observeTranscript(event: SessionTranscriptEvent) {
+    try { return this.onTranscript?.(event); } catch { /* Observability must never affect a reply. */ }
   }
 
   private runObservation(action: () => void): void {
@@ -449,6 +451,7 @@ export class ConversationRunner {
     }
     const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
     const newMessages: Message[] = [];
+    const pendingWiki = new Map<string, WikiInjectionDisplay>();
     let nextTurnTransientHints: Message[] = [];
     let hasDeliveredMessageOutThisRun = false;
     let lastOutboundContent: string | null = null;
@@ -484,7 +487,7 @@ export class ConversationRunner {
           newMessages,
         };
       }
-      this.injectSyntheticObservations(messages, turns, newMessages);
+      this.injectSyntheticObservations(messages, turns, newMessages, pendingWiki);
       const manualCreditResume = isManualCreditResume(this.toolExecutionContext?.sessionId);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
       const requestTools = this.fitToolsToPromptBudget(activeTools);
@@ -612,6 +615,13 @@ export class ConversationRunner {
 
       let response: ChatResponse;
       try {
+        for (const message of requestMessages) {
+          if (message.role !== 'tool' || !message.syntheticObservationId) continue;
+          const injection = pendingWiki.get(message.syntheticObservationId);
+          if (!injection) continue;
+          pendingWiki.delete(message.syntheticObservationId);
+          this.runObservation(() => callbacks?.onWikiInjection?.(injection));
+        }
         response = await this.requestModelResponse(requestMessages, requestTools, turns, callbacks);
         if (manualCreditResume) {
           if (restoreProviderReplayToolCalls(response.content || '', this.buildRestorableReplayToolNameSet(requestTools)).toolCalls.length) {
@@ -1189,7 +1199,9 @@ export class ConversationRunner {
     }
   }
 
-  private injectSyntheticObservations(messages: Message[], turn: number, progressMessages: readonly Message[]): void {
+  private injectSyntheticObservations(
+    messages: Message[], turn: number, progressMessages: readonly Message[], pendingWiki: Map<string, WikiInjectionDisplay>,
+  ): void {
     if (!this.syntheticObservationProvider) return;
     let observations: SyntheticObservation[] = [];
     try {
@@ -1202,10 +1214,24 @@ export class ConversationRunner {
 
     const syntheticMessages = buildSyntheticObservationMessages(observations);
     messages.push(...syntheticMessages);
+    const wikiObservations = new Map(observations.filter(observation => observation.metadata?.wiki)
+      .map(observation => [observation.id, observation]));
     for (const message of syntheticMessages) {
-      if (message.role === 'tool') this.observeTranscript({
+      if (message.role !== 'tool') continue;
+      const receipt = this.observeTranscript({
         type: 'runtime_observation', source: 'synthetic_observation', text: contentToString(message.content),
       });
+      const id = message.syntheticObservationId;
+      const observation = wikiObservations.get(id);
+      const wiki = observation?.metadata?.wiki;
+      if (id && receipt && observation && wiki) {
+        pendingWiki.set(id, {
+          ...receipt,
+          kind: observation.timing === 'late_previous_turn' ? 'previous' : wiki.refresh ? 'refresh' : 'initial',
+          summary: observation.summary,
+          references: wiki.citations.map(({ wiki_id, evidence_level, contribution }) => ({ wiki_id, evidence_level, contribution })),
+        });
+      }
     }
     Logger.info(
       `[${this.sessionLabel}Turn ${turn}] injected ${observations.length} synthetic runtime observation(s): `

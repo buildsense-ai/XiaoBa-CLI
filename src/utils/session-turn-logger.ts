@@ -130,7 +130,7 @@ export class SessionTurnLogger {
     return inputId;
   }
 
-  logTranscript(event: SessionTranscriptEvent, runId?: string): void {
+  logTranscript(event: SessionTranscriptEvent, runId?: string): Pick<SessionTranscriptLogEntry, 'event_id' | 'timestamp'> | undefined {
     const seq = ++this.eventSequence;
     const entry: SessionTranscriptLogEntry = {
       entry_type: 'transcript', schema_version: 1,
@@ -143,7 +143,7 @@ export class SessionTurnLogger {
         ? { ...event, result: this.truncate(event.result, MAX_TOOL_RESULT_LENGTH) }
         : event,
     };
-    this.appendLog(entry);
+    if (this.appendLog(entry)) return { event_id: entry.event_id, timestamp: entry.timestamp };
   }
 
   /**
@@ -262,9 +262,9 @@ export class SessionTurnLogger {
     return text.slice(0, maxLength) + '... [truncated]';
   }
 
-  private appendLog(entry: SessionLogEntry): void {
+  private appendLog(entry: SessionLogEntry): boolean {
     if (this.fileLoggingDisabled || !this.logFilePath) {
-      return;
+      return false;
     }
     try {
       // A previous process may have stopped mid-line. Isolate its damaged tail
@@ -284,9 +284,11 @@ export class SessionTurnLogger {
         }
       }
       fs.appendFileSync(this.logFilePath, JSON.stringify(entry) + '\n');
+      return true;
     } catch (error) {
       // Diagnostic logging must never break a conversation turn.
       console.error('[SessionTurnLogger] Failed to write log:', error);
+      return false;
     }
   }
 

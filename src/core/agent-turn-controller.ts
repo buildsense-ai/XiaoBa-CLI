@@ -189,6 +189,7 @@ export interface MemoryBranchRuntime {
 }
 
 export interface AgentTurnCallbacks {
+  onWikiInjection?: RunnerCallbacks['onWikiInjection'];
   onText?: (text: string) => void;
   onAssistantText?: (text: string) => void | Promise<void>;
   onThinking?: (thinking: string) => void;
@@ -1016,6 +1017,7 @@ export class AgentTurnController {
 
   private toRunnerCallbacks(callbacks?: AgentTurnCallbacks, injectionTiming?: TurnInjectionTiming): RunnerCallbacks {
     const wrapped: RunnerCallbacks = {
+      onWikiInjection: callbacks?.onWikiInjection,
       onText: callbacks?.onText,
       onAssistantText: callbacks?.onAssistantText,
       onThinking: callbacks?.onThinking,

@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../utils/logger';
 import { RuntimePlanSnapshot } from '../core/plan-runtime';
+import type { WikiInjectionDisplay } from '../core/synthetic-observation';
 
 const MAX_MSG_LENGTH = 4000;
 
@@ -193,6 +194,16 @@ export class MessageSender {
   private resolveBaseUrl(): string {
     if (this.baseUrl) return this.baseUrl;
     return this.bot.getHttpBaseUrl?.() || 'https://app.catsco.cn';
+  }
+
+  async sendWikiInjection(topic: string, injection: WikiInjectionDisplay, replyTo?: number): Promise<void> {
+    const response = await fetch(`${this.resolveBaseUrl()}/api/bot/wiki-injections`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `ApiKey ${this.apiKey}` },
+      body: JSON.stringify({ topic_id: topic, reply_to: replyTo, ...injection }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error(`Wiki injection delivery failed (HTTP ${response.status})`);
   }
 
   private async send(
