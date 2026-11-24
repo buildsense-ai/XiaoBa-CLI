@@ -13,6 +13,9 @@ import { PathResolver } from '../utils/path-resolver';
 import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
 import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
 import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
+import { McpClientManager } from '../mcp/mcp-client-manager';
+import { loadMcpConfig } from '../mcp/mcp-config';
+import { forwardMcpEventToExternalRouter } from '../events/event-bus-adapters';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { serviceRunReceiptRouter } from '../catscompany/service-run-receipts';
 import { FileBotDefinitionRepository } from '../bot-definition/repository';
@@ -99,6 +102,7 @@ export class RuntimeFactory {
       enabledToolNames: profile.tools.enabled,
     });
     const mcpToolBridge = this.createMcpToolBridge(toolManager, profile);
+    const mcpClientManager = this.createMcpClientManager(toolManager);
 
     return {
       aiService,
@@ -110,6 +114,7 @@ export class RuntimeFactory {
       },
       ...(catslogMemory ? { catslogMemory } : {}),
       ...(mcpToolBridge ? { mcpToolBridge } : {}),
+      ...(mcpClientManager ? { mcpClientManager } : {}),
       toolManager,
       skillManager: new SkillManager(),
       turnSkillSnapshotStore: this.createTurnSkillSnapshotStore(),
@@ -181,6 +186,32 @@ export class RuntimeFactory {
     } catch (error: any) {
       // 工具桥是增量能力：初始化异常不得影响主流程。
       Logger.warning(`CatsCo Agent 工具桥初始化失败，已跳过: ${error?.message ?? error}`);
+      return undefined;
+    }
+  }
+
+  /** 通用长连接 MCP Client Manager：加载用户配置的 stdio/HTTP MCP servers 并转发事件到总线（增量能力，失败不阻断）。 */
+  private static createMcpClientManager(toolManager: ToolManager): McpClientManager | undefined {
+    if (process.env.XIAOBA_MCP_CLIENT_MANAGER === '0') return undefined;
+    try {
+      const config = loadMcpConfig();
+      const serverIds = Object.keys(config.servers);
+      if (serverIds.length === 0) return undefined;
+      const manager = new McpClientManager({
+        toolManager,
+        servers: config.servers,
+        onEvent: (event) => {
+          try {
+            forwardMcpEventToExternalRouter(event);
+          } catch (error: any) {
+            Logger.warning(`MCP 事件转发失败 (${event.serverId}/${event.method}): ${error?.message ?? error}`);
+          }
+        },
+      });
+      manager.start();
+      return manager;
+    } catch (error: any) {
+      Logger.warning(`通用 MCP Client Manager 初始化失败，已跳过: ${error?.message ?? error}`);
       return undefined;
     }
   }

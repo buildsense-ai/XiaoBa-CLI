@@ -3,6 +3,8 @@ import * as path from 'path';
 import type { Server } from 'http';
 import { Logger } from '../utils/logger';
 import { createApiRouter } from './routes/api';
+import { createArtifactEventsRouter } from './routes/artifact-events';
+import { createExternalEventArtifactSink } from '../events/event-bus-adapters';
 import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
@@ -73,6 +75,7 @@ export async function startDashboard(
     catsConnectorAutoStart,
     manageConnector: connectorPolicy.manageConnector,
   }));
+  app.use('/api', dashboardAuth.middleware, createArtifactEventsRouter(createExternalEventArtifactSink()));
 
   // Serve frontend
   const frontendPath = path.join(__dirname, '../../dashboard');

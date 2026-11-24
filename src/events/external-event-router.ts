@@ -319,7 +319,7 @@ export class ExternalEventRouter {
   /** 进入防抖缓冲：同键事件合并，窗口结束一次性派发。 */
   private buffer(event: ExternalEventEnvelope, policy: ExternalEventAggregationPolicy): void {
     const key = policy.debounceKey?.(event)
-      ?? `${event.target?.sessionKey ?? ''} ${event.type}`;
+      ?? `${event.target?.sessionKey ?? ''}\0${event.type}`;
     const existing = this.debounced.get(key);
     if (existing) {
       const merge = policy.merge ?? mergeEventPayloads;
