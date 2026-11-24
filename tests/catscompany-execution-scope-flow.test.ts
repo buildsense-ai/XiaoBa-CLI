@@ -804,7 +804,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.executionScope.isTrusted, true);
   });
 
-  test('keeps execution scope when a busy CatsCompany turn is queued then drained', async () => {
+  test('keeps execution scope and the Wiki injection reply target when a queued turn is drained', async () => {
     const { bot, handledTurns, sessionKeys, session } = createHarness({ busy: true });
     const ref = `acr_${'c'.repeat(43)}`;
 
@@ -834,6 +834,14 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.executionScope.topicId, 'p2p_8_43');
     assert.equal(handledTurns[0].options.executionScope.isTrusted, true);
     assert.equal(handledTurns[0].options.artifactContextRef, ref);
+    const injection = {
+      event_id: 'stream:7', timestamp: '2026-11-24T01:00:00Z', kind: 'previous',
+      summary: 'Use the existing script.', references: [],
+    };
+    const deliveries: unknown[][] = [];
+    bot.sender.sendWikiInjection = async (...args: unknown[]) => { deliveries.push(args); };
+    handledTurns[0].options.callbacks.onWikiInjection(injection);
+    assert.deepEqual(deliveries, [['p2p_8_43', injection, 12]]);
   });
 
   test('keeps a drained user message queued when the session call rejects once', async () => {

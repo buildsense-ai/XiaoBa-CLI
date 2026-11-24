@@ -4627,6 +4627,7 @@ export class CatsCompanyBot {
               senderId: msg.senderId,
               channelSource: msg.executionScope?.channelSource,
               clearGeneration,
+              promptSeq: msg.seq,
             }),
           });
         if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
