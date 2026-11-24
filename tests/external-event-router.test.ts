@@ -114,7 +114,7 @@ describe('ExternalEventRouter — artifact 路由', () => {
   });
 
   test('未绑定 artifact 且无 sessionKey → 丢弃但不污染幂等表，绑定后重投可正常派发', async () => {
-    const router = new ExternalEventRouter();
+    const router = new ExternalEventRouter({ aggregationPolicies: {} });
     const { dispatches } = collect(router);
     const first = router.emitWithResult({
       eventId: 'orphan',

@@ -103,7 +103,7 @@ export class RuntimeFactory {
       enabledToolNames: profile.tools.enabled,
     });
     const mcpToolBridge = this.createMcpToolBridge(toolManager, profile);
-    const mcpClientManager = this.createMcpClientManager(toolManager);
+    const mcpClientManager = this.createMcpClientManager(toolManager, profile);
 
     return {
       aiService,
@@ -192,8 +192,16 @@ export class RuntimeFactory {
   }
 
   /** 通用长连接 MCP Client Manager：加载用户配置的 stdio/HTTP MCP servers，并支持 Per-Artifact MCP Bridge 动态挂载（增量能力，失败不阻断）。 */
-  private static createMcpClientManager(toolManager: ToolManager): McpClientManager | undefined {
+  private static createMcpClientManager(
+    toolManager: ToolManager,
+    profile: RuntimeProfile,
+  ): McpClientManager | undefined {
     if (process.env.XIAOBA_MCP_CLIENT_MANAGER === '0') return undefined;
+    // 仅在具备完整生命周期销毁（destroy → closeAll）与事件消费的 CatsCo 连接器进程中默认启动，
+    // 避免 Feishu / Weixin / CLI 进程重复拉起无人消费且永不关闭的 stdio MCP 子进程。
+    if (profile.surface !== 'catscompany' && process.env.XIAOBA_MCP_CLIENT_MANAGER !== '1') {
+      return undefined;
+    }
     try {
       let servers: Record<string, import('../mcp/mcp-config').McpServerConfig> = {};
       try {

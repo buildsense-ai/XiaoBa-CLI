@@ -230,7 +230,7 @@ describe('mcp-notification-adapter', () => {
     assert.equal(event.source, 'mcp');
     assert.equal(event.type, 'resources/updated');
     assert.equal(event.method, 'notifications/resources/updated');
-    assert.equal(event.artifactId, 'file:///a.txt');
+    assert.equal(event.artifactId, undefined);
     assert.equal(event.sessionKey, 's1');
     assert.equal(event.topic, 't1');
     assert.equal(event.priority, 'normal');

@@ -33,10 +33,15 @@ const MAX_EVENTS_PER_REQUEST = 100;
  */
 export interface ArtifactEventsRouterOptions {
   /**
-   * 是否允许通过 HTTP 动态挂载/卸载 Per-Artifact MCP Bridge。
-   * 未配置 DASHBOARD_API_KEY 且未显式开启时默认拒绝，防止本机任意进程无鉴权注入 MCP 工具。
+   * 是否允许通过 HTTP 动态挂载/卸载/查询 Per-Artifact MCP Bridge。
+   * 未配置 DASHBOARD_API_KEY 且未显式开启时默认拒绝，防止本机任意进程无鉴权注入或篡改 MCP 工具。
    */
   allowMcpAttach?: boolean;
+  /**
+   * 是否允许通过 HTTP 投递 Artifact 事件与绑定会话（/artifacts/events、/artifacts/:id/bind）。
+   * 未配置 DASHBOARD_API_KEY 且未显式开启时默认拒绝，防止本机任意进程无鉴权向已知 sessionKey 注入提示词。
+   */
+  allowArtifactEvents?: boolean;
 }
 
 export function createArtifactEventsRouter(
@@ -46,9 +51,17 @@ export function createArtifactEventsRouter(
 ): Router {
   const router = Router();
   const allowMcpAttach = options.allowMcpAttach !== false;
+  const allowArtifactEvents = options.allowArtifactEvents !== false;
 
   router.post('/artifacts/events', async (req, res) => {
     try {
+      if (!allowArtifactEvents) {
+        return res.status(403).json({
+          ok: false,
+          code: 'artifact_events_requires_auth',
+          error: 'Artifact event intake requires DASHBOARD_API_KEY (or XIAOBA_ALLOW_LOCAL_ARTIFACT_EVENTS=1)',
+        });
+      }
       const rawEvents = extractEventInputs(req.body);
       if (rawEvents.length === 0) {
         return res.status(400).json({
@@ -100,6 +113,13 @@ export function createArtifactEventsRouter(
 
   router.post('/artifacts/:artifactId/bind', async (req, res) => {
     try {
+      if (!allowArtifactEvents) {
+        return res.status(403).json({
+          ok: false,
+          code: 'artifact_events_requires_auth',
+          error: 'Artifact session binding requires DASHBOARD_API_KEY (or XIAOBA_ALLOW_LOCAL_ARTIFACT_EVENTS=1)',
+        });
+      }
       const artifactId = String(req.params.artifactId || '').trim();
       if (!artifactId) {
         return res.status(400).json({
@@ -146,8 +166,19 @@ export function createArtifactEventsRouter(
   });
 
   if (bridgeSink) {
+    const requireMcpAttachAuth = (res: any): boolean => {
+      if (allowMcpAttach) return true;
+      res.status(403).json({
+        ok: false,
+        code: 'mcp_attach_requires_auth',
+        error: 'MCP bridge management requires DASHBOARD_API_KEY (or XIAOBA_ALLOW_LOCAL_MCP_ATTACH=1)',
+      });
+      return false;
+    };
+
     router.get('/artifacts/mcp/bridges', async (_req, res) => {
       try {
+        if (!requireMcpAttachAuth(res)) return;
         const bridges = await bridgeSink.listArtifactBridges();
         return res.status(200).json({
           ok: true,
@@ -160,13 +191,7 @@ export function createArtifactEventsRouter(
 
     router.post('/artifacts/:artifactId/mcp/attach', async (req, res) => {
       try {
-        if (!allowMcpAttach) {
-          return res.status(403).json({
-            ok: false,
-            code: 'mcp_attach_requires_auth',
-            error: 'MCP bridge attach requires DASHBOARD_API_KEY (or XIAOBA_ALLOW_LOCAL_MCP_ATTACH=1)',
-          });
-        }
+        if (!requireMcpAttachAuth(res)) return;
         const artifactId = String(req.params.artifactId || '').trim();
         const body = (req.body && typeof req.body === 'object') ? req.body : {};
         const result = await bridgeSink.registerArtifactBridge({
@@ -186,6 +211,7 @@ export function createArtifactEventsRouter(
 
     const handleDetach = async (req: any, res: any) => {
       try {
+        if (!requireMcpAttachAuth(res)) return;
         const artifactId = String(req.params.artifactId || '').trim();
         const body = (req.body && typeof req.body === 'object') ? req.body : {};
         const unbindSession =

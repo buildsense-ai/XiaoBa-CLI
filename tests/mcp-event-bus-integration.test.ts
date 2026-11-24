@@ -23,7 +23,7 @@ import { McpPersistentClient, type McpConnection, type McpConnectionHooks } from
 import type { Tool } from '../src/types/tool';
 
 async function testMcpNotificationEndToEnd(): Promise<void> {
-  const router = new ExternalEventRouter();
+  const router = new ExternalEventRouter({ aggregationPolicies: {} });
   const dispatches: ExternalEventDispatch[] = [];
   router.subscribe((dispatch) => {
     dispatches.push(dispatch);
@@ -179,7 +179,7 @@ async function testArtifactHttpRoutesEndToEnd(): Promise<void> {
 }
 
 async function testPerArtifactDynamicMcpBridge(): Promise<void> {
-  const router = new ExternalEventRouter();
+  const router = new ExternalEventRouter({ aggregationPolicies: {} });
   const registry = new ArtifactMcpRegistry(router);
   const dispatches: ExternalEventDispatch[] = [];
   router.subscribe((dispatch) => {
@@ -432,9 +432,10 @@ async function testReviewProbesP1ToP4(): Promise<void> {
     }
   }
 
-  // P4: 3x notifications/resources/updated for the same URI (no explicit id) → 3 dispatches
+  // P4: 3x notifications/resources/updated for the same URI (no explicit id)
+  // (a) Without debounce: all 3 dispatch (not dropped for 24h)
   {
-    const router = new ExternalEventRouter();
+    const router = new ExternalEventRouter({ aggregationPolicies: {} });
     const dispatches: ExternalEventDispatch[] = [];
     router.subscribe((d) => dispatches.push(d));
     router.bindArtifact('art-res', { sessionKey: 'sess-res', topic: 'p2p_res' });
@@ -445,10 +446,36 @@ async function testReviewProbesP1ToP4(): Promise<void> {
         params: { uri: 'canvas://art-res/layout' },
       });
       assert.equal(adapted.hasExplicitEventId, false);
+      assert.equal(adapted.artifactId, undefined, 'uri must not fall back to artifactId');
       forwardMcpEventToExternalRouter(adapted, router, { boundArtifactId: 'art-res' });
     }
     await new Promise((r) => setImmediate(r));
     assert.equal(dispatches.length, 3);
+    router.reset();
+  }
+
+  // (b) With mcp:* prefix throttling policy: burst of 3 updates coalesces into 1 dispatch with 3 items
+  {
+    const router = new ExternalEventRouter({
+      aggregationPolicies: {
+        'mcp:*': { windowMs: 40, maxWaitMs: 200 },
+      },
+    });
+    const dispatches: ExternalEventDispatch[] = [];
+    router.subscribe((d) => dispatches.push(d));
+    router.bindArtifact('art-res', { sessionKey: 'sess-res', topic: 'p2p_res' });
+
+    for (let i = 0; i < 3; i += 1) {
+      const adapted = adaptMcpNotification('canvas-srv', {
+        method: 'notifications/resources/updated',
+        params: { uri: 'canvas://art-res/layout', seq: i + 1 },
+      });
+      forwardMcpEventToExternalRouter(adapted, router, { boundArtifactId: 'art-res' });
+    }
+    await new Promise((r) => setTimeout(r, 90));
+    assert.equal(dispatches.length, 1, 'burst of resources/updated should be throttled via mcp:* prefix policy');
+    assert.equal((dispatches[0].event.payload as any)?.items?.length, 3);
+    router.reset();
   }
 }
 
@@ -550,7 +577,7 @@ async function testCrossProcessConnectorEventBridge(): Promise<void> {
 
 async function testSecurityAndHardening(): Promise<void> {
   // 1. Per-artifact bridge cannot target another session/artifact via spoofed sessionKey/topic
-  const router = new ExternalEventRouter();
+  const router = new ExternalEventRouter({ aggregationPolicies: {} });
   const dispatches: ExternalEventDispatch[] = [];
   router.subscribe((d) => dispatches.push(d));
   router.bindArtifact('art-mine', { sessionKey: 'sess-mine', topic: 'p2p_mine' });
@@ -631,6 +658,77 @@ async function testSecurityAndHardening(): Promise<void> {
   assert.equal(closedFailedCount, 1);
   assert.deepEqual(seenSessionIds, [undefined, 'mcp-sess-abc']);
   await client.close();
+
+  // 6. Tool name collision disambiguation: cross-server ('a_b','c') vs ('a','b_c') and intra-server foo.bar vs foo_bar
+  {
+    const tools = new Map<string, Tool>();
+    const manager = new McpClientManager({
+      toolManager: {
+        registerTool: (tool) => tools.set(tool.definition.name, tool),
+        unregisterTool: (name) => tools.delete(name),
+      },
+      createConnection: (cfg): McpConnection => {
+        const url = cfg.transport === 'streamable-http' ? cfg.url : '';
+        const list = url.includes('srv1')
+          ? [{ name: 'c' }, { name: 'foo.bar' }, { name: 'foo_bar' }]
+          : [{ name: 'b_c' }];
+        return {
+          close: async () => {},
+          listTools: async () => ({ tools: list }),
+          callTool: async (params) => ({ isError: false, content: [{ type: 'text', text: `${url}:${params.name}` }] }),
+          listResources: async () => ({ resources: [] }),
+          readResource: async () => ({ contents: [] }),
+          subscribeResource: async () => {},
+          unsubscribeResource: async () => {},
+          listPrompts: async () => ({ prompts: [] }),
+          getPrompt: async () => ({ messages: [] }),
+        };
+      },
+    });
+    manager.addServer('a_b', { transport: 'streamable-http', url: 'http://127.0.0.1:4991/srv1' });
+    manager.addServer('a', { transport: 'streamable-http', url: 'http://127.0.0.1:4992/srv2' });
+    manager.start();
+    await manager.waitForInitialConnect();
+    await manager.refreshServerTools('a_b');
+    await manager.refreshServerTools('a');
+    assert.equal(tools.size, 4, `expected 4 distinct tools without silent overwrite, got: ${[...tools.keys()].join(', ')}`);
+    for (const name of tools.keys()) {
+      assert.ok(name.length <= 64, `tool name exceeds 64 chars: ${name}`);
+    }
+    await manager.closeAll();
+  }
+
+  // 7. Auth gating covers /events, /bind, /mcp/bridges, /mcp/attach, DELETE /mcp/attach, POST /mcp/detach
+  {
+    const sink = createExternalEventArtifactSink(router);
+    const app = express();
+    app.use(express.json());
+    app.use('/api', createArtifactEventsRouter(sink, registry, { allowArtifactEvents: false, allowMcpAttach: false }));
+    const srv = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const baseUrl = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`;
+    try {
+      const checks: Array<[string, string, unknown?]> = [
+        ['POST', '/api/artifacts/events', { kind: 'a2ui_action', artifactId: 'a1', componentId: 'b1' }],
+        ['POST', '/api/artifacts/a1/bind', { sessionKey: 's1' }],
+        ['GET', '/api/artifacts/mcp/bridges'],
+        ['POST', '/api/artifacts/a1/mcp/attach', { url: 'http://127.0.0.1:4999/mcp' }],
+        ['DELETE', '/api/artifacts/a1/mcp/attach'],
+        ['POST', '/api/artifacts/a1/mcp/detach'],
+      ];
+      for (const [method, endpoint, body] of checks) {
+        const res = await fetch(`${baseUrl}${endpoint}`, {
+          method,
+          ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+        });
+        assert.equal(res.status, 403, `expected 403 for ${method} ${endpoint}, got ${res.status}`);
+      }
+    } finally {
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
+  }
+
   router.reset();
 }
 

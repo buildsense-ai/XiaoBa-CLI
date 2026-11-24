@@ -127,6 +127,8 @@ export const DEFAULT_EXTERNAL_EVENT_BINDING_TTL_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_EXTERNAL_EVENT_MAX_ENTRIES = 4096;
 /** 批注类事件的默认合并窗口：连续批注在 2s 内合并为一次唤醒。 */
 export const DEFAULT_ANNOTATION_DEBOUNCE_MS = 2_000;
+/** MCP 普通优先级通知（如 resources/updated）的默认节流合并窗口，防止高频资源更新风暴。 */
+export const DEFAULT_MCP_EVENT_DEBOUNCE_MS = 1_000;
 
 interface ArtifactBinding {
   sessionKey: string;
@@ -164,8 +166,9 @@ export class ExternalEventRouter {
     this.buildPrompt = options.buildPrompt ?? defaultExternalEventPrompt;
     this.now = options.now ?? Date.now;
     this.policies = new Map(Object.entries(options.aggregationPolicies ?? {
-      // 默认策略：批注合并、其余即时。A2UI 交互默认 immediate（用户点了就响应）。
+      // 默认策略：批注 2s 合并、MCP 普通通知（如 resources/updated）1s 节流合并；A2UI 等 immediate 事件绕过聚合。
       'artifact:annotation': { windowMs: DEFAULT_ANNOTATION_DEBOUNCE_MS },
+      'mcp:*': { windowMs: DEFAULT_MCP_EVENT_DEBOUNCE_MS },
     }));
   }
 
@@ -263,13 +266,30 @@ export class ExternalEventRouter {
     };
 
     // A2UI 动作等 immediate 事件绕过聚合直接派发。
-    const policy = event.priority === 'immediate' ? undefined : this.policies.get(source);
+    const policy = event.priority === 'immediate' ? undefined : this.resolvePolicy(source);
     if (policy && policy.windowMs > 0) {
       this.buffer(event, policy);
       return { accepted: true, reason: 'buffered' };
     }
     this.scheduleDispatch(event);
     return { accepted: true, reason: 'dispatched' };
+  }
+
+  /** 按 source 查找聚合策略：先精确匹配，再按最长的 `prefix*` 通配符前缀匹配（如 `mcp:*`）。 */
+  private resolvePolicy(source: string): ExternalEventAggregationPolicy | undefined {
+    const exact = this.policies.get(source);
+    if (exact) return exact;
+    let bestLen = -1;
+    let bestPolicy: ExternalEventAggregationPolicy | undefined;
+    for (const [pattern, policy] of this.policies.entries()) {
+      if (!pattern.endsWith('*')) continue;
+      const prefix = pattern.slice(0, -1);
+      if (source.startsWith(prefix) && prefix.length > bestLen) {
+        bestLen = prefix.length;
+        bestPolicy = policy;
+      }
+    }
+    return bestPolicy;
   }
 
   /** 带缓冲等待：防抖事件 flush 完成后 resolve（测试/顺序敏感场景用）。 */

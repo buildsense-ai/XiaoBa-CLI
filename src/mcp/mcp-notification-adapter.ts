@@ -78,7 +78,7 @@ function explicitEventId(params: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-/** 提取路由字段：先看 _meta，再看 params 顶层；resources/updated 的 uri 落 artifactId。 */
+/** 提取路由字段：先看 _meta，再看 params 顶层（不再把 params.uri 当作 artifactId 兜底，防止任意 URI 唤醒无关绑定会话）。 */
 function extractRouting(params: Record<string, unknown>): { artifactId?: string; sessionKey?: string; topic?: string } {
   const meta = isRecord(params._meta) ? params._meta : {};
   const pick = (...names: string[]): string | undefined => {
@@ -97,10 +97,6 @@ function extractRouting(params: Record<string, unknown>): { artifactId?: string;
   if (artifactId) routing.artifactId = artifactId;
   if (sessionKey) routing.sessionKey = sessionKey;
   if (topic) routing.topic = topic;
-  // resources/updated 的 uri 天然是被更新资源的标识，作为 artifactId 兜底。
-  if (!routing.artifactId && typeof params.uri === 'string' && params.uri.trim()) {
-    routing.artifactId = params.uri.trim();
-  }
   return routing;
 }
 

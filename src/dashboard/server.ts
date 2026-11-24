@@ -80,10 +80,13 @@ export async function startDashboard(
   }));
   const runtimeRoot = PathResolver.getRuntimeDataRoot();
   const allowMcpAttach = Boolean(dashboardApiKey) || process.env.XIAOBA_ALLOW_LOCAL_MCP_ATTACH === '1';
+  const allowArtifactEvents = Boolean(dashboardApiKey)
+    || process.env.XIAOBA_ALLOW_LOCAL_ARTIFACT_EVENTS === '1'
+    || process.env.XIAOBA_ALLOW_LOCAL_MCP_ATTACH === '1';
   app.use('/api', dashboardAuth.middleware, createArtifactEventsRouter(
     createForwardingArtifactEventSink(runtimeRoot),
     createForwardingArtifactMcpBridgeSink(runtimeRoot),
-    { allowMcpAttach },
+    { allowMcpAttach, allowArtifactEvents },
   ));
 
   // Serve frontend

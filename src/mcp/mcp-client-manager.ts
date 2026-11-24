@@ -85,6 +85,8 @@ export class McpClientManager {
   private readonly random?: () => number;
 
   private readonly servers = new Map<string, ManagedServer>();
+  /** 跨 server 全局工具名归属表，防止 ('a_b','c') 与 ('a','b_c') 或 foo.bar 与 foo_bar 静默覆盖。 */
+  private readonly ownedToolNames = new Map<string, { serverId: string; remoteName: string }>();
   private started = false;
 
   constructor(options: McpClientManagerOptions) {
@@ -143,7 +145,11 @@ export class McpClientManager {
       this.servers.delete(serverId);
     }
     for (const localName of managed.tools.keys()) {
-      this.toolManager.unregisterTool(localName);
+      const owner = this.ownedToolNames.get(localName);
+      if (!owner || owner.serverId === managed.serverId) {
+        this.ownedToolNames.delete(localName);
+        this.toolManager.unregisterTool(localName);
+      }
     }
     managed.tools.clear();
     await managed.client.close();
@@ -255,9 +261,29 @@ export class McpClientManager {
     const registered: string[] = [];
     const unregistered: string[] = [];
 
+    // 先统计同批次内的基础名碰撞（例如同一 server 同时暴露 foo.bar 与 foo_bar）：
+    // 若多条远端工具折叠到同一基础名，只有无需字符折叠的原名可保留基础名，其余追加确定性哈希后缀。
+    const baseNameCounts = new Map<string, number>();
     for (const info of infos) {
       if (!info?.name) continue;
-      const localName = mcpToolName(managed.serverId, info.name);
+      const base = mcpToolName(managed.serverId, info.name);
+      baseNameCounts.set(base, (baseNameCounts.get(base) ?? 0) + 1);
+    }
+
+    const batchClaimed = new Set<string>();
+    for (const info of infos) {
+      if (!info?.name) continue;
+      const baseName = mcpToolName(managed.serverId, info.name);
+      const owner = this.ownedToolNames.get(baseName);
+      const crossServerConflict = Boolean(
+        owner && (owner.serverId !== managed.serverId || owner.remoteName !== info.name),
+      );
+      const intraBatchConflict = (baseNameCounts.get(baseName) ?? 0) > 1
+        && (batchClaimed.has(baseName) || /[^A-Za-z0-9_-]/.test(info.name));
+      const localName = (crossServerConflict || intraBatchConflict)
+        ? disambiguatedMcpToolName(managed.serverId, info.name)
+        : baseName;
+      batchClaimed.add(localName);
       seen.add(localName);
       const definition: ToolDefinition = {
         name: localName,
@@ -266,16 +292,22 @@ export class McpClientManager {
       };
       const existing = managed.tools.get(localName);
       if (existing && existing.remoteName === info.name && sameDefinition(existing.definition, definition)) {
+        this.ownedToolNames.set(localName, { serverId: managed.serverId, remoteName: info.name });
         continue;
       }
       managed.tools.set(localName, { serverId: managed.serverId, remoteName: info.name, definition });
+      this.ownedToolNames.set(localName, { serverId: managed.serverId, remoteName: info.name });
       this.toolManager.registerTool(this.createRemoteTool(managed, localName, info.name, definition));
       registered.push(localName);
     }
 
     for (const localName of [...managed.tools.keys()]) {
       if (seen.has(localName)) continue;
-      this.toolManager.unregisterTool(localName);
+      const owner = this.ownedToolNames.get(localName);
+      if (!owner || owner.serverId === managed.serverId) {
+        this.ownedToolNames.delete(localName);
+        this.toolManager.unregisterTool(localName);
+      }
       managed.tools.delete(localName);
       unregistered.push(localName);
     }
@@ -336,6 +368,16 @@ export function mcpToolName(serverId: string, remoteName: string): string {
   if (full.length <= MAX_MCP_TOOL_NAME_LENGTH) {
     return full;
   }
+  return disambiguatedMcpToolName(serverId, remoteName);
+}
+
+/**
+ * 碰撞消歧或超长截断时使用：始终附带基于原始 `(serverId, remoteName)` 的 8 位 sha256 哈希，
+ * 保证长度 <= 64 且不同 `(serverId, remoteName)` 不会静默互相覆盖。
+ */
+export function disambiguatedMcpToolName(serverId: string, remoteName: string): string {
+  const normalized = remoteName.replace(/[^A-Za-z0-9_-]/g, '_').replace(/_{2,}/g, '_');
+  const full = `${MCP_TOOL_NAME_PREFIX}_${serverId}_${normalized}`;
   const hash = crypto.createHash('sha256').update(`${serverId}\0${remoteName}`).digest('hex').slice(0, 8);
   const maxPrefixLen = MAX_MCP_TOOL_NAME_LENGTH - 1 - hash.length;
   const truncated = full.slice(0, maxPrefixLen).replace(/_+$/, '');

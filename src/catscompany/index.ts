@@ -937,9 +937,17 @@ export class CatsCompanyBot {
     // 统一外部事件唤醒总线：MCP 通知 / A2UI 交互 / 批注 / 服务回执都经
     // externalEventRouter 派发到这里。派发前已完成 eventId 幂等去重与
     // artifactId → 会话绑定解析；此处按 shutdown fence + in-flight 计数收口。
+    // 注：catsco:receipt 已在 handleServiceRunReceipt 入口做过 shutdown fence 并处于
+    // runTrackedConversationWork 追踪内，此处返回 Promise 供 emitAndWait 等待完成，
+    // 避免回执刚被 consume 就在 dispatch 间隙因 shutdown 丢回合。
     this.unsubscribeExternalEvents = externalEventRouter.subscribe(dispatch => {
+      if (dispatch.event.source === 'catsco:receipt') {
+        return this.handleExternalEvent(dispatch).catch((error: any) => {
+          Logger.warning(`[CatsCompany] 处理服务回执派发失败: ${error?.message || error}`);
+        });
+      }
       if (this.shuttingDown) return;
-      void this.runTrackedConversationWork(() => this.handleExternalEvent(dispatch)).catch((error: any) => {
+      return this.runTrackedConversationWork(() => this.handleExternalEvent(dispatch)).catch((error: any) => {
         Logger.warning(`[CatsCompany] 处理外部事件失败: ${error?.message || error}`);
       });
     });
@@ -3834,6 +3842,7 @@ export class CatsCompanyBot {
    * 幂等由路由保证（receipt_id 24h 去重 + run 只消费一次）；未登记/重复回执直接忽略。
    */
   private async handleServiceRunReceipt(receipt: ServiceRunReceipt): Promise<void> {
+    if (this.shuttingDown) return;
     const consumed = serviceRunReceiptRouter.consume(receipt);
     if (!consumed) {
       Logger.info(`[CatsCompany] 忽略服务回执（未登记或重复投递）: run=${receipt?.run_id || '-'}`);
@@ -3855,9 +3864,9 @@ export class CatsCompanyBot {
       `tool=${consumed.run.toolName || '-'}`,
     );
     // 统一外部事件总线：回执作为 catsco:receipt 事件走同一派发链路。
-    // 幂等双保险：receipt_id 已在 ServiceRunReceiptRouter 去重，这里再以
-    // eventId 登记一次（事件源重投/多实例转发时仍只派发一次）。
-    externalEventRouter.emit({
+    // 使用 emitAndWait 让 consume → dispatch → drainMessageQueue 留在同一次
+    // runTrackedConversationWork 生命周期内，避免 shutdown 间隙丢失已消费回执。
+    await externalEventRouter.emitAndWait({
       eventId: receipt.receipt_id
         ? `catsco:receipt:${receipt.receipt_id}`
         : `catsco:receipt:${consumed.run.runId}`,
