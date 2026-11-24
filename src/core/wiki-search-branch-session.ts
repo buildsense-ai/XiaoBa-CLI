@@ -28,7 +28,7 @@ interface ReadWiki {
   checked_source_refs: string[];
 }
 
-type WikiCitation = { contribution: string } & (
+export type WikiCitation = { contribution: string } & (
   | (ReadWiki & { evidence_level: 'wiki_body' })
   | { wiki_id: string; retrieval_id: string; evidence_level: 'search_snippet'; quote: string }
 );
@@ -228,7 +228,10 @@ export class WikiSearchBranchSession extends ObservationBranchSession<WikiFinish
     const refs = evidence.map(item => item.wiki_id);
     return {
       id: this.options.id, source: 'memory', status: 'completed', relevance: 'medium', summary,
-      metadata: { branchId: this.options.id, branchType: this.options.type, refs },
+      metadata: {
+        branchId: this.options.id, branchType: this.options.type, refs,
+        wiki: { citations: evidence, refresh: this.input.activationContext !== undefined },
+      },
       formattedContent: JSON.stringify({
         source: 'memory', branch: 'wiki', content_trust: 'untrusted_branch_evidence', summary, refs, wiki_refs: evidence,
       }),

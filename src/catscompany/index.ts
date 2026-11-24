@@ -1913,6 +1913,7 @@ export class CatsCompanyBot {
       senderId?: string;
       channelSource?: string;
       clearGeneration?: number;
+      promptSeq?: number;
     },
   ): SessionCallbacks {
     const suppressToolProgress = shouldSuppressStructuredToolProgress(opts?.channelSource);
@@ -1933,6 +1934,11 @@ export class CatsCompanyBot {
           || callbackStopGeneration !== this.getSessionStopGeneration(opts.sessionKey))),
     );
     return {
+      onWikiInjection: injection => {
+        if (isStaleCallback() || suppressToolProgress) return;
+        void this.sender.sendWikiInjection(topic, injection, opts?.promptSeq || this.replyOptionsFor(opts?.sessionKey)?.replyTo)
+          .catch(error => Logger.warning(`记忆注入详情发送失败: ${error instanceof Error ? error.message : String(error)}`));
+      },
       onRetry: async (attempt, maxRetries, info) => {
         if (isStaleCallback() || suppressToolProgress) {
           return;
@@ -2570,6 +2576,7 @@ export class CatsCompanyBot {
             senderId: msg.senderId,
             channelSource: msg.executionScope?.channelSource,
             clearGeneration: entryClearGeneration,
+            promptSeq: msg.seq,
           }),
         });
 

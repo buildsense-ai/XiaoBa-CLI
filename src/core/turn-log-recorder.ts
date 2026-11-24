@@ -43,8 +43,8 @@ export class TurnLogRecorder {
     });
   }
 
-  recordEvent(runId: string, event: SessionTranscriptEvent): void {
-    this.logger.logTranscript(event, runId);
+  recordEvent(runId: string, event: SessionTranscriptEvent) {
+    return this.logger.logTranscript(event, runId);
   }
 
   recordTurn(params: RecordTurnParams): void {

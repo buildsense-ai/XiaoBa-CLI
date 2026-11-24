@@ -153,6 +153,7 @@ export type SystemPromptProvider = () => Promise<string> | string;
 
 /** 会话回调（由适配层提供） */
 export interface SessionCallbacks {
+  onWikiInjection?: (injection: import('./synthetic-observation').WikiInjectionDisplay) => void;
   onText?: (text: string) => void;
   onAssistantText?: (text: string) => void | Promise<void>;
   onThinking?: (thinking: string) => void | Promise<void>;
