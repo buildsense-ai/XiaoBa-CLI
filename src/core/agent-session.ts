@@ -143,6 +143,8 @@ export interface AgentServices {
   catslogMemory?: CatsLogMemoryBackend;
   /** CatsCo MCP 工具桥（可选；把远端定制 Agent 暴露为本地一等工具）。 */
   mcpToolBridge?: import('../mcp/mcp-tool-bridge').CatsCoMcpToolBridge;
+  /** 通用长连接 MCP Client Manager（可选；管理用户配置的 stdio/HTTP MCP servers 及事件转发）。 */
+  mcpClientManager?: import('../mcp/mcp-client-manager').McpClientManager;
   toolManager: ToolManager;
   skillManager: SkillManager;
   /** Optional so tests and embedded legacy runtimes keep their existing path. */

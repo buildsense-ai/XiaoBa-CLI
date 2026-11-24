@@ -443,13 +443,8 @@ export class ConversationRunner {
       };
     }
     this.removeLegacyArtifactObservations(messages);
-    const allTools = this.toolExecutor.getToolDefinitions();
     const supportsToolCalling = (this.aiService as any).isToolCallingSupported?.() !== false;
-    const activeTools = supportsToolCalling ? allTools : [];
-    if (activeTools.length === 0 && allTools.length > 0) {
-      Logger.warning(`[${this.sessionLabel}] 当前模型/中转暂不启用工具调用，已按纯文本模型运行`);
-    }
-    const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
+    let warnedToolCallingUnsupported = false;
     const newMessages: Message[] = [];
     const pendingWiki = new Map<string, WikiInjectionDisplay>();
     let nextTurnTransientHints: Message[] = [];
@@ -490,6 +485,14 @@ export class ConversationRunner {
       this.injectSyntheticObservations(messages, turns, newMessages, pendingWiki);
       const manualCreditResume = isManualCreditResume(this.toolExecutionContext?.sessionId);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
+      // 每轮推理前重新读取工具清单，使单回合内动态热加载/卸载的 MCP 工具在下一轮立即生效。
+      const allTools = this.toolExecutor.getToolDefinitions();
+      const activeTools = supportsToolCalling ? allTools : [];
+      if (activeTools.length === 0 && allTools.length > 0 && !warnedToolCallingUnsupported) {
+        warnedToolCallingUnsupported = true;
+        Logger.warning(`[${this.sessionLabel}] 当前模型/中转暂不启用工具调用，已按纯文本模型运行`);
+      }
+      const toolDefinitions = new Map(allTools.map(tool => [tool.name, tool]));
       const requestTools = this.fitToolsToPromptBudget(activeTools);
       if (this.onCheckpointCandidateBoundary) {
         const nextMessages = await this.onCheckpointCandidateBoundary(messages, requestTools, 0);

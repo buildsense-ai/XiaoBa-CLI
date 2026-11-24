@@ -14,6 +14,10 @@ import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
 import { mondayWikiMemory } from '../utils/monday-wiki-memory';
 import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
 import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
+import { McpClientManager } from '../mcp/mcp-client-manager';
+import { loadMcpConfig } from '../mcp/mcp-config';
+import { artifactMcpRegistry } from '../mcp/artifact-mcp-registry';
+import { forwardMcpEventToExternalRouter } from '../events/event-bus-adapters';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { serviceRunReceiptRouter } from '../catscompany/service-run-receipts';
 import { FileBotDefinitionRepository } from '../bot-definition/repository';
@@ -104,6 +108,7 @@ export class RuntimeFactory {
       enabledToolNames: profile.tools.enabled,
     });
     const mcpToolBridge = this.createMcpToolBridge(toolManager, profile);
+    const mcpClientManager = this.createMcpClientManager(toolManager, profile);
 
     return {
       aiService,
@@ -119,6 +124,7 @@ export class RuntimeFactory {
       },
       ...(catslogMemory ? { catslogMemory } : {}),
       ...(mcpToolBridge ? { mcpToolBridge } : {}),
+      ...(mcpClientManager ? { mcpClientManager } : {}),
       toolManager,
       skillManager: new SkillManager(),
       turnSkillSnapshotStore: this.createTurnSkillSnapshotStore(),
@@ -190,6 +196,77 @@ export class RuntimeFactory {
     } catch (error: any) {
       // 工具桥是增量能力：初始化异常不得影响主流程。
       Logger.warning(`CatsCo Agent 工具桥初始化失败，已跳过: ${error?.message ?? error}`);
+      return undefined;
+    }
+  }
+
+  /** 通用长连接 MCP Client Manager：加载用户配置的 stdio/HTTP MCP servers，并支持 Per-Artifact MCP Bridge 动态挂载（增量能力，失败不阻断）。 */
+  private static createMcpClientManager(
+    toolManager: ToolManager,
+    profile: RuntimeProfile,
+  ): McpClientManager | undefined {
+    if (process.env.XIAOBA_MCP_CLIENT_MANAGER === '0') return undefined;
+    // 仅在具备完整生命周期销毁（destroy → closeAll）与事件消费的 CatsCo 连接器进程中默认启动，
+    // 避免 Feishu / Weixin / CLI 进程重复拉起无人消费且永不关闭的 stdio MCP 子进程。
+    if (profile.surface !== 'catscompany' && process.env.XIAOBA_MCP_CLIENT_MANAGER !== '1') {
+      return undefined;
+    }
+    try {
+      let servers: Record<string, import('../mcp/mcp-config').McpServerConfig> = {};
+      try {
+        const config = loadMcpConfig({
+          runtimeRoot: PathResolver.getRuntimeDataRoot(),
+          tolerateInvalidServers: true,
+          onServerError: (serverId, error) => {
+            Logger.warning(`MCP server "${serverId}" 配置无效，已跳过: ${error.message}`);
+          },
+        });
+        servers = config.servers;
+      } catch (error: any) {
+        // 即使静态配置文件损坏，也仍然初始化空管理器以支持 Per-Artifact MCP Bridge 动态挂载。
+        Logger.warning(`MCP 配置文件加载失败，将以空静态配置启动（Artifact Bridge 仍可用）: ${error?.message ?? error}`);
+      }
+      const manager = new McpClientManager({
+        toolManager,
+        servers,
+        onEvent: (event) => {
+          try {
+            const boundArtifactId = artifactMcpRegistry.getBoundArtifactId(event.serverId);
+            forwardMcpEventToExternalRouter(event, undefined, {
+              ...(boundArtifactId ? { boundArtifactId } : {}),
+            });
+          } catch (error: any) {
+            Logger.warning(`MCP 事件转发失败 (${event.serverId}/${event.method}): ${error?.message ?? error}`);
+          }
+        },
+      });
+      artifactMcpRegistry.attachManager(manager);
+      manager.start();
+      if (process.env.XIAOBA_MCP_CONFIG_WATCH !== '0') {
+        manager.watchConfig({
+          loadOptions: {
+            runtimeRoot: PathResolver.getRuntimeDataRoot(),
+            tolerateInvalidServers: true,
+            onServerError: (serverId, error) => {
+              Logger.warning(`MCP server "${serverId}" 热重载配置无效，已跳过: ${error.message}`);
+            },
+          },
+          onReload: (diff) => {
+            Logger.info(
+              `MCP 配置已热重载: +${diff.added.length} ~${diff.updated.length} -${diff.removed.length}` +
+                (diff.added.length ? ` added=[${diff.added.join(',')}]` : '') +
+                (diff.updated.length ? ` updated=[${diff.updated.join(',')}]` : '') +
+                (diff.removed.length ? ` removed=[${diff.removed.join(',')}]` : ''),
+            );
+          },
+          onError: (error) => {
+            Logger.warning(`MCP 配置热重载失败（保留现有连接）: ${error.message}`);
+          },
+        });
+      }
+      return manager;
+    } catch (error: any) {
+      Logger.warning(`通用 MCP Client Manager 初始化失败，已跳过: ${error?.message ?? error}`);
       return undefined;
     }
   }

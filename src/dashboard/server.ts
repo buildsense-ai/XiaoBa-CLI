@@ -3,6 +3,11 @@ import * as path from 'path';
 import type { Server } from 'http';
 import { Logger } from '../utils/logger';
 import { createApiRouter } from './routes/api';
+import { createArtifactEventsRouter } from './routes/artifact-events';
+import {
+  createForwardingArtifactEventSink,
+  createForwardingArtifactMcpBridgeSink,
+} from '../events/connector-event-bridge';
 import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
@@ -73,6 +78,16 @@ export async function startDashboard(
     catsConnectorAutoStart,
     manageConnector: connectorPolicy.manageConnector,
   }));
+  const runtimeRoot = PathResolver.getRuntimeDataRoot();
+  const allowMcpAttach = Boolean(dashboardApiKey) || process.env.XIAOBA_ALLOW_LOCAL_MCP_ATTACH === '1';
+  const allowArtifactEvents = Boolean(dashboardApiKey)
+    || process.env.XIAOBA_ALLOW_LOCAL_ARTIFACT_EVENTS === '1'
+    || process.env.XIAOBA_ALLOW_LOCAL_MCP_ATTACH === '1';
+  app.use('/api', dashboardAuth.middleware, createArtifactEventsRouter(
+    createForwardingArtifactEventSink(runtimeRoot),
+    createForwardingArtifactMcpBridgeSink(runtimeRoot),
+    { allowMcpAttach, allowArtifactEvents },
+  ));
 
   // Serve frontend
   const frontendPath = path.join(__dirname, '../../dashboard');
