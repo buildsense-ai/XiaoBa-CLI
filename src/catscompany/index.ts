@@ -115,6 +115,10 @@ import {
   type ServiceRunReceipt,
 } from './service-run-receipts';
 import {
+  externalEventRouter,
+  type ExternalEventDispatch,
+} from '../events/external-event-router';
+import {
   SkillHubThinRpcError,
   SkillHubThinRpcHandler,
   SKILLHUB_THIN_RPC_TOOLS,
@@ -163,7 +167,7 @@ interface QueuedMessage {
   /** Device metadata for the interrupted-turn marker if this queued work is running at shutdown. */
   deviceContext?: InterruptedTurnDeviceContext;
   receivedAt: number;
-  source?: 'user' | 'subagent_feedback' | 'service_run_receipt';
+  source?: 'user' | 'subagent_feedback' | 'service_run_receipt' | 'external_event';
   runtimeFeedback?: RuntimeFeedbackInput[];
   nativeFeishuContext?: NativeFeishuContextHydration;
   clearGeneration?: number;
@@ -674,6 +678,8 @@ export class CatsCompanyBot {
   private cloudSessionRestoreAbortControllers = new Map<string, AbortController>();
   /** 子 Agent 事件应沿用 spawn 时的通道能力，不能被同 session 后续消息覆盖 */
   private subAgentEventRoutes = new Map<string, SubAgentEventRoute>();
+  /** 外部事件总线订阅的退订函数（destroy 时清理）。 */
+  private unsubscribeExternalEvents: (() => void) | null = null;
   /** no-wait 子 Agent 完成后的批量回流，避免逐条唤醒主模型刷屏 */
   private subAgentCompletionBatches = new Map<string, BackgroundSubAgentCompletionBatch>();
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
@@ -917,6 +923,16 @@ export class CatsCompanyBot {
       if (this.shuttingDown) return;
       void this.runTrackedConversationWork(() => this.handleServiceRunReceipt(receipt)).catch((error: any) => {
         Logger.warning(`[CatsCompany] 处理服务回执失败: ${error?.message || error}`);
+      });
+    });
+
+    // 统一外部事件唤醒总线：MCP 通知 / A2UI 交互 / 批注 / 服务回执都经
+    // externalEventRouter 派发到这里。派发前已完成 eventId 幂等去重与
+    // artifactId → 会话绑定解析；此处按 shutdown fence + in-flight 计数收口。
+    this.unsubscribeExternalEvents = externalEventRouter.subscribe(dispatch => {
+      if (this.shuttingDown) return;
+      void this.runTrackedConversationWork(() => this.handleExternalEvent(dispatch)).catch((error: any) => {
+        Logger.warning(`[CatsCompany] 处理外部事件失败: ${error?.message || error}`);
       });
     });
 
@@ -2447,6 +2463,12 @@ export class CatsCompanyBot {
       }
     }
 
+    // Artifact 路由绑定：消息携带的 artifact ref 登记到外部事件总线，
+    // 之后 A2UI 交互/批注事件只需带 artifactId 即可精准唤回本会话。
+    for (const ref of [msg.artifactContextRef, msg.artifactTaskRef]) {
+      if (ref) externalEventRouter.bindArtifact(ref, { sessionKey: key, topic: msg.topic });
+    }
+
     // 并发保护：忙时消息静默入队，空闲后自动处理
     if (entryClearGeneration !== this.getSessionClearGeneration(key)
       || entryStopGeneration !== this.getSessionStopGeneration(key)) return;
@@ -3810,15 +3832,71 @@ export class CatsCompanyBot {
       `[CatsCompany] 服务回执唤醒会话: run=${consumed.run.runId} status=${receipt.status || '-'} ` +
       `tool=${consumed.run.toolName || '-'}`,
     );
-    this.enqueueServiceRunReceiptTurn(sessionKey, topic, senderId, text);
+    // 统一外部事件总线：回执作为 catsco:receipt 事件走同一派发链路。
+    // 幂等双保险：receipt_id 已在 ServiceRunReceiptRouter 去重，这里再以
+    // eventId 登记一次（事件源重投/多实例转发时仍只派发一次）。
+    externalEventRouter.emit({
+      eventId: receipt.receipt_id
+        ? `catsco:receipt:${receipt.receipt_id}`
+        : `catsco:receipt:${consumed.run.runId}`,
+      source: 'catsco:receipt',
+      type: 'service_run_receipt',
+      target: { sessionKey, topic },
+      actorUserId: senderId,
+      priority: 'immediate',
+      buildText: () => text,
+    });
+  }
+
+  /**
+   * 统一外部事件唤醒入口（设计「MCP Event Bus」）：把 ExternalEventRouter 派发
+   * 的事件作为一轮 runtime observation 入队并立即唤醒对应会话。
+   * 幂等/防抖/artifact 路由已在路由层完成；topic 缺失时无法构建通道回调，丢弃并告警。
+   */
+  private async handleExternalEvent(dispatch: ExternalEventDispatch): Promise<void> {
+    const sessionKey = dispatch.sessionKey;
+    const topic = dispatch.topic || '';
+    if (!sessionKey || !topic) {
+      Logger.warning(
+        `[CatsCompany] 外部事件缺少会话/topic，无法唤醒: source=${dispatch.event.source} ` +
+        `type=${dispatch.event.type} session=${sessionKey || '-'} topic=${topic || '-'}`,
+      );
+      return;
+    }
+    // 通用事件可能没有真人触发者（如 MCP Server 推送）：用 'system' 作为发送者，
+    // 语义与平台机器人系统消息一致（envelope 只把它当字符串处理）。
+    const senderId = dispatch.actorUserId || 'system';
+    // 平台回执仍按 service_run_receipt 归属（保持 observation source 不变）；
+    // 其它事件统一按 external_event。
+    const source = dispatch.event.type === 'service_run_receipt' ? 'service_run_receipt' : 'external_event';
+    this.enqueueExternalEventTurn(sessionKey, topic, senderId, dispatch.text, source);
+    Logger.info(
+      `[CatsCompany] 外部事件唤醒会话: source=${dispatch.event.source} type=${dispatch.event.type} ` +
+      `session=${sessionKey}${dispatch.artifactId ? ` artifact=${dispatch.artifactId}` : ''}`,
+    );
     await this.drainMessageQueue(sessionKey);
   }
 
+  /** 服务回执入队（保留原方法名与队列形状，测试/兼容路径）。 */
   private enqueueServiceRunReceiptTurn(
     sessionKey: string,
     topic: string,
     senderId: string,
     text: string,
+  ): void {
+    this.enqueueExternalEventTurn(sessionKey, topic, senderId, text, 'service_run_receipt');
+  }
+
+  /**
+   * 外部事件入队：与回执同一队列形状（seq=0 + runtime observation source），
+   * drainMessageQueue 时按 source 归属为 service_run_receipt / external_event。
+   */
+  private enqueueExternalEventTurn(
+    sessionKey: string,
+    topic: string,
+    senderId: string,
+    text: string,
+    source: 'service_run_receipt' | 'external_event',
   ): void {
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
@@ -3828,7 +3906,7 @@ export class CatsCompanyBot {
       seq: 0,
       executionScope: createExecutionScope(createCatsCoMessageEnvelope({ topic, senderId, text })),
       receivedAt: Date.now(),
-      source: 'service_run_receipt',
+      source,
       clearGeneration: this.getSessionClearGeneration(sessionKey),
       stopGeneration: this.getSessionStopGeneration(sessionKey),
     });
@@ -4581,7 +4659,9 @@ export class CatsCompanyBot {
               channelSource: msg.executionScope?.channelSource,
               clearGeneration,
             }),
-            source: msg.source === 'service_run_receipt' ? 'service_run_receipt' : 'subagent_result',
+            source: msg.source === 'service_run_receipt' ? 'service_run_receipt'
+              : msg.source === 'external_event' ? 'external_event'
+              : 'subagent_result',
             suppressFinalResponse: suppressSubAgentFinalResponse,
             executionScope: msg.executionScope,
             localDeviceGrant: this.localDeviceGrant,
@@ -4853,6 +4933,11 @@ export class CatsCompanyBot {
       if (batch.timer) clearTimeout(batch.timer);
     }
     this.subAgentCompletionBatches.clear();
+    // 退订外部事件总线：进程内单例会被后续服务实例复用，残留订阅会导致
+    // 旧实例的回调在 shutdown 后继续被调用（回调内虽有 shuttingDown fence，
+    // 但退订更干净，也避免 handler 集合泄漏）。
+    this.unsubscribeExternalEvents?.();
+    this.unsubscribeExternalEvents = null;
     // Interrupt every busy session before quiescing. requestInterrupt() aborts
     // the session's active model turn (AbortController), so an in-flight
     // handleMessage / handleRuntimeObservation returns a cancellation instead of
