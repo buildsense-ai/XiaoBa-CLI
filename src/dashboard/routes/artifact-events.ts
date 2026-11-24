@@ -11,21 +11,30 @@ import {
   formatAnnotationBatchPrompt,
   formatArtifactEventPrompt,
 } from '../../artifacts/artifact-event-formatter';
+import {
+  ArtifactMcpBridgeError,
+  type ArtifactMcpBridgeSink,
+} from '../../mcp/artifact-mcp-registry';
 
 const MAX_EVENTS_PER_REQUEST = 100;
 
 /**
- * Artifact A2UI / annotation event intake routes.
+ * Artifact A2UI / annotation event intake routes (plus optional per-artifact
+ * MCP bridge attach/detach routes).
  *
- * Mount under `/api` (e.g. `app.use('/api', auth, createArtifactEventsRouter(sink))`)
+ * Mount under `/api` (e.g. `app.use('/api', auth, createArtifactEventsRouter(sink, bridgeSink))`)
  * so requests land on:
- *   POST /api/artifacts/events
- *   POST /api/artifacts/:artifactId/bind
- *
- * The sink is injected so Track 1's ExternalEventRouter can be wired in with a
- * one-line adapter once it lands.
+ *   POST   /api/artifacts/events
+ *   POST   /api/artifacts/:artifactId/bind
+ *   POST   /api/artifacts/:artifactId/mcp/attach
+ *   DELETE /api/artifacts/:artifactId/mcp/attach
+ *   POST   /api/artifacts/:artifactId/mcp/detach
+ *   GET    /api/artifacts/mcp/bridges
  */
-export function createArtifactEventsRouter(sink: ArtifactEventSink): Router {
+export function createArtifactEventsRouter(
+  sink: ArtifactEventSink,
+  bridgeSink?: ArtifactMcpBridgeSink,
+): Router {
   const router = Router();
 
   router.post('/artifacts/events', async (req, res) => {
@@ -126,6 +135,53 @@ export function createArtifactEventsRouter(sink: ArtifactEventSink): Router {
     }
   });
 
+  if (bridgeSink) {
+    router.get('/artifacts/mcp/bridges', (_req, res) => {
+      return res.status(200).json({
+        ok: true,
+        bridges: bridgeSink.listArtifactBridges(),
+      });
+    });
+
+    router.post('/artifacts/:artifactId/mcp/attach', async (req, res) => {
+      try {
+        const artifactId = String(req.params.artifactId || '').trim();
+        const body = (req.body && typeof req.body === 'object') ? req.body : {};
+        const result = await bridgeSink.registerArtifactBridge({
+          artifactId,
+          url: firstNonEmpty(body.url, body.mcpUrl, body.mcp_url) || '',
+          bearerToken: firstNonEmpty(body.bearerToken, body.bearer_token, body.token),
+          headers: body.headers && typeof body.headers === 'object' ? body.headers : undefined,
+          timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+          sessionKey: firstNonEmpty(body.sessionKey, body.session_key),
+          topic: firstNonEmpty(body.topic),
+        });
+        return res.status(200).json(result);
+      } catch (error) {
+        return respondWithError(res, error);
+      }
+    });
+
+    const handleDetach = async (req: any, res: any) => {
+      try {
+        const artifactId = String(req.params.artifactId || '').trim();
+        const body = (req.body && typeof req.body === 'object') ? req.body : {};
+        const unbindSession =
+          body.unbindSession === true ||
+          body.unbind_session === true ||
+          req.query?.unbind === '1' ||
+          req.query?.unbind === 'true';
+        const result = await bridgeSink.unregisterArtifactBridge(artifactId, { unbindSession });
+        return res.status(200).json(result);
+      } catch (error) {
+        return respondWithError(res, error);
+      }
+    };
+
+    router.delete('/artifacts/:artifactId/mcp/attach', handleDetach);
+    router.post('/artifacts/:artifactId/mcp/detach', handleDetach);
+  }
+
   return router;
 }
 
@@ -198,6 +254,13 @@ function respondWithError(res: any, error: unknown): any {
       code: error.code,
       error: error.message,
       ...(error.details !== undefined ? { details: error.details } : {}),
+    });
+  }
+  if (error instanceof ArtifactMcpBridgeError) {
+    return res.status(error.status).json({
+      ok: false,
+      code: error.code,
+      error: error.message,
     });
   }
   const status = Number((error as any)?.status) || 500;

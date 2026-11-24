@@ -8,6 +8,7 @@ import {
 } from '../src/events/event-bus-adapters';
 import { createArtifactEventsRouter } from '../src/dashboard/routes/artifact-events';
 import { McpClientManager } from '../src/mcp/mcp-client-manager';
+import { ArtifactMcpRegistry } from '../src/mcp/artifact-mcp-registry';
 import type { McpConnection, McpConnectionHooks } from '../src/mcp/mcp-persistent-client';
 import type { Tool } from '../src/types/tool';
 
@@ -167,9 +168,135 @@ async function testArtifactHttpRoutesEndToEnd(): Promise<void> {
   }
 }
 
+async function testPerArtifactDynamicMcpBridge(): Promise<void> {
+  const router = new ExternalEventRouter();
+  const registry = new ArtifactMcpRegistry(router);
+  const dispatches: ExternalEventDispatch[] = [];
+  router.subscribe((dispatch) => {
+    dispatches.push(dispatch);
+  });
+
+  const registeredTools = new Map<string, Tool>();
+  let capturedHooks: McpConnectionHooks | undefined;
+  let closed = false;
+
+  const manager = new McpClientManager({
+    toolManager: {
+      registerTool: (tool) => registeredTools.set(tool.definition.name, tool),
+      unregisterTool: (name) => registeredTools.delete(name),
+    },
+    createConnection: (_config, hooks): McpConnection => {
+      capturedHooks = hooks;
+      return {
+        connect: async () => {},
+        close: async () => { closed = true; },
+        listTools: async () => ({
+          tools: [
+            { name: 'canvas_get_snapshot', description: 'Read canvas snapshot' },
+            { name: 'canvas_patch', description: 'Patch canvas layout' },
+          ],
+        }),
+        callTool: async () => ({ isError: false, content: [{ type: 'text', text: 'patched' }] }),
+        listResources: async () => ({ resources: [] }),
+        readResource: async () => ({ contents: [] }),
+        subscribeResource: async () => {},
+        unsubscribeResource: async () => {},
+        listPrompts: async () => ({ prompts: [] }),
+        getPrompt: async () => ({ messages: [] }),
+      } as unknown as McpConnection;
+    },
+    onEvent: (event) => {
+      forwardMcpEventToExternalRouter(event, router);
+    },
+  });
+  registry.attachManager(manager);
+  manager.start();
+
+  const app = express();
+  app.use(express.json());
+  app.use('/api', createArtifactEventsRouter(createExternalEventArtifactSink(router), registry));
+
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const port = (server.address() as AddressInfo).port;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    // 1. Invalid URL rejected with 422
+    const badRes = await fetch(`${baseUrl}/api/artifacts/canvas-1/mcp/attach`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'ftp://invalid.test/mcp' }),
+    });
+    assert.equal(badRes.status, 422);
+
+    // 2. Attach per-artifact MCP bridge + bind session in one call
+    const attachRes = await fetch(`${baseUrl}/api/artifacts/canvas-1/mcp/attach`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        url: 'http://127.0.0.1:4510/mcp',
+        bearerToken: 'secret-token',
+        sessionKey: 'sess-canvas-1',
+        topic: 'p2p_88_99',
+      }),
+    });
+    assert.equal(attachRes.status, 200);
+    const attachJson = await attachRes.json() as any;
+    assert.equal(attachJson.ok, true);
+    assert.equal(attachJson.serverId, 'art_canvas_1');
+    assert.equal(attachJson.sessionBound, true);
+
+    await manager.waitForInitialConnect();
+    await manager.refreshServerTools('art_canvas_1');
+    assert.equal(registeredTools.has('mcp_art_canvas_1_canvas_get_snapshot'), true);
+    assert.equal(registeredTools.has('mcp_art_canvas_1_canvas_patch'), true);
+
+    // 3. List bridges hides bearerToken
+    const listRes = await fetch(`${baseUrl}/api/artifacts/mcp/bridges`);
+    assert.equal(listRes.status, 200);
+    const listJson = await listRes.json() as any;
+    assert.equal(listJson.bridges.length, 1);
+    assert.equal(listJson.bridges[0].hasBearerToken, true);
+    assert.equal('bearerToken' in listJson.bridges[0], false);
+
+    // 4. Artifact MCP notification wakes bound session
+    capturedHooks?.onNotification?.({
+      method: 'notifications/artifact/a2ui',
+      params: {
+        artifactId: 'canvas-1',
+        eventId: 'evt-canvas-1',
+        actionName: 'auto_arrange',
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(dispatches.length, 1);
+    assert.equal(dispatches[0].sessionKey, 'sess-canvas-1');
+    assert.equal(dispatches[0].topic, 'p2p_88_99');
+
+    // 5. Detach unregisters tools and closes connection
+    const detachRes = await fetch(`${baseUrl}/api/artifacts/canvas-1/mcp/attach?unbind=1`, {
+      method: 'DELETE',
+    });
+    assert.equal(detachRes.status, 200);
+    const detachJson = await detachRes.json() as any;
+    assert.equal(detachJson.existed, true);
+    assert.equal(detachJson.sessionUnbound, true);
+    assert.equal(closed, true);
+    assert.equal(registeredTools.has('mcp_art_canvas_1_canvas_patch'), false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await manager.closeAll();
+    registry.reset();
+    router.reset();
+  }
+}
+
 async function main(): Promise<void> {
   await testMcpNotificationEndToEnd();
   await testArtifactHttpRoutesEndToEnd();
+  await testPerArtifactDynamicMcpBridge();
   console.log('mcp-event-bus-integration.test.ts: PASS');
 }
 

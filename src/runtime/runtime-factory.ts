@@ -15,6 +15,7 @@ import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
 import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
 import { McpClientManager } from '../mcp/mcp-client-manager';
 import { loadMcpConfig } from '../mcp/mcp-config';
+import { artifactMcpRegistry } from '../mcp/artifact-mcp-registry';
 import { forwardMcpEventToExternalRouter } from '../events/event-bus-adapters';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { serviceRunReceiptRouter } from '../catscompany/service-run-receipts';
@@ -190,13 +191,11 @@ export class RuntimeFactory {
     }
   }
 
-  /** 通用长连接 MCP Client Manager：加载用户配置的 stdio/HTTP MCP servers 并转发事件到总线（增量能力，失败不阻断）。 */
+  /** 通用长连接 MCP Client Manager：加载用户配置的 stdio/HTTP MCP servers，并支持 Per-Artifact MCP Bridge 动态挂载（增量能力，失败不阻断）。 */
   private static createMcpClientManager(toolManager: ToolManager): McpClientManager | undefined {
     if (process.env.XIAOBA_MCP_CLIENT_MANAGER === '0') return undefined;
     try {
       const config = loadMcpConfig();
-      const serverIds = Object.keys(config.servers);
-      if (serverIds.length === 0) return undefined;
       const manager = new McpClientManager({
         toolManager,
         servers: config.servers,
@@ -208,6 +207,7 @@ export class RuntimeFactory {
           }
         },
       });
+      artifactMcpRegistry.attachManager(manager);
       manager.start();
       return manager;
     } catch (error: any) {

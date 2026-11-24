@@ -5,6 +5,7 @@ import { Logger } from '../utils/logger';
 import { createApiRouter } from './routes/api';
 import { createArtifactEventsRouter } from './routes/artifact-events';
 import { createExternalEventArtifactSink } from '../events/event-bus-adapters';
+import { artifactMcpRegistry } from '../mcp/artifact-mcp-registry';
 import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
 import { createDashboardAuth } from './auth';
@@ -75,7 +76,10 @@ export async function startDashboard(
     catsConnectorAutoStart,
     manageConnector: connectorPolicy.manageConnector,
   }));
-  app.use('/api', dashboardAuth.middleware, createArtifactEventsRouter(createExternalEventArtifactSink()));
+  app.use('/api', dashboardAuth.middleware, createArtifactEventsRouter(
+    createExternalEventArtifactSink(),
+    artifactMcpRegistry,
+  ));
 
   // Serve frontend
   const frontendPath = path.join(__dirname, '../../dashboard');
