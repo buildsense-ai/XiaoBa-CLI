@@ -112,6 +112,7 @@ const DEFAULT_TOOL_PREFIX = 'catsco_';
 const DEFAULT_REFRESH_INTERVAL_MS = 30_000;
 const DEFAULT_RUN_STATUS_TOOL = 'catsco_run_status';
 const DEFAULT_SHARE_SELF_TOOL = 'catsco_share_self';
+const COMPUTE_PREVIEW_TOOL = 'catsco_compute_preview';
 export const DEFAULT_RUN_POLL_TIMEOUT_MS = 90_000;
 
 /**
@@ -242,7 +243,7 @@ export class CatsCoMcpToolBridge {
    * 服务端根本不认的 `bot_uid`，描述还被写成「这是另一个 Agent」——误导模型去当 agent 调。
    */
   private isSystemTool(toolName: string): boolean {
-    return toolName === this.runStatusToolName || toolName === this.shareSelfToolName;
+    return toolName === this.runStatusToolName || toolName === this.shareSelfToolName || toolName === COMPUTE_PREVIEW_TOOL;
   }
 
   /** 当前已桥接的远端工具名（诊断/测试用）。 */
@@ -404,7 +405,7 @@ export class CatsCoMcpToolBridge {
       name: info.name,
       // run_status 仍要补那句 run_id 用法（轮询入口）；share_self 是平台系统工具，
       // 不该套「这是另一个 Agent」的用法指引——那会诱导模型把它当 agent 调。
-      description: info.name === this.shareSelfToolName
+      description: this.isSystemTool(info.name) && info.name !== this.runStatusToolName
         ? (info.description ?? '')
         : buildBridgeDescription(info.name, info.description, this.runStatusToolName),
       parameters: toToolParameters(info.inputSchema),
