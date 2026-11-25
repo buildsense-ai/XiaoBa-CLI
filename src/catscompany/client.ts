@@ -142,6 +142,18 @@ export interface CatsDeviceRpcError {
   message: string;
 }
 
+export interface CatsComputeTaskReceipt {
+  contract_version?: string;
+  receipt_id?: string;
+  quote_id?: string;
+  status?: string;
+  state?: string;
+  charged_units?: number;
+  progress?: unknown;
+  error?: string;
+  created_at?: string;
+}
+
 export interface CatsDeviceRpcMessage {
   share_id?: string;
   share_revision?: number;
@@ -650,6 +662,9 @@ export class CatsClient extends EventEmitter {
       // 生命周期回注（平台 service_run_receipts 收件箱投递）：
       // 至少一次投递 + 幂等（receipt_id 稳定），去重与路由交给上层路由表。
       this.emit('service_run_receipt', msg.service_run_receipt);
+    } else if (msg.compute_task_receipt) {
+      // HPC 任务回执在资源释放和实扣完成后投递，按 quote_id 交给上层路由。
+      this.emit('compute_task_receipt', msg.compute_task_receipt as CatsComputeTaskReceipt);
     } else if (msg.thin_tool_rpc) {
       this.handleThinToolRpcMessage(msg.thin_tool_rpc);
     } else if (msg.device_grant_renewal) {

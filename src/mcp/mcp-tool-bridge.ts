@@ -99,6 +99,14 @@ export interface McpToolBridgeOptions {
     /** 触发本次调用的真人 uid（回执唤醒回合时作为消息发送者）。 */
     actorUserId?: string;
   }) => void;
+  /** 算力报价进入后台执行后，记录 quote_id 对应的原对话路由。 */
+  onComputeTaskPending?: (info: {
+    quoteId: string;
+    toolName: string;
+    conversationSessionKey?: string;
+    conversationTopic?: string;
+    actorUserId?: string;
+  }) => void;
   now?: () => number;
   /**
    * 调用窗口（可注入，测试用）：调用进行中，那个会话里的消息不算新任务。
@@ -150,6 +158,7 @@ export class CatsCoMcpToolBridge {
   private readonly resolveEndpoint: () => McpBridgeEndpoint | null;
   private readonly resolveAgentSlugs?: () => string[] | undefined;
   private readonly resolveBotUid?: () => number | undefined;
+  private readonly onComputeTaskPending?: McpToolBridgeOptions['onComputeTaskPending'];
   private readonly toolNamePrefix: string;
   private readonly refreshIntervalMs: number;
   private readonly runStatusToolName: string;
@@ -187,6 +196,7 @@ export class CatsCoMcpToolBridge {
     this.runPollIntervalMs = options.runPollIntervalMs ?? DEFAULT_RUN_POLL_INTERVAL_MS;
     this.callWindow = options.callWindow ?? defaultBotCallWindow;
     this.onRunPending = options.onRunPending;
+    this.onComputeTaskPending = options.onComputeTaskPending;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
     this.resumeTtlMs = options.resumeTtlMs ?? DEFAULT_RESUME_TTL_MS;
@@ -505,6 +515,20 @@ export class CatsCoMcpToolBridge {
         }
         return { ok: false, errorCode: code, message: mapToolErrorMessage(code, detail) };
       }
+      const computeQuoteId = parseComputeTaskQuoteId(first.structured);
+      if (toolName === 'catsco_compute_task_quote' && computeQuoteId) {
+        try {
+          this.onComputeTaskPending?.({
+            quoteId: computeQuoteId,
+            toolName,
+            ...(route?.conversationSessionKey ? { conversationSessionKey: route.conversationSessionKey } : {}),
+            ...(route?.conversationTopic ? { conversationTopic: route.conversationTopic } : {}),
+            ...(route?.actorUserId ? { actorUserId: route.actorUserId } : {}),
+          });
+        } catch (error: any) {
+          Logger.warning(`CatsCo 算力回执登记失败: ${error?.message ?? error}`);
+        }
+      }
       let envelope = parseServiceRunEnvelope(first.structured);
       // degraded：轮询通道坏了导致「仍在运行」这个结论不可信时，把原因带给结果文本。
       let pollDegraded: string | null = null;
@@ -685,6 +709,12 @@ function toArgsRecord(args: unknown): Record<string, unknown> {
   if (isRecord(args)) return args;
   return { input: args };
 }
+
+ export function parseComputeTaskQuoteId(structured: unknown): string | null {
+   if (!isRecord(structured) || typeof structured.quote_id !== 'string') return null;
+   const quoteId = structured.quote_id.trim();
+   return /^hpc_[0-9a-f]{32}$/.test(quoteId) ? quoteId : null;
+ }
 
 /** 解析平台 envelope（structuredContent）；形状不符时返回 null。 */
 export function parseServiceRunEnvelope(structured: unknown): ServiceRunEnvelopeView | null {
