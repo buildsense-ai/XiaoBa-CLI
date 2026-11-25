@@ -1146,25 +1146,30 @@ describe('CatsCo 回复归属（群会话）', () => {
     );
   });
 
-  test('算力预览保留在受限工具清单里，并透传预览正文', async () => {
-    const name = 'catsco_compute_preview';
-    const args = { task: { topology: 'independent_shards', shards: 8, logical_cpus: 2, memory_mib: 1024 } };
-    const text = '| 运行位置 | 费用上限 |\n| --- | --- |\n| 云集群 | 待报价 |';
-    const { bridge, manager } = createHarness({
-      listTools: () => [toolInfo(name, '算力预览')],
-      resolveAgentSlugs: () => [],
-      resolveBotUid: () => 1619,
-      callTool: (toolName, input) => {
-        assert.equal(toolName, name);
-        assert.deepEqual(input, args);
-        return { isError: false, contentText: text, structured: { schema_version: 'catsco.compute-preview.v1' } };
-      },
+  for (const [name, args, text] of [
+    ['catsco_compute_preview', { task: { topology: 'independent_shards', shards: 8, logical_cpus: 2, memory_mib: 1024 } },
+      '| 运行位置 | 费用上限 |\n| --- | --- |\n| 云集群 | 待报价 |'],
+    ['catsco_compute_task_quote', { nodes: 2, logical_cpus: 2, memory_mib: 1024, wall_seconds: 60 },
+      '请本人确认报价'],
+    ['catsco_compute_task_status', { quote_id: 'hpc_abcd' }, 'Cats 算力任务状态：active'],
+  ] as const) {
+    test(`${name} 保留服务端描述及参数`, async () => {
+      const { bridge, manager } = createHarness({
+        listTools: () => [toolInfo(name, '算力工具')],
+        resolveAgentSlugs: () => [],
+        resolveBotUid: () => 1619,
+        callTool: (toolName, input) => {
+          assert.equal(toolName, name);
+          assert.deepEqual(input, args);
+          return { isError: false, contentText: text };
+        },
+      });
+      await bridge.refresh();
+      const tool = manager.getTool(name)!;
+      assert.equal(tool.definition.description, '算力工具');
+      assert.deepEqual(await tool.execute(args, context), { ok: true, content: text });
     });
-    await bridge.refresh();
-    const tool = manager.getTool(name)!;
-    assert.equal(tool.definition.description, '算力预览');
-    assert.deepEqual(await tool.execute(args, context), { ok: true, content: text });
-  });
+  }
 
   test('系统工具的描述不套「这是另一个 Agent」的用法指引', async () => {
     const { bridge, manager } = createHarness({
