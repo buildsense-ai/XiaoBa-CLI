@@ -1587,15 +1587,6 @@ export class CatsClient extends EventEmitter {
     return [...this.endpointCandidates];
   }
 
-  async requestGroupDeviceAccess(payload: Record<string, unknown>): Promise<unknown> {
-    const response = await fetch(this.getHttpBaseUrl().replace(/\/$/, '') + '/api/groups/device-share-requests', {
-      method: 'POST', headers: { Authorization: `ApiKey ${this.config.apiKey || ''}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload), signal: AbortSignal.timeout(15000),
-    });
-    if (!response.ok) throw new Error('Device sharing request was rejected');
-    return response.json();
-  }
-
   /** 当前 HTTP 基地址；跟随已选中的域名族，避免 WS 与 HTTP 落在不同域名。 */
   getHttpBaseUrl(): string {
     return this.httpBaseUrl();

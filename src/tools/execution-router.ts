@@ -527,7 +527,7 @@ function findRuntimeTargetRoute(context: ToolExecutionContext, target: string): 
     if (selection.status !== 'selected' || !selection.selectedDeviceId) {
       return { ok: false, reason: selection.status === 'needs_selection' ? 'ambiguous' : 'unavailable',
         message: selection.status === 'needs_selection' && !selection.selectedDeviceId
-          ? '当前未指定默认设备。请按用户任务使用已授权设备的准确名称或 ID 作为 target；目标仍不明确时再询问。'
+          ? '当前未指定默认设备，普通任务在 Bot 自身环境执行。用户指定了用户设备时，请用已授权设备的准确名称或 ID；设备仍不明确时再询问。'
           : '当前会话尚未选定可用电脑。请确认目标设备；不会自动切换到另一台电脑。' };
     }
     const selected = targetRoutes.routes.find(route => route.ownerUserId === (selection.selectedOwnerUserId || owner) && route.deviceId === selection.selectedDeviceId);

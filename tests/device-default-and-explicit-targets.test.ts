@@ -46,21 +46,25 @@ function fixture(selected: 'selected' | 'unavailable' | 'needs_selection' = 'sel
   return { ctx, calls, metadata, scope };
 }
 
-test('an unspecified default leaves exact-device routing authorized and lets the Bot decide', () => {
+test('an unspecified default routes ordinary work to the Bot and preserves exact-device authorization', () => {
   const { ctx } = fixture('needs_selection');
   ctx.deviceSelection!.selectionSource = 'user_unspecified';
+  const local = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file' });
+  assert.ok(local.ok && local.mode === 'local');
+  assert.equal(local.target, 'agent_self');
   const route = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file', target: 'b' });
-  assert.equal(route.ok, true);
+  assert.ok(route.ok && route.mode === 'remote');
+  assert.equal(route.targetDeviceId, 'b');
   const alias = resolveExecutionRoute(ctx, { toolName: 'read_file', operation: 'read_file', target: 'speaker_default' });
   assert.equal(alias.ok, false, 'an empty default must not silently resolve by list order');
   const text = buildRuntimeContextText(ctx.targetRoutes, undefined, undefined, ctx.deviceSelection);
-  assert.match(text, /由 Bot 根据当前任务判断/);
-  assert.match(text, /不要要求用户必须先设置默认设备/);
+  assert.match(text, /普通任务在 Bot 自己的运行环境执行/);
+  assert.match(text, /无需设置默认设备/);
   assert.doesNotMatch(text, /默认未选定且有多台设备时才询问/);
   assert.doesNotMatch(text, /target 用 "Alice"/);
   const snapshot = buildRuntimeContextSnapshot({ sessionKey: ctx.executionScope!.sessionKey, executionScope: ctx.executionScope,
     deviceSelection: ctx.deviceSelection, deviceGrants: ctx.deviceGrants });
-  assert.match(snapshot!.toolRules.join('\n'), /No user device is pinned/);
+  assert.match(snapshot!.toolRules.join('\n'), /No user device is pinned. Run ordinary tasks on agent_self/);
   assert.doesNotMatch(snapshot!.toolRules.join('\n'), /call target="speaker_default"/);
 });
 

@@ -1,4 +1,3 @@
-import { RequestDeviceAccessTool } from '../tools/request-device-access-tool';
 import {
   CatsClient,
   MessageContext,
@@ -771,9 +770,6 @@ export class CatsCompanyBot {
     this.agentServices = runtime.services;
     this.cloudSessionRestorer = new CatsCompanyCloudSessionRestorer(this.bot, this.agentServices.aiService);
     const { toolManager } = this.agentServices;
-    if (!config.connectorToken) {
-      toolManager.registerTool(new RequestDeviceAccessTool(payload => this.bot.requestGroupDeviceAccess(payload)));
-    }
 
     Logger.info(`已注册 ${toolManager.getToolCount()} 个基础工具 (message mode)`);
     Logger.info(`运行时可用工具数量将根据 skill toolPolicy 动态过滤`);
