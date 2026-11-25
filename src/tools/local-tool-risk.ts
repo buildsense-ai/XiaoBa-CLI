@@ -22,6 +22,7 @@ const LOW_RISK_TOOLS = new Set([
   'ask_parent',
   'send_text',
   'skill',
+  'local_compute_resources',
   // Branch-local memory tools. Remote reads remain device-capability scoped
   // and bounded by the session; no new write or operator capability.
   'memory_search',
