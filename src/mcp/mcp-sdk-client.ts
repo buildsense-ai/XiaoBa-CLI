@@ -1,10 +1,18 @@
 /**
- * CatsCo MCP 工具桥的 SDK 客户端实现（生产路径）。
- * 复用 `scripts/mcp-smoke.mjs` 已验证的 SDK 组合：
- * StreamableHTTPClientTransport + Bearer 头，close() 会向平台发送 DELETE 以释放会话。
+ * CatsCo MCP 工具桥的 SDK 客户端实现（生产路径，@modelcontextprotocol/client v2）。
+ *
+ * v2 升级要点：
+ * - 代际协商 mode 'auto'：连接时先探 server/discover（2026-07-28 modern），
+ *   不识别的 server 自动回退 initialize（2025-11-25 legacy），平台升级协议零改动接入；
+ * - 长连接保持 + tools/list_changed 推送：服务端推送清单变更时经回调上抛，
+ *   桥接层可热刷新而无需轮询；
+ * - StreamableHTTPClientTransport + Bearer 头组合不变，close() 仍向平台发送 DELETE 释放会话。
  */
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  type ProtocolEra,
+} from '@modelcontextprotocol/client';
 import type {
   McpBridgeCallResult,
   McpBridgeClient,
@@ -17,8 +25,19 @@ export const MCP_BRIDGE_CALL_TIMEOUT_MS = 120_000;
 /** tools/list 请求超时。 */
 export const MCP_BRIDGE_LIST_TIMEOUT_MS = 30_000;
 
-export function createSdkMcpBridgeClientFactory(): McpBridgeClientFactory {
-  return (endpoint: McpBridgeEndpoint) => new SdkMcpBridgeClient(normalizeEndpoint(endpoint));
+export interface SdkMcpBridgeClientOptions {
+  /** 服务端推送 tools/list_changed 时的回调（v2 长连接推送支持）。 */
+  onToolsListChanged?: () => void;
+  /** 服务端通知的通用回调（list_changed 之外的推送也会送达）。 */
+  onNotification?: (notification: { method: string; params?: unknown }) => void;
+  /** 连接断开回调（非主动 close 触发）。 */
+  onConnectionLost?: () => void;
+}
+
+export function createSdkMcpBridgeClientFactory(
+  options: SdkMcpBridgeClientOptions = {},
+): McpBridgeClientFactory {
+  return (endpoint: McpBridgeEndpoint) => new SdkMcpBridgeClient(normalizeEndpoint(endpoint), options);
 }
 
 /** 防御性：避免端点 URL 带尾斜杠导致 SDK `new URL` 异常。 */
@@ -32,13 +51,58 @@ class SdkMcpBridgeClient implements McpBridgeClient {
   private connected = false;
   private closed = false;
 
-  constructor(endpoint: McpBridgeEndpoint) {
-    this.client = new Client({ name: 'xiaoba-mcp-bridge', version: '0.1.0' });
+  constructor(endpoint: McpBridgeEndpoint, private readonly options: SdkMcpBridgeClientOptions = {}) {
+    this.client = new Client(
+      { name: 'xiaoba-mcp-bridge', version: '0.2.0' },
+      {
+        capabilities: {},
+        // 声明 modern 草稿版本 + auto 协商：双代（2026-07-28 / 2025-11-25）自适应。
+        supportedProtocolVersions: ['2026-07-28', '2025-11-25', '2025-06-18', '2025-03-26'],
+        versionNegotiation: { mode: 'auto' },
+      },
+    );
+
+    // tools/list_changed 推送：modern 代走 subscriptions/listen 流，legacy 代走
+    //  unsolicited 通知 —— v2 两条轨都 dispatch 到同一个 handler，桥接层无感知。
+    this.client.setNotificationHandler('notifications/tools/list_changed', async () => {
+      try {
+        this.options.onToolsListChanged?.();
+      } catch { /* 回调异常不拖垮通知通道 */ }
+      this.notify('notifications/tools/list_changed', {});
+    });
+    this.client.fallbackNotificationHandler = async (notification) => {
+      this.notify(notification.method, notification.params);
+    };
+    this.client.onclose = () => {
+      if (!this.closed) {
+        this.connected = false;
+        try {
+          this.options.onConnectionLost?.();
+        } catch { /* 回调异常不影响状态 */ }
+      }
+    };
+
     this.transport = new StreamableHTTPClientTransport(new URL(endpoint.url), {
       requestInit: {
         headers: { authorization: `Bearer ${endpoint.token}` },
       },
     });
+  }
+
+  private notify(method: string, params: unknown): void {
+    try {
+      this.options.onNotification?.({ method, params });
+    } catch { /* 回调异常不拖垮通知通道 */ }
+  }
+
+  /** 协商到的协议代际（连接后可用；诊断用）。 */
+  getProtocolEra(): ProtocolEra | undefined {
+    return this.client.getProtocolEra();
+  }
+
+  /** 协商到的协议版本字符串（连接后可用；诊断用）。 */
+  getProtocolVersion(): string | undefined {
+    return this.client.getNegotiatedProtocolVersion();
   }
 
   private async ensureConnected(): Promise<void> {
@@ -50,7 +114,7 @@ class SdkMcpBridgeClient implements McpBridgeClient {
 
   async listTools(): Promise<{ name: string; description?: string; inputSchema?: unknown }[]> {
     await this.ensureConnected();
-    const result = await this.client.listTools(undefined, { timeout: MCP_BRIDGE_LIST_TIMEOUT_MS });
+    const result = await this.client.listTools({ cursor: undefined }, { timeout: MCP_BRIDGE_LIST_TIMEOUT_MS });
     return (result.tools ?? []).map(tool => ({
       name: tool.name,
       description: tool.description,
@@ -62,7 +126,6 @@ class SdkMcpBridgeClient implements McpBridgeClient {
     await this.ensureConnected();
     const result = await this.client.callTool(
       { name, arguments: args },
-      undefined,
       { timeout: MCP_BRIDGE_CALL_TIMEOUT_MS },
     );
     return {

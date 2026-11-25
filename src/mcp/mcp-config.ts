@@ -25,7 +25,13 @@ export interface McpStdioServerConfig {
 }
 
 export interface McpHttpServerConfig {
-  transport: 'streamable-http';
+  /**
+   * - `streamable-http`：现代 Streamable HTTP（POST + SSE 双通道）；
+   *   连接时会自动探测旧服务器，遇 404/405 自动回退 legacy SSE。
+   * - `sse`：旧版 HTTP+SSE transport（2024-11-05 时代的 GET /sse + POST /message），
+   *   只用于只实现 legacy SSE 的服务器。
+   */
+  transport: 'streamable-http' | 'sse';
   url: string;
   headers?: Record<string, string>;
   /** 等价于 headers.Authorization = `Bearer <token>`；两者都给时以显式 header 为准。 */
@@ -135,13 +141,7 @@ export function validateServerConfig(serverId: string, raw: unknown): McpServerC
     };
   }
 
-  if (transport === 'sse') {
-    throw new McpConfigError([
-      `[${serverId}] 不支持旧版 legacy sse transport，请使用 streamable-http 或 stdio`,
-    ]);
-  }
-
-  if (transport === 'streamable-http' || transport === 'http') {
+  if (transport === 'streamable-http' || transport === 'http' || transport === 'sse') {
     if (typeof raw.url !== 'string' || !raw.url.trim()) {
       issues.push('url 必填且必须是非空字符串');
     } else {
@@ -163,7 +163,8 @@ export function validateServerConfig(serverId: string, raw: unknown): McpServerC
     const headers = validateStringMap(raw.headers, 'headers', issues);
     if (issues.length > 0) fail();
     return {
-      transport: 'streamable-http',
+      // `http` 是 streamable-http 的历史别名；sse 是一等 transport，不再拒绝。
+      transport: transport === 'sse' ? 'sse' : 'streamable-http',
       url: (raw.url as string).trim().replace(/\/+$/, ''),
       ...(headers ? { headers } : {}),
       ...(typeof raw.bearerToken === 'string' && raw.bearerToken ? { bearerToken: raw.bearerToken } : {}),
@@ -171,7 +172,7 @@ export function validateServerConfig(serverId: string, raw: unknown): McpServerC
     };
   }
 
-  throw new McpConfigError([`[${serverId}] 未知 transport "${String(transport)}"（支持 stdio / streamable-http）`]);
+  throw new McpConfigError([`[${serverId}] 未知 transport "${String(transport)}"（支持 stdio / streamable-http / sse）`]);
 }
 
 /**
@@ -283,8 +284,9 @@ export function isSameMcpServerConfig(left: McpServerConfig, right: McpServerCon
       JSON.stringify(stableStringMap(left.env)) === JSON.stringify(stableStringMap(right.env))
     );
   }
-  if (left.transport === 'streamable-http' && right.transport === 'streamable-http') {
+  if (left.transport !== 'stdio' && right.transport !== 'stdio') {
     return (
+      left.transport === right.transport &&
       left.url === right.url &&
       (left.bearerToken ?? '') === (right.bearerToken ?? '') &&
       (left.timeoutMs ?? null) === (right.timeoutMs ?? null) &&

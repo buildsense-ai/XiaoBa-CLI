@@ -614,11 +614,9 @@ async function testSecurityAndHardening(): Promise<void> {
     mcpToolName('very_long_server_identifier', 'super_long_remote_tool_name_that_exceeds_sixty_four_characters_limit'),
   );
 
-  // 4. Legacy SSE transport is explicitly rejected instead of silently mapped
-  assert.throws(
-    () => validateServerConfig('legacy', { transport: 'sse', url: 'https://example.test/sse' }),
-    (err: unknown) => err instanceof McpConfigError,
-  );
+  // 4. Legacy SSE transport is accepted as a first-class transport (v2: SSEClientTransport support)
+  const sseCfg = validateServerConfig('legacy', { transport: 'sse', url: 'https://example.test/sse' });
+  assert.equal(sseCfg.transport, 'sse');
 
   // 5. Failed connection attempt is closed before retry, and lastSessionId is passed on reconnect
   let closedFailedCount = 0;

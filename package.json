@@ -69,7 +69,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
     "@larksuiteoapi/node-sdk": "^1.58.0",
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/core": "^2.4.0",
     "@napi-rs/canvas": "^1.0.2",
     "axios": "^1.18.1",
     "chalk": "^4.1.2",
@@ -89,6 +90,7 @@
     "yauzl": "^2.10.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
     "@types/deasync": "^0.1.5",
     "@types/express": "^5.0.6",
     "@types/glob": "^8.1.0",
