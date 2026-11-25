@@ -692,8 +692,14 @@ async function testSecurityAndHardening(): Promise<void> {
     await manager.waitForInitialConnect();
     await manager.refreshServerTools('a_b');
     await manager.refreshServerTools('a');
-    assert.equal(tools.size, 4, `expected 4 distinct tools without silent overwrite, got: ${[...tools.keys()].join(', ')}`);
-    for (const name of tools.keys()) {
+    // 元工具（mcp_list_resources 等 6 个）随 server 上线自动注册，不属于远端工具面，统计时排除。
+    const META_TOOL_NAMES = new Set([
+      'mcp_list_resources', 'mcp_read_resource', 'mcp_subscribe_resource',
+      'mcp_list_prompts', 'mcp_get_prompt', 'mcp_complete',
+    ]);
+    const remoteToolNames = [...tools.keys()].filter((name) => !META_TOOL_NAMES.has(name));
+    assert.equal(remoteToolNames.length, 4, `expected 4 distinct tools without silent overwrite, got: ${[...tools.keys()].join(', ')}`);
+    for (const name of remoteToolNames) {
       assert.ok(name.length <= 64, `tool name exceeds 64 chars: ${name}`);
     }
     await manager.closeAll();

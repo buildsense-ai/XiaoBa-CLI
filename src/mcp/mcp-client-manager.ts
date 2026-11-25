@@ -30,9 +30,25 @@ import {
 } from './mcp-persistent-client';
 import {
   adaptMcpNotification,
+  isProgressNotification,
   type McpForwardedEvent,
   type McpNotificationLike,
 } from './mcp-notification-adapter';
+import {
+  extractToolAnnotations,
+  extractToolIcons,
+  preserveFullInputSchema,
+} from './mcp-schema-utils';
+import {
+  createMcpPrimitivesTools,
+  MCP_PRIMITIVES_TOOL_NAMES,
+  type McpPrimitivesClient,
+} from './mcp-primitives-tools';
+import { McpPrimitivesCache } from './mcp-primitives-cache';
+import {
+  McpProgressBridge,
+  type McpProgressSink,
+} from './mcp-progress-bridge';
 
 export const MCP_TOOL_NAME_PREFIX = 'mcp';
 
@@ -54,6 +70,14 @@ export interface McpClientManagerOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /** progress → task_status 桥接实例（缺省自动创建，测试可注入）。 */
+  progressBridge?: McpProgressBridge;
+  /** progress 投递目标（CatsCo MessageSender 适配器），也可后经 progressBridge.setSink 注入。 */
+  progressSink?: McpProgressSink;
+  /** 元工具缓存（缺省自动创建，测试可注入）。 */
+  primitivesCache?: McpPrimitivesCache;
+  /** 进度节流窗口（默认 500ms）。 */
+  progressThrottleMs?: number;
 }
 
 interface RegisteredRemoteTool {
@@ -61,6 +85,9 @@ interface RegisteredRemoteTool {
   remoteName: string;
   definition: ToolDefinition;
 }
+
+/** 元工具在 ownedToolNames 表里的归属占位 serverId（不可能是合法 serverId，防止真实 server 静默覆盖元工具名）。 */
+const META_TOOLS_OWNER_SERVER_ID = '\0mcp-meta';
 
 interface ManagedServer {
   serverId: string;
@@ -114,6 +141,11 @@ export class McpClientManager {
   private readonly configWatchDisposers = new Set<() => void>();
   private staticSyncChain: Promise<unknown> = Promise.resolve();
   private started = false;
+  /** progressToken → task_status 节流桥接。 */
+  readonly progressBridge: McpProgressBridge;
+  /** Resources/Prompts/Completion 元工具 TTL 缓存。 */
+  readonly primitivesCache: McpPrimitivesCache;
+  private primitivesToolsRegistered = false;
 
   constructor(options: McpClientManagerOptions) {
     this.toolManager = options.toolManager;
@@ -124,6 +156,11 @@ export class McpClientManager {
     this.now = options.now;
     this.sleep = options.sleep;
     this.random = options.random;
+    this.progressBridge = options.progressBridge ?? new McpProgressBridge({
+      ...(options.progressThrottleMs !== undefined ? { throttleMs: options.progressThrottleMs } : {}),
+    });
+    if (options.progressSink) this.progressBridge.setSink(options.progressSink);
+    this.primitivesCache = options.primitivesCache ?? new McpPrimitivesCache();
     for (const [serverId, config] of Object.entries(options.servers ?? {})) {
       this.staticServerIds.add(serverId);
       this.addServer(serverId, config);
@@ -156,6 +193,7 @@ export class McpClientManager {
       random: this.random,
     });
     this.servers.set(serverId, managed);
+    this.ensurePrimitivesToolsRegistered();
     if (this.started) {
       managed.client.connect().catch(() => {});
     }
@@ -180,6 +218,9 @@ export class McpClientManager {
     }
     managed.tools.clear();
     await managed.client.close();
+    if (this.servers.size === 0) {
+      this.unregisterPrimitivesTools();
+    }
   }
 
   /** 启动全部 server 的长连接（后台连接，失败走自动重连，不阻塞调用方）。 */
@@ -374,12 +415,35 @@ export class McpClientManager {
     }
     this.staticServerIds.clear();
     await Promise.allSettled([...this.servers.keys()].map(serverId => this.removeServer(serverId)));
+    this.primitivesCache.clear();
+    this.progressBridge.dispose();
   }
 
   // ---------------- 通知与状态 ----------------
 
-  /** 每条通知都规范化转发给 onEvent；list_changed 额外触发增量刷新。 */
+  /**
+   * 每条通知都规范化转发给 onEvent；list_changed 额外触发增量刷新。
+   * progress 通知先喂给 progress 桥接（走 task_status sink，不唤醒模型回合）——
+   * 即使仍然被转发给 onEvent，事件总线适配层也会把它过滤在唤醒路由之外。
+   */
   private handleNotification(managed: ManagedServer, notification: McpNotificationLike): void {
+    if (isProgressNotification(notification)) {
+      try {
+        this.progressBridge.handleProgress(notification.params);
+      } catch (error: any) {
+        Logger.warning(`MCP server ${managed.serverId} progress 桥接失败: ${error?.message ?? error}`);
+      }
+    }
+    // 缓存失效：resources/prompts 清单变化、资源内容更新时对应 namespace 全部作弃。
+    if (notification.method === 'notifications/resources/list_changed') {
+      this.primitivesCache.invalidateServer(managed.serverId, 'resources');
+      this.primitivesCache.invalidateServer(managed.serverId, 'completion');
+    } else if (notification.method === 'notifications/resources/updated') {
+      this.primitivesCache.invalidateServer(managed.serverId, 'resources');
+    } else if (notification.method === 'notifications/prompts/list_changed') {
+      this.primitivesCache.invalidateServer(managed.serverId, 'prompts');
+      this.primitivesCache.invalidateServer(managed.serverId, 'completion');
+    }
     let event: McpForwardedEvent;
     try {
       event = adaptMcpNotification(managed.serverId, notification);
@@ -402,6 +466,10 @@ export class McpClientManager {
     if (state === 'connected') {
       void this.refreshServerTools(managed.serverId).catch(() => {});
       return;
+    }
+    if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+      // 连接断开：该 server 的缓存内容不再可信（重连后可能已是另一份资源状态）。
+      this.primitivesCache.invalidateServer(managed.serverId);
     }
     if (state === 'failed') {
       Logger.warning(`MCP server ${managed.serverId} 连接失败（第 ${info.attempt} 次尝试后放弃）: ${info.error ?? '未知错误'}`);
@@ -461,6 +529,8 @@ export class McpClientManager {
         name: localName,
         description: info.description?.trim() || `MCP 远端工具 ${managed.serverId}/${info.name}`,
         parameters: toToolParameters(info.inputSchema),
+        ...(extractToolAnnotations(info.annotations) ? { annotations: extractToolAnnotations(info.annotations) } : {}),
+        ...(extractToolIcons(info.icons) ? { icons: extractToolIcons(info.icons) } : {}),
       };
       const existing = managed.tools.get(localName);
       if (existing && existing.remoteName === info.name && sameDefinition(existing.definition, definition)) {
@@ -493,18 +563,26 @@ export class McpClientManager {
   private createRemoteTool(managed: ManagedServer, _localName: string, remoteName: string, definition: ToolDefinition): Tool {
     return {
       definition,
-      execute: (args: unknown, _context?: ToolExecutionContext) =>
-        this.executeRemoteTool(managed, remoteName, args),
+      execute: (args: unknown, context?: ToolExecutionContext) =>
+        this.executeRemoteTool(managed, remoteName, args, context),
     };
   }
 
   /** 调用远端工具并把多模态结果映射回 ToolExecutionResult。 */
-  async executeRemoteTool(managed: ManagedServer, remoteName: string, args: unknown): Promise<ToolExecutionResult> {
+  async executeRemoteTool(managed: ManagedServer, remoteName: string, args: unknown, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
     const callArgs = args && typeof args === 'object' && !Array.isArray(args)
       ? (args as Record<string, unknown>)
       : { input: args };
+    // 为本次调用生成唯一 progressToken：server 可以用它推送 notifications/progress，
+    // 桥接层据此把进度映射到发起会话的 task_status（不唤醒模型回合）。
+    const progressToken = this.progressBridge.beginCall(managed.serverId, {
+      ...(context?.channel?.chatId ? { topic: context.channel.chatId } : {}),
+      ...(context?.runId ? { runId: context.runId } : {}),
+      ...(context?.artifactTaskRef ? { artifactTaskRef: context.artifactTaskRef } : {}),
+      toolName: remoteName,
+    });
     try {
-      const result = await managed.client.callTool(remoteName, callArgs);
+      const result = await managed.client.callTool(remoteName, callArgs, { progressToken });
       const content = mapCallResultContent(result.content, result.structuredContent);
       if (result.isError) {
         return {
@@ -521,8 +599,77 @@ export class McpClientManager {
         message: `调用 MCP server ${managed.serverId} 失败: ${error?.message ?? error}`,
         retryable: true,
       };
+    } finally {
+      this.progressBridge.endCall(progressToken);
     }
   }
+
+  // ---------------- MCP Primitives（resources/prompts/completion/instructions） ----------------
+
+  /** 元工具消费的窄客户端适配：把 serverId 路由到对应长连接客户端。 */
+  private primitivesClientAdapter(): McpPrimitivesClient {
+    const requireClient = (serverId: string): McpPersistentClient => {
+      const client = this.servers.get(serverId)?.client;
+      if (!client) throw new Error(`MCP server "${serverId}" 不存在或未连接`);
+      return client;
+    };
+    return {
+      listResources: (serverId, cursor) => requireClient(serverId).listResources(cursor ? { cursor } : undefined),
+      listResourceTemplates: (serverId, cursor) => requireClient(serverId).listResourceTemplates(cursor ? { cursor } : undefined),
+      readResource: (serverId, uri) => requireClient(serverId).readResource(uri),
+      subscribeResource: async (serverId, uri) => { await requireClient(serverId).subscribeResource(uri); },
+      unsubscribeResource: async (serverId, uri) => { await requireClient(serverId).unsubscribeResource(uri); },
+      listPrompts: (serverId, cursor) => requireClient(serverId).listPrompts(cursor ? { cursor } : undefined),
+      getPrompt: (serverId, name, args) => requireClient(serverId).getPrompt(name, args),
+      complete: (serverId, ref, argument, context) => requireClient(serverId).complete(ref, argument, context),
+    };
+  }
+
+  /** 首个 server 上线时注册 6 个 MCP 元工具（幂等）。 */
+  private ensurePrimitivesToolsRegistered(): void {
+    if (this.primitivesToolsRegistered) return;
+    if (this.servers.size === 0) return;
+    const tools = createMcpPrimitivesTools({
+      client: this.primitivesClientAdapter(),
+      cache: this.primitivesCache,
+      listServerIds: () => this.serverIds(),
+    });
+    for (const tool of tools) {
+      const owner = this.ownedToolNames.get(tool.definition.name);
+      if (owner && owner.serverId !== META_TOOLS_OWNER_SERVER_ID) continue; // 与远端工具撞名：远端优先，不覆盖。
+      this.ownedToolNames.set(tool.definition.name, { serverId: META_TOOLS_OWNER_SERVER_ID, remoteName: tool.definition.name });
+      this.toolManager.registerTool(tool);
+    }
+    this.primitivesToolsRegistered = true;
+  }
+
+  /** 最后一个 server 下线时摘除元工具（幂等）。 */
+  private unregisterPrimitivesTools(): void {
+    if (!this.primitivesToolsRegistered) return;
+    for (const name of MCP_PRIMITIVES_TOOL_NAMES) {
+      const owner = this.ownedToolNames.get(name);
+      if (!owner || owner.serverId === META_TOOLS_OWNER_SERVER_ID) {
+        this.ownedToolNames.delete(name);
+        this.toolManager.unregisterTool(name);
+      }
+    }
+    this.primitivesToolsRegistered = false;
+  }
+
+  /**
+   * 收集各已连接 server 的 initialize instructions（供系统提示词受限注入）。
+   * 同步快照：只读当前连接已协商好的值，绝不为此发起新连接。
+   */
+  collectServerInstructions(): Array<{ serverId: string; instructions: string }> {
+    const out: Array<{ serverId: string; instructions: string }> = [];
+    for (const managed of this.servers.values()) {
+      if (managed.client.getState() !== 'connected') continue;
+      const instructions = managed.client.getInstructions();
+      if (instructions) out.push({ serverId: managed.serverId, instructions });
+    }
+    return out;
+  }
+
 }
 
 // ---------------- 命名与结果映射 ----------------
@@ -626,52 +773,18 @@ function safeJson(value: unknown): string {
   }
 }
 
-/** 远端 inputSchema → 本地 ToolParameter（与 mcp-tool-bridge 相同的收敛策略）。 */
+/**
+ * 远端 inputSchema → 本地 parameters。
+ *
+ * **完整保留策略**：anyOf/oneOf/allOf/additionalProperties/$defs/$ref/嵌套结构全部
+ * 原样保留（防御性深拷贝），provider 直接拿到完整 JSON Schema。只对个别只支持严格
+ * 子集的 provider，调用方应显式使用 mcp-schema-utils 的 `sanitizeSchemaForProvider()`。
+ *
+ * 返回类型用 ToolDefinition['parameters'] 的结构化超集 —— 完整 JSON Schema 的字段
+ * 超出本地 ToolParameter 的窄声明，这里通过类型断言承载；运行时数据是完整的。
+ */
 export function toToolParameters(schema: unknown): ToolDefinition['parameters'] {
-  const root = schema && typeof schema === 'object' && !Array.isArray(schema)
-    ? (schema as Record<string, unknown>)
-    : {};
-  const rawProps = root.properties && typeof root.properties === 'object' && !Array.isArray(root.properties)
-    ? (root.properties as Record<string, unknown>)
-    : {};
-  const properties: ToolDefinition['parameters']['properties'] = {};
-  for (const [key, value] of Object.entries(rawProps)) {
-    const mapped = sanitizeParameter(value);
-    if (mapped) properties[key] = mapped;
-  }
-  const required = Array.isArray(root.required)
-    ? root.required.filter((item): item is string => typeof item === 'string')
-    : undefined;
-  return {
-    type: 'object',
-    properties,
-    ...(required && required.length > 0 ? { required } : {}),
-  };
-}
-
-function sanitizeParameter(raw: unknown): import('../types/tool').ToolParameter | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const src = raw as Record<string, unknown>;
-  const out: import('../types/tool').ToolParameter = { type: typeof src.type === 'string' ? src.type : 'object' };
-  if (typeof src.description === 'string' && src.description.length > 0) out.description = src.description;
-  if (Array.isArray(src.enum)) {
-    const values = src.enum.filter((item): item is string => typeof item === 'string');
-    if (values.length > 0) out.enum = values;
-  }
-  if (src.default !== undefined) out.default = src.default;
-  if (src.properties && typeof src.properties === 'object' && !Array.isArray(src.properties)) {
-    const nested: Record<string, import('../types/tool').ToolParameter> = {};
-    for (const [key, value] of Object.entries(src.properties as Record<string, unknown>)) {
-      const mapped = sanitizeParameter(value);
-      if (mapped) nested[key] = mapped;
-    }
-    out.properties = nested;
-  }
-  if (src.items !== undefined) {
-    const mapped = sanitizeParameter(src.items);
-    if (mapped) out.items = mapped;
-  }
-  return out;
+  return preserveFullInputSchema(schema) as ToolDefinition['parameters'];
 }
 
 function sameDefinition(left: ToolDefinition, right: ToolDefinition): boolean {

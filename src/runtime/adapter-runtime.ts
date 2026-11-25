@@ -38,6 +38,7 @@ export function createAdapterRuntime(options: AdapterRuntimeOptions): AdapterRun
   const systemPromptProviderFactory = createPromptProviderFactory(
     profile,
     options.promptSnapshotMode ?? 'fixed',
+    services,
   );
 
   return {
@@ -69,14 +70,19 @@ function createSkillLoader(
 function createPromptProviderFactory(
   profile: RuntimeProfile,
   mode: AdapterPromptSnapshotMode,
+  services?: AgentServices,
 ): (sessionKey: string) => SystemPromptProvider {
+  // MCP server instructions 是受限注入的尾部块：每次渲染同步快照，不进 profile 快照。
+  const mcpClientManager = services?.mcpClientManager;
+  const withInstructions = (provider: SystemPromptProvider): SystemPromptProvider =>
+    RuntimeFactory.withMcpServerInstructions(provider, mcpClientManager);
   if (mode === 'fixed') {
     const provider = RuntimeFactory.createSystemPromptProvider(profile);
-    return () => provider;
+    return () => withInstructions(provider);
   }
 
   const workingDirectory = profile.workingDirectory;
-  return () => RuntimeFactory.createSystemPromptProvider({
+  return () => withInstructions(RuntimeFactory.createSystemPromptProvider({
     ...profile,
     workingDirectory,
     model: { ...profile.model },
@@ -84,5 +90,5 @@ function createPromptProviderFactory(
     tools: { enabled: [...profile.tools.enabled] },
     skills: { ...profile.skills },
     logging: { ...profile.logging },
-  });
+  }));
 }

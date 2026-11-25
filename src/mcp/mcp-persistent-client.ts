@@ -32,7 +32,10 @@ import type { McpNotificationLike } from './mcp-notification-adapter';
 /** 连接层的最小契约（生产 = SDK Client + Transport）。 */
 export interface McpConnection {
   listTools(params?: { cursor?: string }, options?: { timeout?: number }): Promise<{ tools: McpRemoteToolInfo[]; nextCursor?: string }>;
-  callTool(params: { name: string; arguments?: Record<string, unknown> }, options?: { timeout?: number }): Promise<McpCallToolResult>;
+  callTool(
+    params: { name: string; arguments?: Record<string, unknown>; meta?: { progressToken?: string } },
+    options?: { timeout?: number },
+  ): Promise<McpCallToolResult>;
   listResources(params?: { cursor?: string }, options?: { timeout?: number }): Promise<{ resources: McpRemoteResourceInfo[]; nextCursor?: string }>;
   listResourceTemplates?(params?: { cursor?: string }, options?: { timeout?: number }): Promise<{ resourceTemplates: McpRemoteResourceTemplate[]; nextCursor?: string }>;
   readResource(params: { uri: string }, options?: { timeout?: number }): Promise<{ contents: McpResourceContent[] }>;
@@ -40,6 +43,10 @@ export interface McpConnection {
   unsubscribeResource(params: { uri: string }, options?: { timeout?: number }): Promise<unknown>;
   listPrompts(params?: { cursor?: string }, options?: { timeout?: number }): Promise<{ prompts: McpRemotePromptInfo[]; nextCursor?: string }>;
   getPrompt(params: { name: string; arguments?: Record<string, string> }, options?: { timeout?: number }): Promise<unknown>;
+  /** completion/complete 补全（SDK v1.32+）。Track 1 升级 SDK v2 时保持同一窄接口即可。 */
+  complete?(params: { ref: unknown; argument: unknown; context?: unknown }, options?: { timeout?: number }): Promise<unknown>;
+  /** initialize 协商时 server 提供的 instructions（未声明则为 undefined）。 */
+  getInstructions?(): string | undefined;
   /** 传输层关闭（含主动 close）。 */
   onclose?: () => void;
   /** 传输层错误（不一定致命）。 */
@@ -52,6 +59,10 @@ export interface McpRemoteToolInfo {
   name: string;
   description?: string;
   inputSchema?: unknown;
+  /** MCP tool annotations（title/readOnlyHint/destructiveHint/idempotentHint/openWorldHint），原样透传。 */
+  annotations?: unknown;
+  /** MCP tool icons 元数据（spec 2025-11 draft），原样透传。 */
+  icons?: unknown;
 }
 
 export interface McpRemoteResourceInfo {
@@ -388,14 +399,49 @@ export class McpPersistentClient {
     return tools;
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<McpCallToolResult> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    options?: { progressToken?: string },
+  ): Promise<McpCallToolResult> {
     const connection = await this.ensureConnected();
-    return connection.callTool({ name, arguments: args }, { timeout: this.requestTimeoutMs });
+    return connection.callTool(
+      {
+        name,
+        arguments: args,
+        ...(options?.progressToken ? { meta: { progressToken: options.progressToken } } : {}),
+      },
+      { timeout: this.requestTimeoutMs },
+    );
+  }
+
+  /** completion/complete 补全；连接实现不支持时抛错（调用方按工具错误兜底）。 */
+  async complete(ref: unknown, argument: unknown, context?: unknown): Promise<unknown> {
+    const connection = await this.ensureConnected();
+    if (typeof connection.complete !== 'function') {
+      throw new Error(`MCP server ${this.serverId} 的连接实现不支持 completion/complete`);
+    }
+    return connection.complete({ ref, argument, ...(context !== undefined ? { context } : {}) }, { timeout: this.requestTimeoutMs });
+  }
+
+  /** initialize 协商时 server 提供的 instructions（当前连接未声明则为 undefined）。 */
+  getInstructions(): string | undefined {
+    const instructions = this.connection?.getInstructions?.();
+    return typeof instructions === 'string' && instructions.trim().length > 0 ? instructions : undefined;
   }
 
   async listResources(params?: { cursor?: string }): Promise<{ resources: McpRemoteResourceInfo[]; nextCursor?: string }> {
     const connection = await this.ensureConnected();
     return connection.listResources(params, { timeout: this.requestTimeoutMs });
+  }
+
+  /** resources/templates/list；连接实现不支持时返回空清单（模板是可选能力）。 */
+  async listResourceTemplates(params?: { cursor?: string }): Promise<{ resourceTemplates: McpRemoteResourceTemplate[]; nextCursor?: string }> {
+    const connection = await this.ensureConnected();
+    if (typeof connection.listResourceTemplates !== 'function') {
+      return { resourceTemplates: [] };
+    }
+    return connection.listResourceTemplates(params, { timeout: this.requestTimeoutMs });
   }
 
   async readResource(uri: string): Promise<{ contents: McpResourceContent[] }> {
@@ -560,13 +606,33 @@ class SdkMcpConnection implements McpConnection {
     return { tools: result.tools ?? [], nextCursor: result.nextCursor };
   }
 
-  async callTool(params: { name: string; arguments?: Record<string, unknown> }, options?: { timeout?: number }): Promise<McpCallToolResult> {
-    const result = await this.client.callTool(params, undefined, options);
+  async callTool(
+    params: { name: string; arguments?: Record<string, unknown>; meta?: { progressToken?: string } },
+    options?: { timeout?: number },
+  ): Promise<McpCallToolResult> {
+    const wireParams = params.meta?.progressToken
+      ? { ...params, _meta: { progressToken: params.meta.progressToken }, meta: undefined }
+      : params;
+    // 清理窄接口的 meta 字段，只把规范里的 _meta.progressToken 放上线路。
+    if ('meta' in wireParams) delete (wireParams as { meta?: unknown }).meta;
+    const result = await this.client.callTool(wireParams as Parameters<typeof this.client.callTool>[0], undefined, options);
     return {
       content: result.content,
       structuredContent: result.structuredContent,
       isError: result.isError === true,
     };
+  }
+
+  async complete(params: { ref: unknown; argument: unknown; context?: unknown }, options?: { timeout?: number }): Promise<unknown> {
+    return this.client.complete(params as Parameters<typeof this.client.complete>[0], options);
+  }
+
+  getInstructions(): string | undefined {
+    try {
+      return this.client.getInstructions();
+    } catch {
+      return undefined;
+    }
   }
 
   async listResources(params?: { cursor?: string }, options?: { timeout?: number }) {
