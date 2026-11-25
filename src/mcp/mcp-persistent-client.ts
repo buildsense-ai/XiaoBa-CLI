@@ -190,6 +190,12 @@ export interface McpPersistentClientOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /** Track 3：elicitation/create 处理器（通常接 McpInteractionBroker）。 */
+  onElicit?: McpConnectionHooks['onElicit'];
+  /** Track 3：sampling/createMessage 处理器（受控）。 */
+  onSamplingCreateMessage?: McpConnectionHooks['onSamplingCreateMessage'];
+  /** Track 3：roots/list 处理器。 */
+  onListRoots?: McpConnectionHooks['onListRoots'];
 }
 
 export interface McpConnectionHooks {
@@ -208,6 +214,12 @@ export interface McpConnectionHooks {
   onDiscovery?: (info: { era?: ProtocolEra; protocolVersion?: string; discoverResult?: unknown; usedPrior: boolean }) => void;
   /** SSE 自动回退发生时回调（诊断）。 */
   onSseFallback?: (reason: string) => void;
+  /** Track 3：elicitation/create（form/url）反向交互请求。 */
+  onElicit?: (params: unknown, extra?: { signal?: AbortSignal }) => Promise<unknown>;
+  /** Track 3：sampling/createMessage 反向采样请求（受控 —— 未接 handler 即无能力）。 */
+  onSamplingCreateMessage?: (params: unknown, extra?: { signal?: AbortSignal }) => Promise<unknown>;
+  /** Track 3：roots/list（动态按 ExecutionScope/device-grants 给根）。 */
+  onListRoots?: () => Promise<{ roots: Array<{ uri: string; name?: string }> }>;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -227,6 +239,9 @@ export class McpPersistentClient {
   private readonly requestTimeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
+  private readonly onElicit?: McpConnectionHooks['onElicit'];
+  private readonly onSamplingCreateMessage?: McpConnectionHooks['onSamplingCreateMessage'];
+  private readonly onListRoots?: McpConnectionHooks['onListRoots'];
 
   private connection: McpConnection | null = null;
   private state: McpClientState = 'disconnected';
@@ -265,6 +280,9 @@ export class McpPersistentClient {
       ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.sleep = options.sleep ?? ((ms) => new Promise<void>(resolve => setTimeout(resolve, ms)));
     this.random = options.random ?? Math.random;
+    this.onElicit = options.onElicit;
+    this.onSamplingCreateMessage = options.onSamplingCreateMessage;
+    this.onListRoots = options.onListRoots;
   }
 
   getState(): McpClientState {
@@ -419,6 +437,9 @@ export class McpPersistentClient {
       },
       ...(this.lastSessionId ? { sessionId: this.lastSessionId } : {}),
       ...(this.lastProtocolVersion ? { protocolVersion: this.lastProtocolVersion } : {}),
+      ...(this.onElicit ? { onElicit: this.onElicit } : {}),
+      ...(this.onSamplingCreateMessage ? { onSamplingCreateMessage: this.onSamplingCreateMessage } : {}),
+      ...(this.onListRoots ? { onListRoots: this.onListRoots } : {}),
     });
   }
 
@@ -865,17 +886,52 @@ interface SdkClientBundle {
   kind: 'stdio' | 'streamable-http' | 'sse';
 }
 
-function createSdkClient(factoryOptions: McpConnectionFactoryOptions): Client {
+function createSdkClient(factoryOptions: McpConnectionFactoryOptions, hooks: McpConnectionHooks): Client {
   const mode = factoryOptions.versionNegotiation ?? 'auto';
+  // Track 3：按接线 handler 声明交互能力（未接线 = 不声明 = server 不会发起）。
+  const capabilities: Record<string, unknown> = {
+    tasks: { list: {}, cancel: {} },
+  };
+  if (hooks.onElicit) {
+    capabilities.elicitation = { form: {}, url: {} };
+  }
+  if (hooks.onSamplingCreateMessage) {
+    capabilities.sampling = {};
+  }
+  if (hooks.onListRoots) {
+    capabilities.roots = { listChanged: false };
+  }
   return new Client(
     factoryOptions.clientInfo ?? { name: 'xiaoba-mcp-client', version: '1.0.0' },
     {
-      capabilities: {},
+      capabilities,
       // 声明 modern 草稿版本：server/discover 交集里出现 2026-07-28 时才会真正进 modern 代。
       supportedProtocolVersions: [...MCP_SUPPORTED_PROTOCOL_VERSIONS],
       versionNegotiation: typeof mode === 'object' ? { mode } : { mode },
     },
   );
+}
+
+function wireRequestHandlers(client: Client, hooks: McpConnectionHooks): void {
+  // Track 3：反向请求处理器（elicitation / sampling / roots）。
+  if (hooks.onElicit) {
+    const onElicit = hooks.onElicit;
+    client.setRequestHandler('elicitation/create', async (request, ctx) => {
+      return await onElicit(request.params, { signal: ctx?.mcpReq?.signal }) as never;
+    });
+  }
+  if (hooks.onSamplingCreateMessage) {
+    const onSampling = hooks.onSamplingCreateMessage;
+    client.setRequestHandler('sampling/createMessage', async (request, ctx) => {
+      return await onSampling(request.params, { signal: ctx?.mcpReq?.signal }) as never;
+    });
+  }
+  if (hooks.onListRoots) {
+    const onListRoots = hooks.onListRoots;
+    client.setRequestHandler('roots/list', async () => {
+      return await onListRoots() as never;
+    });
+  }
 }
 
 function wireNotificationHandlers(client: Client, hooks: McpConnectionHooks): void {
@@ -959,8 +1015,9 @@ export function createSdkMcpConnectionFactory(factoryOptions: McpConnectionFacto
     hooks: McpConnectionHooks,
     kind: 'stdio' | 'streamable-http' | 'sse',
   ): SdkClientBundle => {
-    const client = createSdkClient(factoryOptions);
+    const client = createSdkClient(factoryOptions, hooks);
     wireNotificationHandlers(client, hooks);
+    wireRequestHandlers(client, hooks);
 
     if (config.transport === 'stdio') {
       const transport = new StdioClientTransport({

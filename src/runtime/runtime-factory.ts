@@ -18,6 +18,10 @@ import { loadMcpConfig } from '../mcp/mcp-config';
 import { artifactMcpRegistry } from '../mcp/artifact-mcp-registry';
 import { forwardMcpEventToExternalRouter } from '../events/event-bus-adapters';
 import { renderMcpServerInstructions } from '../mcp/mcp-instructions';
+import { McpInteractionBroker } from '../mcp/mcp-interaction-broker';
+import { McpTasksBridge } from '../mcp/mcp-tasks-bridge';
+import { McpSamplingController } from '../mcp/mcp-sampling-roots';
+import { externalEventRouter } from '../events/external-event-router';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { serviceRunReceiptRouter } from '../catscompany/service-run-receipts';
 import { FileBotDefinitionRepository } from '../bot-definition/repository';
@@ -107,7 +111,7 @@ export class RuntimeFactory {
       enabledToolNames: profile.tools.enabled,
     });
     const mcpToolBridge = this.createMcpToolBridge(toolManager, profile);
-    const mcpClientManager = this.createMcpClientManager(toolManager, profile);
+    const mcpClientManager = this.createMcpClientManager(toolManager, profile, aiService);
 
     return {
       aiService,
@@ -199,6 +203,7 @@ export class RuntimeFactory {
   private static createMcpClientManager(
     toolManager: ToolManager,
     profile: RuntimeProfile,
+    aiService: AIService,
   ): McpClientManager | undefined {
     if (process.env.XIAOBA_MCP_CLIENT_MANAGER === '0') return undefined;
     // 仅在具备完整生命周期销毁（destroy → closeAll）与事件消费的 CatsCo 连接器进程中默认启动，
@@ -221,20 +226,48 @@ export class RuntimeFactory {
         // 即使静态配置文件损坏，也仍然初始化空管理器以支持 Per-Artifact MCP Bridge 动态挂载。
         Logger.warning(`MCP 配置文件加载失败，将以空静态配置启动（Artifact Bridge 仍可用）: ${error?.message ?? error}`);
       }
+      // Track 3：交互/任务/采样控制器（全部走依赖注入的宿主回调；未接线时自动降级或无能力）。
+      const interactionBroker = new McpInteractionBroker({
+        sendText: (sessionKey, text) => {
+          // 进程内默认宿主通道未接线时：只记日志，不静默吞掉用户可见提示。
+          Logger.warning(`MCP 交互文本无宿主通道 (session=${sessionKey}): ${text.slice(0, 120)}`);
+        },
+      });
+      let managerRef: McpClientManager | undefined;
+      const tasksBridge = new McpTasksBridge({
+        router: externalEventRouter,
+        broker: interactionBroker,
+        resolveTasksClient: (serverId) => managerRef?.getTasksClient(serverId),
+      });
+      const samplingAllowlist = Object.entries(servers)
+        .filter(([, config]) => config.allowSampling === true)
+        .map(([serverId]) => serverId);
+      const samplingController = new McpSamplingController({
+        allowlist: samplingAllowlist,
+        aiService,
+      });
+
       const manager = new McpClientManager({
         toolManager,
         servers,
+        interactionBroker,
+        tasksBridge,
+        samplingController,
+        resolveRoots: async () => ({ roots: [] }),
         onEvent: (event) => {
           try {
             const boundArtifactId = artifactMcpRegistry.getBoundArtifactId(event.serverId);
+            const config = manager.getServerConfig(event.serverId);
             forwardMcpEventToExternalRouter(event, undefined, {
               ...(boundArtifactId ? { boundArtifactId } : {}),
+              ...(config?.allowSessionTargeting === true ? { allowSessionTargeting: true } : {}),
             });
           } catch (error: any) {
             Logger.warning(`MCP 事件转发失败 (${event.serverId}/${event.method}): ${error?.message ?? error}`);
           }
         },
       });
+      managerRef = manager;
       artifactMcpRegistry.attachManager(manager);
       manager.start();
       if (process.env.XIAOBA_MCP_CONFIG_WATCH !== '0') {

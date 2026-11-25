@@ -1,0 +1,103 @@
+/**
+ * MCP 模块统一导出（Track 2 基础设施 + Track 3 交互/安全层）。
+ */
+export * from './mcp-config';
+export * from './mcp-notification-adapter';
+export {
+  McpPersistentClient,
+  createSdkMcpConnectionFactory,
+  type McpConnection,
+  type McpConnectionHooks,
+  type McpConnectionFactoryOptions,
+  type McpPersistentClientOptions,
+  type McpReconnectOptions,
+  type McpClientState,
+  type McpCallToolResult,
+  type McpRemoteToolInfo,
+  type McpRemoteResourceInfo,
+  type McpRemoteResourceTemplate,
+  type McpResourceContent,
+  type McpRemotePromptInfo,
+} from './mcp-persistent-client';
+export {
+  McpClientManager,
+  mcpToolName,
+  disambiguatedMcpToolName,
+  mapCallResultContent,
+  toToolParameters,
+  extractInputRequiredResult,
+  MCP_TOOL_NAME_PREFIX,
+  type McpClientManagerOptions,
+  type McpToolRegistry,
+  type McpServerStatus,
+  type McpConfigWatchDiff,
+  type McpConfigWatchOptions,
+} from './mcp-client-manager';
+export {
+  McpInteractionBroker,
+  isMrtrInputRequiredResult,
+  validateElicitationUrl,
+  flattenSchemaFields,
+  parseUserInputContent,
+  type MrtrInputRequest,
+  type MrtrInputRequiredResult,
+  type MrtrInputResponse,
+  type MrtrLoopOutcome,
+  type ElicitFormParams,
+  type ElicitUrlParams,
+  type ElicitRequestParams,
+  type ElicitResult,
+  type InteractionField,
+  type InteractionDelivery,
+  type McpElicitationCardPayload,
+  type McpInteractionBrokerOptions,
+  type SendInteractiveCard,
+  type SendInteractionText,
+  type ResolveInteractionRouting,
+  type UserInputOutcome,
+} from './mcp-interaction-broker';
+export {
+  McpTasksBridge,
+  TERMINAL_TASK_STATUSES,
+  type McpTaskStatus,
+  type McpTaskStatusParams,
+  type McpTasksClient,
+  type McpTasksBridgeOptions,
+} from './mcp-tasks-bridge';
+export {
+  McpSamplingController,
+  McpRootsRegistry,
+  buildScopedRoots,
+  pathToFileUri,
+  createAiserviceSampler,
+  toLocalSamplingMessages,
+  type SamplingRequestParams,
+  type SamplingResult,
+  type SamplingChat,
+  type SamplingApprovalRequest,
+  type McpSamplingControllerOptions,
+  type SamplingGateResult,
+  type McpRoot,
+  type BuildRootsOptions,
+  type RootsProvider,
+} from './mcp-sampling-roots';
+export {
+  CatsCoMcpOAuthProvider,
+  defaultCatsCoOAuthCallbackUrl,
+  type CatsCoOAuthProviderOptions,
+  type CatsCoOAuthGrant,
+  type OAuthAuthorizationRequest,
+  type OAuthTokenStore,
+  type SendOAuthAuthorizationRequest,
+} from './mcp-oauth-provider';
+export {
+  McpSecurityPolicy,
+  NotificationRateLimiter,
+  SessionScopeAllowlist,
+  evaluateServerAccess,
+  isOwnerOnlyServer,
+  type McpServerRiskProfile,
+  type McpPolicyContext,
+  type McpPolicyDecision,
+  type NotificationRateLimiterOptions,
+} from './mcp-security-policy';
