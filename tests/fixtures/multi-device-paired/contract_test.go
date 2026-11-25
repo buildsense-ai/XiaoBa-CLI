@@ -433,6 +433,9 @@ func TestXiaoBaMultiDevicePairedContract(t *testing.T) {
 			oldA = accept(t, 7, 42, "a").Wire
 		})
 		t.Run("other_actor_uses_only_own_device", func(t *testing.T) {
+			// No default device is implied any more: the actor must confirm their own
+			// device before the turn can route there. Isolation still applies.
+			choose(8, 42, "private")
 			got := accept(t, 8, 42, "private")
 			if len(got.Devices) != 1 || got.Devices[0] != "private" {
 				t.Fatalf("actor directory leaked: %+v", got)
