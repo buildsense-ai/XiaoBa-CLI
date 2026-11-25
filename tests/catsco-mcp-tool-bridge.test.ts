@@ -8,6 +8,7 @@ import {
   type McpBridgeEndpoint,
   type McpBridgeToolInfo,
 } from '../src/mcp/mcp-tool-bridge';
+import { parseComputeTaskQuoteId } from '../src/mcp/mcp-tool-bridge';
 import type { ToolExecutionContext } from '../src/types/tool';
 import { BotCallReplyTracker } from '../src/catscompany/bot-call-reply-tracker';
 
@@ -57,6 +58,7 @@ interface HarnessOptions {
   resolveAgentSlugs?: () => string[] | undefined;
   resolveBotUid?: () => number | undefined;
   refreshIntervalMs?: number;
+  onComputeTaskPending?: (info: any) => void;
   runPollTimeoutMs?: number;
   runPollIntervalMs?: number;
   now?: () => number;
@@ -85,6 +87,7 @@ function createHarness(options: HarnessOptions = {}) {
     runPollIntervalMs: options.runPollIntervalMs ?? 1,
     now: options.now,
     resumeTtlMs: options.resumeTtlMs,
+    ...(options.onComputeTaskPending ? { onComputeTaskPending: options.onComputeTaskPending } : {}),
     sleep: async () => {},
   });
   return { bridge, manager, clients };
@@ -1204,3 +1207,57 @@ describe('CatsCo 回复归属（群会话）', () => {
       '被收回的工具应当从本地工具面移除',
     );
   });
+
+test('算力报价返回合法 quote_id：登记原对话路由，非法 quote_id 忽略', async () => {
+  const pending: Array<Record<string, unknown>> = [];
+  const { bridge, manager } = createHarness({
+    listTools: () => [toolInfo('catsco_compute_task_quote')],
+    callTool: (_name, args) => {
+      assert.deepStrictEqual(args, { input: { nodes: 1 } });
+      return {
+        isError: false,
+        contentText: 'quote',
+        structured: { quote_id: 'hpc_0123456789abcdef0123456789abcdef' },
+      };
+    },
+    onComputeTaskPending: info => pending.push(info),
+  });
+  await bridge.refresh();
+
+  const routedContext = {
+    sessionId: 'catscompany:p2p_441_1619',
+    channel: { chatId: 'p2p_441_1619', reply: async () => {} },
+    executionScope: { actorUserId: 'usr441' },
+  } as unknown as ToolExecutionContext;
+  const result = await manager.getTool('catsco_compute_task_quote')!.execute({ input: { nodes: 1 } }, routedContext);
+  assert.equal(result.ok, true);
+  assert.deepStrictEqual(pending, [{
+    quoteId: 'hpc_0123456789abcdef0123456789abcdef',
+    toolName: 'catsco_compute_task_quote',
+    conversationSessionKey: 'catscompany:p2p_441_1619',
+    conversationTopic: 'p2p_441_1619',
+    actorUserId: 'usr441',
+  }]);
+});
+
+test('算力报价没有合法 quote_id：不登记回执路由', async () => {
+  const pending: Array<Record<string, unknown>> = [];
+  const { bridge, manager } = createHarness({
+    listTools: () => [toolInfo('catsco_compute_task_quote')],
+    callTool: () => ({
+      isError: false,
+      contentText: 'quote',
+      structured: { quote_id: 'hpc_invalid' },
+    }),
+    onComputeTaskPending: info => pending.push(info),
+  });
+  await bridge.refresh();
+  await manager.getTool('catsco_compute_task_quote')!.execute({ input: {} }, context);
+  assert.deepStrictEqual(pending, []);
+});
+
+test('parseComputeTaskQuoteId 只接受稳定的 HPC quote_id', () => {
+  assert.equal(parseComputeTaskQuoteId({ quote_id: 'hpc_0123456789abcdef0123456789abcdef' }), 'hpc_0123456789abcdef0123456789abcdef');
+  assert.equal(parseComputeTaskQuoteId({ quote_id: 'hpc_invalid' }), null);
+  assert.equal(parseComputeTaskQuoteId({ quote_id: 123 }), null);
+});

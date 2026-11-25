@@ -16,6 +16,7 @@ import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
 import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { serviceRunReceiptRouter } from '../catscompany/service-run-receipts';
+import { computeTaskReceiptRouter } from '../catscompany/compute-task-receipts';
 import { FileBotDefinitionRepository } from '../bot-definition/repository';
 import {
   RuntimeProfile,
@@ -172,6 +173,14 @@ export class RuntimeFactory {
             serviceRunReceiptRouter.track(info);
           } catch (error: any) {
             Logger.warning(`CatsCo 回执登记失败: ${error?.message ?? error}`);
+          }
+        },
+        // 算力报价的终态回执按 quote_id 关联原对话，资源释放和结算完成后唤醒 Agent。
+        onComputeTaskPending: info => {
+          try {
+            computeTaskReceiptRouter.track(info);
+          } catch (error: any) {
+            Logger.warning(`CatsCo 算力回执登记失败: ${error?.message ?? error}`);
           }
         },
       });

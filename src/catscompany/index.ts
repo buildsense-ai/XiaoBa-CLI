@@ -4,6 +4,7 @@ import {
   type CatsAgentContextMessage,
   type CatsDeviceRpcMessage,
   type CatsSkillMutationGrantMessage,
+  type CatsComputeTaskReceipt,
   type CatsSkillMutationGrantRequest,
   type CatsThinToolRpcMessage,
   type CatsSessionForkControl,
@@ -115,6 +116,11 @@ import {
   type ServiceRunReceipt,
 } from './service-run-receipts';
 import {
+  buildComputeTaskReceiptPrompt,
+  computeTaskReceiptRouter,
+  type ConsumedComputeTaskReceipt,
+} from './compute-task-receipts';
+import {
   SkillHubThinRpcError,
   SkillHubThinRpcHandler,
   SKILLHUB_THIN_RPC_TOOLS,
@@ -163,7 +169,7 @@ interface QueuedMessage {
   /** Device metadata for the interrupted-turn marker if this queued work is running at shutdown. */
   deviceContext?: InterruptedTurnDeviceContext;
   receivedAt: number;
-  source?: 'user' | 'subagent_feedback' | 'service_run_receipt';
+  source?: 'user' | 'subagent_feedback' | 'service_run_receipt' | 'compute_task_receipt';
   runtimeFeedback?: RuntimeFeedbackInput[];
   nativeFeishuContext?: NativeFeishuContextHydration;
   clearGeneration?: number;
@@ -917,6 +923,13 @@ export class CatsCompanyBot {
       if (this.shuttingDown) return;
       void this.runTrackedConversationWork(() => this.handleServiceRunReceipt(receipt)).catch((error: any) => {
         Logger.warning(`[CatsCompany] 处理服务回执失败: ${error?.message || error}`);
+      });
+    });
+    // 算力任务回执：资源释放和实扣完成后唤醒原会话。
+    this.bot.on('compute_task_receipt', (receipt: CatsComputeTaskReceipt) => {
+      if (this.shuttingDown) return;
+      void this.runTrackedConversationWork(() => this.handleComputeTaskReceipt(receipt)).catch((error: any) => {
+        Logger.warning(`[CatsCompany] 处理算力回执失败: ${error?.message || error}`);
       });
     });
 
@@ -3814,11 +3827,31 @@ export class CatsCompanyBot {
     await this.drainMessageQueue(sessionKey);
   }
 
+  private async handleComputeTaskReceipt(receipt: CatsComputeTaskReceipt): Promise<void> {
+    const consumed: ConsumedComputeTaskReceipt | null = computeTaskReceiptRouter.consume(receipt);
+    if (!consumed) {
+      Logger.info(`[CatsCompany] 忽略算力回执（未登记或重复投递）: quote=${receipt?.quote_id || '-'}`);
+      return;
+    }
+    const sessionKey = consumed.task.conversationSessionKey;
+    const topic = consumed.task.conversationTopic || '';
+    const senderId = consumed.task.actorUserId;
+    if (!sessionKey || !senderId || !topic) {
+      Logger.warning(`[CatsCompany] 算力回执缺少会话/发送者，无法唤醒: quote=${consumed.task.quoteId}`);
+      return;
+    }
+    const text = buildComputeTaskReceiptPrompt(consumed);
+    Logger.info(`[CatsCompany] 算力回执唤醒会话: quote=${consumed.task.quoteId} status=${receipt.status || receipt.state || '-'}`);
+    this.enqueueServiceRunReceiptTurn(sessionKey, topic, senderId, text, 'compute_task_receipt');
+    await this.drainMessageQueue(sessionKey);
+  }
+
   private enqueueServiceRunReceiptTurn(
     sessionKey: string,
     topic: string,
     senderId: string,
     text: string,
+    source: QueuedMessage['source'] = 'service_run_receipt',
   ): void {
     const queue = this.messageQueue.get(sessionKey) ?? [];
     queue.push({
@@ -3828,7 +3861,7 @@ export class CatsCompanyBot {
       seq: 0,
       executionScope: createExecutionScope(createCatsCoMessageEnvelope({ topic, senderId, text })),
       receivedAt: Date.now(),
-      source: 'service_run_receipt',
+      source,
       clearGeneration: this.getSessionClearGeneration(sessionKey),
       stopGeneration: this.getSessionStopGeneration(sessionKey),
     });
