@@ -1,6 +1,6 @@
 import type { ScopedDeviceGrant } from '../types/session-identity';
 import type { ToolExecutionContext } from '../types/tool';
-import { validateDeviceGrant } from './device-grants';
+import { isDelegatedDeviceGrant, validateDeviceGrant } from './device-grants';
 import { Logger } from '../utils/logger';
 import { CatsSendError } from '../catscompany/send-error';
 
@@ -25,7 +25,7 @@ type RenewalOutcome = 'attempted' | 'renewed' | 'unsupported' | 'invalid_grant' 
 export function isDeviceGrantRenewal(old: ScopedDeviceGrant, next: ScopedDeviceGrant, now = Date.now()): boolean {
   const keys: (keyof ScopedDeviceGrant)[] = ['kind', 'source', 'status', 'identityTrust', 'identitySource',
     'deviceId', 'deviceBodyId', 'deviceInstallationId', 'ownerUserId', 'sessionKey', 'topicId', 'topicType',
-    'actorUserId', 'agentId', 'agentBodyId', 'targetScope', 'selectionRevision', 'createdAt'];
+    'actorUserId', 'agentId', 'agentBodyId', 'targetScope', 'selectionRevision', 'shareId', 'shareRevision', 'createdAt'];
   return !!next && keys.every(key => old[key] === next[key]) && next.status === 'active'
     && next.identityTrust === 'server_canonical' && typeof next.grantId === 'string' && !!next.grantId
     && next.grantId !== old.grantId && Number.isFinite(next.expiresAt)
@@ -89,11 +89,11 @@ export class DeviceGrantLease {
       // A new human turn supersedes older grants for the same authority. Do
       // not keep every historical grant alive as follow-ups accumulate.
       if (context.deviceGrants?.some(newer => newer.createdAt > grant.createdAt
-        && newer.deviceId === grant.deviceId && newer.actorUserId === grant.actorUserId
+        && newer.deviceId === grant.deviceId && newer.ownerUserId === grant.ownerUserId && newer.actorUserId === grant.actorUserId
         && newer.sessionKey === grant.sessionKey && newer.agentId === grant.agentId
         && newer.targetScope === grant.targetScope && newer.selectionRevision === grant.selectionRevision
         && newer.status === 'active' && newer.identityTrust === 'server_canonical')) { this.note('superseded'); continue; }
-      if (!context.executionScope || !grant.operations.length || grant.ownerUserId !== grant.actorUserId
+      if (!context.executionScope || !grant.operations.length || (grant.ownerUserId !== grant.actorUserId && !isDelegatedDeviceGrant(grant))
         || (context.deviceSelection?.revision || '') !== (grant.selectionRevision || '')
         || !validateDeviceGrant(context, grant, { deviceId: grant.deviceId, operation: grant.operations[0], now }).ok) {
         this.note(grant.expiresAt <= now ? 'expired' : 'invalid_grant'); continue;

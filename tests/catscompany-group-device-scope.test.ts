@@ -105,7 +105,7 @@ for (const [name, other] of [
     input.metadata.catsco_identity.device_grants = other.metadata.catsco_identity.device_grants;
     input.metadata.catsco_identity.device_selection = other.metadata.catsco_identity.device_selection;
     const { ctx, calls } = context(input);
-    assert.equal(ctx.deviceGrants, undefined);
+    assert.deepEqual(ctx.deviceGrants, []);
     assert.equal(ctx.deviceSelection, undefined);
     assert.equal(resolveExecutionRoute(ctx, routeOptions).ok, false);
     const otherContext = context(other).ctx;
@@ -132,7 +132,8 @@ for (const [name, change] of [
     const input = message();
     change(input);
     const { ctx, calls } = context(input);
-    assert.equal(ctx.deviceGrants, undefined);
+    if (name === 'untrusted envelope') assert.equal(ctx.deviceGrants, undefined);
+    else assert.deepEqual(ctx.deviceGrants, []);
     assert.equal(resolveExecutionRoute(ctx, routeOptions).ok, false);
     assert.equal(calls.length, 0);
   });

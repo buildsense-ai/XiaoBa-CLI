@@ -61,6 +61,7 @@ export type DeviceGrantDecision =
 export interface ResolveDeviceGrantOptions {
   operation: DeviceGrantOperation;
   deviceId?: string;
+  ownerUserId?: string;
   now?: number;
 }
 
@@ -68,10 +69,12 @@ const DELEGATED_DEVICE_GRANT_IDENTITY_SOURCES = new Set([
   'channel_identity_link',
 ]);
 
-export function isDelegatedDeviceGrant(grant: Pick<ScopedDeviceGrant, 'identityTrust' | 'identitySource' | 'ownerUserId' | 'actorUserId'>): boolean {
-  return grant.identityTrust === 'server_canonical'
-    && grant.ownerUserId !== grant.actorUserId
-    && DELEGATED_DEVICE_GRANT_IDENTITY_SOURCES.has(String(grant.identitySource || ''));
+export function isDelegatedDeviceGrant(grant: Pick<ScopedDeviceGrant, 'identityTrust' | 'identitySource' | 'ownerUserId' | 'actorUserId'>
+  & Partial<Pick<ScopedDeviceGrant, 'shareId' | 'shareRevision' | 'topicType'>>): boolean {
+  if (grant.identityTrust !== 'server_canonical' || grant.ownerUserId === grant.actorUserId) return false;
+  if (DELEGATED_DEVICE_GRANT_IDENTITY_SOURCES.has(String(grant.identitySource || ''))) return true;
+  return grant.identitySource === 'group_device_share' && grant.topicType === 'group'
+    && Boolean(grant.shareId) && Number.isSafeInteger(grant.shareRevision) && Number(grant.shareRevision) > 0;
 }
 
 export function createUserDevice(input: CreateUserDeviceInput): UserDevice | undefined {
@@ -146,6 +149,7 @@ export function resolveDeviceGrant(
   const normalizedDeviceId = normalizeId(options.deviceId);
   const matchingGrants = grants.filter(candidate => {
     if (normalizedDeviceId && candidate.deviceId !== normalizedDeviceId) return false;
+    if (options.ownerUserId && candidate.ownerUserId !== options.ownerUserId) return false;
     return candidate.operations.includes(options.operation);
   });
 
@@ -165,10 +169,10 @@ export function resolveDeviceGrant(
     return validateDeviceGrant(context, matchingGrants[0], options);
   }
 
-  if (!normalizedDeviceId) {
-    const targetDeviceIds = new Set(validDecisions.map(decision => decision.grant.deviceId));
+  if (!options.ownerUserId) {
+    const targetDeviceIds = new Set(validDecisions.map(decision => JSON.stringify([decision.grant.ownerUserId, decision.grant.deviceId])));
     if (targetDeviceIds.size > 1) {
-      return denied(`当前会话有多个允许 ${options.operation} 的用户设备授权，请由后端指定目标 deviceId 后再执行。`);
+      return denied(`当前会话有多个允许 ${options.operation} 的用户设备授权，请由后端指定目标 owner 和 deviceId 后再执行。`);
     }
   }
 
