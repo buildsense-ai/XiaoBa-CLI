@@ -7,7 +7,7 @@ import {
   type ExternalEventEnvelope,
   type ExternalEventRouter,
 } from './external-event-router';
-import type { McpForwardedEvent } from '../mcp/mcp-notification-adapter';
+import { isProgressNotification, type McpForwardedEvent } from '../mcp/mcp-notification-adapter';
 import type {
   ArtifactBindResult,
   ArtifactEventEmitResult,
@@ -50,7 +50,9 @@ export function forwardMcpEventToExternalRouter(
   router: ExternalEventRouter = externalEventRouter,
   options: ForwardMcpEventOptions = {},
 ): boolean {
-  if (NON_WAKING_MCP_METHODS.has(event.method)) {
+  if (NON_WAKING_MCP_METHODS.has(event.method) || isProgressNotification(event)) {
+    // notifications/progress 绝不唤醒模型回合 —— 进度只走 task_status 桥接
+    // （McpProgressBridge），这里双保险拦截，防止未来有人把它从 NON_WAKING 集合里误删。
     return false;
   }
 

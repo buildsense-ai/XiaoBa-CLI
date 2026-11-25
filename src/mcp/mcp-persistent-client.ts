@@ -49,7 +49,7 @@ import type { McpNotificationLike } from './mcp-notification-adapter';
 export interface McpConnection {
   listTools(params?: { cursor?: string }, options?: { timeout?: number }): Promise<{ tools: McpRemoteToolInfo[]; nextCursor?: string }>;
   callTool(
-    params: { name: string; arguments?: Record<string, unknown> },
+    params: { name: string; arguments?: Record<string, unknown>; meta?: { progressToken?: string | number } },
     options?: McpCallToolOptions,
   ): Promise<McpCallToolResult>;
   listResources(params?: { cursor?: string }, options?: { timeout?: number }): Promise<{ resources: McpRemoteResourceInfo[]; nextCursor?: string }>;
@@ -76,6 +76,8 @@ export interface McpConnection {
   getCapabilities?(): ServerCapabilities | undefined;
   /** 服务端 instructions（initialize/discover 结果里的使用说明）。 */
   getServerInstructions?(): string | undefined;
+  /** Alias for getServerInstructions (used by primitives layer). */
+  getInstructions?(): string | undefined;
   /** 传输层关闭（含主动 close）。 */
   onclose?: () => void;
   /** 传输层错误（不一定致命）。 */
@@ -121,6 +123,10 @@ export interface McpRemoteToolInfo {
   name: string;
   description?: string;
   inputSchema?: unknown;
+  /** MCP tool annotations（title/readOnlyHint/destructiveHint/idempotentHint/openWorldHint），原样透传。 */
+  annotations?: unknown;
+  /** MCP tool icons 元数据（spec 2025-11 draft），原样透传。 */
+  icons?: unknown;
 }
 
 export interface McpRemoteResourceInfo {
@@ -562,7 +568,11 @@ export class McpPersistentClient {
   ): Promise<McpCallToolResult> {
     const connection = await this.ensureConnected();
     return connection.callTool(
-      { name, arguments: args },
+      {
+        name,
+        arguments: args,
+        ...(options?.progressToken !== undefined ? { meta: { progressToken: options.progressToken } } : {}),
+      },
       {
         timeout: options?.timeoutMs ?? this.requestTimeoutMs,
         ...(options?.progressToken !== undefined ? { progressToken: options.progressToken } : {}),
@@ -573,15 +583,22 @@ export class McpPersistentClient {
     );
   }
 
+  /** initialize 协商时 server 提供的 instructions（当前连接未声明则为 undefined）。 */
+  getInstructions(): string | undefined {
+    const instructions = this.connection?.getServerInstructions?.() ?? this.connection?.getInstructions?.();
+    return typeof instructions === 'string' && instructions.trim().length > 0 ? instructions : undefined;
+  }
+
   async listResources(params?: { cursor?: string }): Promise<{ resources: McpRemoteResourceInfo[]; nextCursor?: string }> {
     const connection = await this.ensureConnected();
     return connection.listResources(params, { timeout: this.requestTimeoutMs });
   }
 
+  /** resources/templates/list；连接实现不支持时返回空清单（模板是可选能力）。 */
   async listResourceTemplates(params?: { cursor?: string }): Promise<{ resourceTemplates: McpRemoteResourceTemplate[]; nextCursor?: string }> {
     const connection = await this.ensureConnected();
     if (typeof connection.listResourceTemplates !== 'function') {
-      throw new Error(`MCP server ${this.serverId} 连接不支持 listResourceTemplates`);
+      return { resourceTemplates: [] };
     }
     return connection.listResourceTemplates(params, { timeout: this.requestTimeoutMs });
   }
@@ -649,12 +666,18 @@ export class McpPersistentClient {
     return connection.getPrompt({ name, arguments: args }, { timeout: this.requestTimeoutMs });
   }
 
-  /** completion/complete 自动补全。 */
-  async complete(params: McpCompleteParams): Promise<unknown> {
+  /** completion/complete 自动补全（兼容单对象参数与三参数形式）。 */
+  async complete(params: McpCompleteParams): Promise<unknown>;
+  async complete(ref: unknown, argument: unknown, context?: unknown): Promise<unknown>;
+  async complete(paramsOrRef: McpCompleteParams | unknown, argument?: unknown, context?: unknown): Promise<unknown> {
     const connection = await this.ensureConnected();
     if (typeof connection.complete !== 'function') {
       throw new Error(`MCP server ${this.serverId} 连接不支持 complete`);
     }
+    const params: McpCompleteParams =
+      argument !== undefined
+        ? ({ ref: paramsOrRef, argument, ...(context !== undefined ? { context } : {}) } as McpCompleteParams)
+        : (paramsOrRef as McpCompleteParams);
     return connection.complete(params, { timeout: this.requestTimeoutMs });
   }
 
@@ -1100,11 +1123,12 @@ class SdkMcpConnection implements McpConnection, SdkMcpConnectionInternal {
   }
 
   async callTool(
-    params: { name: string; arguments?: Record<string, unknown> },
+    params: { name: string; arguments?: Record<string, unknown>; meta?: { progressToken?: string | number } },
     options?: McpCallToolOptions,
   ): Promise<McpCallToolResult> {
     const client = this.requireClient();
-    const { progressToken, onProgress, ...rest } = options ?? {};
+    const { progressToken: optToken, onProgress, ...rest } = options ?? {};
+    const progressToken = optToken ?? params.meta?.progressToken;
     // v2 SDK 的 RequestOptions 用 onprogress（小写）：设了它之后 SDK 会把
     // _meta.progressToken 改写为内部 messageId 并按它分发回调；未给 onProgress
     // 时保留调用方显式 progressToken，进度通知走 onNotification 手动追踪。
@@ -1125,6 +1149,10 @@ class SdkMcpConnection implements McpConnection, SdkMcpConnectionInternal {
       structuredContent: result.structuredContent,
       isError: result.isError === true,
     };
+  }
+
+  getInstructions(): string | undefined {
+    return this.getServerInstructions();
   }
 
   async listResources(params?: { cursor?: string }, options?: { timeout?: number }) {

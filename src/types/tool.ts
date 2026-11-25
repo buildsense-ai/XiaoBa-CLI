@@ -44,6 +44,13 @@ export interface ToolDefinition {
     required?: string[];
   };
   /**
+   * MCP tool annotations（title/readOnlyHint/destructiveHint/idempotentHint/openWorldHint）。
+   * 风险/审批层与 UI 可据此调整确认策略；仅由 MCP 远端工具填充。
+   */
+  annotations?: import('../mcp/mcp-schema-utils').McpToolAnnotations;
+  /** MCP tool icons 元数据，UI 可用于展示。 */
+  icons?: import('../mcp/mcp-schema-utils').McpToolIcon[];
+  /**
    * 控制工具结果如何进入后续 transcript。
    * default: 保留 tool_result；
    * outbound_message/outbound_file: 成功后折叠为用户已看到的外发结果。

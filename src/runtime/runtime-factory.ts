@@ -17,6 +17,7 @@ import { McpClientManager } from '../mcp/mcp-client-manager';
 import { loadMcpConfig } from '../mcp/mcp-config';
 import { artifactMcpRegistry } from '../mcp/artifact-mcp-registry';
 import { forwardMcpEventToExternalRouter } from '../events/event-bus-adapters';
+import { renderMcpServerInstructions } from '../mcp/mcp-instructions';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import { serviceRunReceiptRouter } from '../catscompany/service-run-receipts';
 import { FileBotDefinitionRepository } from '../bot-definition/repository';
@@ -48,10 +49,13 @@ export class RuntimeFactory {
     const sessionKey = options.sessionKey ?? profile.surface;
     const sessionType = options.sessionType ?? profile.surface;
     const session = new AgentSession(sessionKey, services, sessionType);
-    session.setSystemPromptProvider(this.createSessionSystemPromptProvider(
-      profile,
-      sessionKey,
-      sessionType,
+    session.setSystemPromptProvider(wrapSystemPromptProviderWithMcpInstructions(
+      this.createSessionSystemPromptProvider(
+        profile,
+        sessionKey,
+        sessionType,
+      ),
+      services.mcpClientManager,
     ));
 
     return {
@@ -262,6 +266,17 @@ export class RuntimeFactory {
     }
   }
 
+  /**
+   * 把 MCP server instructions 受限注入追加到任意系统提示词 provider 的尾部。
+   * 每次渲染时同步收集快照（instructions 在 initialize 协商时已固定，无 I/O）。
+   */
+  static withMcpServerInstructions(
+    provider: SystemPromptProvider,
+    mcpClientManager: McpClientManager | undefined,
+  ): SystemPromptProvider {
+    return wrapSystemPromptProviderWithMcpInstructions(provider, mcpClientManager);
+  }
+
   static createSystemPromptProvider(profile: RuntimeProfile): SystemPromptProvider {
     const promptProfile = this.snapshotProfile(profile);
     return () => PromptComposer.composeSystemPromptFromProfile({
@@ -324,4 +339,27 @@ export class RuntimeFactory {
       logging: { ...profile.logging },
     };
   }
+}
+
+/**
+ * MCP server instructions 受限注入装饰器：
+ * 把已连接 server 的 initialize instructions 渲染为有边界的尾部块拼到系统提示词后面。
+ * 无 manager / 无 instructions 时原样返回 base prompt，零开销。
+ */
+function wrapSystemPromptProviderWithMcpInstructions(
+  provider: SystemPromptProvider,
+  mcpClientManager: McpClientManager | undefined,
+): SystemPromptProvider {
+  if (!mcpClientManager) return provider;
+  return async () => {
+    const base = await provider();
+    let instructionsBlock = '';
+    try {
+      instructionsBlock = renderMcpServerInstructions(mcpClientManager.collectServerInstructions());
+    } catch (error: any) {
+      Logger.warning(`MCP server instructions 渲染失败，已跳过: ${error?.message ?? error}`);
+    }
+    if (!instructionsBlock.trim()) return base;
+    return [base, instructionsBlock].filter(part => part && part.trim()).join('\n\n');
+  };
 }

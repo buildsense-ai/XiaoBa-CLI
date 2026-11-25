@@ -794,6 +794,15 @@ export class CatsCompanyBot {
       'catscompany',
       runtime.sessionManagerOptions,
     );
+
+    // MCP progress → task_status 桥接：远端 server 推送的 notifications/progress
+    // 经节流后作为会话侧栏任务状态上报。进度信号绝不唤醒模型回合。
+    const mcpClientManager = this.agentServices?.mcpClientManager;
+    if (mcpClientManager) {
+      mcpClientManager.progressBridge.setSink((update) =>
+        this.sender.sendTaskStatus(update.topic, update.status),
+      );
+    }
   }
 
   /**

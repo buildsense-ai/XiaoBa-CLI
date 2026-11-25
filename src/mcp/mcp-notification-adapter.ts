@@ -130,6 +130,17 @@ function stableStringify(value: unknown): string {
   return `{${entries.join(',')}}`;
 }
 
+/** progress 通知 method：进度信号只进 task_status 桥接，永不唤醒模型回合。 */
+export const PROGRESS_NOTIFICATION_METHOD = 'notifications/progress';
+
+/**
+ * 判断通知是否只应路由到 progress 桥接而绝不进入唤醒路由。
+ * 适配层与事件总线共用此判断，保证两处不会各写一份而漂移。
+ */
+export function isProgressNotification(notification: McpNotificationLike): boolean {
+  return notification?.method === PROGRESS_NOTIFICATION_METHOD;
+}
+
 /** 优先级兜底规则：标准映射优先，error/fail 类名字升 critical。 */
 export function priorityForMethod(method: string): McpEventPriority {
   const known = KNOWN_PRIORITIES[method];
