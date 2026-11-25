@@ -24,6 +24,9 @@ import {
   ProgressNotificationSchema,
   LoggingMessageNotificationSchema,
   TaskStatusNotificationSchema,
+  ElicitRequestSchema,
+  CreateMessageRequestSchema,
+  ListRootsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { Logger } from '../utils/logger';
 import type { McpServerConfig } from './mcp-config';
@@ -40,6 +43,12 @@ export interface McpConnection {
   unsubscribeResource(params: { uri: string }, options?: { timeout?: number }): Promise<unknown>;
   listPrompts(params?: { cursor?: string }, options?: { timeout?: number }): Promise<{ prompts: McpRemotePromptInfo[]; nextCursor?: string }>;
   getPrompt(params: { name: string; arguments?: Record<string, string> }, options?: { timeout?: number }): Promise<unknown>;
+  /** Track 3：tasks/get（io.modelcontextprotocol/tasks）。 */
+  getTask?(params: { taskId: string }, options?: { timeout?: number }): Promise<unknown>;
+  /** Track 3：tasks/result。 */
+  getTaskResult?(params: { taskId: string }, options?: { timeout?: number }): Promise<unknown>;
+  /** Track 3：tasks/cancel。 */
+  cancelTask?(params: { taskId: string }, options?: { timeout?: number }): Promise<unknown>;
   /** 传输层关闭（含主动 close）。 */
   onclose?: () => void;
   /** 传输层错误（不一定致命）。 */
@@ -115,6 +124,12 @@ export interface McpPersistentClientOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /** Track 3：elicitation/create 处理器（通常接 McpInteractionBroker）。 */
+  onElicit?: McpConnectionHooks['onElicit'];
+  /** Track 3：sampling/createMessage 处理器（受控）。 */
+  onSamplingCreateMessage?: McpConnectionHooks['onSamplingCreateMessage'];
+  /** Track 3：roots/list 处理器。 */
+  onListRoots?: McpConnectionHooks['onListRoots'];
 }
 
 export interface McpConnectionHooks {
@@ -125,6 +140,12 @@ export interface McpConnectionHooks {
   onSessionId?: (sessionId: string | undefined) => void;
   /** Streamable HTTP 的最新 SSE resumption token（断线续传诊断用）。 */
   onResumptionToken?: (token: string) => void;
+  /** Track 3：elicitation/create（form/url）反向交互请求。 */
+  onElicit?: (params: unknown, extra?: { signal?: AbortSignal }) => Promise<unknown>;
+  /** Track 3：sampling/createMessage 反向采样请求（受控 —— 未接 handler 即无能力）。 */
+  onSamplingCreateMessage?: (params: unknown, extra?: { signal?: AbortSignal }) => Promise<unknown>;
+  /** Track 3：roots/list（动态按 ExecutionScope/device-grants 给根）。 */
+  onListRoots?: () => Promise<{ roots: Array<{ uri: string; name?: string }> }>;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -144,6 +165,9 @@ export class McpPersistentClient {
   private readonly requestTimeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
+  private readonly onElicit?: McpConnectionHooks['onElicit'];
+  private readonly onSamplingCreateMessage?: McpConnectionHooks['onSamplingCreateMessage'];
+  private readonly onListRoots?: McpConnectionHooks['onListRoots'];
 
   private connection: McpConnection | null = null;
   private state: McpClientState = 'disconnected';
@@ -180,6 +204,9 @@ export class McpPersistentClient {
       ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.sleep = options.sleep ?? ((ms) => new Promise<void>(resolve => setTimeout(resolve, ms)));
     this.random = options.random ?? Math.random;
+    this.onElicit = options.onElicit;
+    this.onSamplingCreateMessage = options.onSamplingCreateMessage;
+    this.onListRoots = options.onListRoots;
   }
 
   getState(): McpClientState {
@@ -302,6 +329,9 @@ export class McpPersistentClient {
         this.lastResumptionToken = token;
       },
       ...(this.lastSessionId ? { sessionId: this.lastSessionId } : {}),
+      ...(this.onElicit ? { onElicit: this.onElicit } : {}),
+      ...(this.onSamplingCreateMessage ? { onSamplingCreateMessage: this.onSamplingCreateMessage } : {}),
+      ...(this.onListRoots ? { onListRoots: this.onListRoots } : {}),
     });
   }
 
@@ -425,6 +455,27 @@ export class McpPersistentClient {
     return connection.getPrompt({ name, arguments: args }, { timeout: this.requestTimeoutMs });
   }
 
+  /** Track 3：tasks/get；server 不支持 tasks 原语时返回 undefined。 */
+  async getTask(taskId: string): Promise<unknown> {
+    const connection = await this.ensureConnected();
+    if (!connection.getTask) throw new Error(`MCP server ${this.serverId} 连接不支持 tasks 原语`);
+    return connection.getTask({ taskId }, { timeout: this.requestTimeoutMs });
+  }
+
+  /** Track 3：tasks/result。 */
+  async getTaskResult(taskId: string): Promise<unknown> {
+    const connection = await this.ensureConnected();
+    if (!connection.getTaskResult) throw new Error(`MCP server ${this.serverId} 连接不支持 tasks 原语`);
+    return connection.getTaskResult({ taskId }, { timeout: this.requestTimeoutMs });
+  }
+
+  /** Track 3：tasks/cancel。 */
+  async cancelTask(taskId: string): Promise<unknown> {
+    const connection = await this.ensureConnected();
+    if (!connection.cancelTask) throw new Error(`MCP server ${this.serverId} 连接不支持 tasks 原语`);
+    return connection.cancelTask({ taskId }, { timeout: this.requestTimeoutMs });
+  }
+
   /** 主动关闭：停止重连、清订阅意图（不逐个发 unsubscribe —— 连接反正要断）。 */
   async close(): Promise<void> {
     if (this.closedByUser) return;
@@ -460,10 +511,26 @@ export interface McpConnectionFactoryOptions {
  */
 export function createSdkMcpConnectionFactory(factoryOptions: McpConnectionFactoryOptions = {}) {
   return (config: McpServerConfig, hooks: McpConnectionHooks): McpConnection => {
+    // Track 3：按接线 handler 声明交互能力（未接线 = 不声明 = server 不会发起）。
+    const capabilities: Record<string, unknown> = {
+      // io.modelcontextprotocol/tasks：list/cancel 是被动原语，声明无风险；
+      // requests 级任务化（tools/call 变 task）由 server 按其能力自行决定。
+      tasks: { list: {}, cancel: {} },
+    };
+    if (hooks.onElicit) {
+      capabilities.elicitation = { form: {}, url: {} };
+    }
+    if (hooks.onSamplingCreateMessage) {
+      capabilities.sampling = {};
+    }
+    if (hooks.onListRoots) {
+      capabilities.roots = { listChanged: false };
+    }
+
     const client = new Client(
       factoryOptions.clientInfo ?? { name: 'xiaoba-mcp-client', version: '1.0.0' },
       {
-        capabilities: {},
+        capabilities,
         // list_changed 系列由 SDK 做 debounce，避免服务端连发导致刷屏式刷新。
         debouncedNotificationMethods: [
           'notifications/tools/list_changed',
@@ -472,6 +539,26 @@ export function createSdkMcpConnectionFactory(factoryOptions: McpConnectionFacto
         ],
       },
     );
+
+    // Track 3：反向请求处理器（elicitation / sampling / roots）。
+    if (hooks.onElicit) {
+      const onElicit = hooks.onElicit;
+      client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
+        return await onElicit(request.params, { signal: extra?.signal }) as never;
+      });
+    }
+    if (hooks.onSamplingCreateMessage) {
+      const onSampling = hooks.onSamplingCreateMessage;
+      client.setRequestHandler(CreateMessageRequestSchema, async (request, extra) => {
+        return await onSampling(request.params, { signal: extra?.signal }) as never;
+      });
+    }
+    if (hooks.onListRoots) {
+      const onListRoots = hooks.onListRoots;
+      client.setRequestHandler(ListRootsRequestSchema, async () => {
+        return await onListRoots() as never;
+      });
+    }
 
     const notify = (notification: { method: string; params?: unknown }) => {
       hooks.onNotification?.({ method: notification.method, params: notification.params });
@@ -599,6 +686,18 @@ class SdkMcpConnection implements McpConnection {
 
   async getPrompt(params: { name: string; arguments?: Record<string, string> }, options?: { timeout?: number }) {
     return this.client.getPrompt(params, options);
+  }
+
+  async getTask(params: { taskId: string }, options?: { timeout?: number }) {
+    return this.client.experimental.tasks.getTask(params.taskId, options);
+  }
+
+  async getTaskResult(params: { taskId: string }, options?: { timeout?: number }) {
+    return this.client.experimental.tasks.getTaskResult(params.taskId, undefined, options);
+  }
+
+  async cancelTask(params: { taskId: string }, options?: { timeout?: number }) {
+    return this.client.experimental.tasks.cancelTask(params.taskId, options);
   }
 
   async close(): Promise<void> {

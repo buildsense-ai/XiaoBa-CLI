@@ -34,7 +34,28 @@ export interface McpHttpServerConfig {
   timeoutMs?: number;
 }
 
-export type McpServerConfig = McpStdioServerConfig | McpHttpServerConfig;
+/**
+ * Track 3 交互/安全扩展（stdio 与 streamable-http 共用）。
+ * 全部可选 —— 缺省配置行为与 Track 2 完全一致。
+ */
+export interface McpServerSecurityExtensions {
+  /** 该 server 使用个人 OAuth 凭据（自动推导 ownerOnly）。 */
+  oauth?: boolean;
+  /** 显式声明 ownerOnly（缺省：oauth || localRoots 任一启用即为 true）。 */
+  ownerOnly?: boolean;
+  /** 该 server 被授予本地文件系统 roots。 */
+  localRoots?: boolean;
+  /** 附加的本地 roots 绝对路径（仍受 ExecutionScope 约束）。 */
+  extraRoots?: string[];
+  /** 允许该 server 反向采样（sampling/createMessage）。默认拒绝。 */
+  allowSampling?: boolean;
+  /** 允许该 server 直接按 sessionKey/topic 唤醒会话（默认 false）。 */
+  allowSessionTargeting?: boolean;
+  /** URL 模式 elicitation 额外信任的域名后缀。 */
+  elicitationAllowedDomains?: string[];
+}
+
+export type McpServerConfig = (McpStdioServerConfig | McpHttpServerConfig) & McpServerSecurityExtensions;
 
 export interface McpManagerFileConfig {
   servers: Record<string, McpServerConfig>;
@@ -132,6 +153,7 @@ export function validateServerConfig(serverId: string, raw: unknown): McpServerC
       ...(Array.isArray(raw.args) ? { args: raw.args as string[] } : {}),
       ...(env ? { env } : {}),
       ...(typeof raw.cwd === 'string' && raw.cwd.trim() ? { cwd: raw.cwd } : {}),
+      ...extractSecurityExtensions(raw),
     };
   }
 
@@ -168,10 +190,28 @@ export function validateServerConfig(serverId: string, raw: unknown): McpServerC
       ...(headers ? { headers } : {}),
       ...(typeof raw.bearerToken === 'string' && raw.bearerToken ? { bearerToken: raw.bearerToken } : {}),
       ...(typeof raw.timeoutMs === 'number' ? { timeoutMs: raw.timeoutMs } : {}),
+      ...extractSecurityExtensions(raw),
     };
   }
 
   throw new McpConfigError([`[${serverId}] 未知 transport "${String(transport)}"（支持 stdio / streamable-http）`]);
+}
+
+/** 提取 Track 3 安全扩展字段（只收布尔/字符串数组，类型不符即丢弃 —— 扩展字段不进 fail-fast 校验）。 */
+function extractSecurityExtensions(raw: Record<string, unknown>): McpServerSecurityExtensions {
+  const out: McpServerSecurityExtensions = {};
+  if (typeof raw.oauth === 'boolean') out.oauth = raw.oauth;
+  if (typeof raw.ownerOnly === 'boolean') out.ownerOnly = raw.ownerOnly;
+  if (typeof raw.localRoots === 'boolean') out.localRoots = raw.localRoots;
+  if (typeof raw.allowSampling === 'boolean') out.allowSampling = raw.allowSampling;
+  if (typeof raw.allowSessionTargeting === 'boolean') out.allowSessionTargeting = raw.allowSessionTargeting;
+  const stringArray = (value: unknown): string[] | undefined =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : undefined;
+  const extraRoots = stringArray(raw.extraRoots);
+  if (extraRoots && extraRoots.length > 0) out.extraRoots = extraRoots;
+  const domains = stringArray(raw.elicitationAllowedDomains);
+  if (domains && domains.length > 0) out.elicitationAllowedDomains = domains;
+  return out;
 }
 
 /**
@@ -280,7 +320,8 @@ export function isSameMcpServerConfig(left: McpServerConfig, right: McpServerCon
       left.command === right.command &&
       (left.cwd ?? '') === (right.cwd ?? '') &&
       JSON.stringify(left.args ?? []) === JSON.stringify(right.args ?? []) &&
-      JSON.stringify(stableStringMap(left.env)) === JSON.stringify(stableStringMap(right.env))
+      JSON.stringify(stableStringMap(left.env)) === JSON.stringify(stableStringMap(right.env)) &&
+      JSON.stringify(securityExtensionFingerprint(left)) === JSON.stringify(securityExtensionFingerprint(right))
     );
   }
   if (left.transport === 'streamable-http' && right.transport === 'streamable-http') {
@@ -288,10 +329,23 @@ export function isSameMcpServerConfig(left: McpServerConfig, right: McpServerCon
       left.url === right.url &&
       (left.bearerToken ?? '') === (right.bearerToken ?? '') &&
       (left.timeoutMs ?? null) === (right.timeoutMs ?? null) &&
-      JSON.stringify(stableStringMap(left.headers)) === JSON.stringify(stableStringMap(right.headers))
+      JSON.stringify(stableStringMap(left.headers)) === JSON.stringify(stableStringMap(right.headers)) &&
+      JSON.stringify(securityExtensionFingerprint(left)) === JSON.stringify(securityExtensionFingerprint(right))
     );
   }
   return false;
+}
+
+function securityExtensionFingerprint(config: McpServerConfig): unknown {
+  return {
+    oauth: config.oauth ?? null,
+    ownerOnly: config.ownerOnly ?? null,
+    localRoots: config.localRoots ?? null,
+    allowSampling: config.allowSampling ?? null,
+    allowSessionTargeting: config.allowSessionTargeting ?? null,
+    extraRoots: config.extraRoots ?? null,
+    elicitationAllowedDomains: config.elicitationAllowedDomains ?? null,
+  };
 }
 
 /**

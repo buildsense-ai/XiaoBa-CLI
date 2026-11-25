@@ -33,6 +33,19 @@ import {
   type McpForwardedEvent,
   type McpNotificationLike,
 } from './mcp-notification-adapter';
+import {
+  isMrtrInputRequiredResult,
+  type McpInteractionBroker,
+  type MrtrInputRequiredResult,
+} from './mcp-interaction-broker';
+import type { McpTasksBridge, McpTaskStatusParams, McpTaskStatus } from './mcp-tasks-bridge';
+import type { McpSamplingController } from './mcp-sampling-roots';
+import {
+  McpSecurityPolicy,
+  NotificationRateLimiter,
+  evaluateServerAccess,
+  type McpServerRiskProfile,
+} from './mcp-security-policy';
 
 export const MCP_TOOL_NAME_PREFIX = 'mcp';
 
@@ -49,6 +62,20 @@ export interface McpClientManagerOptions {
   createConnection?: (config: McpServerConfig, hooks: McpConnectionHooks) => McpConnection;
   /** 外部事件总线回调：所有 server 的 MCP 通知都经适配层规范化后送达。 */
   onEvent?: (event: McpForwardedEvent) => void;
+  /** Track 3：统一交互代理（elicitation + MRTR）。 */
+  interactionBroker?: McpInteractionBroker;
+  /** Track 3：tasks 桥（终态唤醒 + input_required 交接 + 轮询）。 */
+  tasksBridge?: McpTasksBridge;
+  /** Track 3：受控采样控制器（未提供 = 不声明 sampling 能力）。 */
+  samplingController?: McpSamplingController;
+  /** Track 3：roots/list 动态解析（按 serverId）。 */
+  resolveRoots?: (serverId: string) => Promise<{ roots: Array<{ uri: string; name?: string }> }> | { roots: Array<{ uri: string; name?: string }> };
+  /** Track 3：共享安全策略注册表（缺省 = 管理器内部自建）。 */
+  securityPolicy?: McpSecurityPolicy;
+  /** Track 3：通知限流参数；false = 关闭限流。 */
+  notificationRateLimit?: { capacity?: number; refillPerSecond?: number } | false;
+  /** Track 3：elicitation 路由解析（无上下文时由宿主推断会话）。 */
+  resolveInteractionRouting?: (serverId: string) => { sessionKey: string; topic?: string } | undefined;
   reconnect?: McpReconnectOptions;
   requestTimeoutMs?: number;
   now?: () => number;
@@ -105,6 +132,13 @@ export class McpClientManager {
   private readonly now?: () => number;
   private readonly sleep?: (ms: number) => Promise<void>;
   private readonly random?: () => number;
+  private readonly interactionBroker?: McpInteractionBroker;
+  private readonly tasksBridge?: McpTasksBridge;
+  private readonly samplingController?: McpSamplingController;
+  private readonly resolveRoots?: McpClientManagerOptions['resolveRoots'];
+  private readonly resolveInteractionRouting?: McpClientManagerOptions['resolveInteractionRouting'];
+  readonly securityPolicy: McpSecurityPolicy;
+  readonly rateLimiter?: NotificationRateLimiter;
 
   private readonly servers = new Map<string, ManagedServer>();
   /** 仅追踪由静态配置文件托管的 serverId，热重载 diff 不会误删动态挂载的 Artifact Bridge 等 server。 */
@@ -124,10 +158,33 @@ export class McpClientManager {
     this.now = options.now;
     this.sleep = options.sleep;
     this.random = options.random;
+    this.interactionBroker = options.interactionBroker;
+    this.tasksBridge = options.tasksBridge;
+    this.samplingController = options.samplingController;
+    this.resolveRoots = options.resolveRoots;
+    this.resolveInteractionRouting = options.resolveInteractionRouting;
+    this.securityPolicy = options.securityPolicy ?? new McpSecurityPolicy();
+    if (options.notificationRateLimit !== false) {
+      const rl = options.notificationRateLimit ?? {};
+      this.rateLimiter = new NotificationRateLimiter({
+        ...(rl.capacity !== undefined ? { capacity: rl.capacity } : {}),
+        ...(rl.refillPerSecond !== undefined ? { refillPerSecond: rl.refillPerSecond } : {}),
+        ...(this.now ? { now: this.now } : {}),
+      });
+    }
     for (const [serverId, config] of Object.entries(options.servers ?? {})) {
       this.staticServerIds.add(serverId);
       this.addServer(serverId, config);
     }
+  }
+
+  /** server 配置 → 风险标记（oauth/localRoots/ownerOnly 显式声明优先）。 */
+  private static riskProfileOf(config: McpServerConfig): McpServerRiskProfile {
+    return {
+      ...(config.oauth !== undefined ? { oauthBacked: config.oauth } : {}),
+      ...(config.localRoots !== undefined ? { localRoots: config.localRoots } : {}),
+      ...(config.ownerOnly !== undefined ? { ownerOnly: config.ownerOnly } : {}),
+    };
   }
 
   /** 动态增挂一个 server（幂等：已存在则更新配置重建连接）。 */
@@ -143,6 +200,7 @@ export class McpClientManager {
       refreshInFlight: null,
       client: undefined as unknown as McpPersistentClient,
     };
+    this.securityPolicy.setServerProfile(serverId, McpClientManager.riskProfileOf(config));
     managed.client = new McpPersistentClient({
       serverId,
       config,
@@ -154,6 +212,22 @@ export class McpClientManager {
       now: this.now,
       sleep: this.sleep,
       random: this.random,
+      ...(this.interactionBroker ? {
+        onElicit: async (params) => this.interactionBroker!.handleElicitRequest(
+          serverId,
+          params as Parameters<McpInteractionBroker['handleElicitRequest']>[1],
+          this.resolveInteractionRouting?.(serverId),
+        ),
+      } : {}),
+      ...(this.samplingController?.capable && config.allowSampling ? {
+        onSamplingCreateMessage: async (params) => this.samplingController!.handleCreateMessage(
+          serverId,
+          params as Parameters<McpSamplingController['handleCreateMessage']>[1],
+        ),
+      } : {}),
+      ...(this.resolveRoots ? {
+        onListRoots: async () => this.resolveRoots!(serverId),
+      } : {}),
     });
     this.servers.set(serverId, managed);
     if (this.started) {
@@ -179,6 +253,8 @@ export class McpClientManager {
       }
     }
     managed.tools.clear();
+    this.securityPolicy.removeServer(managed.serverId);
+    this.rateLimiter?.remove(managed.serverId);
     await managed.client.close();
   }
 
@@ -198,6 +274,23 @@ export class McpClientManager {
 
   getClient(serverId: string): McpPersistentClient | undefined {
     return this.servers.get(serverId)?.client;
+  }
+
+  /** server 当前生效配置（只读拷贝；Track 3 策略/事件转发层查询用）。 */
+  getServerConfig(serverId: string): McpServerConfig | undefined {
+    const config = this.servers.get(serverId)?.config;
+    return config ? { ...config } : undefined;
+  }
+
+  /** Track 3：server 交互处理器（tasks/get 等）的窄适配。 */
+  getTasksClient(serverId: string): { getTask(taskId: string): Promise<never>; getTaskResult(taskId: string): Promise<never>; cancelTask(taskId: string): Promise<never> } | undefined {
+    const client = this.servers.get(serverId)?.client;
+    if (!client) return undefined;
+    return {
+      getTask: (taskId) => client.getTask(taskId) as Promise<never>,
+      getTaskResult: (taskId) => client.getTaskResult(taskId) as Promise<never>,
+      cancelTask: (taskId) => client.cancelTask(taskId) as Promise<never>,
+    };
   }
 
   serverIds(): string[] {
@@ -380,6 +473,22 @@ export class McpClientManager {
 
   /** 每条通知都规范化转发给 onEvent；list_changed 额外触发增量刷新。 */
   private handleNotification(managed: ManagedServer, notification: McpNotificationLike): void {
+    // Track 3：tasks/status 先走专用桥（终态唤醒 / input_required 交接），
+    // 已登记的 task 不再走泛化转发，避免双重唤醒。
+    if (notification.method === 'notifications/tasks/status' && this.tasksBridge) {
+      const params = (notification.params ?? {}) as McpTaskStatusParams;
+      if (typeof params.taskId === 'string' && typeof params.status === 'string') {
+        const outcome = this.tasksBridge.handleStatusNotification(managed.serverId, params);
+        if (outcome !== 'untracked') return;
+      }
+    }
+
+    // Track 3：通知限流 —— 令牌桶耗尽的通知直接丢弃（高频风暴不该打爆唤醒链路）。
+    if (this.rateLimiter && !this.rateLimiter.consume(managed.serverId)) {
+      Logger.warning(`MCP server ${managed.serverId} 通知超限，已丢弃 (${notification.method})`);
+      return;
+    }
+
     let event: McpForwardedEvent;
     try {
       event = adaptMcpNotification(managed.serverId, notification);
@@ -493,18 +602,82 @@ export class McpClientManager {
   private createRemoteTool(managed: ManagedServer, _localName: string, remoteName: string, definition: ToolDefinition): Tool {
     return {
       definition,
-      execute: (args: unknown, _context?: ToolExecutionContext) =>
-        this.executeRemoteTool(managed, remoteName, args),
+      execute: (args: unknown, context?: ToolExecutionContext) =>
+        this.executeRemoteTool(managed, remoteName, args, context),
     };
   }
 
   /** 调用远端工具并把多模态结果映射回 ToolExecutionResult。 */
-  async executeRemoteTool(managed: ManagedServer, remoteName: string, args: unknown): Promise<ToolExecutionResult> {
+  async executeRemoteTool(
+    managed: ManagedServer,
+    remoteName: string,
+    args: unknown,
+    context?: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    // Track 3：群聊/私聊隔离 —— ownerOnly server（OAuth/本地 roots）在群聊中非主人触发即拒。
+    const scope = context?.executionScope;
+    if (scope) {
+      const decision = evaluateServerAccess(this.securityPolicy.getServerProfile(managed.serverId), {
+        topicType: scope.topicType,
+        actorUserId: scope.actorUserId,
+        ownerUserId: scope.deviceOwnerUserId ?? scope.actorUserId,
+        sessionKey: scope.sessionKey,
+      });
+      if (!decision.allowed) {
+        return {
+          ok: false,
+          errorCode: decision.code,
+          message: decision.reason,
+        };
+      }
+    }
+
     const callArgs = args && typeof args === 'object' && !Array.isArray(args)
       ? (args as Record<string, unknown>)
       : { input: args };
     try {
       const result = await managed.client.callTool(remoteName, callArgs);
+
+      // Track 3：MRTR —— input_required 结果挂起，走统一交互代理收集输入后重试。
+      const inputRequired = extractInputRequiredResult(result);
+      if (inputRequired && this.interactionBroker) {
+        const sessionKey = scope?.sessionKey ?? this.resolveInteractionRouting?.(managed.serverId)?.sessionKey;
+        if (!sessionKey) {
+          return {
+            ok: false,
+            errorCode: 'mcp_input_unroutable',
+            message: `MCP 工具 ${remoteName} 需要用户输入，但无法定位会话（缺少 ExecutionScope）`,
+          };
+        }
+        const outcome = await this.interactionBroker.runMrtrLoop({
+          serverId: managed.serverId,
+          sessionKey,
+          ...(scope?.topicId ? { topic: scope.topicId } : {}),
+          initialResult: inputRequired,
+          retry: async (inputResponses, requestState) => {
+            const retryResult = await managed.client.callTool(remoteName, {
+              ...callArgs,
+              requestState,
+              inputResponses,
+            });
+            return extractInputRequiredResult(retryResult) ?? retryResult;
+          },
+        });
+        if (outcome.kind === 'result') {
+          const finalResult = outcome.result as McpCallToolResultShape;
+          const content = mapCallResultContent(finalResult?.content, finalResult?.structuredContent);
+          return { ok: true, content };
+        }
+        const cancelReason = outcome.reason === 'timeout' ? '等待输入超时'
+          : outcome.reason === 'max_rounds' ? '交互轮数超限'
+          : '用户取消或拒绝';
+        return {
+          ok: false,
+          errorCode: 'mcp_input_cancelled',
+          message: `MCP 工具 ${remoteName} 的输入交互未完成（${cancelReason}），操作未执行。`,
+        };
+      }
+
       const content = mapCallResultContent(result.content, result.structuredContent);
       if (result.isError) {
         return {
@@ -523,9 +696,46 @@ export class McpClientManager {
       };
     }
   }
+
+  /** Track 3：登记 task 路由（宿主发起任务型调用后调用）。 */
+  trackTask(args: {
+    serverId: string;
+    taskId: string;
+    sessionKey: string;
+    topic?: string;
+    actorUserId?: string;
+  }): (() => void) | undefined {
+    return this.tasksBridge?.trackTask(args);
+  }
+
+  /** Track 3：干净取消 task。 */
+  async cancelTask(serverId: string, taskId: string): Promise<boolean> {
+    return this.tasksBridge?.cancelTask(serverId, taskId) ?? false;
+  }
 }
 
 // ---------------- 命名与结果映射 ----------------
+
+/** tools/call 结果的宽松形状（含 MRTR 扩展字段位）。 */
+interface McpCallToolResultShape {
+  content?: unknown;
+  structuredContent?: unknown;
+  isError?: boolean;
+  resultType?: unknown;
+  requestState?: unknown;
+  inputRequests?: unknown;
+}
+
+/**
+ * MRTR input_required 提取：server 可能把结果放在顶层，也可能放在
+ * structuredContent 里（SDK schema 宽松透传）。两处都查。
+ */
+export function extractInputRequiredResult(result: unknown): MrtrInputRequiredResult | undefined {
+  if (isMrtrInputRequiredResult(result)) return result;
+  const structured = (result as McpCallToolResultShape | undefined)?.structuredContent;
+  if (isMrtrInputRequiredResult(structured)) return structured;
+  return undefined;
+}
 
 const MAX_MCP_TOOL_NAME_LENGTH = 64;
 
