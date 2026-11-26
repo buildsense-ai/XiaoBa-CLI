@@ -31,6 +31,14 @@ import {
   type ArtifactMcpBridgeSummary,
   type ArtifactMcpDetachResult,
 } from '../mcp/artifact-mcp-registry';
+import {
+  WebMcpRelayError,
+  type WebMcpRelaySink,
+  type WebMcpRevokeResult,
+  type WebMcpSessionIssueInput,
+  type WebMcpSessionSummary,
+  type WebMcpSessionTicket,
+} from '../mcp/webmcp-relay';
 import { createArtifactEventsRouter } from '../dashboard/routes/artifact-events';
 
 const BRIDGE_DESCRIPTOR_FILENAME = 'connector-event-bridge.json';
@@ -58,6 +66,7 @@ export async function startConnectorEventBridge(options: {
   runtimeRoot: string;
   sink: ArtifactEventSink;
   bridgeSink?: ArtifactMcpBridgeSink;
+  webMcpRelay?: WebMcpRelaySink;
 }): Promise<ConnectorEventBridgeHandle> {
   const token = crypto.randomBytes(32).toString('hex');
   const app = express();
@@ -70,7 +79,7 @@ export async function startConnectorEventBridge(options: {
       return res.status(401).json({ ok: false, code: 'unauthorized', error: 'invalid internal bridge token' });
     }
     return next();
-  }, createArtifactEventsRouter(options.sink, options.bridgeSink));
+  }, createArtifactEventsRouter(options.sink, options.bridgeSink, { webMcpRelay: options.webMcpRelay }));
 
   const server: Server = await new Promise((resolve, reject) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
@@ -300,4 +309,58 @@ export async function listForwardingArtifactMcpBridges(runtimeRoot: string): Pro
     );
   }
   return Array.isArray(data?.bridges) ? data.bridges : [];
+}
+
+/** Dashboard 侧转发 WebMcpRelaySink：把 WebMCP 会话签发/查询/吊销转发到活着的 Connector 子进程。 */
+export function createForwardingWebMcpRelaySink(runtimeRoot: string): WebMcpRelaySink {
+  return {
+    async issueSession(input: WebMcpSessionIssueInput): Promise<WebMcpSessionTicket> {
+      const { status, data } = await forwardJson(
+        runtimeRoot,
+        'POST',
+        `/artifacts/${encodeURIComponent(input.artifactId)}/webmcp/session`,
+        input,
+      );
+      if (status >= 400) {
+        throw new WebMcpRelayError(
+          data?.error || `connector rejected webmcp session issue (HTTP ${status})`,
+          status,
+          data?.code || 'connector_forward_failed',
+        );
+      }
+      return data as WebMcpSessionTicket;
+    },
+
+    async revokeSession(
+      artifactId: string,
+      options?: { unbindSession?: boolean },
+    ): Promise<WebMcpRevokeResult> {
+      const query = options?.unbindSession ? '?unbind=1' : '';
+      const { status, data } = await forwardJson(
+        runtimeRoot,
+        'DELETE',
+        `/artifacts/${encodeURIComponent(artifactId)}/webmcp/session${query}`,
+      );
+      if (status >= 400) {
+        throw new WebMcpRelayError(
+          data?.error || `connector rejected webmcp session revoke (HTTP ${status})`,
+          status,
+          data?.code || 'connector_forward_failed',
+        );
+      }
+      return data as WebMcpRevokeResult;
+    },
+
+    async listSessions(): Promise<WebMcpSessionSummary[]> {
+      const { status, data } = await forwardJson(runtimeRoot, 'GET', '/artifacts/webmcp/sessions');
+      if (status >= 400) {
+        throw new WebMcpRelayError(
+          data?.error || `connector rejected webmcp sessions list (HTTP ${status})`,
+          status,
+          data?.code || 'connector_forward_failed',
+        );
+      }
+      return Array.isArray(data?.sessions) ? data.sessions : [];
+    },
+  };
 }

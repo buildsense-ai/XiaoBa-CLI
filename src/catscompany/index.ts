@@ -124,6 +124,7 @@ import {
   type ConnectorEventBridgeHandle,
 } from '../events/connector-event-bridge';
 import { artifactMcpRegistry } from '../mcp/artifact-mcp-registry';
+import { startWebMcpRelay, type WebMcpRelay } from '../mcp/webmcp-relay';
 import {
   SkillHubThinRpcError,
   SkillHubThinRpcHandler,
@@ -688,6 +689,8 @@ export class CatsCompanyBot {
   private unsubscribeExternalEvents: (() => void) | null = null;
   /** Dashboard → Connector 跨进程事件桥句柄（destroy 时关闭）。 */
   private connectorEventBridge: ConnectorEventBridgeHandle | null = null;
+  /** 浏览器 WebMCP → 标准 Streamable HTTP MCP 代理服务（destroy 时关闭）。 */
+  private webMcpRelay: WebMcpRelay | null = null;
   /** no-wait 子 Agent 完成后的批量回流，避免逐条唤醒主模型刷屏 */
   private subAgentCompletionBatches = new Map<string, BackgroundSubAgentCompletionBatch>();
   /** Bot 自身的 uid，用于过滤自己发出的消息 */
@@ -958,14 +961,29 @@ export class CatsCompanyBot {
       });
     });
 
+    // 启动 WebMCP Artifact Relay：将浏览器侧 navigator.modelContext 工具桥接为本机 Streamable HTTP MCP。
+    if (process.env.XIAOBA_WEBMCP_RELAY !== '0') {
+      try {
+        const relayPort = Number(process.env.XIAOBA_WEBMCP_RELAY_PORT || 0);
+        this.webMcpRelay = await startWebMcpRelay({
+          port: Number.isInteger(relayPort) && relayPort > 0 ? relayPort : 0,
+          publicWsBaseUrl: process.env.XIAOBA_WEBMCP_PUBLIC_WS_BASE_URL || undefined,
+          bridgeSink: artifactMcpRegistry,
+        });
+      } catch (error: any) {
+        Logger.warning(`[CatsCompany] 启动 WebMCP Relay 失败（不影响主聊天链路）: ${error?.message || error}`);
+      }
+    }
+
     // 启动本机回环事件桥：让独立进程运行的 Dashboard 能把 /api/artifacts/* 请求
-    // 转发到当前 Connector 进程的 externalEventRouter 与 artifactMcpRegistry。
+    // 转发到当前 Connector 进程的 externalEventRouter、artifactMcpRegistry 与 webMcpRelay。
     if (process.env.XIAOBA_CONNECTOR_EVENT_BRIDGE !== '0') {
       try {
         this.connectorEventBridge = await startConnectorEventBridge({
           runtimeRoot: PathResolver.getRuntimeDataRoot(),
           sink: createExternalEventArtifactSink(),
           bridgeSink: artifactMcpRegistry,
+          webMcpRelay: this.webMcpRelay ?? undefined,
         });
       } catch (error: any) {
         Logger.warning(`[CatsCompany] 启动跨进程事件桥失败（不影响主聊天链路）: ${error?.message || error}`);
@@ -4978,6 +4996,11 @@ export class CatsCompanyBot {
     this.connectorEventBridge = null;
     if (bridge) {
       await bridge.stop().catch(() => {});
+    }
+    const relay = this.webMcpRelay;
+    this.webMcpRelay = null;
+    if (relay) {
+      await relay.stop().catch(() => {});
     }
     const mcpClientManager = this.agentServices?.mcpClientManager;
     if (mcpClientManager) {

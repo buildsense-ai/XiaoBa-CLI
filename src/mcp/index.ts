@@ -101,3 +101,40 @@ export {
   type McpPolicyDecision,
   type NotificationRateLimiterOptions,
 } from './mcp-security-policy';
+export {
+  WEBMCP_RELAY_PROTOCOL_VERSION,
+  MAX_WEBMCP_TOOLS_PER_ARTIFACT,
+  MAX_WEBMCP_PAYLOAD_BYTES,
+  DEFAULT_WEBMCP_TOOL_CALL_TIMEOUT_MS,
+  DEFAULT_WEBMCP_TOKEN_TTL_MS,
+  normalizeWebMcpToolDescriptor,
+  normalizeWebMcpToolList,
+  formatWebMcpToolResult,
+  type WebMcpToolAnnotations,
+  type WebMcpToolDescriptor,
+  type WebMcpToolDefinition,
+  type WebMcpModelContext,
+  type WebMcpClientMessage,
+  type WebMcpServerMessage,
+  type McpContentBlock,
+  type McpCallToolWireResult,
+} from './webmcp-protocol';
+export {
+  createWebMcpBrowserShim,
+  buildWebMcpShimScript,
+  type WebMcpSocketLike,
+  type WebMcpBrowserShimOptions,
+  type WebMcpBrowserShimHandle,
+  type WebMcpShimScriptOptions,
+} from './webmcp-shim';
+export {
+  WebMcpRelay,
+  WebMcpRelayError,
+  startWebMcpRelay,
+  type WebMcpRelayOptions,
+  type WebMcpRelaySink,
+  type WebMcpSessionIssueInput,
+  type WebMcpSessionTicket,
+  type WebMcpSessionSummary,
+  type WebMcpRevokeResult,
+} from './webmcp-relay';
