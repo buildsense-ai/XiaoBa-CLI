@@ -252,7 +252,7 @@ export class CatsCoMcpToolBridge {
    * 服务端根本不认的 `bot_uid`，描述还被写成「这是另一个 Agent」——误导模型去当 agent 调。
    */
   private isSystemTool(toolName: string): boolean {
-    return toolName === this.runStatusToolName || toolName === this.shareSelfToolName;
+    return toolName === this.runStatusToolName || toolName === this.shareSelfToolName || toolName === 'catsco_compute';
   }
 
   /** 当前已桥接的远端工具名（诊断/测试用）。 */
@@ -515,7 +515,7 @@ export class CatsCoMcpToolBridge {
         return { ok: false, errorCode: code, message: mapToolErrorMessage(code, detail) };
       }
       const computeQuoteId = parseComputeTaskQuoteId(first.structured);
-      if (toolName === 'catsco_compute_task_quote' && computeQuoteId) {
+	if ((toolName === 'catsco_compute' || toolName === 'catsco_compute_task_quote') && computeQuoteId) {
         try {
           this.onComputeTaskPending?.({
             quoteId: computeQuoteId,

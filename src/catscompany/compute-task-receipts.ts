@@ -55,7 +55,7 @@ export class ComputeTaskReceiptRouter {
     this.prune();
     this.pending.set(quoteId, {
       quoteId,
-      toolName: info.toolName ?? 'catsco_compute_task_quote',
+		toolName: info.toolName ?? 'catsco_compute',
       ...(info.conversationSessionKey ? { conversationSessionKey: info.conversationSessionKey } : {}),
       ...(info.conversationTopic ? { conversationTopic: info.conversationTopic } : {}),
       ...(info.actorUserId ? { actorUserId: info.actorUserId } : {}),

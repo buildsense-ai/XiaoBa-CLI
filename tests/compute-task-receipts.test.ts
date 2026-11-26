@@ -10,7 +10,7 @@ describe('ComputeTaskReceiptRouter', () => {
     const router = new ComputeTaskReceiptRouter();
     router.track({
       quoteId: 'hpc_quote_1',
-      toolName: 'catsco_compute_task_quote',
+      toolName: 'catsco_compute',
       conversationSessionKey: 'catscompany:p2p_441_1619',
       conversationTopic: 'p2p_441_1619',
       actorUserId: 'usr441',
@@ -83,7 +83,7 @@ describe('buildComputeTaskReceiptPrompt', () => {
       },
       task: {
         quoteId: 'hpc_quote_1',
-        toolName: 'catsco_compute_task_quote',
+        toolName: 'catsco_compute',
         trackedAt: 0,
       },
     });
@@ -97,7 +97,7 @@ describe('buildComputeTaskReceiptPrompt', () => {
   test('失败回执提示词要求报告失败原因和资源回收状态', () => {
     const text = buildComputeTaskReceiptPrompt({
       receipt: { quote_id: 'hpc_quote_2', status: 'failed', error: 'Slurm job failed' },
-      task: { quoteId: 'hpc_quote_2', toolName: 'catsco_compute_task_quote', trackedAt: 0 },
+      task: { quoteId: 'hpc_quote_2', toolName: 'catsco_compute', trackedAt: 0 },
     });
     assert.match(text, /失败原因/);
     assert.match(text, /资源回收状态/);
