@@ -1236,9 +1236,9 @@ describe('CatsCo 回复归属（群会话）', () => {
 test('算力报价返回合法 quote_id：登记原对话路由，非法 quote_id 忽略', async () => {
   const pending: Array<Record<string, unknown>> = [];
   const { bridge, manager } = createHarness({
-    listTools: () => [toolInfo('catsco_compute_task_quote')],
+    listTools: () => [toolInfo('catsco_compute')],
     callTool: (_name, args) => {
-      assert.deepStrictEqual(args, { input: { nodes: 1 } });
+      assert.deepStrictEqual(args, { input: { action: 'quote', task: { nodes: 1 } } });
       return {
         isError: false,
         contentText: 'quote',
@@ -1254,11 +1254,11 @@ test('算力报价返回合法 quote_id：登记原对话路由，非法 quote_i
     channel: { chatId: 'p2p_441_1619', reply: async () => {} },
     executionScope: { actorUserId: 'usr441' },
   } as unknown as ToolExecutionContext;
-  const result = await manager.getTool('catsco_compute_task_quote')!.execute({ input: { nodes: 1 } }, routedContext);
+  const result = await manager.getTool('catsco_compute')!.execute({ input: { action: 'quote', task: { nodes: 1 } } }, routedContext);
   assert.equal(result.ok, true);
   assert.deepStrictEqual(pending, [{
     quoteId: 'hpc_0123456789abcdef0123456789abcdef',
-    toolName: 'catsco_compute_task_quote',
+    toolName: 'catsco_compute',
     conversationSessionKey: 'catscompany:p2p_441_1619',
     conversationTopic: 'p2p_441_1619',
     actorUserId: 'usr441',
@@ -1268,7 +1268,7 @@ test('算力报价返回合法 quote_id：登记原对话路由，非法 quote_i
 test('算力报价没有合法 quote_id：不登记回执路由', async () => {
   const pending: Array<Record<string, unknown>> = [];
   const { bridge, manager } = createHarness({
-    listTools: () => [toolInfo('catsco_compute_task_quote')],
+    listTools: () => [toolInfo('catsco_compute')],
     callTool: () => ({
       isError: false,
       contentText: 'quote',
@@ -1277,7 +1277,7 @@ test('算力报价没有合法 quote_id：不登记回执路由', async () => {
     onComputeTaskPending: info => pending.push(info),
   });
   await bridge.refresh();
-  await manager.getTool('catsco_compute_task_quote')!.execute({ input: {} }, context);
+  await manager.getTool('catsco_compute')!.execute({ input: { action: 'quote' } }, context);
   assert.deepStrictEqual(pending, []);
 });
 

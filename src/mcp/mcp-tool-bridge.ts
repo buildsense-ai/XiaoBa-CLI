@@ -120,7 +120,7 @@ const DEFAULT_TOOL_PREFIX = 'catsco_';
 const DEFAULT_REFRESH_INTERVAL_MS = 30_000;
 const DEFAULT_RUN_STATUS_TOOL = 'catsco_run_status';
 const DEFAULT_SHARE_SELF_TOOL = 'catsco_share_self';
-const COMPUTE_TOOLS = new Set(['catsco_compute_preview', 'catsco_compute_task_quote', 'catsco_compute_task_status']);
+const COMPUTE_TOOLS = new Set(['catsco_compute', 'catsco_compute_preview', 'catsco_compute_task_quote', 'catsco_compute_task_status']);
 export const DEFAULT_RUN_POLL_TIMEOUT_MS = 90_000;
 
 /**
@@ -516,7 +516,7 @@ export class CatsCoMcpToolBridge {
         return { ok: false, errorCode: code, message: mapToolErrorMessage(code, detail) };
       }
       const computeQuoteId = parseComputeTaskQuoteId(first.structured);
-      if (toolName === 'catsco_compute_task_quote' && computeQuoteId) {
+      if (COMPUTE_TOOLS.has(toolName) && computeQuoteId) {
         try {
           this.onComputeTaskPending?.({
             quoteId: computeQuoteId,
