@@ -23,6 +23,12 @@ const LOW_RISK_TOOLS = new Set([
   'send_text',
   'skill',
   'local_compute_resources',
+  // CatsCo compute quote and status calls are remote business operations. A quote
+  // only creates a confirmation page, and task submission still happens there.
+  'catsco_compute',
+  'catsco_compute_preview',
+  'catsco_compute_task_quote',
+  'catsco_compute_task_status',
   // Branch-local memory tools. Remote reads remain device-capability scoped
   // and bounded by the session; no new write or operator capability.
   'memory_search',

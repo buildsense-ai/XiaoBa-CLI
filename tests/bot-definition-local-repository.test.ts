@@ -316,6 +316,30 @@ describe('BotDefinition local simulation', () => {
     assert.equal(config.reasoningEffort, 'high');
   });
 
+  test('does not enable CatsCo credit gating for a non-relay catalog endpoint', () => {
+    bindCurrentBot();
+    const definitions = new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot });
+    definitions.writeCache({
+      schema: BOT_DEFINITION_SCHEMA,
+      botId: 'bot-alpha',
+      model: { kind: 'catalog', modelId: 'catalog-gpt-5' },
+    });
+    new FileBotCatalogModelRuntimeRepository({ runtimeRoot }).write({
+      schema: BOT_CATALOG_MODEL_RUNTIME_SCHEMA,
+      botId: 'bot-alpha',
+      modelId: 'catalog-gpt-5',
+      provider: 'openai',
+      apiBase: 'http://127.0.0.1:18991',
+      apiKey: 'local-test-key',
+      model: 'catalog-gpt-5',
+      contextWindowTokens: 272000,
+    });
+
+    const resolved = resolveActiveBotLLMConfig({ runtimeRoot });
+    assert.equal(resolved?.source, 'catalog_runtime');
+    assert.equal(resolved?.config.catsCoRelay, false);
+  });
+
   test('catalog runtime performs a one-time migration only when the legacy model matches the Definition', () => {
     bindCurrentBot();
     new FileBotDefinitionRepository({ runtimeRoot, simulatedCloudRoot }).writeCache({

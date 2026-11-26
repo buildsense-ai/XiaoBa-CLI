@@ -28,6 +28,19 @@ describe('CatsLog tool risk classification', () => {
     }
   });
 
+  test('CatsCo compute preview, quote and status stay low risk in CLI mode', () => {
+    for (const toolName of [
+      'catsco_compute',
+      'catsco_compute_preview',
+      'catsco_compute_task_quote',
+      'catsco_compute_task_status',
+    ]) {
+      const decision = classifyLocalToolRisk(toolName, {}, context());
+      assert.equal(decision.requiresConfirmation, false, toolName);
+      assert.equal(decision.risk, 'low', toolName);
+    }
+  });
+
   test('Retired pipeline and per-source CatsLog tools fall back to the default confirmation gate', () => {
     // The v1.3 pipeline no longer exposes these names; if something re-registers
     // them without re-classifying, they must not silently ride the low-risk
