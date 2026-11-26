@@ -21,6 +21,8 @@ export interface ArtifactMcpBridgeRegistration {
   /** 可选：挂载时顺手把 artifactId 绑定到对应会话。 */
   sessionKey?: string;
   topic?: string;
+  /** 可选：打开该 Artifact 页面的操作者 userId（用于群聊等共享会话中按人隔离页面工具）。 */
+  actorUserId?: string;
 }
 
 export interface ArtifactMcpBridgeSummary {
@@ -30,6 +32,7 @@ export interface ArtifactMcpBridgeSummary {
   hasBearerToken: boolean;
   sessionKey?: string;
   topic?: string;
+  actorUserId?: string;
   attachedAt: string;
 }
 
@@ -98,6 +101,7 @@ interface StoredArtifactBridge {
   config: McpHttpServerConfig;
   sessionKey?: string;
   topic?: string;
+  actorUserId?: string;
   attachedAt: string;
 }
 
@@ -186,11 +190,15 @@ export class ArtifactMcpRegistry implements ArtifactMcpBridgeSink {
     const topic = typeof input.topic === 'string' && input.topic.trim()
       ? input.topic.trim()
       : undefined;
+    const actorUserId = typeof input.actorUserId === 'string' && input.actorUserId.trim()
+      ? input.actorUserId.trim()
+      : undefined;
 
-    if (sessionKey || topic) {
+    if (sessionKey || topic || actorUserId) {
       config.scopeBinding = {
         ...(sessionKey ? { sessionKey } : {}),
         ...(topic ? { topic } : {}),
+        ...(actorUserId ? { actorUserId } : {}),
       };
     }
 
@@ -200,6 +208,7 @@ export class ArtifactMcpRegistry implements ArtifactMcpBridgeSink {
       config,
       ...(sessionKey ? { sessionKey } : {}),
       ...(topic ? { topic } : {}),
+      ...(actorUserId ? { actorUserId } : {}),
       attachedAt: new Date().toISOString(),
     };
     this.bridges.set(artifactId, entry);

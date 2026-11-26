@@ -20,6 +20,7 @@ export interface CatsArtifactWebMcpMessage {
   bridge_id?: string;
   app_id?: string;
   topic_id?: string;
+  actor_user_id?: string;
   call_id?: string;
   name?: string;
   arguments?: Record<string, unknown>;

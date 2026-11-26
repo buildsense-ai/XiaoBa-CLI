@@ -120,7 +120,7 @@ export function labelUntrustedWebMcpDescription(description: string, artifactId?
 }
 
 function escapeUntrustedBoundaryTags(text: string): string {
-  return text.replace(/<(\/?\s*untrusted_artifact_tool_output\b)/gi, '&lt;$1');
+  return text.replace(/<(\s*\/?\s*untrusted_artifact_tool_output\b)/gi, '&lt;$1');
 }
 
 function wrapUntrustedText(text: string, ctx?: WebMcpUntrustedContext): string {

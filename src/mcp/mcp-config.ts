@@ -38,10 +38,11 @@ export interface McpHttpServerConfig {
   bearerToken?: string;
   /** 单次请求超时（毫秒）。 */
   timeoutMs?: number;
-  /** 可选：将此动态 MCP server（如 WebMCP Artifact Bridge）限定到指定会话/topic，防止跨用户串台。 */
+  /** 可选：将此动态 MCP server（如 WebMCP Artifact Bridge）限定到指定会话/topic/打开者，防止跨用户与群内串台。 */
   scopeBinding?: {
     sessionKey?: string;
     topic?: string;
+    actorUserId?: string;
   };
 }
 

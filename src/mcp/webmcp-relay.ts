@@ -65,6 +65,7 @@ export interface WebMcpSessionSummary {
   toolNames: string[];
   sessionKey?: string;
   topic?: string;
+  actorUserId?: string;
   connectedAt?: string;
   lastSeenAt?: string;
 }
@@ -85,6 +86,7 @@ interface BridgeRelayState {
   mcpBearerToken: string;
   sessionKey?: string;
   topic?: string;
+  actorUserId?: string;
   tools: WebMcpToolDescriptor[];
   attached: boolean;
   connectedAt: string;
@@ -227,6 +229,7 @@ export class WebMcpRelay {
       toolNames: state.tools.map((t) => t.name),
       ...(state.sessionKey ? { sessionKey: state.sessionKey } : {}),
       ...(state.topic ? { topic: state.topic } : {}),
+      ...(state.actorUserId ? { actorUserId: state.actorUserId } : {}),
       connectedAt: state.connectedAt,
       lastSeenAt: state.lastSeenAt,
     }));
@@ -234,13 +237,14 @@ export class WebMcpRelay {
 
   /**
    * 接收经 CatsCo WebSocket 转发的 `tools_sync`：
-   * 按 `bridgeId` 独立建槽并挂载到 `ArtifactMcpRegistry`，携带 `sessionKey`/`topic` 作用域。
+   * 按 `bridgeId` 独立建槽并挂载到 `ArtifactMcpRegistry`，携带 `sessionKey`/`topic`/`actorUserId` 作用域。
    */
   async handleRemoteToolsSync(input: {
     bridgeId: string;
     artifactId: string;
     topic?: string;
     sessionKey?: string;
+    actorUserId?: string;
     tools: unknown[];
   }): Promise<void> {
     if (this.stopped) return;
@@ -253,6 +257,9 @@ export class WebMcpRelay {
       : undefined;
     const topic = typeof input.topic === 'string' && input.topic.trim()
       ? input.topic.trim()
+      : undefined;
+    const actorUserId = typeof input.actorUserId === 'string' && input.actorUserId.trim()
+      ? input.actorUserId.trim()
       : undefined;
 
     const now = new Date().toISOString();
@@ -267,6 +274,7 @@ export class WebMcpRelay {
         mcpBearerToken: crypto.randomBytes(24).toString('hex'),
         sessionKey,
         topic,
+        actorUserId,
         tools: [],
         attached: false,
         connectedAt: now,
@@ -279,6 +287,7 @@ export class WebMcpRelay {
       state.lastSeenAt = now;
       if (sessionKey && !state.sessionKey) state.sessionKey = sessionKey;
       if (topic && !state.topic) state.topic = topic;
+      if (actorUserId && !state.actorUserId) state.actorUserId = actorUserId;
     }
 
     const nextTools = normalizeWebMcpToolList(input.tools);
@@ -297,6 +306,7 @@ export class WebMcpRelay {
                 ...(state.topic ? { topic: state.topic } : {}),
               }
             : {}),
+          ...(state.actorUserId ? { actorUserId: state.actorUserId } : {}),
         }));
         state.attached = true;
       } catch {

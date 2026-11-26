@@ -342,21 +342,33 @@ export type { ExecutionScope };
 export interface ToolScopeBinding {
   sessionKey?: string;
   topic?: string;
+  actorUserId?: string;
+}
+
+function normalizeToolScopeActorId(value: string | undefined): string {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  return /^\d+$/.test(text) ? `usr${text}` : text;
 }
 
 /**
  * 严格 fail-closed 作用域匹配：
- * 若工具绑定了 sessionKey 或 topic，则必须存在且精确匹配当前 executionScope；
+ * 若工具绑定了 sessionKey / topic / actorUserId，则必须存在且精确匹配当前 executionScope；
  * 当 executionScope 缺失或缺少对应字段时一律拒绝。
  */
 export function matchesToolScopeBinding(
   binding?: ToolScopeBinding,
   scope?: ExecutionScope,
 ): boolean {
-  if (!binding || (!binding.sessionKey && !binding.topic)) return true;
+  if (!binding || (!binding.sessionKey && !binding.topic && !binding.actorUserId)) return true;
   if (!scope) return false;
   if (binding.sessionKey && scope.sessionKey !== binding.sessionKey) return false;
   if (binding.topic && scope.topicId !== binding.topic) return false;
+  if (binding.actorUserId) {
+    const expectedActor = normalizeToolScopeActorId(binding.actorUserId);
+    const actualActor = normalizeToolScopeActorId(scope.actorUserId);
+    if (!expectedActor || !actualActor || expectedActor !== actualActor) return false;
+  }
   return true;
 }
 

@@ -989,6 +989,7 @@ export class CatsCompanyBot {
               artifactId: msg.app_id,
               topic: msg.topic_id,
               ...(sessionKey ? { sessionKey } : {}),
+              ...(msg.actor_user_id ? { actorUserId: msg.actor_user_id } : {}),
               tools: Array.isArray(msg.tools) ? msg.tools : [],
             }).catch((error: any) => {
               Logger.warning(`[CatsCompany][WebMCP] tools_sync 处理失败: ${error?.message || error}`);
