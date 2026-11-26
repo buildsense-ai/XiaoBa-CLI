@@ -482,8 +482,9 @@ export class ConversationRunner {
       this.injectSyntheticObservations(messages, turns, newMessages);
       const manualCreditResume = isManualCreditResume(this.toolExecutionContext?.sessionId);
       const runtimeTransientHints = this.drainRuntimeTransientMessages(turns);
-      // 每轮推理前重新读取工具清单，使单回合内动态热加载/卸载的 MCP 工具在下一轮立即生效。
-      const allTools = this.toolExecutor.getToolDefinitions();
+      // 每轮推理前重新读取工具清单，使单回合内动态热加载/卸载的 MCP 工具在下一轮立即生效，
+      // 并按当前会话的 executionScope 过滤作用域绑定工具（fail-closed，不泄漏其他会话的页面工具）。
+      const allTools = this.toolExecutor.getToolDefinitions(this.toolExecutionContext?.executionScope);
       const activeTools = supportsToolCalling ? allTools : [];
       if (activeTools.length === 0 && allTools.length > 0 && !warnedToolCallingUnsupported) {
         warnedToolCallingUnsupported = true;

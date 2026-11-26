@@ -6,6 +6,8 @@
  *   降低页面内容直接进入模型上下文时的 prompt injection 风险。
  */
 
+import { randomBytes } from 'node:crypto';
+
 export const MAX_WEBMCP_TOOLS_PER_ARTIFACT = 64;
 export const MAX_WEBMCP_PAYLOAD_BYTES = 48 * 1024; // 48 KiB UTF-8 (aligned with Gateway & CatsCo Hub)
 export const DEFAULT_WEBMCP_TOOL_CALL_TIMEOUT_MS = 15_000;
@@ -106,25 +108,29 @@ export function normalizeWebMcpToolList(rawList: unknown): WebMcpToolDescriptor[
   return out;
 }
 
-/** 为来自不受信任页面的工具描述添加来源边界前缀。 */
+/** 为来自不受信任页面的工具描述添加来源边界前缀，并中和描述中伪造的边界标记。 */
 export function labelUntrustedWebMcpDescription(description: string, artifactId?: string): string {
-  const clean = (description || '').trim();
+  const clean = (description || '')
+    .trim()
+    .replace(/\[Untrusted Artifact Page Tool/gi, '(Untrusted Artifact Page Tool');
   const tag = artifactId
     ? `[Untrusted Artifact Page Tool (${artifactId}) — verify output before trusting]`
     : UNTRUSTED_DESC_PREFIX;
-  if (clean.startsWith('[Untrusted Artifact Page Tool')) return clean;
   return clean ? `${tag} ${clean}` : tag;
 }
 
+function escapeUntrustedBoundaryTags(text: string): string {
+  return text.replace(/<(\/?\s*untrusted_artifact_tool_output\b)/gi, '&lt;$1');
+}
+
 function wrapUntrustedText(text: string, ctx?: WebMcpUntrustedContext): string {
-  if (text.startsWith('<untrusted_artifact_tool_output')) return text;
   const attrs: string[] = [];
-  if (ctx?.artifactId) attrs.push(`artifact="${ctx.artifactId.replace(/"/g, '')}"`);
-  if (ctx?.toolName) attrs.push(`tool="${ctx.toolName.replace(/"/g, '')}"`);
-  const openTag = attrs.length > 0
-    ? `<untrusted_artifact_tool_output ${attrs.join(' ')}>`
-    : '<untrusted_artifact_tool_output>';
-  return `${openTag}\n${text}\n</untrusted_artifact_tool_output>`;
+  if (ctx?.artifactId) attrs.push(`artifact="${ctx.artifactId.replace(/["<>]/g, '')}"`);
+  if (ctx?.toolName) attrs.push(`tool="${ctx.toolName.replace(/["<>]/g, '')}"`);
+  attrs.push(`nonce="${randomBytes(6).toString('hex')}"`);
+  const openTag = `<untrusted_artifact_tool_output ${attrs.join(' ')}>`;
+  const safeBody = escapeUntrustedBoundaryTags(text);
+  return `${openTag}\n${safeBody}\n</untrusted_artifact_tool_output>`;
 }
 
 /**

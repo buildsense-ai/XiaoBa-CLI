@@ -1,4 +1,14 @@
-import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
+import {
+  Tool,
+  ToolDefinition,
+  ToolCall,
+  ToolResult,
+  ToolExecutionContext,
+  ToolExecutor,
+  ToolExecutionResult,
+  ExecutionScope,
+  matchesToolScopeBinding,
+} from '../types/tool';
 import { mergeToolExecutionContext } from '../utils/tool-context';
 import { getStructuredRateLimitErrorCode } from '../utils/rate-limit-error';
 import { confirmLocalToolExecution } from '../tools/local-tool-risk';
@@ -26,8 +36,11 @@ export class AgentToolExecutor implements ToolExecutor {
     private contextDefaults: Partial<ToolExecutionContext> = {},
   ) {}
 
-  getToolDefinitions(): ToolDefinition[] {
-    return this.tools.map(t => t.definition);
+  getToolDefinitions(executionScope?: ExecutionScope): ToolDefinition[] {
+    const scope = executionScope ?? this.contextDefaults.executionScope;
+    return this.tools
+      .filter(t => matchesToolScopeBinding(t.scopeBinding, scope))
+      .map(t => t.definition);
   }
 
   async executeTool(

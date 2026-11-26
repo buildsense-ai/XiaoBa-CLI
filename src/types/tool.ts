@@ -337,8 +337,33 @@ export interface ToolExecutionContext {
 /**
  * 工具接口
  */
+export type { ExecutionScope };
+
+export interface ToolScopeBinding {
+  sessionKey?: string;
+  topic?: string;
+}
+
+/**
+ * 严格 fail-closed 作用域匹配：
+ * 若工具绑定了 sessionKey 或 topic，则必须存在且精确匹配当前 executionScope；
+ * 当 executionScope 缺失或缺少对应字段时一律拒绝。
+ */
+export function matchesToolScopeBinding(
+  binding?: ToolScopeBinding,
+  scope?: ExecutionScope,
+): boolean {
+  if (!binding || (!binding.sessionKey && !binding.topic)) return true;
+  if (!scope) return false;
+  if (binding.sessionKey && scope.sessionKey !== binding.sessionKey) return false;
+  if (binding.topic && scope.topicId !== binding.topic) return false;
+  return true;
+}
+
 export interface Tool {
   definition: ToolDefinition;
+  /** 可选会话/话题作用域绑定（如 WebMCP Artifact 页面工具），用于 fail-closed 可见性过滤与执行隔离 */
+  readonly scopeBinding?: ToolScopeBinding;
   execute(args: any, context: ToolExecutionContext): Promise<ToolExecutionResult>;
   /** Optional tool-owned recovery for arguments that cannot be parsed as JSON. */
   handleInvalidArguments?(message: string, context: ToolExecutionContext): Promise<ToolExecutionResult>;
@@ -374,7 +399,7 @@ export abstract class BaseTool implements Tool {
  * ToolManager 和 AgentToolExecutor 均实现此接口
  */
 export interface ToolExecutor {
-  getToolDefinitions(allowedNames?: string[]): ToolDefinition[];
+  getToolDefinitions(executionScope?: ExecutionScope): ToolDefinition[];
   executeTool(
     toolCall: ToolCall,
     conversationHistory?: any[],

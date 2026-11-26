@@ -1,4 +1,14 @@
-import { Tool, ToolDefinition, ToolCall, ToolResult, ToolExecutionContext, ToolExecutor, ToolExecutionResult } from '../types/tool';
+import {
+  Tool,
+  ToolDefinition,
+  ToolCall,
+  ToolResult,
+  ToolExecutionContext,
+  ToolExecutor,
+  ToolExecutionResult,
+  ExecutionScope,
+  matchesToolScopeBinding,
+} from '../types/tool';
 import { Logger } from '../utils/logger';
 import { getStructuredRateLimitErrorCode } from '../utils/rate-limit-error';
 import { ReadTool } from './read-tool';
@@ -138,10 +148,12 @@ export class ToolManager implements ToolExecutor {
   }
 
   /**
-   * 获取所有工具定义（直接返回全部，不再过滤）
+   * 获取工具定义（对绑定了 scopeBinding 的工具按当前 executionScope 做 fail-closed 过滤）
    */
-  getToolDefinitions(): ToolDefinition[] {
-    return Array.from(this.tools.values()).map(tool => tool.definition);
+  getToolDefinitions(executionScope?: ExecutionScope): ToolDefinition[] {
+    return Array.from(this.tools.values())
+      .filter(tool => matchesToolScopeBinding(tool.scopeBinding, executionScope))
+      .map(tool => tool.definition);
   }
 
   /**

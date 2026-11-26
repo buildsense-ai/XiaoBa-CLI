@@ -11,7 +11,13 @@ import * as crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Logger } from '../utils/logger';
-import type { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
+import {
+  matchesToolScopeBinding,
+  type Tool,
+  type ToolDefinition,
+  type ToolExecutionContext,
+  type ToolExecutionResult,
+} from '../types/tool';
 import type { ContentBlock } from '../types/index';
 import {
   isSameMcpServerConfig,
@@ -670,8 +676,10 @@ export class McpClientManager {
   }
 
   private createRemoteTool(managed: ManagedServer, _localName: string, remoteName: string, definition: ToolDefinition): Tool {
+    const scopeBinding = managed.config.transport !== 'stdio' ? managed.config.scopeBinding : undefined;
     return {
       definition,
+      ...(scopeBinding ? { scopeBinding } : {}),
       execute: (args: unknown, context?: ToolExecutionContext) =>
         this.executeRemoteTool(managed, remoteName, args, context),
     };
@@ -685,18 +693,16 @@ export class McpClientManager {
     context?: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     // Track 3：群聊/私聊隔离 —— ownerOnly server（OAuth/本地 roots）在群聊中非主人触发即拒。
+    // 同时对带 scopeBinding 的会话绑定工具（如 WebMCP Artifact 工具）执行 fail-closed 校验：
+    // executionScope 缺失或缺少必需的 sessionKey/topicId 时一律拒绝。
     const scope = context?.executionScope;
     const scopeBinding = managed.config.transport !== 'stdio' ? managed.config.scopeBinding : undefined;
-    if (scopeBinding && scope) {
-      const sessionMismatch = Boolean(scopeBinding.sessionKey && scope.sessionKey && scope.sessionKey !== scopeBinding.sessionKey);
-      const topicMismatch = Boolean(scopeBinding.topic && scope.topicId && scope.topicId !== scopeBinding.topic);
-      if (sessionMismatch || topicMismatch) {
-        return {
-          ok: false,
-          errorCode: 'session_scope_mismatch',
-          message: 'This artifact tool belongs to another conversation and cannot be invoked from this session.',
-        };
-      }
+    if (!matchesToolScopeBinding(scopeBinding, scope)) {
+      return {
+        ok: false,
+        errorCode: 'session_scope_mismatch',
+        message: 'This artifact tool belongs to another conversation and cannot be invoked from this session.',
+      };
     }
     if (scope) {
       const decision = evaluateServerAccess(this.securityPolicy.getServerProfile(managed.serverId), {
