@@ -686,6 +686,18 @@ export class McpClientManager {
   ): Promise<ToolExecutionResult> {
     // Track 3：群聊/私聊隔离 —— ownerOnly server（OAuth/本地 roots）在群聊中非主人触发即拒。
     const scope = context?.executionScope;
+    const scopeBinding = managed.config.transport !== 'stdio' ? managed.config.scopeBinding : undefined;
+    if (scopeBinding && scope) {
+      const sessionMismatch = Boolean(scopeBinding.sessionKey && scope.sessionKey && scope.sessionKey !== scopeBinding.sessionKey);
+      const topicMismatch = Boolean(scopeBinding.topic && scope.topicId && scope.topicId !== scopeBinding.topic);
+      if (sessionMismatch || topicMismatch) {
+        return {
+          ok: false,
+          errorCode: 'session_scope_mismatch',
+          message: 'This artifact tool belongs to another conversation and cannot be invoked from this session.',
+        };
+      }
+    }
     if (scope) {
       const decision = evaluateServerAccess(this.securityPolicy.getServerProfile(managed.serverId), {
         topicType: scope.topicType,

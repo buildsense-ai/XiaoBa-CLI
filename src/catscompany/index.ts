@@ -968,7 +968,6 @@ export class CatsCompanyBot {
         const relayPort = Number(process.env.XIAOBA_WEBMCP_RELAY_PORT || 0);
         this.webMcpRelay = await startWebMcpRelay({
           port: Number.isInteger(relayPort) && relayPort > 0 ? relayPort : 0,
-          publicWsBaseUrl: process.env.XIAOBA_WEBMCP_PUBLIC_WS_BASE_URL || undefined,
           bridgeSink: artifactMcpRegistry,
           onRemoteToolCall: (req) => this.bot.sendArtifactWebMcp({
             type: 'tool_call',
@@ -984,10 +983,12 @@ export class CatsCompanyBot {
           const relay = this.webMcpRelay;
           if (!relay || !msg || typeof msg !== 'object') return;
           if (msg.type === 'tools_sync' && msg.bridge_id && msg.app_id) {
+            const sessionKey = this.deriveWebMcpSessionKey(msg.topic_id);
             relay.handleRemoteToolsSync({
               bridgeId: msg.bridge_id,
               artifactId: msg.app_id,
               topic: msg.topic_id,
+              ...(sessionKey ? { sessionKey } : {}),
               tools: Array.isArray(msg.tools) ? msg.tools : [],
             }).catch((error: any) => {
               Logger.warning(`[CatsCompany][WebMCP] tools_sync 处理失败: ${error?.message || error}`);
@@ -1016,14 +1017,13 @@ export class CatsCompanyBot {
     }
 
     // 启动本机回环事件桥：让独立进程运行的 Dashboard 能把 /api/artifacts/* 请求
-    // 转发到当前 Connector 进程的 externalEventRouter、artifactMcpRegistry 与 webMcpRelay。
+    // 转发到当前 Connector 进程的 externalEventRouter 与 artifactMcpRegistry。
     if (process.env.XIAOBA_CONNECTOR_EVENT_BRIDGE !== '0') {
       try {
         this.connectorEventBridge = await startConnectorEventBridge({
           runtimeRoot: PathResolver.getRuntimeDataRoot(),
           sink: createExternalEventArtifactSink(),
           bridgeSink: artifactMcpRegistry,
-          webMcpRelay: this.webMcpRelay ?? undefined,
         });
       } catch (error: any) {
         Logger.warning(`[CatsCompany] 启动跨进程事件桥失败（不影响主聊天链路）: ${error?.message || error}`);
@@ -1052,6 +1052,31 @@ export class CatsCompanyBot {
    * ready (including reconnect). This is best-effort and idle-fenced: a cloud
    * failure never blocks chat or changes the existing local Skill workspace.
    */
+  private deriveWebMcpSessionKey(topicId: string | undefined): string | undefined {
+    const topic = String(topicId ?? '').trim();
+    if (!topic) return undefined;
+    const selfUid = String(this.botUid || this.bot?.uid || '').trim();
+    if (topic.startsWith('grp_')) {
+      return buildCatsCoSessionKey('group', topic, selfUid);
+    }
+    const p2pMatch = topic.match(/^p2p_(\d+)_(\d+)$/);
+    if (p2pMatch) {
+      const normalizedSelf = selfUid.replace(/^usr_/, '');
+      const [, uidA, uidB] = p2pMatch;
+      const peerUid = normalizedSelf && uidA === normalizedSelf
+        ? uidB
+        : (normalizedSelf && uidB === normalizedSelf ? uidA : uidA);
+      return createCatsCoMessageEnvelope({
+        topic,
+        isGroup: false,
+        senderId: peerUid,
+        text: '',
+        botUid: selfUid || null,
+      }).sessionKey;
+    }
+    return undefined;
+  }
+
   private reconcileSkillDefinitionAfterReconnect(botUid: string): void {
     const targetBotUid = String(botUid || '').trim();
     if (!targetBotUid || this.shuttingDown || this.skillReconnectReconcileInFlight) return;

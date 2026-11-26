@@ -187,6 +187,13 @@ export class ArtifactMcpRegistry implements ArtifactMcpBridgeSink {
       ? input.topic.trim()
       : undefined;
 
+    if (sessionKey || topic) {
+      config.scopeBinding = {
+        ...(sessionKey ? { sessionKey } : {}),
+        ...(topic ? { topic } : {}),
+      };
+    }
+
     const entry: StoredArtifactBridge = {
       artifactId,
       serverId,

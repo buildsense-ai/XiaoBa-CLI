@@ -15,11 +15,6 @@ import {
   ArtifactMcpBridgeError,
   type ArtifactMcpBridgeSink,
 } from '../../mcp/artifact-mcp-registry';
-import {
-  WebMcpRelayError,
-  type WebMcpRelaySink,
-} from '../../mcp/webmcp-relay';
-import { buildWebMcpShimScript } from '../../mcp/webmcp-shim';
 
 const MAX_EVENTS_PER_REQUEST = 100;
 
@@ -47,8 +42,6 @@ export interface ArtifactEventsRouterOptions {
    * 未配置 DASHBOARD_API_KEY 且未显式开启时默认拒绝，防止本机任意进程无鉴权向已知 sessionKey 注入提示词。
    */
   allowArtifactEvents?: boolean;
-  /** 可选：WebMCP Relay 控制面（签发浏览器 WS 票据、查询/吊销会话）。 */
-  webMcpRelay?: WebMcpRelaySink;
 }
 
 export function createArtifactEventsRouter(
@@ -237,70 +230,6 @@ export function createArtifactEventsRouter(
     router.post('/artifacts/:artifactId/mcp/detach', handleDetach);
   }
 
-  // 浏览器侧 WebMCP Shim 静态脚本（无状态，供 Artifact 宿主壳加载）。
-  router.get('/artifacts/webmcp/shim.js', (_req, res) => {
-    res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).send(buildWebMcpShimScript());
-  });
-
-  if (options.webMcpRelay) {
-    const webMcpRelay = options.webMcpRelay;
-    const requireWebMcpAuth = (res: any): boolean => {
-      if (allowMcpAttach) return true;
-      res.status(403).json({
-        ok: false,
-        code: 'mcp_attach_requires_auth',
-        error: 'WebMCP relay session management requires DASHBOARD_API_KEY (or XIAOBA_ALLOW_LOCAL_MCP_ATTACH=1)',
-      });
-      return false;
-    };
-
-    router.get('/artifacts/webmcp/sessions', async (_req, res) => {
-      try {
-        if (!requireWebMcpAuth(res)) return;
-        const sessions = await webMcpRelay.listSessions();
-        return res.status(200).json({ ok: true, sessions });
-      } catch (error) {
-        return respondWithError(res, error);
-      }
-    });
-
-    router.post('/artifacts/:artifactId/webmcp/session', async (req, res) => {
-      try {
-        if (!requireWebMcpAuth(res)) return;
-        const artifactId = String(req.params.artifactId || '').trim();
-        const body = (req.body && typeof req.body === 'object') ? req.body : {};
-        const ticket = await webMcpRelay.issueSession({
-          artifactId,
-          sessionKey: firstNonEmpty(body.sessionKey, body.session_key),
-          topic: firstNonEmpty(body.topic),
-          ttlMs: typeof body.ttlMs === 'number' ? body.ttlMs : undefined,
-        });
-        return res.status(200).json(ticket);
-      } catch (error) {
-        return respondWithError(res, error);
-      }
-    });
-
-    router.delete('/artifacts/:artifactId/webmcp/session', async (req, res) => {
-      try {
-        if (!requireWebMcpAuth(res)) return;
-        const artifactId = String(req.params.artifactId || '').trim();
-        const body = (req.body && typeof req.body === 'object') ? req.body : {};
-        const unbindSession =
-          body.unbindSession === true ||
-          body.unbind_session === true ||
-          req.query?.unbind === '1' ||
-          req.query?.unbind === 'true';
-        const result = await webMcpRelay.revokeSession(artifactId, { unbindSession });
-        return res.status(200).json(result);
-      } catch (error) {
-        return respondWithError(res, error);
-      }
-    });
-  }
-
   return router;
 }
 
@@ -376,13 +305,6 @@ function respondWithError(res: any, error: unknown): any {
     });
   }
   if (error instanceof ArtifactMcpBridgeError) {
-    return res.status(error.status).json({
-      ok: false,
-      code: error.code,
-      error: error.message,
-    });
-  }
-  if (error instanceof WebMcpRelayError) {
     return res.status(error.status).json({
       ok: false,
       code: error.code,

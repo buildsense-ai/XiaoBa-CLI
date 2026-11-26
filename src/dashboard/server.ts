@@ -7,7 +7,6 @@ import { createArtifactEventsRouter } from './routes/artifact-events';
 import {
   createForwardingArtifactEventSink,
   createForwardingArtifactMcpBridgeSink,
-  createForwardingWebMcpRelaySink,
 } from '../events/connector-event-bridge';
 import { ServiceManager } from './service-manager';
 import { bootstrapDefaultSkillHubSkillsOnce } from '../skillhub/default-skill-bootstrap';
@@ -87,11 +86,7 @@ export async function startDashboard(
   app.use('/api', dashboardAuth.middleware, createArtifactEventsRouter(
     createForwardingArtifactEventSink(runtimeRoot),
     createForwardingArtifactMcpBridgeSink(runtimeRoot),
-    {
-      allowMcpAttach,
-      allowArtifactEvents,
-      webMcpRelay: createForwardingWebMcpRelaySink(runtimeRoot),
-    },
+    { allowMcpAttach, allowArtifactEvents },
   ));
 
   // Serve frontend
