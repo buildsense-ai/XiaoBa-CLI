@@ -962,6 +962,7 @@ export class CatsCompanyBot {
     });
 
     // 启动 WebMCP Artifact Relay：将浏览器侧 navigator.modelContext 工具桥接为本机 Streamable HTTP MCP。
+    // 生产环境经 CatsCo WebSocket (`artifact_webmcp`) 与 Gateway 注入的 webmcp-v1.js 双向通信。
     if (process.env.XIAOBA_WEBMCP_RELAY !== '0') {
       try {
         const relayPort = Number(process.env.XIAOBA_WEBMCP_RELAY_PORT || 0);
@@ -969,6 +970,45 @@ export class CatsCompanyBot {
           port: Number.isInteger(relayPort) && relayPort > 0 ? relayPort : 0,
           publicWsBaseUrl: process.env.XIAOBA_WEBMCP_PUBLIC_WS_BASE_URL || undefined,
           bridgeSink: artifactMcpRegistry,
+          onRemoteToolCall: (req) => this.bot.sendArtifactWebMcp({
+            type: 'tool_call',
+            bridge_id: req.bridgeId,
+            app_id: req.artifactId,
+            topic_id: req.topic,
+            call_id: req.callId,
+            name: req.name,
+            arguments: req.arguments,
+          }),
+        });
+        this.bot.on('artifact_webmcp', (msg) => {
+          const relay = this.webMcpRelay;
+          if (!relay || !msg || typeof msg !== 'object') return;
+          if (msg.type === 'tools_sync' && msg.bridge_id && msg.app_id) {
+            relay.handleRemoteToolsSync({
+              bridgeId: msg.bridge_id,
+              artifactId: msg.app_id,
+              topic: msg.topic_id,
+              tools: Array.isArray(msg.tools) ? msg.tools : [],
+            }).catch((error: any) => {
+              Logger.warning(`[CatsCompany][WebMCP] tools_sync 处理失败: ${error?.message || error}`);
+            });
+          } else if (msg.type === 'tool_result' && msg.bridge_id && msg.call_id) {
+            relay.handleRemoteToolResult({
+              bridgeId: msg.bridge_id,
+              callId: msg.call_id,
+              isError: msg.is_error === true,
+              content: msg.content,
+              structuredContent: msg.structured_content,
+              error: msg.error,
+            });
+          } else if (msg.type === 'detach' && msg.bridge_id) {
+            relay.handleRemoteDetach({
+              bridgeId: msg.bridge_id,
+              reason: msg.reason,
+            }).catch((error: any) => {
+              Logger.warning(`[CatsCompany][WebMCP] detach 处理失败: ${error?.message || error}`);
+            });
+          }
         });
       } catch (error: any) {
         Logger.warning(`[CatsCompany] 启动 WebMCP Relay 失败（不影响主聊天链路）: ${error?.message || error}`);

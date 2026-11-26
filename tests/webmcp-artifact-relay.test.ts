@@ -401,4 +401,71 @@ describe('Dashboard routes & cross-process Connector bridge for WebMCP', () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  test('CatsCo remote transport: tools_sync → McpClientManager tool call → tool_result → detach', async () => {
+    const toolRegistry = new FakeToolRegistry();
+    const mcpManager = new McpClientManager({
+      toolManager: toolRegistry,
+      createConnection: createSdkMcpConnectionFactory(),
+      requestTimeoutMs: 5_000,
+    });
+    await mcpManager.start();
+    const artifactRegistry = new ArtifactMcpRegistry();
+    artifactRegistry.attachManager(mcpManager);
+
+    const outboundCalls: Array<{ bridgeId: string; artifactId: string; callId: string; name: string; arguments: Record<string, unknown> }> = [];
+    const relay = await startWebMcpRelay({
+      bridgeSink: artifactRegistry,
+      heartbeatIntervalMs: 0,
+      toolCallTimeoutMs: 2_000,
+      onRemoteToolCall: (req) => {
+        outboundCalls.push(req);
+        // Simulate CatsCo Hub + Gateway iframe returning tool_result asynchronously
+        setImmediate(() => {
+          relay.handleRemoteToolResult({
+            bridgeId: req.bridgeId,
+            callId: req.callId,
+            isError: false,
+            content: [{ type: 'text', text: JSON.stringify({ applied: req.arguments.mode }) }],
+            structuredContent: { applied: req.arguments.mode },
+          });
+        });
+        return true;
+      },
+    });
+
+    try {
+      await relay.handleRemoteToolsSync({
+        bridgeId: 'awm_catsco_1',
+        artifactId: 'canvas-prod',
+        topic: 'p2p_101_365',
+        tools: [
+          {
+            name: 'set_layout',
+            description: 'Arrange canvas layout',
+            inputSchema: { type: 'object', properties: { mode: { type: 'string' } } },
+          },
+        ],
+      });
+
+      await waitFor(() => Boolean(toolRegistry.findBySuffix('_set_layout')), 4_000, 'remote set_layout tool registered');
+
+      const tool = toolRegistry.findBySuffix('_set_layout');
+      const execResult = await tool.execute({ mode: 'grid' });
+      assert.equal(outboundCalls.length, 1);
+      assert.equal(outboundCalls[0].bridgeId, 'awm_catsco_1');
+      assert.equal(outboundCalls[0].name, 'set_layout');
+      assert.equal(execResult.ok, true);
+      assert.match(JSON.stringify(execResult.content ?? execResult), /grid/);
+
+      // Detach should unregister the tool and remove the session
+      await relay.handleRemoteDetach({ bridgeId: 'awm_catsco_1', reason: 'client_disconnected' });
+      await waitFor(() => !toolRegistry.findBySuffix('_set_layout'), 4_000, 'remote set_layout tool unregistered');
+      assert.equal(relay.listSessions().length, 0);
+    } finally {
+      await relay.stop();
+      await mcpManager.closeAll();
+      artifactRegistry.reset();
+    }
+  });
 });

@@ -92,6 +92,15 @@ export interface WebMcpRelaySink {
   listSessions(): Promise<WebMcpSessionSummary[]> | WebMcpSessionSummary[];
 }
 
+export interface WebMcpRemoteToolCallRequest {
+  bridgeId: string;
+  artifactId: string;
+  topic?: string;
+  callId: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface WebMcpRelayOptions {
   /** 监听地址（默认 127.0.0.1；若通过反向代理公网接入可配置为 127.0.0.1 并由反代转发 WS）。 */
   host?: string;
@@ -101,6 +110,8 @@ export interface WebMcpRelayOptions {
   publicWsBaseUrl?: string;
   /** 自动挂接/卸载 Artifact MCP Bridge 的目标（通常为 `artifactMcpRegistry`）。 */
   bridgeSink?: ArtifactMcpBridgeSink;
+  /** 可选：通过 CatsCo Hub 双向通道下发 tool_call（生产模式，无需浏览器直连本地 WS）。 */
+  onRemoteToolCall?: (request: WebMcpRemoteToolCallRequest) => boolean | Promise<boolean>;
   /** 单次浏览器工具调用超时时间（ms，默认 15000）。 */
   toolCallTimeoutMs?: number;
   /** 页面断连后等待重连的宽限期（ms，默认 5000）；超时未重连则自动 detach。 */
@@ -131,6 +142,7 @@ interface ArtifactRelayState {
   sessionKey?: string;
   topic?: string;
   socket: WebSocket | null;
+  remoteBridgeId?: string;
   tools: WebMcpToolDescriptor[];
   attached: boolean;
   pageUrl?: string;
@@ -149,6 +161,7 @@ export class WebMcpRelay implements WebMcpRelaySink {
   private readonly requestedPort: number;
   private readonly publicWsBaseUrl?: string;
   private readonly bridgeSink?: ArtifactMcpBridgeSink;
+  private readonly onRemoteToolCall?: (request: WebMcpRemoteToolCallRequest) => boolean | Promise<boolean>;
   private readonly toolCallTimeoutMs: number;
   private readonly disconnectGraceMs: number;
   private readonly heartbeatIntervalMs: number;
@@ -166,6 +179,7 @@ export class WebMcpRelay implements WebMcpRelaySink {
     this.requestedPort = options.port ?? 0;
     this.publicWsBaseUrl = options.publicWsBaseUrl?.replace(/\/+$/, '');
     this.bridgeSink = options.bridgeSink;
+    this.onRemoteToolCall = options.onRemoteToolCall;
     this.toolCallTimeoutMs = options.toolCallTimeoutMs ?? DEFAULT_WEBMCP_TOOL_CALL_TIMEOUT_MS;
     this.disconnectGraceMs = options.disconnectGraceMs ?? 5_000;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 25_000;
@@ -321,7 +335,7 @@ export class WebMcpRelay implements WebMcpRelaySink {
     return [...this.artifacts.values()].map((state) => ({
       artifactId: state.artifactId,
       serverId: state.serverId,
-      connected: Boolean(state.socket && state.socket.readyState === WebSocket.OPEN),
+      connected: Boolean((state.socket && state.socket.readyState === WebSocket.OPEN) || state.remoteBridgeId),
       attached: state.attached,
       toolCount: state.tools.length,
       toolNames: state.tools.map((t) => t.name),
@@ -332,6 +346,108 @@ export class WebMcpRelay implements WebMcpRelaySink {
       ...(state.connectedAt ? { connectedAt: state.connectedAt } : {}),
       ...(state.lastSeenAt ? { lastSeenAt: state.lastSeenAt } : {}),
     }));
+  }
+
+  /**
+   * 生产模式（Gateway + CatsCo Hub）：接收经 CatsCo WebSocket 转发的 `tools_sync`，
+   * 自动挂载或热刷新本机 Streamable HTTP MCP 端点。
+   */
+  async handleRemoteToolsSync(input: {
+    bridgeId: string;
+    artifactId: string;
+    topic?: string;
+    sessionKey?: string;
+    tools: unknown[];
+  }): Promise<void> {
+    if (this.stopped) return;
+    const bridgeId = String(input.bridgeId ?? '').trim();
+    const artifactId = String(input.artifactId ?? '').trim();
+    if (!bridgeId || !artifactId) return;
+
+    const state = this.getOrCreateArtifactState(artifactId, input.sessionKey, input.topic);
+    if (state.disconnectTimer) {
+      clearTimeout(state.disconnectTimer);
+      state.disconnectTimer = null;
+    }
+    const now = new Date().toISOString();
+    if (!state.remoteBridgeId) {
+      state.connectedAt = now;
+    } else if (state.remoteBridgeId !== bridgeId) {
+      this.rejectPendingCalls(state, 'page_replaced', 'Artifact page connection was replaced by a newer tab');
+    }
+    state.remoteBridgeId = bridgeId;
+    state.lastSeenAt = now;
+
+    const nextTools = normalizeWebMcpToolList(input.tools);
+    const changed = !areToolListsEqual(state.tools, nextTools);
+    state.tools = nextTools;
+
+    if (!state.attached && nextTools.length > 0 && this.bridgeSink) {
+      try {
+        await Promise.resolve(this.bridgeSink.registerArtifactBridge({
+          artifactId: state.artifactId,
+          url: `${this.baseHttpUrl}/mcp/${encodeURIComponent(state.artifactId)}`,
+          bearerToken: state.mcpBearerToken,
+          ...(state.sessionKey
+            ? {
+                sessionKey: state.sessionKey,
+                ...(state.topic ? { topic: state.topic } : {}),
+              }
+            : {}),
+        }));
+        state.attached = true;
+      } catch {
+        // 挂载失败时不崩溃，后续 tools_sync 可继续重试。
+      }
+    } else if (changed && state.attached) {
+      this.broadcastToolsListChanged(state);
+    }
+  }
+
+  /** 接收经 CatsCo WebSocket 转发的 `tool_result`。 */
+  handleRemoteToolResult(input: {
+    bridgeId: string;
+    callId: string;
+    isError?: boolean;
+    content?: unknown;
+    structuredContent?: Record<string, unknown>;
+    error?: { code?: string; message?: string };
+  }): void {
+    const bridgeId = String(input.bridgeId ?? '').trim();
+    const callId = String(input.callId ?? '').trim();
+    if (!bridgeId || !callId) return;
+    for (const state of this.artifacts.values()) {
+      if (state.remoteBridgeId !== bridgeId) continue;
+      state.lastSeenAt = new Date().toISOString();
+      const pending = state.pendingCalls.get(callId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      state.pendingCalls.delete(callId);
+      const rawResult = input.content !== undefined
+        ? {
+            content: input.content,
+            isError: input.isError === true,
+            ...(input.structuredContent ? { structuredContent: input.structuredContent } : {}),
+          }
+        : undefined;
+      pending.resolve(formatWebMcpToolResult(rawResult, input.isError === true, input.error));
+      return;
+    }
+  }
+
+  /** 接收经 CatsCo WebSocket 转发的 `detach`（页面关闭 / 断连 / open_ref 撤销）。 */
+  async handleRemoteDetach(input: { bridgeId: string; reason?: string }): Promise<void> {
+    const bridgeId = String(input.bridgeId ?? '').trim();
+    if (!bridgeId) return;
+    for (const [artifactId, state] of this.artifacts.entries()) {
+      if (state.remoteBridgeId !== bridgeId) continue;
+      state.remoteBridgeId = undefined;
+      this.rejectPendingCalls(state, 'page_not_open', input.reason || 'Artifact page detached');
+      if (!state.socket) {
+        await this.revokeSession(artifactId);
+      }
+      return;
+    }
   }
 
   async stop(): Promise<void> {
@@ -791,7 +907,10 @@ export class WebMcpRelay implements WebMcpRelaySink {
     name: string,
     args: Record<string, unknown>,
   ): Promise<ReturnType<typeof formatWebMcpToolResult>> {
-    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+    const hasLocalSocket = Boolean(state.socket && state.socket.readyState === WebSocket.OPEN);
+    const hasRemoteBridge = Boolean(state.remoteBridgeId && this.onRemoteToolCall);
+
+    if (!hasLocalSocket && !hasRemoteBridge) {
       return formatWebMcpToolResult(undefined, true, {
         code: 'page_not_open',
         message: `Artifact "${state.artifactId}" page is not currently connected`,
@@ -819,13 +938,44 @@ export class WebMcpRelay implements WebMcpRelaySink {
       timer.unref?.();
 
       state.pendingCalls.set(callId, { callId, timer, resolve });
-      this.sendWsJson(state.socket!, {
-        type: 'tool_call',
-        callId,
-        name,
-        arguments: args,
-        timeoutMs,
-      });
+      if (hasRemoteBridge) {
+        Promise.resolve(
+          this.onRemoteToolCall!({
+            bridgeId: state.remoteBridgeId!,
+            artifactId: state.artifactId,
+            topic: state.topic,
+            callId,
+            name,
+            arguments: args,
+          }),
+        ).then((sent) => {
+          if (!sent && state.pendingCalls.has(callId)) {
+            clearTimeout(timer);
+            state.pendingCalls.delete(callId);
+            resolve(formatWebMcpToolResult(undefined, true, {
+              code: 'page_not_open',
+              message: `Failed to forward WebMCP tool call for artifact "${state.artifactId}"`,
+            }));
+          }
+        }).catch(() => {
+          if (state.pendingCalls.has(callId)) {
+            clearTimeout(timer);
+            state.pendingCalls.delete(callId);
+            resolve(formatWebMcpToolResult(undefined, true, {
+              code: 'page_not_open',
+              message: `Failed to forward WebMCP tool call for artifact "${state.artifactId}"`,
+            }));
+          }
+        });
+      } else {
+        this.sendWsJson(state.socket!, {
+          type: 'tool_call',
+          callId,
+          name,
+          arguments: args,
+          timeoutMs,
+        });
+      }
     });
   }
 }

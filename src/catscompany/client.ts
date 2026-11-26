@@ -15,6 +15,22 @@ export type { CatsSessionForkControl, CatsSessionForkCompletion, CatsSessionFork
 
 export type { UploadResult } from './upload';
 
+export interface CatsArtifactWebMcpMessage {
+  type: 'tools_sync' | 'detach' | 'tool_call' | 'tool_result';
+  bridge_id?: string;
+  app_id?: string;
+  topic_id?: string;
+  call_id?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+  tools?: unknown[];
+  is_error?: boolean;
+  content?: unknown[];
+  structured_content?: Record<string, unknown>;
+  error?: { code?: string; message?: string };
+  reason?: string;
+}
+
 /**
  * undici surfaces a closed pooled socket, a reset, or a refused connection as a
  * bare `TypeError: fetch failed`. A single blip used to abort a whole cloud
@@ -608,6 +624,9 @@ export class CatsClient extends EventEmitter {
           && msg.ctrl.params.features.includes('device_grant_renewal.v1');
         this.supportsRemoteShellTimeout = Array.isArray(msg.ctrl.params?.features)
           && msg.ctrl.params.features.includes('remote_shell_timeout.v1');
+        if (Array.isArray(msg.ctrl.params?.features) && msg.ctrl.params.features.includes('artifact_webmcp.v1')) {
+          Logger.info('[CatsCompany] 服务端支持 artifact_webmcp.v1 双向 WebMCP 桥接');
+        }
         if (this.supportsThinToolRpc) {
           Logger.info('[CatsCompany] 服务端支持 thin_tool_rpc 轻量工具传输');
         }
@@ -644,6 +663,8 @@ export class CatsClient extends EventEmitter {
       this.emit('service_run_receipt', msg.service_run_receipt);
     } else if (msg.thin_tool_rpc) {
       this.handleThinToolRpcMessage(msg.thin_tool_rpc);
+    } else if (msg.artifact_webmcp) {
+      this.emit('artifact_webmcp', msg.artifact_webmcp as CatsArtifactWebMcpMessage);
     } else if (msg.device_grant_renewal) {
       const result = msg.device_grant_renewal;
       const pending = this.pendingDeviceGrantRenewals.get(result.request_id);
@@ -1358,6 +1379,14 @@ export class CatsClient extends EventEmitter {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
     }
+  }
+
+  sendArtifactWebMcp(payload: CatsArtifactWebMcpMessage): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    this.ws.send(JSON.stringify({ artifact_webmcp: payload }));
+    return true;
   }
 
   private sendOrThrow(data: any): void {
