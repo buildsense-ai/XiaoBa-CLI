@@ -1373,6 +1373,8 @@ export class CatsCompanyBot {
     if (!toolName) {
       return { ok: false, errorCode: 'TOOL_NOT_FOUND', message: 'Thin tool RPC request missing tool_name.' };
     }
+    const sharedError = this.validateSharedDeviceRpcRequest(request, request.target_owner_user_id, request.target_device_id);
+    if (sharedError) return { ok: false, errorCode: 'PERMISSION_DENIED', message: sharedError.message };
     const context = this.buildThinToolRpcToolContext(request);
     const args = this.extractDeviceRpcToolArgs(request.payload);
     let result: ToolExecutionResult;
@@ -1428,8 +1430,8 @@ export class CatsCompanyBot {
       executionContext: {
         schema: 'xiaoba.execution_context.v1',
         conversation: {
-          type: 'p2p',
-          currentSpeaker: { id: String(request.target_owner_user_id || 'remote_user'), role: 'user' },
+          type: request.topic_type === 'group' ? 'group' : 'p2p',
+          currentSpeaker: { id: String(request.actor_user_id || request.target_owner_user_id || 'remote_user'), role: 'user' },
           participants: [],
         },
         executionTargets: [{
@@ -1648,6 +1650,7 @@ export class CatsCompanyBot {
       status: 'active',
       identityTrust: 'server_canonical',
       identitySource: String(request.identity_source || 'device_rpc_forward'),
+      shareId: request.share_id, shareRevision: request.share_revision,
       deviceId: String(request.device_id || this.localDeviceGrant?.deviceId || ''),
       deviceBodyId: request.device_body_id || this.localDeviceGrant?.bodyId,
       deviceInstallationId: request.device_installation_id || this.localDeviceGrant?.installationId,
@@ -1697,7 +1700,28 @@ export class CatsCompanyBot {
     };
   }
 
+  private validateSharedDeviceRpcRequest(
+    request: CatsDeviceRpcMessage | CatsThinToolRpcMessage,
+    owner: string | undefined,
+    deviceId: string | undefined,
+  ): { code: string; message: string } | undefined {
+    if (request.identity_source !== 'group_device_share' && request.share_id === undefined && request.share_revision === undefined) return undefined;
+    if (request.identity_source !== 'group_device_share' || !request.share_id || !Number.isSafeInteger(request.share_revision) || Number(request.share_revision) <= 0
+      || request.topic_type !== 'group' || !String(request.topic_id || '').trim()
+      || !String(request.actor_user_id || '').trim() || !String(request.agent_id || '').trim()
+      || !String(request.grant_id || '').trim() || !String(request.session_key || '').trim()
+      || !String(owner || '').trim() || owner === request.actor_user_id
+      || !this.localDeviceGrant?.ownerUserId || owner !== this.localDeviceGrant.ownerUserId
+      || !deviceId || deviceId !== this.localDeviceGrant.deviceId
+      || !Number.isFinite(request.expires_at) || Number(request.expires_at) <= Date.now()) {
+      return { code: 'invalid_shared_authorization', message: '共享设备请求缺少完整授权，或与本机所有者、设备不一致。' };
+    }
+    return undefined;
+  }
+
   private validateDeviceRpcToolRequest(request: CatsDeviceRpcMessage): { code: string; message: string } | undefined {
+    const sharedError = this.validateSharedDeviceRpcRequest(request, request.owner_user_id, request.device_id);
+    if (sharedError) return sharedError;
     const targetError = this.validateDeviceRpcTarget(request);
     if (targetError) return targetError;
 
@@ -1926,6 +1950,7 @@ export class CatsCompanyBot {
       senderId?: string;
       channelSource?: string;
       clearGeneration?: number;
+      promptSeq?: number;
     },
   ): SessionCallbacks {
     const suppressToolProgress = shouldSuppressStructuredToolProgress(opts?.channelSource);
@@ -1946,6 +1971,11 @@ export class CatsCompanyBot {
           || callbackStopGeneration !== this.getSessionStopGeneration(opts.sessionKey))),
     );
     return {
+      onWikiInjection: injection => {
+        if (isStaleCallback() || suppressToolProgress) return;
+        void this.sender.sendWikiInjection(topic, injection, opts?.promptSeq || this.replyOptionsFor(opts?.sessionKey)?.replyTo)
+          .catch(error => Logger.warning(`记忆注入详情发送失败: ${error instanceof Error ? error.message : String(error)}`));
+      },
       onRetry: async (attempt, maxRetries, info) => {
         if (isStaleCallback() || suppressToolProgress) {
           return;
@@ -2258,7 +2288,7 @@ export class CatsCompanyBot {
     // Stop is control input: it must reach the same boundary as the web button
     // before any asynchronous history restore or ordinary message queueing.
     if (/^\/stop(?:\s|$)/i.test(msg.text)) {
-      this.stopSessionExecution(key);
+      this.stopSessionExecution(key, { keepMemory: true });
       await this.sender.reply(msg.topic, '已停止当前请求。').catch((err: any) => {
         Logger.warning(`停止提示发送失败: ${err?.message || err}`);
       });
@@ -2583,6 +2613,7 @@ export class CatsCompanyBot {
             senderId: msg.senderId,
             channelSource: msg.executionScope?.channelSource,
             clearGeneration: entryClearGeneration,
+            promptSeq: msg.seq,
           }),
         });
 
@@ -4433,10 +4464,10 @@ export class CatsCompanyBot {
       botUid: this.botUid,
     });
     const key = envelope.sessionKey;
-    this.stopSessionExecution(key);
+    this.stopSessionExecution(key, { keepMemory: true });
   }
 
-  private stopSessionExecution(key: string): void {
+  private stopSessionExecution(key: string, options?: { keepMemory: boolean }): void {
     const stopGeneration = this.bumpSessionStopGeneration(key);
     // Stop is a boundary for queued input. Messages received afterwards get
     // the new generation and can start a fresh turn normally.
@@ -4461,7 +4492,7 @@ export class CatsCompanyBot {
       return;
     }
 
-    session.requestInterrupt();
+    session.requestInterrupt(options);
     this.cancelConversationTask(key);
     Logger.info(`[${key}] 收到 CatsCompany 取消事件，已请求中断当前回合`);
   }
@@ -4653,6 +4684,7 @@ export class CatsCompanyBot {
               senderId: msg.senderId,
               channelSource: msg.executionScope?.channelSource,
               clearGeneration,
+              promptSeq: msg.seq,
             }),
           });
         if (clearGeneration !== this.getSessionClearGeneration(sessionKey)
@@ -4808,7 +4840,9 @@ export class CatsCompanyBot {
       .map(item => item.approvalInput)
       .filter((item): item is CurrentUserApprovalInput => item !== undefined);
     const localFileGrants = messages.flatMap(item => item.localFileGrants || []);
-    const deviceGrants = messages.flatMap(item => item.deviceGrants || []);
+    // Each message holds a complete list. The newest supplied list wins,
+    // including []; a message without device metadata makes no update.
+    const deviceGrants = [...messages].reverse().find(item => Array.isArray(item.deviceGrants))?.deviceGrants;
     const deviceSelection = [...messages].reverse().find(item => item.deviceSelection)?.deviceSelection;
     const targetRoutes = [...messages].reverse().find(item => item.targetRoutes)?.targetRoutes;
     // Union the whole batch so two grants arriving together both survive; a
@@ -4834,12 +4868,12 @@ export class CatsCompanyBot {
         this.messageQueue.set(sessionKey, [...userMessages, ...(this.messageQueue.get(sessionKey) || [])]);
       },
     };
-    if (localFileGrants.length === 0 && deviceGrants.length === 0 && !deviceSelection && !targetRoutes && !artifactContextMessage && !skillConnectorGrants?.length && currentUserApprovalInputs.length === 0) return pending;
+    if (localFileGrants.length === 0 && deviceGrants === undefined && !deviceSelection && !targetRoutes && !artifactContextMessage && !skillConnectorGrants?.length && currentUserApprovalInputs.length === 0) return pending;
     return {
       ...pending,
       currentUserApprovalInputs,
       localFileGrants: localFileGrants.length > 0 ? localFileGrants : undefined,
-      deviceGrants: deviceGrants.length > 0 ? deviceGrants : undefined,
+      deviceGrants,
       deviceSelection,
       targetRoutes,
       artifactContextRef: artifactContextMessage?.artifactContextRef,

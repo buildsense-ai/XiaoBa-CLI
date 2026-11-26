@@ -22,6 +22,7 @@ import { RecordDecisionTool } from './record-decision-tool';
 import { ShareSkillHubSkillTool } from './share-skillhub-skill-tool';
 import { SkillHubTool } from './skillhub-tool';
 import { AskParentTool } from './ask-parent-tool';
+import { LocalComputeResourcesTool } from './local-compute-resources-tool';
 import { DEFAULT_TOOL_NAMES } from './default-tool-names';
 import { mergeToolExecutionContext } from '../utils/tool-context';
 import { confirmLocalToolExecution } from './local-tool-risk';
@@ -93,6 +94,7 @@ export class ToolManager implements ToolExecutor {
       new ShareSkillHubSkillTool(),
       new SkillHubTool(),
       new SkillTool(),
+      new LocalComputeResourcesTool(),
     ];
 
     for (const tool of defaultTools) {

@@ -1,11 +1,20 @@
 import { randomUUID } from 'crypto';
 import { Message } from '../types';
+import type { WikiCitation } from './wiki-search-branch-session';
 
 export type SyntheticObservationSource = 'memory' | 'runtime' | 'subagent' | 'skill_context';
 export type SyntheticObservationStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
 export type SyntheticObservationRelevance = 'high' | 'medium' | 'low';
 export type SyntheticObservationTiming = 'current_turn' | 'late_previous_turn';
 export type SyntheticObservationLifecycleOutcome = 'injected' | 'dropped';
+
+export interface WikiInjectionDisplay {
+  event_id: string;
+  timestamp: string;
+  kind: 'previous' | 'initial' | 'refresh';
+  summary: string;
+  references: Pick<WikiCitation, 'wiki_id' | 'evidence_level' | 'contribution'>[];
+}
 
 export interface SyntheticObservationEvidence {
   sourceType: SyntheticObservationSource | 'session' | 'file';
@@ -38,6 +47,7 @@ export interface SyntheticObservationMetadata {
   refs?: string[];
   timing?: SyntheticObservationTiming;
   originTurn?: number;
+  wiki?: { citations: WikiCitation[]; refresh: boolean };
   /**
    * Per-ref lane attribution for this injection, tagged by the memory branch
    * from presentation lane membership (additive, local-only telemetry; never

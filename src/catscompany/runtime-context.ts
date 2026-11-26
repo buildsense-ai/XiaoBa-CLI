@@ -1,3 +1,4 @@
+import { isDelegatedDeviceGrant } from '../core/device-grants';
 import type { TargetRoute, TargetRouteOS, TargetRoutes } from '../types/tool';
 import type { ExecutionScope } from '../types/session-identity';
 import { extractCatsCoDeviceGrants } from './device-grants';
@@ -13,14 +14,14 @@ export function extractCatsCoRuntimeContext(metadata: Record<string, unknown> | 
     const selection = extractCatsCoDeviceSelection(metadata, scope);
     const grants = extractCatsCoDeviceGrants(metadata, scope) || [];
     const explicit = grants.filter(grant => grant.targetScope === 'explicit_device'
-      && grant.ownerUserId === scope.actorUserId && typeof selection?.revision === 'string'
+      && (grant.ownerUserId === scope.actorUserId || isDelegatedDeviceGrant(grant)) && typeof selection?.revision === 'string'
       && (grant.selectionRevision || '') === selection.revision);
     if (explicit.length > 0 && selection?.candidates?.length) {
       const ownerRecord = (Array.isArray(runtime?.devices) ? runtime.devices : []).map(asRecord)
         .find(device => stringField(device, 'userId') === scope.actorUserId);
-      return buildTargetRoutes(selection.candidates.map(device => ({
-        userId: scope.actorUserId, ownerUserId: scope.actorUserId, deviceId: device.deviceId,
-        userName: stringField(ownerRecord, 'userName'),
+      return buildTargetRoutes(selection.candidates.filter(device => !device.ownerUserId || device.ownerUserId === scope.actorUserId || device.status !== 'ready' || explicit.some(grant => grant.deviceId === device.deviceId && grant.ownerUserId === device.ownerUserId)).map(device => ({
+        userId: device.ownerUserId || scope.actorUserId, ownerUserId: device.ownerUserId || scope.actorUserId, deviceId: device.deviceId,
+        userName: device.ownerUserId && device.ownerUserId !== scope.actorUserId ? device.ownerDisplayName : stringField(ownerRecord, 'userName'),
         label: device.displayName || device.deviceId, os: normalizeOS(device.os),
         status: device.status === 'ready' ? 'ready' : 'unavailable',
       })));

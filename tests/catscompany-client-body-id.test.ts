@@ -102,7 +102,7 @@ describe('CatsCompany client body identity', () => {
     assert.equal(headers['x-catsco-body-id'], 'body-test');
     assert.equal(headers['x-catsco-installation-id'], 'install-test');
     assert.equal(headers['x-catsco-runtime-credential'], 'runtime-credential-test');
-    assert.deepEqual(hello.hi.runtime_capabilities, ['device-targets.v1']);
+    assert.deepEqual(hello.hi.runtime_capabilities, ['device-targets.v1', 'group-device-share.v1']);
   });
 
   test('does not send the privileged Runtime header when no credential is configured', async () => {

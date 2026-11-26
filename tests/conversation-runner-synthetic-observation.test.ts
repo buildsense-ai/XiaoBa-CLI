@@ -58,6 +58,50 @@ class NoopToolExecutor implements ToolExecutor {
 }
 
 describe('ConversationRunner synthetic observations', () => {
+  test('publishes the transcript receipt once for a Wiki observation sent to the model', async () => {
+    const observation: SyntheticObservation = {
+      ...makeObservation(),
+      timing: 'late_previous_turn',
+      formattedContent: '{"source":"memory","branch":"wiki"}',
+      metadata: { wiki: { refresh: false, citations: [{
+        wiki_id: 'mem_release', retrieval_id: 'ret_release', evidence_level: 'search_snippet',
+        contribution: 'Use the existing script.', quote: 'existing script',
+      }] } },
+    };
+    let requests = 0;
+    let receipts = 0;
+    const displayed: unknown[] = [];
+    const receipt = { event_id: 'stream:7', timestamp: '2026-11-24T01:00:00Z' };
+    const aiService = {
+      chat: async (messages: Message[]) => {
+        requests++;
+        assert.ok(messages.some(message => message.role === 'tool' && message.content === observation.formattedContent));
+        return requests === 1
+          ? { content: null, toolCalls: [makeToolCall('call_1')], usage }
+          : { content: 'done', toolCalls: [], usage };
+      },
+    } as any;
+    const runner = new ConversationRunner(aiService, new NoopToolExecutor(), {
+      stream: false,
+      syntheticObservationProvider: () => requests === 0 ? [observation] : [],
+      onTranscript: event => {
+        if (event.type !== 'runtime_observation') return;
+        assert.equal(event.text, observation.formattedContent);
+        receipts++;
+        return receipt;
+      },
+    });
+
+    await runner.run([{ role: 'user', content: 'deploy it' }], { onWikiInjection: injection => displayed.push(injection) });
+
+    assert.equal(requests, 2);
+    assert.equal(receipts, 1);
+    assert.deepEqual(displayed, [{
+      ...receipt, kind: 'previous', summary: observation.summary,
+      references: [{ wiki_id: 'mem_release', evidence_level: 'search_snippet', contribution: 'Use the existing script.' }],
+    }]);
+  });
+
   test('drains completed observations into the current runner turn without duplicate injection', async () => {
     const received: Message[][] = [];
     const responses: ChatResponse[] = [

@@ -804,7 +804,7 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.executionScope.isTrusted, true);
   });
 
-  test('keeps execution scope when a busy CatsCompany turn is queued then drained', async () => {
+  test('keeps execution scope and the Wiki injection reply target when a queued turn is drained', async () => {
     const { bot, handledTurns, sessionKeys, session } = createHarness({ busy: true });
     const ref = `acr_${'c'.repeat(43)}`;
 
@@ -834,6 +834,14 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(handledTurns[0].options.executionScope.topicId, 'p2p_8_43');
     assert.equal(handledTurns[0].options.executionScope.isTrusted, true);
     assert.equal(handledTurns[0].options.artifactContextRef, ref);
+    const injection = {
+      event_id: 'stream:7', timestamp: '2026-11-24T01:00:00Z', kind: 'previous',
+      summary: 'Use the existing script.', references: [],
+    };
+    const deliveries: unknown[][] = [];
+    bot.sender.sendWikiInjection = async (...args: unknown[]) => { deliveries.push(args); };
+    handledTurns[0].options.callbacks.onWikiInjection(injection);
+    assert.deepEqual(deliveries, [['p2p_8_43', injection, 12]]);
   });
 
   test('keeps a drained user message queued when the session call rejects once', async () => {
@@ -1530,7 +1538,7 @@ describe('CatsCompany execution scope flow', () => {
 
     assert.deepEqual(sessionKeys, ['cc_group:grp_80']);
     assert.equal(handledTurns.length, 1);
-    assert.equal(handledTurns[0].options.deviceGrants, undefined);
+    assert.deepEqual(handledTurns[0].options.deviceGrants, []);
     assert.equal(handledTurns[0].options.deviceSelection, undefined);
   });
 
@@ -1594,7 +1602,7 @@ describe('CatsCompany execution scope flow', () => {
     });
 
     assert.equal(handledTurns.length, 1);
-    assert.equal(handledTurns[0].options.deviceGrants, undefined);
+    assert.deepEqual(handledTurns[0].options.deviceGrants, []);
   });
 
   test('forwards a trusted Artifact context ref only through current turn options', async () => {
@@ -1870,6 +1878,20 @@ describe('CatsCompany execution scope flow', () => {
     assert.equal(pending.deviceGrants.length, 1);
     assert.equal(pending.deviceGrants[0].deviceId, 'alice-laptop');
   });
+
+  for (const lists of [[['old'],['new']],[['old'],[]],[[],['new']],[['old'],undefined]] as const) {
+    test(`takes newest queued device list including empty: ${JSON.stringify(lists)}`, () => {
+      const {bot}=createHarness();
+      const scope=createExecutionScope(createCatsCoMessageEnvelope({topic:'p2p_7_43',senderId:'usr7',text:'update',metadata:canonicalMetadata('usr7','p2p_7_43'),botUid:'usr43'}));
+      bot.messageQueue.set(scope.sessionKey,lists.map((ids,index)=>({
+        userMessage:'update '+index,topic:'p2p_7_43',senderId:'usr7',seq:13+index,
+        executionScope:scope,deviceGrants:ids?.map(id=>deviceGrant({grantId:id})),receivedAt:Date.now()+index,source:'user',
+      })));
+      const pending=(bot as any).consumeQueuedUserInput(scope.sessionKey,scope);
+      const expected=lists[1]===undefined?lists[0]:lists[1];
+      assert.deepEqual(pending.deviceGrants.map((grant:any)=>grant.grantId),expected);
+    });
+  }
 
   test('merges Skill connector grants across a queued CatsCompany batch', () => {
     const { bot } = createHarness();

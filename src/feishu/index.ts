@@ -370,7 +370,7 @@ export class FeishuBot {
     // 并发保护：忙时消息静默入队，空闲后自动处理
     if (session.isBusy()) {
       if (this.isInterruptMessage(userText)) {
-        session.requestInterrupt();
+        session.requestInterrupt({ keepMemory: true });
         Logger.warning(`[${key}] 检测到用户中断请求，已请求中止当前回合`);
       }
       const queue = this.messageQueue.get(key) ?? [];

@@ -143,18 +143,14 @@ function createTimingController(
   });
 
   const queues: InMemorySyntheticObservationQueue[] = [];
-  (controller as any).startMemorySidecarIfEnabled = (slotOptions: { turnNumber: number }) => {
+  controller['startMemorySidecarIfEnabled'] = slotOptions => {
     const queue = new InMemorySyntheticObservationQueue();
     queues.push(queue);
     options?.onQueueCreated?.(queue, slotOptions.turnNumber);
     return {
       queue,
       originTurn: slotOptions.turnNumber,
-      done: false,
-      handle: {
-        cancel: () => undefined,
-        done: new Promise<void>(() => undefined),
-      },
+      cancel: () => undefined,
     };
   };
   return { controller, queues };
@@ -304,14 +300,7 @@ describe('AgentTurnController injection timing', () => {
     const { controller } = createTimingController(aiService);
     const queue = new InMemorySyntheticObservationQueue();
     queue.push(memoryObservation('obs-dropped'));
-    const slot = {
-      queue,
-      originTurn: 3,
-      done: false,
-      handle: { cancel: () => undefined, done: Promise.resolve() },
-    };
-
-    (controller as any).expireMemoryBranch(slot, 'test_drop');
+    controller['expireMemoryBranch']({ queue, originTurn: 3 }, 'test_drop');
 
     const dropped = runtime.byType('synthetic_observation_lifecycle')
       .filter(entry => entry.event.payload.outcome === 'dropped');

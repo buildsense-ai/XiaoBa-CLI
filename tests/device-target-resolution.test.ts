@@ -171,7 +171,9 @@ test('delegated runner inherits target-specific failures without blocking anothe
 
 test('prompt and target schema separate unknown-device intent from legitimate local Skill work', () => {
   const text = buildRuntimeContextText(fixture().ctx.targetRoutes, '/test/attachments');
-  assert.match(text, /默认目标/);
+  assert.match(text, /当前未指定默认设备/);
+  assert.match(text, /准确设备名\/ID/);
+  assert.doesNotMatch(text, /直接使用本轮默认选择/);
   assert.match(text, /该设备可以不同于默认选择，但必须有自己的本轮授权/);
   assert.match(text, /不得猜测\/改写 Linux 与 Windows 路径/);
   assert.match(text, /正常 Skill、附件处理/);

@@ -83,6 +83,7 @@ describe('runtime characterization', () => {
         'glob',
         'grep',
         'import_file',
+        'local_compute_resources',
         'read_file',
         'record_decision',
         'resolve_common_directory',
