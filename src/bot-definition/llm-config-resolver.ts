@@ -80,7 +80,7 @@ function catalogRuntimeToConfig(runtime: BotCatalogModelRuntime): ResolvedBotLLM
       ...runtime,
       ...(openaiApiMode ? { openaiApiMode } : {}),
     }),
-    catsCoRelay: true,
+    catsCoRelay: isCatsRelayApiBase(runtime.apiBase),
   };
 }
 
