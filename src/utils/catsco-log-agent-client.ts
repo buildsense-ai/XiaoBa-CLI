@@ -1,5 +1,7 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Readable } from 'stream';
 
 export interface CatscoBootstrapInput {
   deviceId: string;
@@ -563,6 +565,12 @@ export class CatscoAppendConflictError extends Error {
   }
 }
 
+export class CatscoLogUploadBusyError extends Error {
+  constructor(message: string, readonly retryAfter?: string | null) {
+    super(message);
+  }
+}
+
 export class CatscoLogAgentClient {
   constructor(private readonly apiBaseUrl: string) {}
 
@@ -591,25 +599,21 @@ export class CatscoLogAgentClient {
     token: string;
     logDate: string;
   }): Promise<CatscoUploadResponse> {
-    const form = new FormData();
-    form.append('log_date', input.logDate);
-
-    const fileBuffer = fs.readFileSync(input.filePath);
-    form.append(
-      'file',
-      new Blob([fileBuffer], { type: 'application/x-ndjson' }),
-      path.basename(input.filePath),
+    const size = fs.statSync(input.filePath).size;
+    async function* readSnapshot() {
+      const file = fs.createReadStream(input.filePath);
+      try {
+        yield* file;
+      } finally {
+        // The scheduler can remove the snapshot once its file handle closes.
+        if (!file.closed) {
+          await new Promise<void>(resolve => file.once('close', resolve).destroy());
+        }
+      }
+    }
+    return this.sendLogMultipart<CatscoUploadResponse>(
+      '/catsco/logs/upload', input, readSnapshot(), size, 'CatsLog upload failed',
     );
-
-    const response = await fetch(this.buildUrl('/catsco/logs/upload'), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${input.token}`,
-      },
-      body: form,
-    });
-
-    return this.parseJsonResponse<CatscoUploadResponse>(response, 'CatsLog upload failed');
   }
 
   async appendLog(input: {
@@ -622,33 +626,74 @@ export class CatscoLogAgentClient {
     requestId: string;
     content: Buffer;
   }): Promise<CatscoAppendResponse> {
-    const form = new FormData();
-    form.append('log_date', input.logDate);
-    form.append('file', new Blob([input.content], { type: 'application/x-ndjson' }), path.basename(input.filePath));
-    const response = await fetch(this.buildUrl(input.appendUrl), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${input.token}`,
-        'X-CatsLog-Expected-Offset': String(input.expectedOffset),
-        'X-CatsLog-Expected-Revision': input.expectedRevision,
-        'X-CatsLog-Request-ID': input.requestId,
-      },
-      body: form,
-    });
-    let data: any;
-    try { data = await response.json(); } catch { throw new Error('CatsLog append failed: invalid JSON response'); }
-    if (response.status === 409 && Number.isSafeInteger(data?.accepted_offset) && typeof data?.revision === 'string') {
-      throw new CatscoAppendConflictError(data.accepted_offset, data.revision);
-    }
-    if (!response.ok) {
-      const error = new Error(`CatsLog append failed: HTTP ${response.status}`);
-      (error as any).status = response.status;
+    let data: CatscoAppendResponse;
+    try {
+      data = await this.sendLogMultipart<CatscoAppendResponse>(
+        input.appendUrl, input, [input.content], input.content.length, 'CatsLog append failed', {
+          'X-CatsLog-Expected-Offset': String(input.expectedOffset),
+          'X-CatsLog-Expected-Revision': input.expectedRevision,
+          'X-CatsLog-Request-ID': input.requestId,
+        },
+      );
+    } catch (error: any) {
+      const conflict = error?.payload;
+      if (error?.status === 409 && Number.isSafeInteger(conflict?.accepted_offset) && typeof conflict?.revision === 'string') {
+        throw new CatscoAppendConflictError(conflict.accepted_offset, conflict.revision);
+      }
       throw error;
     }
     if (!Number.isSafeInteger(data?.accepted_offset) || typeof data?.revision !== 'string') {
       throw new Error('CatsLog append failed: invalid response');
     }
-    return data as CatscoAppendResponse;
+    return data;
+  }
+
+  private async sendLogMultipart<T extends object>(
+    route: string,
+    input: { filePath: string; token: string; logDate: string },
+    content: AsyncIterable<Buffer> | Iterable<Buffer>,
+    size: number,
+    fallbackMessage: string,
+    headers: Record<string, string> = {},
+  ): Promise<T> {
+    const boundary = `----CatsLog${crypto.randomBytes(16).toString('hex')}`;
+    // Escape header parameters the same way FormData does.
+    const filename = path.basename(input.filePath).replace(/[\r\n"]/g, char => encodeURIComponent(char));
+    const head = Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="log_date"\r\n\r\n${input.logDate}\r\n` +
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+      'Content-Type: application/x-ndjson\r\n\r\n',
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+    async function* multipartBody() {
+      yield head;
+      yield* content;
+      yield tail;
+    }
+    const body = Readable.from(multipartBody());
+    const request: RequestInit & { duplex: 'half' } = {
+      method: 'POST',
+      headers: {
+        ...headers,
+        Authorization: `Bearer ${input.token}`,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': String(head.length + size + tail.length),
+      },
+      body: body as unknown as RequestInit['body'],
+      duplex: 'half',
+    };
+    try {
+      const response = await fetch(this.buildUrl(route), request);
+      const result = await this.parseJsonResponse<T>(response, fallbackMessage);
+      if ('status' in result && result.status === 'upload_busy') {
+        throw new CatscoLogUploadBusyError(`${fallbackMessage}: upload_busy`, response.headers.get('retry-after'));
+      }
+      return result;
+    } finally {
+      if (!body.closed) {
+        await new Promise<void>(resolve => body.once('close', resolve).destroy());
+      }
+    }
   }
 
   /**
@@ -1140,6 +1185,7 @@ export class CatscoLogAgentClient {
       const error = new Error(detail ? `${fallbackMessage}: ${detail}` : `${fallbackMessage}: HTTP ${response.status}`);
       (error as any).status = response.status;
       (error as any).payload = data;
+      (error as any).retryAfter = response.headers.get('retry-after');
       throw error;
     }
 

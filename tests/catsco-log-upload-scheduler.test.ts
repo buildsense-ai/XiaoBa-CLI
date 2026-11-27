@@ -80,6 +80,10 @@ describe('CatscoLogUploadScheduler', () => {
 
         if (req.url === '/catsco/logs/upload') {
           assert.equal(req.headers.authorization, 'Bearer log-upload-token');
+          assert.match(String(req.headers['content-type']), /^multipart\/form-data; boundary=/);
+          assert.equal(Number(req.headers['content-length']), Buffer.byteLength(body, 'latin1'));
+          assert.ok(body.includes('name="log_date"\r\n\r\n2026-05-14\r\n'));
+          assert.match(body, /name="file"; filename="(?:chat_cli|weixin_user_demo)\.jsonl"\r\nContent-Type: application\/x-ndjson/);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             upload_id: `upload-${requests.filter(item => item.url === '/catsco/logs/upload').length}`,
@@ -565,6 +569,99 @@ describe('CatscoLogUploadScheduler', () => {
     await scheduler.runPendingUploadCycle('manual');
     assert.equal(appendRequests.length, appendRequestCount);
   });
+
+  test('preserves an early HTTP 429 and closes the streaming snapshot', async () => {
+    const logPath = path.join(testRoot, 'early-response.jsonl');
+    fs.closeSync(fs.openSync(logPath, 'w'));
+    fs.truncateSync(logPath, 16 * 1024 * 1024);
+    server = http.createServer((req, res) => {
+      req.once('data', () => res.writeHead(429, { 'Retry-After': '7200' }).end('upload unavailable'));
+    });
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const client = new CatscoLogAgentClient(`http://127.0.0.1:${address.port}`);
+    await assert.rejects(
+      client.uploadLog({ filePath: logPath, token: 'synthetic-upload-token', logDate: '2026-05-14' }),
+      { status: 429, retryAfter: '7200' },
+    );
+    fs.unlinkSync(logPath);
+  });
+
+  test('keeps an oversized v2 fallback local and preserves its accepted checkpoint', async t => {
+    const statePath = configureV1Upload();
+    process.env.CATSCO_LOG_MAX_FILE_BYTES = '128';
+    const logPath = 'logs/sessions/chat/2026-05-14/rewritten.jsonl';
+    const content = '{"message":"rewritten"}\n'.repeat(12);
+    writeLog(logPath, content, true);
+    const uploaded = {
+      [logPath]: { append: { acceptedOffset: 16, revision: 'revision-1', prefixSha256: 'mismatched-prefix' } },
+    };
+    fs.writeFileSync(statePath, JSON.stringify({
+      token: 'synthetic-upload-token', uploadProtocol: 2, appendUrl: '/catsco/logs/append', uploaded,
+    }));
+    const upload = t.mock.method(CatscoLogAgentClient.prototype, 'uploadLog', async () => ({ status: 'created' }));
+    const append = t.mock.method(CatscoLogAgentClient.prototype, 'appendLog', async () => ({}));
+    const scheduler = new CatscoLogUploadScheduler(testRoot);
+    await scheduler.runPendingUploadCycle('manual');
+    await scheduler.runPendingUploadCycle('manual');
+    assert.equal(upload.mock.callCount(), 0);
+    assert.equal(append.mock.callCount(), 0);
+    assert.deepEqual(JSON.parse(fs.readFileSync(statePath, 'utf8')).uploaded, uploaded);
+    assert.equal(fs.readFileSync(path.join(testRoot, logPath), 'utf8'), content);
+  });
+
+  for (const failure of ['400', '429', 'upload_busy'] as const) {
+    test(`defers ${failure} and lets a later log use the next cycle`, async t => {
+      configureV1Upload();
+      process.env.CATSCO_LOG_MAX_FILES_PER_CYCLE = '1';
+      const blocked = 'logs/sessions/chat/2026-05-14/blocked.jsonl';
+      const other = 'logs/sessions/chat/2026-05-14/other.jsonl';
+      writeLog(other, '{"ok":true}\n', true);
+      const older = new Date(Date.now() - 20 * 60 * 1000);
+      fs.utimesSync(path.join(testRoot, other), older, older);
+      writeLog(blocked, '{"blocked":true}\n', true);
+      const uploads: string[] = [];
+      server = http.createServer(async (req, res) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const body = Buffer.concat(chunks).toString('utf8');
+        const isBlocked = body.includes('filename="blocked.jsonl"');
+        uploads.push(isBlocked ? 'blocked' : 'other');
+        if (!isBlocked) {
+          res.writeHead(200).end('{"status":"created"}');
+        } else if (failure === 'upload_busy') {
+          res.writeHead(200).end('{"status":"upload_busy"}');
+        } else {
+          res.writeHead(Number(failure), { 'Retry-After': '7200' }).end('upload unavailable');
+        }
+      });
+      await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      assert.ok(address && typeof address === 'object');
+      process.env.CATSCO_LOG_API_BASE_URL = `http://127.0.0.1:${address.port}`;
+      const scheduler = new CatscoLogUploadScheduler(testRoot);
+      await scheduler.runPendingUploadCycle('manual');
+      await scheduler.runPendingUploadCycle('manual');
+      assert.deepEqual(uploads, ['blocked', 'other']);
+      if (failure === '400') {
+        // A corrected record should be eligible again immediately.
+        writeLog(blocked, '{"blocked":"changed"}\n', true);
+        await scheduler.runPendingUploadCycle('manual');
+        assert.deepEqual(uploads, ['blocked', 'other', 'blocked']);
+      }
+      if (failure === '429') {
+        const initialTime = Date.now();
+        let elapsedMinutes = 90;
+        t.mock.method(Date, 'now', () => initialTime + elapsedMinutes * 60 * 1000);
+        await scheduler.runPendingUploadCycle('manual');
+        assert.deepEqual(uploads, ['blocked', 'other']);
+        elapsedMinutes = 121;
+        await scheduler.runPendingUploadCycle('manual');
+        assert.deepEqual(uploads, ['blocked', 'other', 'blocked']);
+      }
+    });
+  }
 
   test('reads only the bootstrapped device principal\'s Skills without a UID selector', async () => {
     const requests: Array<{ url?: string; auth?: string }> = [];

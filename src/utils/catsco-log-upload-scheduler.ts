@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { glob } from 'glob';
 import { APP_VERSION } from '../version';
-import { CatscoAppendConflictError, CatscoLogAgentClient, isSafeCatsLogPath, type CatscoSkillsResponse as CatscoSkillReadResponse } from './catsco-log-agent-client';
+import { CatscoAppendConflictError, CatscoLogAgentClient, CatscoLogUploadBusyError, isSafeCatsLogPath, type CatscoSkillsResponse as CatscoSkillReadResponse } from './catsco-log-agent-client';
 import { getCatscoLogAgentConfig } from './catsco-log-agent-config';
 import {
   cleanCapabilityText as cleanResponseText,
@@ -29,7 +29,19 @@ type UploadReason = 'startup' | 'scheduled' | 'manual';
 const ALLOWED_SESSION_TYPES = new Set(['chat', 'cli', 'catscompany', 'feishu', 'weixin']);
 const SESSION_LOG_PATH_RE = /^sessions\/([^/]+)\/(\d{4}-\d{2}-\d{2})\/([^/]+\.jsonl)$/;
 const MAX_APPEND_CHUNK_BYTES = 4 * 1024 * 1024;
+const MAX_APPEND_RECORD_BYTES = 25 * 1024 * 1024;
 const APPEND_NEWLINE_SCAN_BYTES = 64 * 1024;
+const UPLOAD_BACKOFF_MS = 60 * 60 * 1000;
+
+class CatscoLogSizeLimitError extends Error {}
+
+interface PendingLog {
+  absolutePath: string;
+  stateKey: string;
+  logDate: string;
+  size: number;
+  mtimeMs: number;
+}
 
 interface UploadSession {
   token: string;
@@ -116,6 +128,7 @@ function applyWriteCapabilityResponse(
 
 export class CatscoLogUploadScheduler {
   private readonly workingDirectory: string;
+  private readonly uploadRetries = new Map<string, { retryAt: number; version?: string }>();
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private started = false;
@@ -206,29 +219,29 @@ export class CatscoLogUploadScheduler {
         pending.slice(0, config.maxFilesPerCycle),
         config.maxConcurrentUploads,
         async item => {
-        if (tokenRejected) return;
-        try {
-          const appendUrl = uploadSession.appendUrl;
-          if (appendUrl) {
-            const appended = await this.appendV2(item, state, client, { ...uploadSession, appendUrl }, config.stateFilePath);
+          if (tokenRejected) return;
+          try {
+            const appendUrl = uploadSession.appendUrl;
+            const appended = appendUrl && await this.appendV2(
+              item, state, client, { ...uploadSession, appendUrl }, config.stateFilePath,
+            );
             if (!appended) {
-              await this.uploadV1(item, state, client, uploadSession.token);
+              await this.uploadV1(item, state, client, uploadSession.token, config.maxFileBytes);
             }
-          } else {
-            await this.uploadV1(item, state, client, uploadSession.token);
+            this.uploadRetries.delete(item.stateKey);
+            uploadedCount++;
+          } catch (error: any) {
+            if (Number(error?.status) === 401) {
+              tokenRejected = true;
+              clearCatscoLogToken(state);
+              saveCatscoLogAgentState(config.stateFilePath, state);
+              Logger.warning('[CatsLog] upload token rejected; token cleared and will be refreshed next cycle');
+              return;
+            }
+            this.deferUpload(item, error);
+            Logger.warning(`[CatsLog] failed to upload ${item.stateKey}: ${error.message}`);
           }
-          uploadedCount++;
-        } catch (error: any) {
-          if (Number(error?.status) === 401) {
-            tokenRejected = true;
-            clearCatscoLogToken(state);
-            saveCatscoLogAgentState(config.stateFilePath, state);
-            Logger.warning('[CatsLog] upload token rejected; token cleared and will be refreshed next cycle');
-            return;
-          }
-          Logger.warning(`[CatsLog] failed to upload ${item.stateKey}: ${error.message}`);
-        }
-      },
+        },
       );
 
       saveCatscoLogAgentState(config.stateFilePath, state);
@@ -382,26 +395,34 @@ export class CatscoLogUploadScheduler {
   }
 
   private async uploadV1(
-    item: { absolutePath: string; stateKey: string; logDate: string },
+    item: PendingLog,
     state: CatscoLogAgentState,
     client: CatscoLogAgentClient,
     token: string,
+    maxBytes: number,
   ): Promise<void> {
     // The client reads filePath itself, so freeze the bytes before handing it
     // over. Keep the basename because v1 uses it as the multipart filename.
     const sourceStats = fs.statSync(item.absolutePath);
+    if (sourceStats.size > maxBytes) {
+      throw new CatscoLogSizeLimitError(`CatsLog v1 upload exceeds the ${maxBytes}-byte snapshot limit; log retained locally`);
+    }
     const snapshotDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'catslog-upload-'));
     const snapshotPath = path.join(snapshotDirectory, path.basename(item.absolutePath));
     try {
       fs.copyFileSync(item.absolutePath, snapshotPath);
       const size = fs.statSync(snapshotPath).size;
+      if (size > maxBytes) {
+        throw new CatscoLogSizeLimitError(`CatsLog v1 snapshot grew beyond ${maxBytes} bytes; log retained locally`);
+      }
       const snapshotSha256 = sha256FilePrefix(snapshotPath, size);
       const result = await client.uploadLog({
         filePath: snapshotPath,
         token,
         logDate: item.logDate,
       });
-      if (result.status && !['created', 'appended', 'duplicate'].includes(result.status.toLowerCase())) {
+      const status = result.status?.toLowerCase();
+      if (status && !['created', 'appended', 'duplicate'].includes(status)) {
         throw new Error(`CatsLog v1 fallback was not accepted (${String(result.status || 'unknown')})`);
       }
       if (result.sha256 && result.sha256.toLowerCase() !== snapshotSha256) {
@@ -421,7 +442,7 @@ export class CatscoLogUploadScheduler {
   }
 
   private async appendV2(
-    item: { absolutePath: string; stateKey: string; logDate: string },
+    item: PendingLog,
     state: CatscoLogAgentState,
     client: CatscoLogAgentClient,
     uploadSession: Required<UploadSession>,
@@ -439,7 +460,7 @@ export class CatscoLogUploadScheduler {
       if (expectedOffset > 0 && !matchesKnownPrefix(prefixHash.copy().digest('hex'), expectedOffset, record)) {
         return false;
       }
-      const chunk = readCompleteJSONLChunk(item.absolutePath, expectedOffset, MAX_APPEND_CHUNK_BYTES);
+      const chunk = readCompleteJSONLChunk(item.absolutePath, expectedOffset);
       if (!chunk) {
         if (expectedOffset !== stats.size) {
           throw new Error('CatsLog v2 append requires complete newline-terminated JSONL records');
@@ -512,6 +533,9 @@ export class CatscoLogUploadScheduler {
         state.uploaded[item.stateKey] = record;
         saveCatscoLogAgentState(stateFilePath, state);
       } catch (error) {
+        if (error instanceof CatscoAppendConflictError && error.acceptedOffset === expectedOffset && error.revision === pending.expectedRevision) {
+          throw new CatscoLogUploadBusyError('CatsLog append conflict did not advance the checkpoint');
+        }
         if (error instanceof CatscoAppendConflictError && this.adoptAppendConflict(item.absolutePath, record, error)) {
           record = state.uploaded[item.stateKey] = {
             ...record,
@@ -549,11 +573,25 @@ export class CatscoLogUploadScheduler {
     return Boolean(expectedHash && sha256FilePrefix(filePath, conflict.acceptedOffset) === expectedHash);
   }
 
-  private async collectPendingSessionLogs(state: CatscoLogAgentState): Promise<Array<{
-    absolutePath: string;
-    stateKey: string;
-    logDate: string;
-  }>> {
+  private deferUpload(item: PendingLog, error: any): void {
+    const status = Number(error?.status);
+    const tooLarge = error instanceof CatscoLogSizeLimitError;
+    const busy = error instanceof CatscoLogUploadBusyError
+      || [error?.payload?.status, error?.payload?.detail, error?.payload?.error].includes('upload_busy');
+    if (!tooLarge && !busy && status !== 400 && status !== 429) return;
+
+    const now = Date.now();
+    const retryAfter = error?.retryAfter;
+    const serverRetryAt = typeof retryAfter === 'string' && /^\d+$/.test(retryAfter.trim())
+      ? now + Number(retryAfter) * 1000
+      : typeof retryAfter === 'string' ? Date.parse(retryAfter) : NaN;
+    this.uploadRetries.set(item.stateKey, {
+      retryAt: tooLarge ? Infinity : Math.max(now + UPLOAD_BACKOFF_MS, Number.isFinite(serverRetryAt) ? serverRetryAt : 0),
+      version: tooLarge || (status === 400 && !busy) ? `${item.size}:${item.mtimeMs}` : undefined,
+    });
+  }
+
+  private async collectPendingSessionLogs(state: CatscoLogAgentState): Promise<PendingLog[]> {
     const config = getCatscoLogAgentConfig(this.workingDirectory);
     const stableBefore = Date.now() - config.stableMinutes * 60 * 1000;
     const candidates = await glob(['sessions/*/*/*.jsonl'], {
@@ -568,17 +606,19 @@ export class CatscoLogUploadScheduler {
       ],
     });
 
-    return candidates
+    const logs = candidates
       .map(relativePath => relativePath.replace(/\\/g, '/'))
       .filter(relativePath => this.isAllowedSessionLogPath(relativePath))
       .map(relativePath => this.toPendingCandidate(relativePath))
-      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
-      .filter(candidate => this.isStableAndPending(candidate, stableBefore, state))
-      .sort((a, b) => {
-        const aStats = fs.statSync(a.absolutePath);
-        const bStats = fs.statSync(b.absolutePath);
-        return bStats.mtimeMs - aStats.mtimeMs;
-      });
+      .filter((candidate): candidate is PendingLog => Boolean(candidate));
+    if (this.uploadRetries.size > 0) {
+      const keys = new Set(logs.map(log => log.stateKey));
+      for (const key of this.uploadRetries.keys()) {
+        if (!keys.has(key)) this.uploadRetries.delete(key);
+      }
+    }
+    return logs.filter(candidate => this.isStableAndPending(candidate, stableBefore, state, config.maxFileBytes))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
   }
 
   private isAllowedSessionLogPath(relativePath: string): boolean {
@@ -594,11 +634,7 @@ export class CatscoLogUploadScheduler {
       && filename.toLowerCase().endsWith('.jsonl');
   }
 
-  private toPendingCandidate(relativePath: string): {
-    absolutePath: string;
-    stateKey: string;
-    logDate: string;
-  } | null {
+  private toPendingCandidate(relativePath: string): PendingLog | null {
     const config = getCatscoLogAgentConfig(this.workingDirectory);
     const match = relativePath.match(SESSION_LOG_PATH_RE);
     if (!match) return null;
@@ -609,33 +645,36 @@ export class CatscoLogUploadScheduler {
       return null;
     }
 
+    const stats = fs.lstatSync(absolutePath, { throwIfNoEntry: false });
+    if (!stats?.isFile()) return null;
     return {
       absolutePath,
       stateKey: path.join('logs', relativePath).replace(/\\/g, '/'),
       logDate: match[2],
+      size: stats.size,
+      mtimeMs: stats.mtimeMs,
     };
   }
 
   private isStableAndPending(
-    candidate: { absolutePath: string; stateKey: string },
+    candidate: PendingLog,
     stableBefore: number,
     state: CatscoLogAgentState,
+    maxFileBytes: number,
   ): boolean {
-    if (!fs.existsSync(candidate.absolutePath)) {
-      return false;
-    }
-    const lstat = fs.lstatSync(candidate.absolutePath);
-    if (lstat.isSymbolicLink() || !lstat.isFile()) {
-      return false;
-    }
-    const config = getCatscoLogAgentConfig(this.workingDirectory);
-    const stats = lstat;
+    const stats = candidate;
     const appendProtocol = state.uploadProtocol === 2 && isSafeServerPath(state.appendUrl);
-    if (stats.size <= 0 || (!appendProtocol && stats.size > config.maxFileBytes)) {
+    if (stats.size <= 0 || (!appendProtocol && stats.size > maxFileBytes)) {
       return false;
     }
     if (stats.mtimeMs > stableBefore) {
       return false;
+    }
+    const retry = this.uploadRetries.get(candidate.stateKey);
+    if (retry) {
+      const sameVersion = !retry.version || retry.version === `${stats.size}:${stats.mtimeMs}`;
+      if (sameVersion && retry.retryAt > Date.now()) return false;
+      this.uploadRetries.delete(candidate.stateKey);
     }
 
     const uploaded = state.uploaded[candidate.stateKey];
@@ -659,12 +698,12 @@ export class CatscoLogUploadScheduler {
   }
 }
 
-function readCompleteJSONLChunk(filePath: string, offset: number, maxBytes: number): Buffer | null {
+function readCompleteJSONLChunk(filePath: string, offset: number): Buffer | null {
   const stats = fs.statSync(filePath);
   if (offset >= stats.size) return null;
   const descriptor = fs.openSync(filePath, 'r');
   try {
-    const initialLength = Math.min(maxBytes, stats.size - offset);
+    const initialLength = Math.min(MAX_APPEND_CHUNK_BYTES, stats.size - offset);
     const initialBuffer = Buffer.allocUnsafe(initialLength);
     const initialBytesRead = fs.readSync(descriptor, initialBuffer, 0, initialLength, offset);
     if (initialBytesRead <= 0) return null;
@@ -672,7 +711,7 @@ function readCompleteJSONLChunk(filePath: string, offset: number, maxBytes: numb
     const initialContent = initialBuffer.subarray(0, initialBytesRead);
     const lastInitialNewline = initialContent.lastIndexOf(0x0a);
     if (lastInitialNewline >= 0) {
-      return Buffer.from(initialContent.subarray(0, lastInitialNewline + 1));
+      return initialContent.subarray(0, lastInitialNewline + 1);
     }
 
     // Every accepted offset is a JSONL record boundary. With no newline in the
@@ -681,8 +720,9 @@ function readCompleteJSONLChunk(filePath: string, offset: number, maxBytes: numb
     // records keep the 4 MiB cap while oversized records remain atomic.
     const parts = [initialContent];
     let nextOffset = offset + initialBytesRead;
-    while (nextOffset < stats.size) {
-      const scanLength = Math.min(APPEND_NEWLINE_SCAN_BYTES, stats.size - nextOffset);
+    const scanEnd = Math.min(stats.size, offset + MAX_APPEND_RECORD_BYTES);
+    while (nextOffset < scanEnd) {
+      const scanLength = Math.min(APPEND_NEWLINE_SCAN_BYTES, scanEnd - nextOffset);
       const scanBuffer = Buffer.allocUnsafe(scanLength);
       const bytesRead = fs.readSync(descriptor, scanBuffer, 0, scanLength, nextOffset);
       if (bytesRead <= 0) return null;
@@ -698,6 +738,9 @@ function readCompleteJSONLChunk(filePath: string, offset: number, maxBytes: numb
       nextOffset += bytesRead;
     }
 
+    if (nextOffset < stats.size) {
+      throw new CatscoLogSizeLimitError(`CatsLog JSONL record exceeds the ${MAX_APPEND_RECORD_BYTES}-byte append limit; log retained locally`);
+    }
     return null;
   } finally {
     fs.closeSync(descriptor);
