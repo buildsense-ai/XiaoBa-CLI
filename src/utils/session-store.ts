@@ -232,6 +232,13 @@ export interface InterruptedTurnDeviceContext {
   catscoIdentity?: Record<string, unknown>;
   /** `xiaoba_runtime` only: the target routes for the user's computers. */
   xiaobaRuntime?: Record<string, unknown>;
+  /** The destination used before interruption. Multiple destinations require a new user turn. */
+  remoteTarget?: InterruptedTurnRemoteTarget | 'multiple';
+}
+
+export interface InterruptedTurnRemoteTarget {
+  ownerUserId: string;
+  deviceId: string;
 }
 
 /** Primitive-only copy of ExecutionScope; kept structural to avoid a type cycle. */

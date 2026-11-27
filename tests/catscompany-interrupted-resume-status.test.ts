@@ -4,6 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
+import type { ExecutionScope } from '../src/types/session-identity';
+import type { ToolExecutionContext } from '../src/types/tool';
 
 /**
  * Task-status coordination of the interrupted-turn resume.
@@ -29,6 +31,10 @@ after(() => {
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 });
 
+const { collectInterruptedTurns, markInterruptedTurn, sanitizeDeviceContext } = require('../src/core/interrupted-turn-recovery');
+const { getDeviceAuthorizationSessionKey } = require('../src/core/device-grants');
+const { executeRouteIfRemote, resolveExecutionRoute } = require('../src/tools/execution-router');
+
 let serial = 7000;
 
 type Observation = { text?: string; visibleToUser?: boolean; taskOutcome?: string };
@@ -48,13 +54,13 @@ function fixture(t: TestContext) {
   const statuses: Array<{ run_id: string; state: string; summary?: string; error?: string }> = [];
   const replies: string[] = [];
   const events: string[] = [];
-  let observation: () => Promise<Observation> = async () => ({ text: '', visibleToUser: false });
+  let observation: (context: ToolExecutionContext) => Promise<Observation> = async () => ({ text: '', visibleToUser: false });
   const session = {
     isBusy: () => false,
     requestInterrupt: () => { events.push('interrupt'); },
-    handleRuntimeObservation: async () => {
+    handleRuntimeObservation: async (_notice: string, context: ToolExecutionContext) => {
       events.push('observation');
-      return observation();
+      return observation(context);
     },
   };
   const bot = Object.create(CatsCompanyBot.prototype) as any;
@@ -96,9 +102,92 @@ function fixture(t: TestContext) {
     events,
     mark: () => store.saveRuntimeState(key, { interruptedTurn: marker }),
     resume: () => bot.resumeOneInterruptedTurn(marker),
-    setObservation: (next: () => Promise<Observation>) => { observation = next; },
+    setObservation: (next: (context: ToolExecutionContext) => Promise<Observation>) => { observation = next; },
   };
 }
+
+test('automatic resume restores the original device from the v1 authorization envelope', async t => {
+  const h = fixture(t);
+  const scope: ExecutionScope = {
+    source: 'catscompany', sessionKey: h.key, topicId: h.topic, topicType: 'group',
+    actorUserId: 'usr38', agentId: 'usr9', agentBodyId: 'bot-body',
+    identityTrust: 'server_canonical', isTrusted: true,
+  };
+  const sessionKey = getDeviceAuthorizationSessionKey(scope);
+  const devices = ['pc-original', 'pc-default'];
+  const grants = devices.map(deviceId => ({
+    kind: 'user_device_grant', source: scope.source, sessionKey, topicId: scope.topicId, topicType: scope.topicType,
+    actorUserId: scope.actorUserId, ownerUserId: scope.actorUserId, agentId: scope.agentId, agentBodyId: scope.agentBodyId,
+    targetScope: 'explicit_device', selectionRevision: 'rev-1', status: 'active', identityTrust: 'server_canonical',
+    grantId: `grant-${deviceId}`, deviceId, deviceBodyId: `body-${deviceId}`, deviceInstallationId: `install-${deviceId}`,
+    operations: ['read_file', 'write_file', 'execute_shell'], createdAt: Date.now() - 1000, expiresAt: Date.now() + 3600_000,
+    actor_token: 'fixture-secret-value',
+  }));
+  const context = sanitizeDeviceContext({
+    catsco_identity: {
+      permissions: { source: 'server_canonical_message' },
+      device_selection: {
+        kind: 'user_device_selection', source: scope.source, sessionKey, topicId: scope.topicId, topicType: scope.topicType,
+        actorUserId: scope.actorUserId, agentId: scope.agentId, status: 'selected', revision: 'rev-1', selectedDeviceId: 'pc-default',
+        candidates: devices.map(deviceId => ({
+          deviceId, displayName: deviceId, ownerUserId: scope.actorUserId,
+          active: true, routeConnected: true, routable: true,
+        })),
+      },
+      device_target_authorizations: { schema: 'catsco.device-targets.v1', grants, authorization: 'fixture-secret-value' },
+    },
+  }, scope);
+  assert.ok(context);
+  const candidates = () => collectInterruptedTurns({
+    stateDir: path.join(root, 'data', 'session-state'), maxAgeMs: 60_000, maxAttempts: 2,
+  });
+  assert.equal(markInterruptedTurn(h.key, { topic: h.topic, reason: 'shutdown', deviceContext: context }), true);
+  const unpinned = candidates().find((candidate: any) => candidate.sessionKey === h.key).deviceContext;
+  assert.equal(h.bot.rebuildDeviceContext(h.key, h.topic, unpinned).targetRoutes, undefined, 'an old multi-device marker is ambiguous');
+
+  context.remoteTarget = { ownerUserId: scope.actorUserId, deviceId: 'pc-original' };
+  assert.equal(markInterruptedTurn(h.key, { topic: h.topic, reason: 'shutdown', deviceContext: context }), true);
+  assert.doesNotMatch(JSON.stringify(h.store.loadRuntimeState(h.key)), /fixture-secret-value|actor_token/);
+  const candidate = candidates().find((candidate: any) => candidate.sessionKey === h.key);
+  assert.equal(h.bot.rebuildDeviceContext('other-session', h.topic, candidate.deviceContext).targetRoutes, undefined);
+  delete h.bot.buildDeviceRpcTransport;
+  delete h.bot.maybeBuildThinToolRpcTransport;
+  const requests: Array<{ tool_name: string; grant_id: string; target_device_id: string }> = [];
+  let platformError: string | undefined;
+  h.bot.bot.supportsThinToolRpc = true;
+  h.bot.bot.sendThinToolRpcRequest = async (request: typeof requests[number]) => {
+    requests.push(request);
+    return platformError ? { error: { code: platformError } } : { result: { ok: true, content: 'read result' } };
+  };
+  h.setObservation(async options => {
+    const tools = { ...options, surface: 'catscompany' as const };
+    assert.deepEqual(tools.targetRoutes?.routes.map(route => route.deviceId), ['pc-original']);
+    assert.equal(resolveExecutionRoute(tools, { toolName: 'read_file', operation: 'read_file', target: 'pc-default' }).ok, false);
+    assert.equal(resolveExecutionRoute(tools, { toolName: 'read_file', operation: 'read_file', target: 'speaker_default' }).ok, false);
+    assert.equal(resolveExecutionRoute(tools, { toolName: 'write_file', operation: 'write_file' }).ok, false);
+    const write = resolveExecutionRoute(tools, { toolName: 'write_file', operation: 'write_file', target: 'pc-original' });
+    assert.equal(write.ok, true);
+    assert.equal((await executeRouteIfRemote(tools, write, 'write_file', 'write_file', {}))?.ok, false, 'remote write is blocked at dispatch');
+    const shell = resolveExecutionRoute(tools, { toolName: 'execute_shell', operation: 'execute_shell', target: 'pc-original' });
+    assert.equal(shell.ok, true);
+    assert.equal((await executeRouteIfRemote(tools, shell, 'execute_shell', 'execute_shell', {}))?.ok, false, 'remote shell is blocked at dispatch');
+    assert.equal(requests.length, 0, 'writes and commands must never reach the platform');
+    const read = resolveExecutionRoute(tools, { toolName: 'read_file', operation: 'read_file', target: 'pc-original' });
+    assert.equal(read.ok, true);
+    assert.equal((await executeRouteIfRemote(tools, read, 'read_file', 'read_file', {}))?.ok, true, 'read reaches the original device');
+    for (const error of ['device_authorization_required', 'target_device_unavailable']) {
+      platformError = error;
+      assert.equal((await executeRouteIfRemote(tools, read, 'read_file', 'read_file', {}))?.ok, false);
+    }
+    assert.deepEqual(requests.map(request => [request.tool_name, request.target_device_id, request.grant_id]),
+      Array.from({ length: 3 }, () => ['read_file', 'pc-original', 'grant-pc-original']));
+    return { taskOutcome: 'completed' };
+  });
+  await h.bot.resumeOneInterruptedTurn(candidate);
+  await until(() => h.statuses.length >= 2, 'resume task statuses');
+  assert.equal(h.statuses.at(-1)?.state, 'completed');
+  assert.equal(requests.length, 3);
+});
 
 /** Waits for the serialized task-status queue to reach a state, never a fixed sleep. */
 async function until(check: () => boolean, label: string): Promise<void> {

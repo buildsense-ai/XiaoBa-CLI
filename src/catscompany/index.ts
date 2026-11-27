@@ -20,7 +20,7 @@ import { defaultBotCallWindow, isSelfAuthoredBotCallPrompt } from '../mcp/bot-ca
 import { createCatsCoAttachmentGrant, createCatsCoLocalDeviceGrant } from './local-file-grants';
 import { extractCatsCoDeviceGrants } from './device-grants';
 import { extractCatsCoDeviceSelection } from './device-selection';
-import { extractCatsCoRuntimeContext } from './runtime-context';
+import { buildTargetRoutes, extractCatsCoRuntimeContext } from './runtime-context';
 import { extractCatsCoSkillConnectorGrants, mergeSkillConnectorGrants } from './skill-connector-grants';
 import { MessageSessionManager } from '../core/message-session-manager';
 import {
@@ -34,6 +34,7 @@ import {
   stopResumingInterruptedTurn,
   type InterruptedTurnCandidate,
   type InterruptedTurnDeviceContext,
+  type InterruptedTurnRemoteTarget,
 } from '../core/interrupted-turn-recovery';
 import {
   AgentServices,
@@ -73,6 +74,7 @@ import { inferCatsUploadType } from './upload';
 import { RpcToolTelemetrySpan, toolResultContentChars } from './rpc-tool-telemetry';
 import {
   isRemoteDeviceRpcTool,
+  isRemoteReadonlyTool,
   normalizeDeviceRpcToolResultForTransport,
   normalizeDeviceRpcToolResultPayload,
   remoteRpcOutcomeError,
@@ -226,6 +228,22 @@ interface ActiveConversationTask {
    * gone by the time shutdown runs.
    */
   deviceContext?: InterruptedTurnDeviceContext;
+}
+
+type DeviceCallGuard = (target: InterruptedTurnRemoteTarget, toolName: string, grant?: ScopedDeviceGrant) =>
+  Extract<ToolExecutionResult, { ok: false }> | undefined;
+
+function captureInterruptedDeviceTarget(task: ActiveConversationTask | undefined): DeviceCallGuard | undefined {
+  if (!task) return undefined;
+  return target => {
+    const context = task.deviceContext ??= {};
+    const previous = context.remoteTarget;
+    if (!previous) context.remoteTarget = target;
+    else if (previous !== 'multiple' && (previous.ownerUserId !== target.ownerUserId || previous.deviceId !== target.deviceId)) {
+      context.remoteTarget = 'multiple';
+    }
+    return undefined;
+  };
 }
 
 interface SubAgentEventRoute {
@@ -1110,8 +1128,9 @@ export class CatsCompanyBot {
     this.deviceRegistrationTimer = undefined;
   }
 
-  private buildDeviceRpcTransport(): DeviceRpcTransport {
+  private buildDeviceRpcTransport(guard?: DeviceCallGuard, remoteOnly = false): DeviceRpcTransport {
     return {
+      remoteOnly,
       executeTool: async ({
         toolName,
         operation,
@@ -1140,6 +1159,8 @@ export class CatsCompanyBot {
         const topicType = grant?.topicType || 'unknown';
         const actorUserId = grant?.actorUserId || '';
         const ownerUserId = grant?.ownerUserId || actorUserId;
+        const blocked = guard?.({ ownerUserId, deviceId }, toolName, grant);
+        if (blocked) return blocked;
         const response = await this.bot.sendDeviceRpcRequest({
           request_id: `device_rpc_${randomUUID()}`,
           grant_id: grant?.grantId || `lightweight_${randomUUID()}`,
@@ -1177,7 +1198,7 @@ export class CatsCompanyBot {
     };
   }
 
-  private buildThinToolRpcTransport(): ThinToolRpcTransport {
+  private buildThinToolRpcTransport(guard?: DeviceCallGuard): ThinToolRpcTransport {
     const client = this.bot;
     return {
       // Re-read capabilities after reconnect/downgrade, not just at turn start.
@@ -1206,6 +1227,8 @@ export class CatsCompanyBot {
             retryable: false,
           };
         }
+        const blocked = guard?.({ ownerUserId: targetOwnerUserId, deviceId: targetDeviceId }, toolName, grant);
+        if (blocked) return blocked;
         const requestID = `thin_tool_rpc_${randomUUID()}`;
         Logger.info(`[CatsCompany][thin_tool_rpc] executeTool request: request=${requestID}, tool=${toolName}, targetOwner=${targetOwnerUserId}, targetDevice=${targetDeviceId}, args=${summarizeThinToolRpcArgs(args)}`);
         const response = await this.bot.sendThinToolRpcRequest({
@@ -1237,8 +1260,8 @@ export class CatsCompanyBot {
     };
   }
 
-  private maybeBuildThinToolRpcTransport(): ThinToolRpcTransport | undefined {
-    return this.bot?.supportsThinToolRpc ? this.buildThinToolRpcTransport() : undefined;
+  private maybeBuildThinToolRpcTransport(guard?: DeviceCallGuard): ThinToolRpcTransport | undefined {
+    return this.bot?.supportsThinToolRpc ? this.buildThinToolRpcTransport(guard) : undefined;
   }
 
   private async handleThinToolRpcRequest(request: CatsThinToolRpcMessage): Promise<void> {
@@ -2580,6 +2603,7 @@ export class CatsCompanyBot {
           // destroy() even when a pre-turn await resumed afterwards.
           return;
         }
+        const captureTarget = captureInterruptedDeviceTarget(task);
         const result = await session.handleMessage(userMessage, {
           transcriptInputIds,
           channel,
@@ -2597,8 +2621,8 @@ export class CatsCompanyBot {
           // 平台把这个 bot 当工具调（另一个 Agent 在另一台机器上等结果）。
           // 只影响本轮注入的一句说明，不进历史：同一会话里人可以接着聊同样的活。
           dispatchedAsTool: msg.envelope?.dispatchedAsTool === true,
-          deviceRpc: this.buildDeviceRpcTransport(),
-          thinToolRpc: this.maybeBuildThinToolRpcTransport(),
+          deviceRpc: this.buildDeviceRpcTransport(captureTarget),
+          thinToolRpc: this.maybeBuildThinToolRpcTransport(captureTarget),
           localFileGrants,
           runtimeFeedback,
           pendingUserInputProvider: () => this.consumeQueuedUserInput(
@@ -2806,7 +2830,7 @@ export class CatsCompanyBot {
       // The running turn's context is the one the interruption will need, but a
       // newer message may carry a fresher grant (the user connected a device
       // mid-turn), so upgrade rather than ignore it.
-      if (deviceContext) active.deviceContext = deviceContext;
+      if (deviceContext) active.deviceContext = { ...deviceContext, remoteTarget: active.deviceContext?.remoteTarget };
       return active;
     }
 
@@ -3027,6 +3051,7 @@ export class CatsCompanyBot {
       const notice = [
         `[系统] 上一轮任务被中断（${reason}，非用户取消），进程已重启。`,
         '请从中断处继续：先检查已完成的进度和已生成的文件，不要重复已执行的步骤；',
+        '远程电脑上的操作只能在原设备上只读核对。不要补跑远程命令或写入，也不要换到其他设备或 Bot 宿主机。',
         '如果上一轮的目标已经达成，直接给出结论即可。',
       ].join('');
 
@@ -3070,17 +3095,19 @@ export class CatsCompanyBot {
    * carried rather than a parallel interpretation of them. Expired grants are
    * dropped by the extractors themselves.
    */
-  private rebuildDeviceContext(deviceContext?: InterruptedTurnDeviceContext): {
+  private rebuildDeviceContext(sessionKey: string, topic: string, deviceContext?: InterruptedTurnDeviceContext): {
     executionScope?: ExecutionScope;
     deviceGrants?: ScopedDeviceGrant[];
     deviceSelection?: ScopedDeviceSelection;
     targetRoutes?: TargetRoutes;
+    remoteOnly?: boolean;
+    guard?: DeviceCallGuard;
   } {
     const scope = deviceContext?.executionScope;
-    if (!scope) {
+    if (!scope || scope.sessionKey !== sessionKey || scope.topicId !== topic) {
       // Nothing was captured (an older marker, or a turn with no device
       // metadata). The resume still runs; it simply has no device access.
-      return {};
+      return { remoteOnly: Boolean(deviceContext?.remoteTarget) };
     }
     // The stored scope is a primitive-only copy that matches the ExecutionScope
     // shape (sanitizeExecutionScope validated every required field). The
@@ -3090,17 +3117,47 @@ export class CatsCompanyBot {
     const metadata: Record<string, unknown> = {};
     if (deviceContext?.catscoIdentity) metadata.catsco_identity = deviceContext.catscoIdentity;
     if (deviceContext?.xiaobaRuntime) metadata.xiaoba_runtime = deviceContext.xiaobaRuntime;
-    const targetRoutes = extractCatsCoRuntimeContext(metadata, executionScope);
-    const deviceGrants = extractCatsCoDeviceGrants(metadata, executionScope);
-    const deviceSelection = extractCatsCoDeviceSelection(metadata, executionScope);
-    if (targetRoutes?.routes?.length) {
-      Logger.info(`[中断续跑] 已恢复用户设备路由: ${targetRoutes.routes.map(route => `${route.userName || route.userId || '?'}:${route.deviceId}`).join(', ')}`);
+    if (!executionScope.isTrusted || executionScope.identityTrust !== 'server_canonical' || executionScope.source !== 'catscompany') {
+      return { remoteOnly: Boolean(deviceContext?.remoteTarget) };
     }
+    const routes = extractCatsCoRuntimeContext(metadata, executionScope)?.routes ?? [];
+    const grants = extractCatsCoDeviceGrants(metadata, executionScope) ?? [];
+    const selection = extractCatsCoDeviceSelection(metadata, executionScope);
+    const recorded = deviceContext?.remoteTarget;
+    const sameTarget = (left: InterruptedTurnRemoteTarget, right: InterruptedTurnRemoteTarget) =>
+      left.ownerUserId === right.ownerUserId && left.deviceId === right.deviceId;
+    // Older markers have no dispatch record. Only infer a target if the
+    // original authorization context could address exactly one device.
+    const first = grants[0];
+    const pinned = recorded === 'multiple' ? undefined : recorded
+      ?? (first && grants.every(grant => sameTarget(first, grant)) ? first : undefined);
+    const targetRoutes = pinned ? buildTargetRoutes(routes.filter(route => sameTarget(route, pinned))) : undefined;
+    const deviceGrants = targetRoutes && pinned ? grants.filter(grant => sameTarget(grant, pinned)) : [];
+    const deviceSelection = targetRoutes && selection ? {
+      ...selection,
+      candidates: selection.candidates?.filter(candidate => candidate.deviceId === pinned?.deviceId
+        && (candidate.ownerUserId || selection.actorUserId) === pinned?.ownerUserId),
+    } : undefined;
+    const guard: DeviceCallGuard = (target, toolName, grant) => {
+      if (!isRemoteReadonlyTool(toolName, toolName as DeviceGrantOperation)) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', retryable: false,
+          message: '中断前远程操作的结果可能未知。自动续跑只允许在原设备上读取核对，执行命令或写入需要新的用户请求。' };
+      }
+      if (!targetRoutes || !pinned || !sameTarget(pinned, target) || !grant?.grantId) {
+        return { ok: false, errorCode: 'PERMISSION_DENIED', retryable: false,
+          message: '自动续跑无法确认原设备及其授权，请重新发送请求。' };
+      }
+      // The normal RPC path checks current platform authorization, device
+      // instance and online status before forwarding, even for permanent grants.
+      return undefined;
+    };
     return {
       executionScope,
-      ...(deviceGrants ? { deviceGrants } : {}),
+      deviceGrants,
       ...(deviceSelection ? { deviceSelection } : {}),
       ...(targetRoutes ? { targetRoutes } : {}),
+      remoteOnly: Boolean(recorded),
+      guard,
     };
   }
 
@@ -3139,7 +3196,7 @@ export class CatsCompanyBot {
     // no device grants and no target routes: the user-device tools are denied
     // and the model is told "No user computer targets are currently
     // available", stranding exactly the tasks this feature rescues.
-    const resumedContext = this.rebuildDeviceContext(deviceContext);
+    const resumedContext = this.rebuildDeviceContext(sessionKey, topic, deviceContext);
     try {
       let result: {
         text?: string;
@@ -3159,8 +3216,8 @@ export class CatsCompanyBot {
           deviceSelection: resumedContext.deviceSelection,
           targetRoutes: resumedContext.targetRoutes,
           localDeviceGrant: this.localDeviceGrant,
-          deviceRpc: this.buildDeviceRpcTransport(),
-          thinToolRpc: this.maybeBuildThinToolRpcTransport(),
+          deviceRpc: this.buildDeviceRpcTransport(resumedContext.guard, resumedContext.remoteOnly),
+          thinToolRpc: this.maybeBuildThinToolRpcTransport(resumedContext.guard),
         });
       } catch (error: any) {
         if (this.shuttingDown) {
@@ -4636,6 +4693,7 @@ export class CatsCompanyBot {
           );
           if (!task) return;
         }
+        const captureTarget = captureInterruptedDeviceTarget(task);
         const result = msg.source !== 'user'
           ? await session.handleRuntimeObservation(msg.userMessage as string, {
             channel,
@@ -4668,8 +4726,8 @@ export class CatsCompanyBot {
             targetRoutes: msg.targetRoutes,
             groupRoster: toGroupRosterEntries(msg.roster),
             dispatchedAsTool: msg.dispatchedAsTool === true,
-            deviceRpc: this.buildDeviceRpcTransport(),
-            thinToolRpc: this.maybeBuildThinToolRpcTransport(),
+            deviceRpc: this.buildDeviceRpcTransport(captureTarget),
+            thinToolRpc: this.maybeBuildThinToolRpcTransport(captureTarget),
             runtimeFeedback: msg.runtimeFeedback,
             localFileGrants: msg.localFileGrants,
             pendingUserInputProvider: () => this.consumeQueuedUserInput(

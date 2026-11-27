@@ -124,6 +124,8 @@ export interface DeviceRpcToolRequest {
 
 export interface DeviceRpcTransport {
   executeTool(request: DeviceRpcToolRequest): Promise<ToolExecutionResult>;
+  /** An interrupted remote turn must not fall back to tools on the Bot host. */
+  remoteOnly?: boolean;
 }
 
 export interface ThinToolRpcRequest {

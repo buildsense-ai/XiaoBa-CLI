@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ExecutionScope } from '../types/session-identity';
+import { extractCatsCoDeviceGrants } from '../catscompany/device-grants';
 import { Logger } from '../utils/logger';
 import {
   InterruptedTurnDeviceContext,
@@ -11,7 +12,7 @@ import {
 
 // Re-exported so callers can name the shape they hand to sanitizeDeviceContext
 // without reaching into the store module.
-export type { InterruptedTurnDeviceContext, InterruptedTurnExecutionScope } from '../utils/session-store';
+export type { InterruptedTurnDeviceContext, InterruptedTurnExecutionScope, InterruptedTurnRemoteTarget } from '../utils/session-store';
 
 /**
  * Startup scan for conversations whose last turn never reached a terminal
@@ -79,9 +80,9 @@ export function markInterruptedTurn(
       : 0;
     // Prefer this interruption's context; fall back to what a previous marker
     // carried so a crash-loop rewrite does not lose the device access. The
-    // value arrives in the stored shape (already whitelisted at capture time),
-    // so it is validated rather than re-sanitized.
-    const deviceContext = readDeviceContext(input?.deviceContext) ?? previous?.deviceContext;
+    // value arrives in the stored shape. Reapply the credential guard to both
+    // candidates before writing, including markers from older versions.
+    const deviceContext = readDeviceContext(input?.deviceContext) ?? readDeviceContext(previous?.deviceContext);
     return store.saveRuntimeState(key, {
       ...state,
       interruptedTurn: {
@@ -119,29 +120,34 @@ export function sanitizeDeviceContext(
   const scope = sanitizeExecutionScope(executionScope);
   if (scope) context.executionScope = scope;
 
-  if (metadata && typeof metadata === 'object') {
-    const catscoIdentity = plainObject(metadata.catsco_identity);
-    if (catscoIdentity) context.catscoIdentity = catscoIdentity;
-
-    const xiaobaRuntime = plainObject(metadata.xiaoba_runtime);
-    if (xiaobaRuntime) context.xiaobaRuntime = xiaobaRuntime;
+  const identity = plainObject(metadata?.catsco_identity);
+  const targets = plainObject(identity?.device_target_authorizations);
+  if (identity) {
+    const { device_target_authorizations: _targets, ...legacyIdentity } = identity;
+    context.catscoIdentity = legacyIdentity;
   }
+
+  const xiaobaRuntime = plainObject(metadata?.xiaoba_runtime);
+  if (xiaobaRuntime) context.xiaobaRuntime = xiaobaRuntime;
 
   if (!context.catscoIdentity && !context.xiaobaRuntime) return undefined;
 
-  // The two kept containers are copied whole, so a credential added to them
-  // upstream would be persisted silently. Their consumers read only identity
-  // and device fields (permissions / device_grants / device_selection / actor /
-  // topic / devices), and no key with a credential-shaped name is part of that
-  // structure today. Refusing on a match means a future schema change drops the
-  // device context (degrading to "no device access") instead of writing a token
-  // to disk -- the same trade every other guard here makes.
+  // Keep the fail-closed guard for legacy fields. The versioned authorization
+  // envelope is projected separately by the same parser used for live messages.
   const credentialKey = findCredentialishKey(context);
   if (credentialKey) {
     Logger.warning(
       `中断恢复：设备上下文中出现疑似凭据字段 ${credentialKey}，已放弃保存以保护凭据`,
     );
     return undefined;
+  }
+
+  if (scope?.isTrusted && scope.identityTrust === 'server_canonical' && scope.source === 'catscompany'
+    && targets?.schema === 'catsco.device-targets.v1' && Array.isArray(targets.grants)
+    && context.catscoIdentity) {
+    const grants = extractCatsCoDeviceGrants(metadata, scope as ExecutionScope)
+      ?.filter(grant => grant.targetScope === 'explicit_device');
+    context.catscoIdentity.device_target_authorizations = { schema: targets.schema, grants: grants ?? [] };
   }
 
   // A malformed or oversized payload would bloat a state file the startup scan
@@ -442,20 +448,20 @@ function readInterruptedTurn(stateFile: string): InterruptedTurnState | undefine
 function readDeviceContext(value: unknown): InterruptedTurnDeviceContext | undefined {
   const record = plainObject(value);
   if (!record) return undefined;
-  const context: InterruptedTurnDeviceContext = {};
-  const scope = sanitizeExecutionScope(record.executionScope);
-  if (scope) context.executionScope = scope;
-  const catscoIdentity = plainObject(record.catscoIdentity);
-  if (catscoIdentity) context.catscoIdentity = catscoIdentity;
-  const xiaobaRuntime = plainObject(record.xiaobaRuntime);
-  if (xiaobaRuntime) context.xiaobaRuntime = xiaobaRuntime;
-  if (!context.catscoIdentity && !context.xiaobaRuntime) return undefined;
-  try {
-    if (JSON.stringify(context).length > MAX_DEVICE_CONTEXT_CHARS) return undefined;
-  } catch {
-    return undefined;
+  const context = sanitizeDeviceContext({
+    catsco_identity: record.catscoIdentity,
+    xiaoba_runtime: record.xiaobaRuntime,
+  }, sanitizeExecutionScope(record.executionScope) as ExecutionScope | undefined);
+  if (!context && record.remoteTarget === undefined) return undefined;
+  const target = plainObject(record.remoteTarget);
+  const restored = context ?? {};
+  if (record.remoteTarget !== undefined) {
+    restored.remoteTarget = typeof target?.ownerUserId === 'string' && target.ownerUserId
+      && typeof target.deviceId === 'string' && target.deviceId
+      && target.ownerUserId.length <= 256 && target.deviceId.length <= 256
+      ? { ownerUserId: target.ownerUserId, deviceId: target.deviceId } : 'multiple';
   }
-  return context;
+  return restored;
 }
 
 // Session state files use keyToFilename() from session-store: every character
