@@ -175,6 +175,9 @@ function resolveExecutionRouteUnchecked(
   const target = explicitTarget || 'agent_self';
 
   if (!explicitTarget || target === 'agent_self' || context.surface !== 'catscompany') {
+    if (context.deviceRpc?.remoteOnly) {
+      return { ok: false, errorCode: 'PERMISSION_DENIED', message: '自动续跑需要指定原来的远程设备。若设备无法确认，请等待用户重新发送请求。' };
+    }
     return {
       ok: true,
       mode: 'local',

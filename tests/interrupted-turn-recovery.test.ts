@@ -900,7 +900,7 @@ describe('interrupted turn recovery', () => {
     );
     assert.match(
       connector,
-      /const resumedContext = this\.rebuildDeviceContext\(deviceContext\)/,
+      /const resumedContext = this\.rebuildDeviceContext\(sessionKey, topic, deviceContext\)/,
       'the resume must rebuild the context it was given',
     );
     for (const field of ['executionScope', 'deviceGrants', 'deviceSelection', 'targetRoutes']) {
