@@ -127,7 +127,16 @@ export interface CatsLogKnowledgeSearchQuery {
   date_to?: string;
   statuses?: CatsLogKnowledgeEntryStatus[];
   include_draft?: boolean;
+  /**
+   * Result order for keyword search. `relevance` (the server default) is
+   * never sent; `day` orders by Diary day first and needs a CatsLog server
+   * that accepts `sort` (older servers reject unknown fields).
+   */
+  sort?: CatsLogKnowledgeSearchSort;
 }
+
+export const CATSLOG_KNOWLEDGE_SEARCH_SORTS = ['relevance', 'day'] as const;
+export type CatsLogKnowledgeSearchSort = typeof CATSLOG_KNOWLEDGE_SEARCH_SORTS[number];
 
 /** Mirrors knowledge.SearchPage. */
 export interface CatsLogKnowledgeSearchPage {

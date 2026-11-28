@@ -3,6 +3,7 @@ import * as assert from 'node:assert/strict';
 import { CatsLogKnowledgeRecallTool } from '../src/tools/catslog-knowledge-recall-tool';
 import { classifyLocalToolRisk } from '../src/tools/local-tool-risk';
 import { CatsLogMemoryUnavailableError } from '../src/utils/catslog-memory-provider';
+import { validateKnowledgeSearchQuery } from '../src/utils/catsco-log-agent-client';
 import type { CatsLogMemoryBackend } from '../src/utils/catslog-memory-provider';
 import type { ToolExecutionContext } from '../src/types/tool';
 
@@ -83,6 +84,36 @@ describe('catslog_knowledge_recall tool', () => {
         assert.ok(calls.length <= 5);
       }
     }
+  });
+
+  // Failure modes: sort sent to servers that predate it (relevance, recent),
+  // dropped by the wire whitelist or the phrase→alternatives fallback, or an
+  // invalid value reaching the server instead of a typed argument error.
+  test('sort reaches the wire only as day, through the fallback, and never for recent', async () => {
+    const wire: Record<string, unknown>[] = [];
+    const tool = new CatsLogKnowledgeRecallTool(fakeBackend({ searchKnowledge: async q => {
+      wire.push(validateKnowledgeSearchQuery(q));
+      return { hits: [], exhausted: true };
+    } }));
+    const sent = async (args: object) => {
+      wire.length = 0;
+      const result = await tool.execute(args, context());
+      return { result, wire: [...wire] };
+    };
+    const day = await sent({ action: 'search', query: 'a b', sort: 'day' });
+    assert.equal(day.result.ok, true);
+    assert.deepEqual(day.wire.map(body => [body.query ?? body.any_of, body.sort]), [['a b', 'day'], [['a', 'b'], 'day']]);
+    for (const args of [{ action: 'search', query: 'a', sort: 'relevance' }, { action: 'search', query: 'a' }, { action: 'recent', sort: 'day' }]) {
+      const { result, wire: bodies } = await sent(args);
+      assert.equal(result.ok, true);
+      assert.ok(bodies.length > 0 && bodies.every(body => !('sort' in body)), JSON.stringify(args));
+    }
+    for (const args of [{ action: 'search', query: 'a', sort: 'date' }, { action: 'search', query: 'a', sort: 'Day' }, { action: 'recent', sort: 'asc' }]) {
+      const { result, wire: bodies } = await sent(args);
+      assert.equal(result.errorCode, 'INVALID_TOOL_ARGUMENTS');
+      assert.equal(bodies.length, 0);
+    }
+    assert.throws(() => validateKnowledgeSearchQuery({ query: 'a', sort: 'date' as never }), /sort/);
   });
 
   test('alternative search preserves its server cursor and accepts continuation', async () => {

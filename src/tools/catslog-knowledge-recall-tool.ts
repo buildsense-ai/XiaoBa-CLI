@@ -2,6 +2,7 @@ import { validateKnowledgeGraph, validateKnowledgeGraphQuery, type CatsLogKnowle
 import { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult } from '../types/tool';
 import type { CatsLogMemoryBackend } from '../utils/catslog-memory-provider';
 import { CatsLogMemoryUnavailableError } from '../utils/catslog-memory-provider';
+import { CATSLOG_KNOWLEDGE_SEARCH_SORTS } from '../utils/catslog-knowledge-types';
 import type {
   CatsLogKnowledgeAnchor,
   CatsLogKnowledgeReadQuery,
@@ -29,6 +30,7 @@ interface RecallArgs {
   date_to?: unknown;
   statuses?: unknown;
   include_draft?: unknown;
+  sort?: unknown;
   // read
   document_id?: unknown;
   revision?: unknown;
@@ -66,7 +68,7 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     description: [
       '按需检索本 Agent 在 CatsLog 的私有日记文档（只读）。历史会话与来源记忆由后台记忆 branch 负责，不在此工具中。',
       'action=recent：按日期从新到旧列举日记，适用于工作复盘。日期可选，按问题限定范围。先取小页，找到足够线索就用 graph 或 read 按固定版本核实正文和后续更正。',
-      'action=search：按关键词搜索每日知识，优先返回标题命中，同档按日记日期从新到旧。点名项目、事项或术语时优先用 search；可按用户的时间范围筛选。默认包含 draft，全文需 read 或 graph 核实。',
+      'action=search：按关键词搜索每日知识。默认优先返回标题命中，同档按日记日期从新到旧；问某事的最新进展或现在状态时传 sort=day，改为日记日期从新到旧、同日标题命中优先。问题点名日期或时段（如“上周二”“这周”）时用 date_from/date_to 筛选，不要只靠排序。点名项目、事项或术语时优先用 search。默认包含 draft，全文需 read 或 graph 核实。',
       'action=graph：读取精确条目 seeds 的完整必要条件与补充/修正子图；预算不足整组失败，不返回省掉条件的正文。优先用于搜索后的记忆读取。Skill 是日记经验的可选补充。',
       'action=read：读取指定文档（可选 revision/entry_id）；format=json 返回条目全文分页，format=okf 返回整篇 Open Knowledge Format Markdown。',
       '每次成功返回 recall_attribution.trace_id 和稳定 ref；引用事实时复制对应正文 ref。披露/交付不等于已使用；引用与最终保留在本地分别统计，远端 typed-source feedback 尚未接入。',
@@ -89,8 +91,13 @@ export class CatsLogKnowledgeRecallTool implements Tool {
         any_of: { type: 'array', items: { type: 'string' }, description: 'search 时与 query 二选一。1..4 个候选短语，按任一短语匹配并去重。使用同样的查询条件和 next_cursor 翻页。' },
         limit: { type: 'number', description: '可选。每页条数上限（服务端有默认值与上限）。' },
         cursor: { type: 'string', description: '可选。上一页响应原样返回的 next_cursor、before_cursor 或 after_cursor，翻页时必须逐字节一致。' },
-        date_from: { type: 'string', description: '可选。YYYY-MM-DD 起始日（含）。' },
-        date_to: { type: 'string', description: '可选。YYYY-MM-DD 结束日（含）。' },
+        date_from: { type: 'string', description: '可选。YYYY-MM-DD 起始日（含）。问题点名日期或时段时用它筛选。' },
+        date_to: { type: 'string', description: '可选。YYYY-MM-DD 结束日（含）。问题点名日期或时段时用它筛选。' },
+        sort: {
+          type: 'string',
+          enum: [...CATSLOG_KNOWLEDGE_SEARCH_SORTS],
+          description: '可选，用于 search。relevance=默认，标题命中优先；day=日记日期优先，适合问最新状态。翻页时与首次请求保持一致，否则 cursor 失效。recent 已按日期排序，无需传。',
+        },
         statuses: {
           type: 'array',
           items: { type: 'string', enum: ['draft', 'active', 'superseded', 'retired'] },
@@ -143,10 +150,19 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     }
   }
 
+  /** Rejects a sort value the server would refuse, before any request. */
+  private invalidSort(input: RecallArgs): ToolExecutionResult | undefined {
+    if (input.sort === undefined || CATSLOG_KNOWLEDGE_SEARCH_SORTS.includes(input.sort as never)) return undefined;
+    return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'sort 只能是 relevance 或 day' };
+  }
+
   private async recent(input: RecallArgs, signal?: AbortSignal): Promise<ToolExecutionResult> {
     if (input.query !== undefined || input.any_of !== undefined) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'recent 不接受关键词' };
     }
+    // Recent is already day-ordered; a valid sort is accepted and not sent.
+    const badSort = this.invalidSort(input);
+    if (badSort) return badSort;
     if (!this.backend.searchKnowledge) return this.unavailableResult('当前运行环境未接入 CatsLog 日记检索');
     const page = await this.backend.searchKnowledge({
       recent: true,
@@ -169,6 +185,8 @@ export class CatsLogKnowledgeRecallTool implements Tool {
     if (typeof phrase !== 'string' || !phrase.trim()) {
       return { ok: false, errorCode: 'INVALID_TOOL_ARGUMENTS', retryable: false, message: 'search 需要 query 或 any_of' };
     }
+    const badSort = this.invalidSort(input);
+    if (badSort) return badSort;
     const query: CatsLogKnowledgeSearchQuery = {
       query: phrase,
       ...(this.optionalLimit(input.limit) !== undefined ? { limit: this.optionalLimit(input.limit) } : {}),
@@ -179,6 +197,9 @@ export class CatsLogKnowledgeRecallTool implements Tool {
       // Explicit opt-out must reach the wire: the client defaults drafts in,
       // so only an explicit boolean false may exclude them.
       ...(typeof input.include_draft === 'boolean' ? { include_draft: input.include_draft } : {}),
+      // Carried into the alternatives fallback below through `filters`, so a
+      // phrase miss and its continuation keep the same order and cursor domain.
+      ...(input.sort === 'day' ? { sort: 'day' as const } : {}),
     };
     if (!this.backend.searchKnowledge) {
       return this.unavailableResult('当前运行环境未接入 CatsLog 每日知识检索');

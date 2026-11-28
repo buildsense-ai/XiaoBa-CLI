@@ -106,6 +106,23 @@ test('recent Diary is read on demand in the same turn, followed by an ordinary r
       assert.equal(result.ok, true);
       return JSON.parse(result.content!);
     };
+    // sort=day: the newer body-only mention (10-12) now precedes the older title match (10-08).
+    const dayRankedDays = (await search({ any_of: ['配音', '故障'], sort: 'day' })).hits.map((hit: { day: string }) => hit.day);
+    assert.deepEqual(dayRankedDays, ['2026-11-16', '2026-10-12', '2026-10-08']);
+    // A phrase miss falls back to alternatives; the order survives the fallback and every continuation.
+    const walkedDays: string[] = [];
+    for (let cursor: string | undefined, page = 0; ; page++) {
+      assert.ok(page < 10, 'day-ordered fallback walk did not terminate');
+      const step = await search({ query: '配音 故障', sort: 'day', limit: 1, ...(cursor ? { cursor } : {}) });
+      walkedDays.push(...step.hits.map((hit: { day: string }) => hit.day));
+      if (!step.next_cursor) break;
+      cursor = step.next_cursor;
+    }
+    assert.deepEqual(walkedDays, dayRankedDays);
+    const before = queries.length;
+    const badSort = await native.execute({ action: 'search', query: '配音', sort: 'date' }, {});
+    assert.equal(badSort.errorCode, 'INVALID_TOOL_ARGUMENTS');
+    assert.equal(queries.length, before, 'an invalid sort never reaches CatsLog');
     const terms = { any_of: ['渲染', '字幕'] };
     const single = await search({ ...terms, limit: 1 });
     const full = await search({ ...terms, limit: 10 });
@@ -128,7 +145,7 @@ test('recent Diary is read on demand in the same turn, followed by an ordinary r
     const checked = await native.execute({ action: 'read', document_id: correction.document_id, entry_id: correction.entry_id, revision: correction.revision }, {});
     assert.match(JSON.parse(checked.content!).entries[0].text, /已修复，验收通过/);
     if (process.env.RECENT_DIARY_CLIENT_REPORT) {
-      fs.writeFileSync(process.env.RECENT_DIARY_CLIENT_REPORT, JSON.stringify({ answer: first.text, model_requests: requests.length, lookups: lookupCount, pinned_reads: reads, follow_up: follow.text, prefetch: false, keyword_ranked_days: rankedDays, corrected_status_ref: correction.ref, first_at_both_limits: single.hits[0].ref }, null, 2) + '\n', { mode: 0o600 });
+      fs.writeFileSync(process.env.RECENT_DIARY_CLIENT_REPORT, JSON.stringify({ answer: first.text, model_requests: requests.length, lookups: lookupCount, pinned_reads: reads, follow_up: follow.text, prefetch: false, keyword_ranked_days: rankedDays, day_ranked_days: dayRankedDays, day_fallback_walk: walkedDays, corrected_status_ref: correction.ref, first_at_both_limits: single.hits[0].ref }, null, 2) + '\n', { mode: 0o600 });
     }
   } finally {
     fs.rmSync(work, { recursive: true, force: true });

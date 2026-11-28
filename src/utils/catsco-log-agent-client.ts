@@ -9,6 +9,7 @@ import {
   CATSLOG_KNOWLEDGE_ANCHOR_KINDS,
   CATSLOG_KNOWLEDGE_ENTRY_STATUSES,
   CATSLOG_KNOWLEDGE_LINK_KINDS,
+  CATSLOG_KNOWLEDGE_SEARCH_SORTS,
   DEFAULT_KNOWLEDGE_EXPAND_URL,
   DEFAULT_KNOWLEDGE_PROJECTED_NODES_URL,
   KNOWLEDGE_MAX_PROJECTED_NODES_ANCHORS,
@@ -1879,6 +1880,13 @@ export function validateKnowledgeSearchQuery(query: CatsLogKnowledgeSearchQuery)
   const dateTo = validateKnowledgeDay(query.date_to, 'date_to');
   if (dateTo !== undefined) body.date_to = dateTo;
   if (query.recent === true && trimmed) throw new Error('Recent Diary cannot use a keyword');
+  if (query.sort !== undefined && !CATSLOG_KNOWLEDGE_SEARCH_SORTS.includes(query.sort)) {
+    throw new Error('CatsLog knowledge search sort must be relevance or day');
+  }
+  // Only `day` reaches the wire: `relevance` is the server default, and a
+  // recent listing is already day-ordered, so neither needs a field that
+  // servers predating `sort` would reject.
+  if (query.sort === 'day' && query.recent !== true) body.sort = 'day';
   if (dateFrom && dateTo && dateFrom > dateTo) throw new Error('CatsLog knowledge date range is inverted');
   if (query.statuses !== undefined) {
     if (!Array.isArray(query.statuses) || query.statuses.some(status => !CATSLOG_KNOWLEDGE_ENTRY_STATUSES.includes(status))) {
